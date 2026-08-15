@@ -41,10 +41,17 @@ impl StatsHistoryRepository for PgStatsHistoryRepository {
         }
 
         // One statement for the whole window via `unnest`, matched positionally.
-        // `ON CONFLICT … DO UPDATE` makes a second tick inside the same hour
-        // idempotent rather than a double count — which is the difference
-        // between a restart costing one partial window and a restart inventing
-        // traffic.
+        //
+        // `hits`/`misses` **accumulate** on conflict because every row here is a
+        // *delta* since the previous tick, and two ticks landing in the same
+        // hour carry disjoint deltas. Replacing would discard the earlier one:
+        // a process that recorded 40 000 hits for the 11:00 window and was then
+        // redeployed at 11:20 would have that window overwritten with the new
+        // process's near-zero startup delta, losing the hour outright rather
+        // than the partial window the rollup's contract promises.
+        //
+        // `cached_bytes` is the opposite kind of number — a level read from
+        // storage, not a delta — so for it `EXCLUDED` (replace) is correct.
         let registries: Vec<String> = rows.iter().map(|r| r.registry.clone()).collect();
         let windows: Vec<DateTime<Utc>> = rows.iter().map(|r| r.window_start).collect();
         let hits: Vec<i64> = rows.iter().map(|r| r.hits as i64).collect();
@@ -55,8 +62,8 @@ impl StatsHistoryRepository for PgStatsHistoryRepository {
             "INSERT INTO stats_history (registry, window_start, hits, misses, cached_bytes) \
              SELECT * FROM unnest($1::text[], $2::timestamptz[], $3::bigint[], $4::bigint[], $5::bigint[]) \
              ON CONFLICT (registry, window_start) DO UPDATE SET \
-               hits = EXCLUDED.hits, \
-               misses = EXCLUDED.misses, \
+               hits = stats_history.hits + EXCLUDED.hits, \
+               misses = stats_history.misses + EXCLUDED.misses, \
                cached_bytes = EXCLUDED.cached_bytes",
         )
         .bind(&registries)

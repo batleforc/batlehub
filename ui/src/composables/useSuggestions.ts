@@ -1,5 +1,15 @@
 import { ref, watch, type Ref } from "vue";
 
+/**
+ * A ref these composables only ever *read*.
+ *
+ * Widening the parameter types to this is what lets a caller pass a getter ref
+ * or a `computed` — which is the only form that survives a form object being
+ * replaced wholesale, as `openCreate`/`openEdit` dialogs do. A plain
+ * `Ref<T>` remains assignable, so no existing caller changes.
+ */
+type ReadonlyRef<T> = Readonly<Ref<T>>;
+
 import { explorePackageDetail, explorePackages, listSubjects } from "@/client/sdk.gen";
 import type {
   ExplorePackageDetailResponse,
@@ -41,9 +51,21 @@ const MAX_SUGGESTIONS = 10;
  * needs luck to hit.
  */
 function suggest<T>(
-  query: Ref<string>,
+  query: ReadonlyRef<string>,
   fetcher: (q: string) => Promise<T[]>,
-  opts: { enabled?: Ref<boolean>; minLength?: number } = {},
+  opts: {
+    enabled?: ReadonlyRef<boolean>;
+    minLength?: number;
+    /**
+     * Extra reactive inputs the *fetcher* reads but the query does not name —
+     * a registry filter, say. They belong in the same watcher rather than a
+     * separate one, so that changing one re-issues the request through `run`
+     * and bumps `seq`. A sibling `watch` that only cleared `items` would leave
+     * an in-flight request free to land afterwards with results computed under
+     * the old value, and would never refetch under the new one.
+     */
+    deps?: ReadonlyRef<unknown>[];
+  } = {},
 ) {
   const items = ref<T[]>([]) as Ref<T[]>;
   const loading = ref(false);
@@ -69,11 +91,16 @@ function suggest<T>(
     }
   }
 
+  const depCount = opts.deps?.length ?? 0;
+
   watch(
-    [query, opts.enabled ?? ref(true)] as const,
-    ([q, enabled]) => {
+    [query, opts.enabled ?? ref(true), ...(opts.deps ?? [])],
+    (next, prev) => {
       if (timer) clearTimeout(timer);
-      if (!enabled || q.trim().length < minLength) {
+      const text = String(next[0] ?? "");
+      const enabled = Boolean(next[1]);
+
+      if (!enabled || text.trim().length < minLength) {
         // Cancel in flight too: a request issued for `lo` must not repopulate
         // the list after the operator has cleared the field.
         seq++;
@@ -81,7 +108,26 @@ function suggest<T>(
         loading.value = false;
         return;
       }
-      timer = setTimeout(() => void run(q.trim()), DEBOUNCE_MS);
+
+      // A *dep* change (not a keystroke) invalidates what is on screen now
+      // rather than merely making it stale: the visible list was computed under
+      // the old registry and names packages that may not exist under the new
+      // one. Bumping `seq` strands any in-flight response as well, so it cannot
+      // land afterwards and repopulate the list from the old filter.
+      //
+      // Deliberately not done on a keystroke: clearing there would blank the
+      // list for the whole debounce and flash "nothing matches" while the
+      // operator is still typing.
+      const depsChanged =
+        depCount > 0 &&
+        prev !== undefined &&
+        next.slice(2, 2 + depCount).some((v, i) => v !== prev[2 + i]);
+      if (depsChanged) {
+        seq++;
+        items.value = [];
+      }
+
+      timer = setTimeout(() => void run(text.trim()), DEBOUNCE_MS);
     },
     { immediate: true },
   );
@@ -96,27 +142,35 @@ function suggest<T>(
  * viewer can reach, so the same field works on `/tools/access-check` and on an
  * admin page without two code paths that must agree.
  */
-export function usePackageNameSuggestions(query: Ref<string>, registry: Ref<string>) {
-  const { items, loading } = suggest<ComboboxOption>(query, async (q) => {
-    const { data } = await explorePackages({
-      query: {
-        name: q,
-        registry: registry.value || undefined,
-        per_page: MAX_SUGGESTIONS,
-        page: 0,
-      },
-    });
-    const body = data as ExplorePackageListResponse | undefined;
-    return (body?.items ?? []).map((entry) => ({
-      value: entry.name,
-      hint: entry.registry,
-    }));
-  });
-
-  // A registry change makes the current suggestions wrong, not merely stale.
-  watch(registry, () => {
-    items.value = [];
-  });
+export function usePackageNameSuggestions(
+  query: ReadonlyRef<string>,
+  registry: ReadonlyRef<string>,
+) {
+  // `registry` goes in as a dep rather than a sibling `watch` that only cleared
+  // the list. The fetcher reads it, so it has to participate in the same
+  // last-response-wins sequence: clearing alone left an in-flight request free
+  // to land under the new registry with hits from the old one, and never
+  // refetched, so the field reported "nothing matches" for a registry that does
+  // have matches until the operator typed another character.
+  const { items, loading } = suggest<ComboboxOption>(
+    query,
+    async (q) => {
+      const { data } = await explorePackages({
+        query: {
+          name: q,
+          registry: registry.value || undefined,
+          per_page: MAX_SUGGESTIONS,
+          page: 0,
+        },
+      });
+      const body = data as ExplorePackageListResponse | undefined;
+      return (body?.items ?? []).map((entry) => ({
+        value: entry.name,
+        hint: entry.registry,
+      }));
+    },
+    { deps: [registry] },
+  );
 
   return { options: items, loading };
 }
@@ -125,7 +179,7 @@ export function usePackageNameSuggestions(query: Ref<string>, registry: Ref<stri
  * The versions of one package — a closed set, known once its parent fields are
  * answered, and small enough to load whole.
  */
-export function useVersionSuggestions(registry: Ref<string>, name: Ref<string>) {
+export function useVersionSuggestions(registry: ReadonlyRef<string>, name: ReadonlyRef<string>) {
   const options = ref<ComboboxOption[]>([]);
   const loading = ref(false);
   let seq = 0;
@@ -173,7 +227,7 @@ export function useVersionSuggestions(registry: Ref<string>, name: Ref<string>) 
  * log for `alice` on an instance that stores `oidc:alice` returned an empty
  * table, which reads exactly like "this user did nothing".
  */
-export function useSubjectSuggestions(query: Ref<string>) {
+export function useSubjectSuggestions(query: ReadonlyRef<string>) {
   const { items, loading } = suggest<ComboboxOption>(
     query,
     async (q) => {

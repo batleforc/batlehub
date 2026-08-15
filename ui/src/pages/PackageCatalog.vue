@@ -356,6 +356,12 @@ async function fetchPackages() {
     error.value = null;
     packages.value = cached.items;
     total.value = cached.total;
+    // `loading` has to be cleared here too, not only in the `finally` below.
+    // This call already bumped `packagesSeq`, so any request still in flight
+    // will fail its own `seq === packagesSeq` check and skip the `finally` —
+    // leaving the skeleton row on screen forever. Reproduced by selecting an
+    // uncached registry and then a cached one before the first lands.
+    loading.value = false;
     return;
   }
 

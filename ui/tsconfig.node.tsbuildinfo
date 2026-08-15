@@ -1,1 +1,1 @@
-{"root":["./vite.config.ts","./openapi-ts.config.ts","./src/design/tokens.test.ts","./src/test/fixtures.test.ts"],"version":"6.0.3"}
+{"root":["./vite.config.ts","./openapi-ts.config.ts","./build/csp.test.ts","./build/csp.ts","./build/i18n-audit.test.ts","./src/design/tokens.test.ts","./src/test/fixtures.test.ts","./src/config/registryTypes.docs.test.ts"],"version":"6.0.3"}

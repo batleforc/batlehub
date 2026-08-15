@@ -71,8 +71,14 @@ const {
 });
 
 /* A8: identities this instance has seen. A claim may still name someone it
-   has not — a namespace is often claimed before its owner's first pull. */
-const claimedBySuggestions = useSubjectSuggestions(toRef(claimForm.value, "claimed_by"));
+   has not — a namespace is often claimed before its owner's first pull.
+
+   A getter ref, not `toRef(claimForm.value, …)`: `useAdminCrudList.submitAdd`
+   does `addForm.value = initialAddForm()` after a successful claim, so a
+   property ref bound to the object held at setup time points at an orphaned
+   object from the second claim onwards and the field suggests nothing for the
+   rest of the session. A getter re-reads `claimForm.value` on every access. */
+const claimedBySuggestions = useSubjectSuggestions(toRef(() => claimForm.value.claimed_by));
 </script>
 
 <template>

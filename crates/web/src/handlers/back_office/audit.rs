@@ -105,6 +105,16 @@ pub struct ExportQuery {
     pub to: Option<DateTime<Utc>>,
     pub registry: Option<String>,
     pub user_id: Option<String>,
+    /// Restrict the export to denied events, as the listing's "Denied only"
+    /// filter does.
+    ///
+    /// The listing accepted this and the export did not, so an operator reading
+    /// a table of denials downloaded a file containing every allowed event too,
+    /// with nothing on screen saying so — on the surface whose whole purpose is
+    /// establishing what happened. An export has to be able to describe the
+    /// same set the table did.
+    #[serde(default)]
+    pub denied_only: bool,
     /// "json" (default) or "csv"
     #[serde(default)]
     pub format: String,
@@ -147,7 +157,7 @@ pub async fn export_audit_log(
         user_id: query.user_id.clone(),
         from: query.from,
         to: query.to,
-        denied_only: false,
+        denied_only: query.denied_only,
         limit: 100_000,
         offset: 0,
     };

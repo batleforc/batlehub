@@ -30,11 +30,18 @@ pub fn hour_start(at: DateTime<Utc>) -> DateTime<Utc> {
 /// tick, so each row is a closed observation of its own window and nothing
 /// later depends on the counter that produced it.
 ///
-/// A restart therefore costs at most the current partial hour: the baseline
+/// A restart therefore costs at most the current partial tick: the baseline
 /// resets to zero along with the counters, and the next tick writes what
 /// accumulated since the process came up. It never produces a negative or
 /// absurd delta, which a naive "store the counter" scheme would on every
 /// restart.
+///
+/// That bound holds only because [`StatsHistoryRepository::append`]
+/// **accumulates** `hits`/`misses` on `(registry, window_start)`. Several ticks
+/// land in each hourly bucket and each carries a disjoint delta, so a repository
+/// that replaced on conflict would keep only the last one — turning a redeploy
+/// at 11:20 into an erased 11:00 window rather than a lost partial tick.
+/// `cached_bytes` is a level rather than a delta, and is replaced.
 pub struct StatsRollupService {
     metrics: Arc<ProxyMetrics>,
     repo: Arc<dyn StatsHistoryRepository>,
@@ -134,12 +141,22 @@ mod tests {
     #[async_trait]
     impl StatsHistoryRepository for MemHistory {
         async fn append(&self, rows: &[StatsRollupRow]) -> Result<(), CoreError> {
+            // Mirrors the real repositories: deltas accumulate on conflict,
+            // `cached_bytes` (a level) is replaced. A double that merely
+            // replaced would hide the restart-erases-the-hour defect.
             let mut guard = self.rows.lock().unwrap();
             for row in rows {
-                guard.retain(|r| {
-                    !(r.registry == row.registry && r.window_start == row.window_start)
-                });
-                guard.push(row.clone());
+                match guard
+                    .iter_mut()
+                    .find(|r| r.registry == row.registry && r.window_start == row.window_start)
+                {
+                    Some(existing) => {
+                        existing.hits = existing.hits.saturating_add(row.hits);
+                        existing.misses = existing.misses.saturating_add(row.misses);
+                        existing.cached_bytes = row.cached_bytes;
+                    }
+                    None => guard.push(row.clone()),
+                }
             }
             Ok(())
         }
@@ -283,18 +300,27 @@ mod tests {
         );
     }
 
+    /// Two ticks inside one hour write two *disjoint* deltas of that hour, and
+    /// the repository sums them. The traffic the first tick recorded survives
+    /// the second — which is the difference between a restart costing the
+    /// current partial window (the documented contract) and a restart erasing
+    /// the whole hour it happened in.
     #[tokio::test]
-    async fn ticking_twice_in_one_window_does_not_double_count() {
+    async fn ticking_twice_in_one_window_keeps_both_deltas() {
         let (metrics, repo, svc) = svc(0);
         for _ in 0..4 {
             metrics.record_artifact_hit("npm");
         }
         svc.tick(at(10, 5), &HashMap::new()).await.unwrap();
+
+        for _ in 0..3 {
+            metrics.record_artifact_hit("npm");
+        }
         svc.tick(at(10, 55), &HashMap::new()).await.unwrap();
 
         let rows = repo.rows.lock().unwrap().clone();
         assert_eq!(rows.len(), 1, "same window, upserted");
-        assert_eq!(rows[0].hits, 0, "the second tick saw no new traffic");
+        assert_eq!(rows[0].hits, 7, "4 from the first tick + 3 from the second");
     }
 
     #[tokio::test]

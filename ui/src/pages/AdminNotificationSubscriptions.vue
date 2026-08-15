@@ -107,9 +107,15 @@ const form = ref({
 /* Suggested from `name_contains`, still accepting a package this instance has
    never cached — subscribing *before* the first pull is a real workflow
    (RFC 0004-bis §6.2). */
+/* Getter refs, not `toRef(form.value, …)`. The property form binds to the
+   object `form` held *at setup time*, and both `openCreate` and `openEdit`
+   replace `form.value` outright — so by the time the dialog is ever visible the
+   refs point at an orphaned object that nothing writes to, and the field
+   suggests nothing for the rest of the session. A getter re-reads `form.value`
+   on every access, so it survives the replacement. */
 const packageSuggestions = usePackageNameSuggestions(
-  toRef(form.value, "package_name"),
-  toRef(form.value, "registry"),
+  toRef(() => form.value.package_name),
+  toRef(() => form.value.registry),
 );
 /**
  * The channel field is required but was never validated — `submitForm` checked

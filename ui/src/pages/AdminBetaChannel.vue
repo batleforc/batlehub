@@ -70,8 +70,13 @@ const {
   canSubmitAdd: (form) => !!form.principal_id.trim(),
 });
 
-/* A8: identities this instance has seen, offered rather than typed blind. */
-const grantedBySuggestions = useSubjectSuggestions(toRef(addForm.value, "granted_by"));
+/* A8: identities this instance has seen, offered rather than typed blind.
+
+   A getter ref, not `toRef(addForm.value, …)`: `useAdminCrudList.submitAdd`
+   replaces `addForm.value` outright after a successful grant, which would leave
+   a property ref bound to an orphaned object and the field dead from the second
+   grant onwards. */
+const grantedBySuggestions = useSubjectSuggestions(toRef(() => addForm.value.granted_by));
 
 // computed, not a bare const: a const is evaluated once at module load and
 // would keep the English labels after a locale change.

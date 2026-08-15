@@ -511,6 +511,10 @@ export default defineConfig({
               text: "0007 — The README, per version",
               link: "/rfc/0007-package-readmes",
             },
+            {
+              text: "0008 — mise in an air-gapped estate",
+              link: "/rfc/0008-mise-in-an-air-gapped-estate",
+            },
           ],
         },
       ],

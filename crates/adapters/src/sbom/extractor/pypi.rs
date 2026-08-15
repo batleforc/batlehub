@@ -92,6 +92,23 @@ fn parse_pep_metadata(content: &str) -> ExtractedManifest {
     }
 }
 
+/// setuptools wrote `UNKNOWN` into `License:` (and `Summary:`, `Home-page:`, …)
+/// by default for years, so a large share of older wheels and sdists carry it.
+///
+/// It has to read back as *unknown*, not as a licence. `LicenseGateRule` treats
+/// any recorded string as a known declaration, so storing `"UNKNOWN"` takes the
+/// package out of the `allow_unknown` path and judges it against the allow list,
+/// which `UNKNOWN` never matches: an operator with
+/// `allow = ["MIT"], allow_unknown = true` would find `pip install` of an older
+/// MIT-licensed sdist denied — precisely the outcome `allow_unknown` exists to
+/// prevent.
+fn is_placeholder_license(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_uppercase().as_str(),
+        "UNKNOWN" | "NONE" | "N/A" | "NOASSERTION"
+    )
+}
+
 /// PEP 639's `License-Expression` first, then the legacy `License`, then the
 /// `License ::` trove classifier.
 ///
@@ -109,7 +126,7 @@ fn parse_pep_license(content: &str) -> Option<String> {
             line.trim()
                 .strip_prefix(name)
                 .map(str::trim)
-                .filter(|v| !v.is_empty())
+                .filter(|v| !v.is_empty() && !is_placeholder_license(v))
                 .map(str::to_owned)
         })
     };
@@ -195,6 +212,22 @@ mod tests {
     #[test]
     fn parse_pep_license_absent_is_none() {
         assert_eq!(parse_pep_license("Name: x\nVersion: 1.0\n"), None);
+    }
+
+    /// setuptools' default placeholder must read back as unknown, or the gate
+    /// judges it against the allow list and denies an otherwise fine package.
+    #[test]
+    fn parse_pep_license_placeholder_is_none() {
+        assert_eq!(parse_pep_license("License: UNKNOWN\n"), None);
+        assert_eq!(parse_pep_license("License: unknown\n"), None);
+        assert_eq!(parse_pep_license("License-Expression: UNKNOWN\n"), None);
+    }
+
+    /// …but it must not shadow a real declaration further down.
+    #[test]
+    fn parse_pep_license_placeholder_falls_through_to_the_classifier() {
+        let metadata = "License: UNKNOWN\nClassifier: License :: OSI Approved :: MIT License\n";
+        assert_eq!(parse_pep_license(metadata).as_deref(), Some("MIT License"));
     }
 
     #[test]

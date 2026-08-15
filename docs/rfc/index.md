@@ -13,7 +13,7 @@ is not that a project has never been wrong; it is what it does when it finds
 out.
 
 **Every page here opens with a status banner, and the status is not uniform.**
-Three of the nine below are implemented and six are not. The banner is
+Three of the ten below are implemented and seven are not. The banner is
 generated from each document's own `Status` field rather than written on the
 page, so it cannot drift from the table it is quoting — an RFC that describes a
 proposal, published under a label saying it shipped, would be a claim about the
@@ -30,6 +30,7 @@ product that is not true.
 | [0005-bis — Two readers, one home each](/rfc/0005-bis-audience-split-and-one-home) | Splitting the guide by audience, giving every instruction one home, cutting each page down to one subject, and turning the showcase back into an introduction |
 | [0006 — A block every ecosystem can see](/rfc/0006-blocked-versions-hidden-everywhere) | Hiding blocked versions from every registry's listings, not just npm's, and stating which protocols cannot be filtered |
 | [0007 — The README, per version](/rfc/0007-package-readmes) | Storing each version's own README, rendering it safely on the server, and putting it on the package page |
+| [0008 — mise in an air-gapped estate](/rfc/0008-mise-in-an-air-gapped-estate) | Making `mise install` work with no route off the site: `mise.lock` as the bill of materials, a server that will not dial out, and verification moved to the connected side |
 
 They read in order: each one argues with the state the previous one left.
 

@@ -262,8 +262,13 @@ pub(super) async fn explore_packages_impl(
         -- what carries "size unknown" through to the DTO: artifacts cached
         -- before 004 added `size_bytes` have no number, and reporting 0 for
         -- them would claim we hold empty files.
+        -- COUNT(DISTINCT version), not COUNT(*): `artifact_cache_meta` is keyed
+        -- on `artifact_key`, which for multi-file registries is one row *per
+        -- file*. A Maven version with pom + jar + sources + javadoc is four
+        -- rows and one version, and COUNT(*) reported it as four cached
+        -- versions of a package whose `version_count` is 1.
         LEFT JOIN LATERAL (
-            SELECT COUNT(*)::bigint AS cached_versions,
+            SELECT COUNT(DISTINCT acm.version)::bigint AS cached_versions,
                    SUM(acm.size_bytes)::bigint AS cached_bytes,
                    MAX(acm.cached_at) AS last_fetched_at
             FROM artifact_cache_meta acm
@@ -285,10 +290,18 @@ pub(super) async fn explore_packages_impl(
                 FROM artifact_cache_meta acm
                 WHERE acm.registry = agg.registry AND acm.package_name = agg.package_name
                 UNION ALL
+                -- The same `{visibility}` predicate the `local_pkgs` CTE
+                -- applies. A row can reach `agg` through `package_statuses`
+                -- alone (`record_access` writes one on any allowed download or
+                -- metadata read, including on the local path), so without it
+                -- this join hands an anonymous caller the newest version string
+                -- and publish date of a `team`-visibility package that its own
+                -- owner happened to pull once.
                 SELECT lp.version, lp.published_at, lp.published_at AS obtained_at
                 FROM local_packages lp
                 WHERE lp.registry = agg.registry AND lp.name = agg.package_name
                   AND lp.status = 'published'
+                  {visibility}
             ) v
             ORDER BY v.obtained_at DESC NULLS LAST
             LIMIT 1

@@ -517,7 +517,21 @@ impl LocalRegistryService {
         self.filter_for_identity(registry, versions, identity).await
     }
 
-    /// `load_visible_versions`, returning `CoreError::NotFound` if the result is empty.
+    /// `load_visible_versions`, turning an empty result into an error.
+    ///
+    /// **Which** error matters, and the distinction is a security boundary, not
+    /// a cosmetic one. On a Hybrid registry the web layer treats `NotFound` as
+    /// "we do not have this, ask upstream"
+    /// (`handlers::proxy::common::serve_local_or_proxy_document`). So if an
+    /// operator blocks every version of an internal package `acme-auth` and this
+    /// returned `NotFound`, the fall-through would answer with the *public*
+    /// `acme-auth` from npmjs — serving the substitution the block exists to
+    /// prevent, and turning a deliberate block into a dependency-confusion
+    /// vector.
+    ///
+    /// An all-blocked *local* package therefore reports `AccessDenied`, which
+    /// the web layer surfaces as `403` and never falls through. "Never published
+    /// here" keeps its `NotFound`, so genuine hybrid fall-through is unaffected.
     ///
     /// `entity_label` is used in the error message, e.g. `"crate"`, `"gem"`, `"module"`.
     pub(super) async fn load_visible_versions_or_not_found(
@@ -529,11 +543,56 @@ impl LocalRegistryService {
     ) -> Result<Vec<PublishedPackage>, CoreError> {
         let versions = self.load_visible_versions(registry, name, identity).await?;
         if versions.is_empty() {
+            // Only consulted on the empty path, so the common case pays nothing.
+            if self.emptied_by_blocking(registry, name).await {
+                return Err(CoreError::AccessDenied(format!(
+                    "every version of {entity_label} '{name}' in registry '{registry}' \
+                     is administratively blocked"
+                )));
+            }
             return Err(CoreError::NotFound(format!(
                 "{entity_label} '{name}' not found in local registry '{registry}'"
             )));
         }
         Ok(versions)
+    }
+
+    /// Whether this instance holds `name` locally *and* administrative blocks
+    /// are what left its listing empty.
+    ///
+    /// "Some version of this name is blocked" is a different fact and must not
+    /// be mistaken for this one. Blocks live in `package_statuses`, which is
+    /// keyed on registry + name + version and records blocks on **proxied**
+    /// versions too — so on a Hybrid registry, blocking one bad version of an
+    /// upstream package that was never published here would otherwise report
+    /// `AccessDenied` and refuse the whole document, where the correct answer is
+    /// upstream's document with that one version stripped (which is exactly what
+    /// [`crate::services::ProxyService::version_document`] does).
+    ///
+    /// Requiring a non-empty *local* set that blocking covers entirely keeps the
+    /// `AccessDenied` for the case it was introduced for — an internal package
+    /// whose every published version is blocked, which must never fall through
+    /// to a public package of the same name.
+    async fn emptied_by_blocking(&self, registry: &str, name: &str) -> bool {
+        let Some(repo) = self.package_repo.as_ref() else {
+            return false;
+        };
+        // Listed versions only: an unlisted version is hidden from listings by
+        // policy, not by a block, so it cannot make this an "all blocked" case.
+        let local = match self.backend.get_versions(registry, name).await {
+            Ok(v) => Self::filter_unlisted(v),
+            // Fails closed onto `NotFound`, matching `filter_blocked`'s own
+            // fail-open stance: a storage blip must not manufacture a `403`.
+            Err(_) => return false,
+        };
+        if local.is_empty() {
+            return false;
+        }
+        let Ok(blocked) = repo.blocked_versions(registry, name).await else {
+            return false;
+        };
+        let blocked: std::collections::HashSet<&str> = blocked.iter().map(String::as_str).collect();
+        local.iter().all(|p| blocked.contains(p.version.as_str()))
     }
 
     /// Picks the newest non-prerelease version, falling back to the overall newest

@@ -347,12 +347,20 @@ const expiresIn = computed(() => {
   return `${secs}s`;
 });
 
-onMounted(async () => {
-  await Promise.all([fetchPending(), fetchHistory(), loadConfigContent(), fetchWarnings()]);
+onMounted(() => {
+  // The interval is installed *before* the initial loads are awaited. Behind
+  // the await, `onUnmounted` could already have run — it would find
+  // `pollTimer` still null, clear nothing, and the interval would then be
+  // installed on a dead component and poll `/admin/config/pending` every 5 s
+  // for the rest of the session, one leaked timer per visit. Navigating away
+  // from this page before four requests settle is not an edge case on a slow
+  // instance.
   pollTimer = setInterval(() => void fetchPending(), 5_000);
+  void Promise.all([fetchPending(), fetchHistory(), loadConfigContent(), fetchWarnings()]);
 });
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer);
+  pollTimer = null;
 });
 </script>
 

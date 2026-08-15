@@ -138,7 +138,13 @@ async function block(pkg: AdminPackageSummary) {
   }
   actionError.value = null;
   try {
-    await blockPackage({
+    // `res.error`, not `catch` alone. The generated client is built without
+    // `throwOnError`, so an HTTP failure *resolves* rather than throws: a 403
+    // or 409 fell straight through to `reload()` and the operator saw the
+    // dialog close on a package that is still Available, with no message
+    // anywhere — indistinguishable from a block the server accepted and
+    // ignored. Same guard `AdminBulk` already applies.
+    const res = await blockPackage({
       body: {
         registry: pkg.package_id.registry,
         name: pkg.package_id.name,
@@ -147,6 +153,10 @@ async function block(pkg: AdminPackageSummary) {
         reason,
       },
     });
+    if (res.error) {
+      actionError.value = extractMessage(res.error);
+      return;
+    }
     reload();
   } catch (e: unknown) {
     actionError.value = extractMessage(e);
@@ -156,7 +166,9 @@ async function block(pkg: AdminPackageSummary) {
 async function unblock(pkg: AdminPackageSummary) {
   actionError.value = null;
   try {
-    await unblockPackage({
+    // See `block()` above: the client resolves on HTTP failure, so the error
+    // has to be read off the response rather than waited for as an exception.
+    const res = await unblockPackage({
       body: {
         registry: pkg.package_id.registry,
         name: pkg.package_id.name,
@@ -164,6 +176,10 @@ async function unblock(pkg: AdminPackageSummary) {
         artifact: pkg.package_id.artifact,
       },
     });
+    if (res.error) {
+      actionError.value = extractMessage(res.error);
+      return;
+    }
     reload();
   } catch (e: unknown) {
     actionError.value = extractMessage(e);

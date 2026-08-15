@@ -278,10 +278,15 @@ async fn local_packument_hides_blocked_version_and_repoints_latest() {
 }
 
 /// Blocking every version leaves the package with nothing to resolve to. The
-/// listing endpoint reports it as absent rather than serving an empty document
-/// that a client would read as "exists, but broken".
+/// listing endpoint refuses it rather than serving an empty document that a
+/// client would read as "exists, but broken".
+///
+/// `403`, not `404`, and the difference is load-bearing — see
+/// `hybrid_packument_does_not_fall_through_to_upstream_when_every_version_is_blocked`
+/// below. It also matches what a direct request for a blocked version already
+/// answers, so the two halves of a block agree.
 #[actix_web::test]
-async fn local_packument_is_not_found_when_every_version_is_blocked() {
+async fn local_packument_is_denied_when_every_version_is_blocked() {
     let parts = npm_app_parts(RegistryMode::Local);
     let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
 
@@ -299,5 +304,95 @@ async fn local_packument_is_not_found_when_every_version_is_blocked() {
         .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
         .to_request();
     let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 404);
+    assert_eq!(resp.status(), 403);
+}
+
+/// A package that was never published here is still `404`, so genuine hybrid
+/// fall-through to upstream is untouched by the rule above.
+#[actix_web::test]
+async fn local_packument_is_not_found_when_never_published() {
+    let parts = npm_app_parts(RegistryMode::Local);
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-npm/never-published")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 404);
+}
+
+/// SECURITY: on a Hybrid registry, "we hold nothing for this name" falls through
+/// to upstream. If an all-blocked package reported *that*, blocking every
+/// version of an internal `lodash` would make this proxy answer with the public
+/// npmjs `lodash` in its place — the substitution a block exists to prevent, and
+/// a dependency-confusion vector built out of an operator's own control.
+///
+/// It must refuse instead, and must not serve the upstream document.
+#[actix_web::test]
+async fn hybrid_packument_does_not_fall_through_to_upstream_when_every_version_is_blocked() {
+    let parts = npm_app_parts(RegistryMode::Hybrid);
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+
+    // `lodash` is a name the upstream fixture also serves — that overlap is the
+    // whole point of the test.
+    let req = TestRequest::put()
+        .uri("/proxy/local-npm/lodash")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(npm_publish_payload("lodash", "9.9.9"))
+        .to_request();
+    assert!(call_service(&app, req).await.status().is_success());
+
+    block_version(&app, "local-npm", "lodash", "9.9.9").await;
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-npm/lodash")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(
+        resp.status(),
+        403,
+        "an all-blocked local package must be refused, never replaced by upstream's"
+    );
+}
+
+/// The other side of the rule above, and the one it is easiest to break: blocks
+/// are recorded per registry + name + version and cover **proxied** versions
+/// too, so "this name has a blocked version" is not "this name is ours and is
+/// entirely blocked".
+///
+/// Blocking one bad version of a purely upstream package — nothing of it ever
+/// published here — must still serve upstream's document with that version
+/// stripped. Refusing it would turn a routine CVE block on a popular proxied
+/// package into a `403` for the whole package, and every `npm install` naming
+/// any version of it would fail.
+#[actix_web::test]
+async fn hybrid_packument_falls_through_when_only_a_proxied_version_is_blocked() {
+    let parts = npm_app_parts(RegistryMode::Hybrid);
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+
+    // Nothing is published locally: `lodash` exists only upstream.
+    block_version(&app, "local-npm", "lodash", "1.1.0").await;
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-npm/lodash")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(
+        resp.status(),
+        200,
+        "a purely proxied package must still resolve when one of its versions is blocked"
+    );
+
+    let doc: Value = read_body_json(resp).await;
+    let versions = version_keys(&doc);
+    assert!(
+        !versions.contains(&"1.1.0".to_owned()),
+        "the blocked version must be hidden: {versions:?}"
+    );
+    assert!(
+        versions.contains(&"1.0.0".to_owned()),
+        "the allowed versions must survive: {versions:?}"
+    );
 }

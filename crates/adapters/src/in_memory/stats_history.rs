@@ -28,10 +28,24 @@ impl StatsHistoryRepository for InMemoryStatsHistory {
         let mut guard = self.rows.write().await;
         for row in rows {
             // Upsert on (registry, window_start), mirroring the Postgres
-            // primary key: a writer that runs twice in one hour must not
-            // double-count.
-            guard.retain(|r| !(r.registry == row.registry && r.window_start == row.window_start));
-            guard.push(row.clone());
+            // primary key and — crucially — its *accumulating* conflict clause.
+            // Each row is a delta since the previous tick, so two ticks in one
+            // hour carry disjoint deltas and must be summed; replacing would
+            // silently drop the earlier one, which is exactly the restart-loses-
+            // an-hour bug this impl has to be able to reproduce in tests.
+            //
+            // `cached_bytes` is a level, not a delta, so it is replaced.
+            match guard
+                .iter_mut()
+                .find(|r| r.registry == row.registry && r.window_start == row.window_start)
+            {
+                Some(existing) => {
+                    existing.hits = existing.hits.saturating_add(row.hits);
+                    existing.misses = existing.misses.saturating_add(row.misses);
+                    existing.cached_bytes = row.cached_bytes;
+                }
+                None => guard.push(row.clone()),
+            }
         }
         guard.sort_by(|a, b| {
             a.window_start
@@ -95,15 +109,31 @@ mod tests {
         assert_eq!(rows[0].hits, 2);
     }
 
+    /// Two writes to one window are two *deltas* of the same hour, so they sum.
+    /// Replacing here would mean a redeploy at 11:20 wiped the 11:00 window the
+    /// previous process had already recorded.
     #[tokio::test]
-    async fn append_upserts_on_registry_and_window() {
+    async fn append_accumulates_deltas_within_one_window() {
         let repo = InMemoryStatsHistory::new();
         repo.append(&[row("npm", 10, 1)]).await.unwrap();
         repo.append(&[row("npm", 10, 9)]).await.unwrap();
 
         let rows = repo.read_window(at(0), at(23)).await.unwrap();
-        assert_eq!(rows.len(), 1, "same key, replaced not duplicated");
-        assert_eq!(rows[0].hits, 9);
+        assert_eq!(rows.len(), 1, "same key, merged not duplicated");
+        assert_eq!(rows[0].hits, 10, "1 + 9 — deltas of the same hour");
+        assert_eq!(rows[0].misses, 2);
+    }
+
+    /// `cached_bytes` is a level read from storage, not a delta: 100 bytes held
+    /// at both ticks is 100 bytes, not 200.
+    #[tokio::test]
+    async fn append_replaces_cached_bytes_rather_than_summing_it() {
+        let repo = InMemoryStatsHistory::new();
+        repo.append(&[row("npm", 10, 1)]).await.unwrap();
+        repo.append(&[row("npm", 10, 9)]).await.unwrap();
+
+        let rows = repo.read_window(at(0), at(23)).await.unwrap();
+        assert_eq!(rows[0].cached_bytes, 100);
     }
 
     #[tokio::test]

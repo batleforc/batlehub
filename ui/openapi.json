@@ -253,6 +253,15 @@
             }
           },
           {
+            "name": "denied_only",
+            "in": "query",
+            "description": "Restrict the export to denied events, as the listing's \"Denied only\"\nfilter does.\n\nThe listing accepted this and the export did not, so an operator reading\na table of denials downloaded a file containing every allowed event too,\nwith nothing on screen saying so — on the surface whose whole purpose is\nestablishing what happened. An export has to be able to describe the\nsame set the table did.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "name": "format",
             "in": "query",
             "description": "\"json\" (default) or \"csv\"",

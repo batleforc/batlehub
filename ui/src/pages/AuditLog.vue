@@ -120,9 +120,12 @@ function clearFilters() {
 
 const exportFormat = ref<"json" | "csv">("csv");
 const exporting = ref(false);
+/** Said, not swallowed — see the `catch` in `exportAuditLog`. */
+const exportError = ref<string | null>(null);
 
 async function exportAuditLog() {
   exporting.value = true;
+  exportError.value = null;
   try {
     const headers: Record<string, string> = {};
     if (token.value) headers["Authorization"] = `Bearer ${token.value}`;
@@ -134,6 +137,10 @@ async function exportAuditLog() {
     // table they were reading is worse than offering no export.
     if (userFilter.value.trim()) params.set("user_id", userFilter.value.trim());
     if (registryFilter.value.trim()) params.set("registry", registryFilter.value.trim());
+    // Including "Denied only". It was the one filter the export dropped, so a
+    // file downloaded from a table of denials silently contained every allowed
+    // event as well.
+    if (deniedOnly.value) params.set("denied_only", "true");
     const fromIso = asRfc3339(from.value);
     const toIso = asRfc3339(to.value);
     if (fromIso) params.set("from", fromIso);
@@ -149,6 +156,12 @@ async function exportAuditLog() {
     a.download = match ? match[1] : `audit-log.${exportFormat.value}`;
     a.click();
     URL.revokeObjectURL(a.href);
+  } catch (e: unknown) {
+    // There was a `throw` and a `finally` but no `catch`, so a 500 on export
+    // produced an unhandled rejection, no message, and a button that simply
+    // re-enabled — the operator could not tell a failed export from one the
+    // browser had quietly saved.
+    exportError.value = extractMessage(e);
   } finally {
     exporting.value = false;
   }
@@ -231,6 +244,10 @@ async function purge() {
             <Button variant="outline" size="sm" @click="reload">{{ t("common.refresh") }}</Button>
           </div>
         </div>
+
+        <!-- A failed export has to say so. Without this the button re-enabled
+             and nothing else changed, which reads as "saved". -->
+        <p v-if="exportError" class="text-sm text-destructive">{{ exportError }}</p>
 
         <!-- Every one of these is a server-side parameter the endpoint has
              always accepted. -->

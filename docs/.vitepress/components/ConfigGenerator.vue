@@ -457,7 +457,26 @@ let _argon2id: ArgFn | null = null;
 const tokenHashes = ref<Record<number, string | null>>({});
 let _hashTimer: ReturnType<typeof setTimeout> | null = null;
 
+/**
+ * Generation counter for `runHashComputation`.
+ *
+ * Argon2id at `memorySize: 65536, iterations: 3` takes well over a second in a
+ * browser, which is far longer than the 350 ms debounce — so runs overlap, and
+ * `scheduleHashing` can only cancel a run that has not *started*. Without this
+ * guard the slower, older run wrote last: type `secret-a`, pause, type `-b`,
+ * pause, and run B finishes first with `hash("secret-a-b")` before run A lands
+ * and overwrites it with `hash("secret-a")`.
+ *
+ * The panel then shows a green `$argon2id$…` and emits it into
+ * `[[auth.tokens]] value = …` — a correct-looking config holding the hash of a
+ * token the operator never had, discovered only as a failed login. A stale
+ * result must be dropped, not written.
+ */
+let _hashRun = 0;
+
 async function runHashComputation() {
+  const mine = ++_hashRun;
+
   const next: Record<number, string | null> = {};
   for (const auth of authProviders.value) {
     if (auth.type !== "token") continue;
@@ -489,8 +508,10 @@ async function runHashComputation() {
         } else {
           result = raw;
         }
+        if (mine !== _hashRun) return; // superseded — this hash is of stale input
         tokenHashes.value = { ...tokenHashes.value, [tok.id]: result };
       } catch {
+        if (mine !== _hashRun) return;
         tokenHashes.value = { ...tokenHashes.value, [tok.id]: raw };
       }
     }
@@ -499,7 +520,9 @@ async function runHashComputation() {
 
 function scheduleHashing() {
   if (_hashTimer) clearTimeout(_hashTimer);
-  _hashTimer = setTimeout(runHashComputation, 350);
+  // Clearing the timer only cancels a run that has not started; one already
+  // in flight is stranded by the generation counter above.
+  _hashTimer = setTimeout(() => void runHashComputation(), 350);
 }
 
 onMounted(async () => {

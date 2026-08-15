@@ -112,40 +112,87 @@ pub(super) fn spawn_periodic_vuln_scan(
     });
 }
 
-/// Spawn the hourly cache-statistics rollup (RFC 0004 §6.4, R9).
+/// Spawn the cache-statistics rollup (RFC 0004 §6.4, R9).
 ///
-/// The interval is fixed at one hour rather than configured: it is the
-/// resolution the data is *kept* at, and a deployment wanting daily figures
+/// The stored **resolution** is fixed at one hour rather than configured: it is
+/// the granularity the data is *kept* at, and a deployment wanting daily figures
 /// aggregates on read — daily figures can always be derived from hourly ones,
 /// never recovered from them.
 ///
+/// The **write cadence** is deliberately shorter than that resolution. Each tick
+/// writes the counter delta since the previous tick and stamps it with
+/// `hour_start(now)`, so the delta and the stamp only describe the same interval
+/// when the tick is short relative to the hour. Ticking hourly from process
+/// start meant an instance booted at 09:05 filed all of 09:05–10:05 under the
+/// 10:00 bucket, permanently reporting every hour's traffic an hour late; at
+/// five minutes the attribution error is bounded by the tick, and a restart
+/// costs at most that much rather than a whole window.
+///
+/// Correctness here depends on `StatsHistoryRepository::append` **accumulating**
+/// on `(registry, window_start)` — twelve ticks land in each hourly bucket, and
+/// a replacing upsert would keep only the last one.
+///
+/// The `cached_bytes` **measurement** keeps the hourly cadence, though, and does
+/// not follow the write cadence down. `stat_by_prefix` enumerates every cached
+/// object of a registry — a paginated S3 `ListObjectsV2` over the whole prefix,
+/// or a full directory walk with a `stat` per file — and it is a level, not a
+/// delta, so measuring it twelve times an hour would multiply that scan by
+/// twelve to store the same number. Between measurements the last one is
+/// re-sent rather than dropped: `StatsRollupService::tick` reads the map with
+/// `unwrap_or(0)` and `cached_bytes` is *replaced* on conflict, so an absent
+/// entry would write a zero over a good level and show the cache as empty.
+///
 /// The first tick fires immediately (tokio's `interval` does), which is what
 /// makes a freshly started instance record its startup window rather than
-/// nothing for an hour.
+/// nothing at all.
 pub(super) fn spawn_stats_rollup(
     rollup: Arc<batlehub_core::services::StatsRollupService>,
     proxy_svc: Arc<batlehub_core::services::ProxyService>,
     registries: Vec<String>,
 ) {
+    /// How often the counters are read and a delta written.
+    const TICK: Duration = Duration::from_secs(300);
+    /// How many ticks pass between two storage measurements — one hour's worth,
+    /// the resolution `cached_bytes` is stored at.
+    const TICKS_PER_MEASUREMENT: u32 = 12;
+
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(3_600));
+        let mut ticker = tokio::time::interval(TICK);
+        // `cached_bytes` is a level read from storage, not something the
+        // counters know; the rollup takes it as input rather than reaching
+        // into a storage backend from `core`.
+        let mut cached: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+        // `TICKS_PER_MEASUREMENT` so the first tick measures rather than
+        // reporting an empty cache for the startup window.
+        let mut ticks_since_measurement = TICKS_PER_MEASUREMENT;
+
         loop {
             ticker.tick().await;
 
-            // `cached_bytes` is a level read from storage, not something the
-            // counters know; the rollup takes it as input rather than reaching
-            // into a storage backend from `core`.
-            let mut cached = std::collections::HashMap::new();
-            for registry in &registries {
-                let prefix = format!("artifact:{registry}/");
-                if let Ok((_, bytes)) = proxy_svc.storage.stat_by_prefix(&prefix).await {
-                    cached.insert(registry.clone(), bytes);
+            if ticks_since_measurement >= TICKS_PER_MEASUREMENT {
+                ticks_since_measurement = 0;
+                for registry in &registries {
+                    let prefix = format!("artifact:{registry}/");
+                    match proxy_svc.storage.stat_by_prefix(&prefix).await {
+                        Ok((_, bytes)) => {
+                            cached.insert(registry.clone(), bytes);
+                        }
+                        // Keep the previous measurement rather than dropping the
+                        // entry: a missing key records 0, and a replacing upsert
+                        // makes one failed listing read back as "cache emptied".
+                        Err(e) => tracing::warn!(
+                            registry = %registry,
+                            error = %e,
+                            "stats-rollup: cached-size measurement failed, reusing the last one"
+                        ),
+                    }
                 }
             }
+            ticks_since_measurement += 1;
 
             match rollup.tick_now(&cached).await {
                 Ok(n) => tracing::debug!(rows = n, "stats-rollup: window recorded"),
-                // A failed rollup costs one hour of chart, never a request:
+                // A failed rollup costs one tick of chart, never a request:
                 // this is a detached task and nothing on the request path
                 // waits for it.
                 Err(e) => tracing::warn!(error = %e, "stats-rollup: window failed"),
