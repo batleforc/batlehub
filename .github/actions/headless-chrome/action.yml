@@ -1,0 +1,72 @@
+name: Headless Chrome on a CDP port
+description: >
+  Start the runner's Chrome with remote debugging on a known port, and fail with
+  the reason rather than with a timeout. Both rendered-gate jobs drive an
+  existing browser over CDP instead of launching their own, so both need this;
+  it lived twice, byte-identical, in front-design.yaml.
+
+inputs:
+  port:
+    description: The CDP port to listen on.
+    required: false
+    default: "9222"
+  timeout:
+    description: Milliseconds to wait for the port to answer.
+    required: false
+    default: "60000"
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+
+        # Printed before anything is attempted: when this step fails, the first
+        # question is always "is there a Chrome, and which one" — and the answer
+        # used to be absent from the log entirely.
+        if ! command -v google-chrome >/dev/null; then
+          echo "::error::google-chrome is not on PATH on this runner"
+          exit 1
+        fi
+        echo "chrome: $(command -v google-chrome) — $(google-chrome --version)"
+
+        # On its own line, not inline in the argument list. A failing
+        # `--user-data-dir="$(mktemp -d)"` is a *substitution* failure, which
+        # does not trip `set -e` in argument position: Chrome would then get an
+        # empty value, treat the flag as unset, fall back to the default profile
+        # — the exact Chrome 136+ condition the flag exists to avoid — and the
+        # step would die 60 seconds later on the timeout, blaming the port.
+        profile="$(mktemp -d)"
+        echo "profile: $profile"
+
+        google-chrome --headless=new --no-sandbox --disable-gpu \
+          --disable-dev-shm-usage \
+          --user-data-dir="$profile" \
+          --no-first-run --no-default-browser-check \
+          --remote-debugging-address=127.0.0.1 \
+          --remote-debugging-port='${{ inputs.port }}' >/tmp/chrome.log 2>&1 &
+        chrome_pid=$!
+
+        report_and_die() {
+          echo "::error::$1"
+          echo "--- chrome.log ---"
+          cat /tmp/chrome.log || true
+          echo "--- DevToolsActivePort ---"
+          cat "$profile/DevToolsActivePort" 2>/dev/null || echo "(absent — Chrome never opened a port)"
+          # Leave nothing listening. A self-hosted runner reuses the machine, and
+          # a stale browser makes the *next* run's wait succeed against a dead
+          # page — a green gate measuring nothing.
+          kill "$chrome_pid" 2>/dev/null || true
+          exit 1
+        }
+
+        # Distinguish "died on startup" from "alive but not listening": they have
+        # different causes and the timeout message conflated them.
+        sleep 2
+        kill -0 "$chrome_pid" 2>/dev/null || report_and_die "Chrome exited during startup"
+
+        npx --yes wait-on "http://127.0.0.1:${{ inputs.port }}/json/version" -t '${{ inputs.timeout }}' \
+          || report_and_die "Chrome is running but never answered on port ${{ inputs.port }}"
+
+        echo "CDP is up: $(curl -sS "http://127.0.0.1:${{ inputs.port }}/json/version")"

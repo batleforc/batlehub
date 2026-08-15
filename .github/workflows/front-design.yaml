@@ -196,21 +196,8 @@ jobs:
       # than launching its own — locally that is the workspace's `che-browser`
       # sidecar, and here it is this. Same contract either way: something is
       # listening on 9222.
-      #
-      # `--user-data-dir` is not decoration: since Chrome 136 the remote
-      # debugging port is refused against the default profile directory, and
-      # this image ships Chrome 151 — without it nothing ever listens on 9222
-      # and the step dies on the wait-on timeout a minute later. The output
-      # goes to a file and is printed when the wait fails; the first time this
-      # broke, the reason went to /dev/null and the step said nothing at all.
       - name: Start a headless browser
-        run: |
-          google-chrome --headless=new --no-sandbox --disable-gpu \
-            --user-data-dir="$(mktemp -d)" \
-            --no-first-run --no-default-browser-check \
-            --remote-debugging-port=9222 >/tmp/chrome.log 2>&1 &
-          npx --yes wait-on http://127.0.0.1:9222/json/version -t 60000 \
-            || { echo "::error::Chrome never opened the CDP port"; cat /tmp/chrome.log; exit 1; }
+        uses: ./.github/actions/headless-chrome
 
       # Every rendered route: the 15 admin pages and 4 account pages — the
       # largest surface in the console, and the one no URL-based scanner can
@@ -277,17 +264,8 @@ jobs:
           npx --yes wait-on http://127.0.0.1:4173 -t 60000
         working-directory: docs
 
-      # Same launch as the console job above, `--user-data-dir` included: the
-      # remote debugging port is refused against the default profile directory
-      # from Chrome 136 on.
       - name: Start a headless browser
-        run: |
-          google-chrome --headless=new --no-sandbox --disable-gpu \
-            --user-data-dir="$(mktemp -d)" \
-            --no-first-run --no-default-browser-check \
-            --remote-debugging-port=9222 >/tmp/chrome.log 2>&1 &
-          npx --yes wait-on http://127.0.0.1:9222/json/version -t 60000 \
-            || { echo "::error::Chrome never opened the CDP port"; cat /tmp/chrome.log; exit 1; }
+        uses: ./.github/actions/headless-chrome
 
       # axe at WCAG 2.2 AA, the two type ramps per face, zero radius, no blurred
       # shadow, no off-box request, and both authored renditions — over every
