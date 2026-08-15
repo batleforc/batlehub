@@ -621,9 +621,14 @@ onMounted(() => {
            should not have to cross five columns to find out. It used to sit
            last, behind Registry, Versions, Downloads and Source. -->
         <Table :label="t('packageCatalog.tableLabel')">
-          <caption
-            class="caption-top pb-3 text-left text-xs uppercase tracking-[0.1em] text-muted-foreground"
-          >
+          <!-- Body, not Meta. DESIGN.md gives uppercase-and-tracked to labels —
+               column heads, state words, nav — and prose to captions, and this
+               is a sentence: "7 packages · sorted by last fetch" is 33
+               characters of it. Set in caps it was the one run of body text on
+               the page that the all-caps rule catches, because caps strips the
+               ascenders and descenders a reader recognises words by. The
+               tracking goes with it: letterspacing is a small-caps device. -->
+          <caption class="caption-top pb-3 text-left text-xs text-muted-foreground">
             {{
               tableCaption
             }}

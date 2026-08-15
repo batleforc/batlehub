@@ -70,30 +70,32 @@ runs:
           exit 1
         }
 
-        # Readiness is the `DevToolsActivePort` file, not an HTTP probe.
+        # Readiness is a GET of `/json/version`, polled with curl.
         #
-        # Chrome writes it the moment the debugging socket is bound, so it is
-        # the browser's own signal rather than an inference from a request. The
-        # HTTP probe this replaces reported "Chrome never opened the CDP port"
-        # for sixty seconds while the log said, three seconds in, `DevTools
-        # listening on ws://127.0.0.1:9222/...` — the port was open the whole
-        # time and only `/json/version` was unreachable, so the check was
-        # blaming the wrong thing and failing the run over it.
+        # Not `wait-on`: for an `http://` resource it sends HEAD, and headless
+        # Chrome's DevTools server does not answer HEAD usefully, so the probe
+        # retried for the full minute and reported "Chrome never opened the CDP
+        # port" while the log said, three seconds in, `DevTools listening on
+        # ws://127.0.0.1:9222/...`. The same endpoint returns 200 to a GET
+        # immediately — the port was never the problem, the method was.
+        #
+        # Not `DevToolsActivePort` either: `--headless=new` does not write it,
+        # so keying on the file swapped one wrong answer for another.
+        version=""
         for _ in $(seq 1 '${{ inputs.timeout }}'); do
-          [ -s "$profile/DevToolsActivePort" ] && break
+          version="$(curl -sS -m 2 "http://127.0.0.1:${{ inputs.port }}/json/version" 2>/dev/null || true)"
+          case "$version" in *webSocketDebuggerUrl*) break ;; esac
+          version=""
           kill -0 "$chrome_pid" 2>/dev/null || report_and_die "Chrome exited during startup"
           sleep 1
         done
-        [ -s "$profile/DevToolsActivePort" ] || report_and_die "Chrome never wrote DevToolsActivePort"
+        [ -n "$version" ] || report_and_die "Chrome never answered GET /json/version"
 
-        port="$(sed -n 1p "$profile/DevToolsActivePort")"
-        path="$(sed -n 2p "$profile/DevToolsActivePort")"
-        ws="ws://127.0.0.1:${port}${path}"
+        # Handed to the harness so it does not have to rediscover the endpoint,
+        # and so nothing has to resolve `localhost` — which is ::1 first on the
+        # runners, while Chrome binds IPv4.
+        ws="$(printf '%s' "$version" | sed -n 's/.*"webSocketDebuggerUrl": *"\([^"]*\)".*/\1/p')"
+        [ -n "$ws" ] || report_and_die "no webSocketDebuggerUrl in /json/version"
         echo "CDP_WS_URL=$ws" >> "$GITHUB_ENV"
         echo "CDP is up: $ws"
 
-        # Reported, not enforced: the harness connects by WebSocket and does not
-        # need this, but if `/json/version` is well again it is worth knowing.
-        echo "--- /json/version (informational) ---"
-        curl -sS -m 5 -o /dev/null -w 'HTTP %{http_code}\n' \
-          "http://127.0.0.1:${port}/json/version" || echo "(no answer — harmless while CDP_WS_URL is set)"
