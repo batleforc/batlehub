@@ -1,9 +1,9 @@
 name: Headless Chrome on a CDP port
 description: >
-  Start the runner's Chrome with remote debugging on a known port, and fail with
-  the reason rather than with a timeout. Both rendered-gate jobs drive an
-  existing browser over CDP instead of launching their own, so both need this;
-  it lived twice, byte-identical, in front-design.yaml.
+  Start the runner's Chrome with remote debugging and export the WebSocket
+  endpoint as CDP_WS_URL. Both rendered-gate jobs drive an existing browser over
+  CDP instead of launching their own, so both need this; it lived twice,
+  byte-identical, in front-design.yaml.
 
 inputs:
   port:
@@ -11,9 +11,9 @@ inputs:
     required: false
     default: "9222"
   timeout:
-    description: Milliseconds to wait for the port to answer.
+    description: Seconds to wait for Chrome to publish its debugging port.
     required: false
-    default: "60000"
+    default: "60"
 
 runs:
   using: composite
@@ -35,15 +35,22 @@ runs:
         # `--user-data-dir="$(mktemp -d)"` is a *substitution* failure, which
         # does not trip `set -e` in argument position: Chrome would then get an
         # empty value, treat the flag as unset, fall back to the default profile
-        # — the exact Chrome 136+ condition the flag exists to avoid — and the
-        # step would die 60 seconds later on the timeout, blaming the port.
+        # — the exact Chrome 136+ condition the flag exists to avoid.
         profile="$(mktemp -d)"
         echo "profile: $profile"
 
+        # The second group is not decoration either. Left on, Chrome spends its
+        # first half-minute on GCM registration, component updates, sync and an
+        # on-device model download — all of which fail on a runner and none of
+        # which a rendering gate wants. This is the subset of puppeteer's own
+        # default arguments that turns those off.
         google-chrome --headless=new --no-sandbox --disable-gpu \
           --disable-dev-shm-usage \
           --user-data-dir="$profile" \
-          --no-first-run --no-default-browser-check \
+          --no-first-run --no-default-browser-check --no-default-apps \
+          --disable-background-networking --disable-component-update \
+          --disable-sync --disable-extensions --disable-default-apps \
+          --disable-client-side-phishing-detection --metrics-recording-only \
           --remote-debugging-address=127.0.0.1 \
           --remote-debugging-port='${{ inputs.port }}' >/tmp/chrome.log 2>&1 &
         chrome_pid=$!
@@ -53,7 +60,9 @@ runs:
           echo "--- chrome.log ---"
           cat /tmp/chrome.log || true
           echo "--- DevToolsActivePort ---"
-          cat "$profile/DevToolsActivePort" 2>/dev/null || echo "(absent — Chrome never opened a port)"
+          cat "$profile/DevToolsActivePort" 2>/dev/null || echo "(absent — Chrome never published a port)"
+          echo "--- what the HTTP endpoint says ---"
+          curl -sS -m 5 -i "http://127.0.0.1:${{ inputs.port }}/json/version" || true
           # Leave nothing listening. A self-hosted runner reuses the machine, and
           # a stale browser makes the *next* run's wait succeed against a dead
           # page — a green gate measuring nothing.
@@ -61,12 +70,30 @@ runs:
           exit 1
         }
 
-        # Distinguish "died on startup" from "alive but not listening": they have
-        # different causes and the timeout message conflated them.
-        sleep 2
-        kill -0 "$chrome_pid" 2>/dev/null || report_and_die "Chrome exited during startup"
+        # Readiness is the `DevToolsActivePort` file, not an HTTP probe.
+        #
+        # Chrome writes it the moment the debugging socket is bound, so it is
+        # the browser's own signal rather than an inference from a request. The
+        # HTTP probe this replaces reported "Chrome never opened the CDP port"
+        # for sixty seconds while the log said, three seconds in, `DevTools
+        # listening on ws://127.0.0.1:9222/...` — the port was open the whole
+        # time and only `/json/version` was unreachable, so the check was
+        # blaming the wrong thing and failing the run over it.
+        for _ in $(seq 1 '${{ inputs.timeout }}'); do
+          [ -s "$profile/DevToolsActivePort" ] && break
+          kill -0 "$chrome_pid" 2>/dev/null || report_and_die "Chrome exited during startup"
+          sleep 1
+        done
+        [ -s "$profile/DevToolsActivePort" ] || report_and_die "Chrome never wrote DevToolsActivePort"
 
-        npx --yes wait-on "http://127.0.0.1:${{ inputs.port }}/json/version" -t '${{ inputs.timeout }}' \
-          || report_and_die "Chrome is running but never answered on port ${{ inputs.port }}"
+        port="$(sed -n 1p "$profile/DevToolsActivePort")"
+        path="$(sed -n 2p "$profile/DevToolsActivePort")"
+        ws="ws://127.0.0.1:${port}${path}"
+        echo "CDP_WS_URL=$ws" >> "$GITHUB_ENV"
+        echo "CDP is up: $ws"
 
-        echo "CDP is up: $(curl -sS "http://127.0.0.1:${{ inputs.port }}/json/version")"
+        # Reported, not enforced: the harness connects by WebSocket and does not
+        # need this, but if `/json/version` is well again it is worth knowing.
+        echo "--- /json/version (informational) ---"
+        curl -sS -m 5 -o /dev/null -w 'HTTP %{http_code}\n' \
+          "http://127.0.0.1:${port}/json/version" || echo "(no answer — harmless while CDP_WS_URL is set)"

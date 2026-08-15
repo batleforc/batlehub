@@ -64,7 +64,21 @@ const AXE_SOURCE = readFileSync(require.resolve("axe-core/axe.min.js"), "utf8");
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const DIST = join(ROOT, ".vitepress", "dist");
 const BASE = process.env.BASE ?? "http://localhost:4173";
-const CDP = process.env.CDP_URL ?? "http://localhost:9222";
+/*
+ * Prefer the WebSocket endpoint when the launcher published one.
+ *
+ * `browserURL` makes puppeteer discover the endpoint by GETting
+ * `/json/version` first, which is a second thing that has to work — and in CI
+ * it was the thing that did not: Chrome logged `DevTools listening on
+ * ws://127.0.0.1:9222/...` three seconds in while that URL stayed unreachable
+ * for the full minute. `CDP_WS_URL` comes from Chrome's own
+ * `DevToolsActivePort` file, so there is nothing left to discover.
+ *
+ * `127.0.0.1`, not `localhost`, in the fallback: `localhost` resolves to ::1
+ * first on the runners, and Chrome binds IPv4.
+ */
+const CDP_WS = process.env.CDP_WS_URL ?? "";
+const CDP = process.env.CDP_URL ?? "http://127.0.0.1:9222";
 const SURVEY = process.argv.includes("--survey");
 
 /** WCAG 2.2 AA — the same tag set the console's gate uses. */
@@ -185,7 +199,9 @@ function assertions(textRampArr, displayRampArr) {
   return findings;
 }
 
-const browser = await puppeteer.connect({ browserURL: CDP });
+const browser = await puppeteer.connect(
+  CDP_WS ? { browserWSEndpoint: CDP_WS } : { browserURL: CDP },
+);
 const routes = process.env.ROUTES ? process.env.ROUTES.split(",") : builtRoutes();
 if (!routes.length) {
   console.error(`no built pages under ${DIST} — run \`vitepress build\` first`);
