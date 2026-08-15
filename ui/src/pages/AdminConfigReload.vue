@@ -692,6 +692,7 @@ onUnmounted(() => {
       :scope="t('adminConfigReload.thisInstance')"
       :loading="loadingApply"
       reversible
+      allow-empty
       @confirm="
         () => {
           confirmApply = false;

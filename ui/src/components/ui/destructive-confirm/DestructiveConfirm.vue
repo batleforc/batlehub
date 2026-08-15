@@ -51,8 +51,28 @@ const props = withDefaults(
     confirmName?: string;
     loading?: boolean;
     error?: string | null;
+    /**
+     * Let the action be confirmed when `count` is 0.
+     *
+     * `count > 0` normally gates the button, because for a selection-driven
+     * action an empty selection means confirming would do nothing. That reading
+     * is wrong when the count *describes* the change rather than *being* the
+     * selection: the config-reload Apply acts on the pending reload itself, and
+     * `ReloadDiff` only carries registry, access and limits fields — so a change
+     * staged for `[server]`, `[storage]` or `[cache]` counts 0 while being
+     * entirely real, and the operator was locked out of applying it with only
+     * Discard left.
+     */
+    allowEmpty?: boolean;
   }>(),
-  { scope: "", reversible: false, confirmName: "", loading: false, error: null },
+  {
+    scope: "",
+    reversible: false,
+    confirmName: "",
+    loading: false,
+    error: null,
+    allowEmpty: false,
+  },
 );
 
 const emit = defineEmits<{ "update:open": [boolean]; confirm: [] }>();
@@ -81,7 +101,10 @@ const consequence = computed(() =>
 const needsTypedName = computed(() => !props.reversible && props.confirmName.length > 0);
 const nameMatches = computed(() => typed.value.trim() === props.confirmName);
 const canConfirm = computed(
-  () => !props.loading && props.count > 0 && (!needsTypedName.value || nameMatches.value),
+  () =>
+    !props.loading &&
+    (props.allowEmpty || props.count > 0) &&
+    (!needsTypedName.value || nameMatches.value),
 );
 
 function cancel(): void {

@@ -276,6 +276,7 @@
   "adminPackages": {
     "allRegistries": "All registries",
     "blockedOnly": "Blocked only",
+    "blockNeedsReason": "A reason is required to block — the consumer reads it back on a 403.",
     "blockNotHereYet": "To block something this instance has not cached yet, paste its coordinates into {link}.",
     "blockSelected": "Block selected",
     "bulkBlocked": "Blocked {count} package. | Blocked {count} packages.",

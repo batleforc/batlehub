@@ -96,6 +96,11 @@ export default defineConfig(({ mode }) => {
     test: {
       environment: "jsdom",
       setupFiles: ["./src/test/setup.ts"],
+      // Mounting a radix Dialog through DialogPortal costs ~600 ms in isolation
+      // and was measured past 8 s once the page suites run in parallel — CI
+      // parallelises harder than any local run, so the 5 s default turns real
+      // passes into flakes that look like product failures.
+      testTimeout: 20_000,
       coverage: {
         provider: "v8",
         reporter: ["text", "lcov", "html"],

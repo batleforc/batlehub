@@ -15,6 +15,12 @@ vi.mock("@/client/sdk.gen", () => ({
   exploreRegistryStats: statsMock,
 }));
 
+const { pushMock } = vi.hoisted(() => ({ pushMock: vi.fn() }));
+vi.mock("vue-router", () => ({
+  useRouter: () => ({ push: pushMock }),
+  RouterLink: { template: "<a :href='String(to)'><slot/></a>", props: ["to"] },
+}));
+
 import PackageCatalog from "./PackageCatalog.vue";
 import { scopeExploreCacheTo, useExploreCache } from "@/composables/useExploreCache";
 
@@ -262,5 +268,377 @@ describe("PackageCatalog resolution column", () => {
     const wrapper = await mountPage();
     expect(wrapper.find("caption").text()).toMatch(/2 packages/i);
     expect(wrapper.find("caption").text()).toMatch(/last fetch/i);
+  });
+
+  it("renames the ordering in the caption when the sort changes", async () => {
+    const wrapper = await mountPage();
+    await wrapper.find("select").setValue("downloads");
+    await flushPromises();
+    expect(wrapper.find("caption").text()).toMatch(/most downloaded/i);
+  });
+});
+
+const upstreamHit = (name: string, over: Record<string, unknown> = {}) => ({
+  registry: "npm",
+  name,
+  description: null,
+  latest_version: "9.9.9",
+  already_cached: false,
+  ...over,
+});
+
+/**
+ * The specimen (RFC 0004-bis §14.9): the page announces its subject, and the
+ * caption states only facts the API actually returned. A missing fact is
+ * dropped, never printed as a zero — "we never recorded any sizes" and "0 B
+ * held" are different claims about the instance.
+ */
+describe("PackageCatalog specimen", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    explorePackagesMock.mockReset().mockResolvedValue(listing(["lodash"]));
+    exploreUpstreamSearchMock.mockReset().mockResolvedValue({ data: { items: [] } });
+    listRegistriesMock.mockReset().mockResolvedValue({ data: [{ name: "npm", type: "npm" }] });
+    statsMock.mockReset().mockResolvedValue({ data: { registries: [] } });
+    scopeExploreCacheTo(`test-${Math.random()}`);
+  });
+
+  const specimen = (w: { find: (s: string) => { text: () => string } }) =>
+    w.find("[data-testid='specimen-name']").text();
+
+  it("names the instance, and counts what it holds across every registry", async () => {
+    listRegistriesMock.mockResolvedValue({
+      data: [
+        { name: "pypi", type: "pypi", mode: "proxy" },
+        { name: "npm", type: "npm", mode: "hybrid" },
+      ],
+    });
+    statsMock.mockResolvedValue({
+      data: {
+        registries: [
+          { registry: "npm", package_count: 1200, cached_bytes: 2048 },
+          { registry: "pypi", package_count: 84, cached_bytes: 1024 },
+        ],
+      },
+    });
+    const wrapper = await mountPage();
+
+    expect(specimen(wrapper)).toBe("All registries");
+    const facts = wrapper.find("section p").text();
+    expect(facts).toContain("2 registries");
+    expect(facts).toContain("1,284 packages");
+    expect(facts).toMatch(/3(\.0)? KiB cached/i);
+  });
+
+  it("sorts the registries it lists, whatever order the API returned them in", async () => {
+    listRegistriesMock.mockResolvedValue({
+      data: [
+        { name: "pypi", type: "pypi", mode: "proxy" },
+        { name: "cargo", type: "cargo", mode: "proxy" },
+        { name: "npm", type: "npm", mode: "proxy" },
+      ],
+    });
+    const wrapper = await mountPage();
+    const options = wrapper.findAll("aside button").map((b) => b.text().replace(/\d+$/, ""));
+    expect(options.slice(1)).toEqual(["cargo", "npm", "pypi"]);
+  });
+
+  /**
+   * The server answers `{ registries: [], upstream_unavailable: true }` when the
+   * stats query fails. Discarding that flag rendered a failed query as every
+   * registry showing 0 — indistinguishable from an instance that holds nothing.
+   */
+  it("says nothing rather than zero when the counts could not be read", async () => {
+    statsMock.mockResolvedValue({ data: { registries: [], upstream_unavailable: true } });
+    const wrapper = await mountPage();
+
+    expect(wrapper.find("aside").text()).toContain("All registries");
+    // The count renders as a bare number, never parenthesised, so the original
+    // `not.toContain("(0)")` could not fail — it missed exactly the regression
+    // its own comment names. Assert no count is rendered at all.
+    expect(wrapper.find("aside").text()).not.toMatch(/\b0\b/);
+    expect(wrapper.findAll("aside .tabular-nums")).toHaveLength(0);
+    // No count claimed anywhere in the caption either.
+    expect(wrapper.find("section p").exists()).toBe(false);
+  });
+
+  it("treats a failed stats call the same as unavailable counts", async () => {
+    statsMock.mockResolvedValue({ error: { message: "stats query timed out" } });
+    const wrapper = await mountPage();
+    expect(wrapper.find("section p").exists()).toBe(false);
+  });
+
+  it("survives the registry list being unreachable", async () => {
+    listRegistriesMock.mockRejectedValue(new Error("network down"));
+    const wrapper = await mountPage();
+    expect(specimen(wrapper)).toBe("All registries");
+  });
+
+  it("gives the display step to the chosen registry, with how it runs", async () => {
+    listRegistriesMock.mockResolvedValue({
+      data: [{ name: "npm", type: "npm", mode: "hybrid", upstream: "registry.npmjs.org" }],
+    });
+    statsMock.mockResolvedValue({
+      data: { registries: [{ registry: "npm", package_count: 1284, cached_bytes: 4096 }] },
+    });
+    const wrapper = await mountPage();
+
+    await wrapper
+      .findAll("aside button")
+      .find((b) => b.text().startsWith("npm"))!
+      .trigger("click");
+    await flushPromises();
+
+    expect(specimen(wrapper)).toBe("npm");
+    const facts = wrapper.find("section p").text();
+    expect(facts).toContain("npm");
+    expect(facts).toContain("hybrid");
+    expect(facts).toContain("registry.npmjs.org");
+    expect(facts).toContain("1,284 packages");
+  });
+
+  it("drops the upstream fact for a registry that has none", async () => {
+    listRegistriesMock.mockResolvedValue({
+      data: [{ name: "internal", type: "npm", mode: "local" }],
+    });
+    const wrapper = await mountPage();
+
+    await wrapper
+      .findAll("aside button")
+      .find((b) => b.text().startsWith("internal"))!
+      .trigger("click");
+    await flushPromises();
+
+    expect(specimen(wrapper)).toBe("internal");
+    const facts = wrapper.find("section p").text();
+    expect(facts).toContain("local");
+    // The behaviour the test is named for. Asserting only that an *unrelated*
+    // fact is present left `facts.push(reg.upstream ?? "…")` passing, so a
+    // registry with no upstream could render an empty fact between the dots.
+    expect(facts).not.toMatch(/undefined|null/);
+    expect(facts.split("·").map((f) => f.trim())).not.toContain("");
+  });
+
+  /** `cached_bytes: null` is "we never recorded sizes", not "0 B". */
+  it("omits the cached size when the registry never reported one", async () => {
+    listRegistriesMock.mockResolvedValue({ data: [{ name: "npm", type: "npm", mode: "proxy" }] });
+    statsMock.mockResolvedValue({
+      data: { registries: [{ registry: "npm", package_count: 3, cached_bytes: null }] },
+    });
+    const wrapper = await mountPage();
+
+    await wrapper
+      .findAll("aside button")
+      .find((b) => b.text().startsWith("npm"))!
+      .trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find("section p").text()).not.toMatch(/cached/);
+  });
+});
+
+/**
+ * The catalog as a working surface: filtering by registry, searching (which also
+ * asks the upstreams), paging, and getting to a package's own page.
+ */
+describe("PackageCatalog browsing", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    pushMock.mockReset();
+    explorePackagesMock.mockReset().mockResolvedValue(listing(["lodash"]));
+    exploreUpstreamSearchMock.mockReset().mockResolvedValue({ data: { items: [] } });
+    listRegistriesMock.mockReset().mockResolvedValue({
+      data: [
+        { name: "npm", type: "npm", mode: "proxy" },
+        { name: "pypi", type: "pypi", mode: "proxy" },
+      ],
+    });
+    statsMock.mockReset().mockResolvedValue({ data: { registries: [] } });
+    scopeExploreCacheTo(`test-${Math.random()}`);
+  });
+
+  /** Type into the search box and let the 300 ms debounce elapse. */
+  async function typeSearch(wrapper: Awaited<ReturnType<typeof mountPage>>, value: string) {
+    await wrapper.find("input").setValue(value);
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await flushPromises();
+  }
+
+  /**
+   * The debounce timer is cleared on unmount.
+   *
+   * `typeSearch` always waits 350 ms — past the 300 ms deadline — so no test
+   * ever left a timer in flight, and routing away within the window ran
+   * `fetchPackages` against a destroyed component.
+   */
+  it("does not fetch after the page is left mid-debounce", async () => {
+    const wrapper = await mountPage();
+    const before = explorePackagesMock.mock.calls.length;
+
+    await wrapper.find("input").setValue("left");
+    wrapper.unmount();
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await flushPromises();
+
+    expect(explorePackagesMock).toHaveBeenCalledTimes(before);
+  });
+
+  it("scopes the query to the registry the facet selected, and back again", async () => {
+    const wrapper = await mountPage();
+
+    await wrapper
+      .findAll("aside button")
+      .find((b) => b.text().startsWith("pypi"))!
+      .trigger("click");
+    await flushPromises();
+    expect(explorePackagesMock).toHaveBeenLastCalledWith({
+      query: { page: 0, per_page: 20, sort: "fetched", registry: "pypi", name: undefined },
+    });
+
+    // Going back to "all" reads the entry the initial load filled — the facet is
+    // a cache key, so returning to a view already seen costs no request.
+    const calls = explorePackagesMock.mock.calls.length;
+    await wrapper.findAll("aside button")[0].trigger("click"); // "All registries"
+    await flushPromises();
+    expect(explorePackagesMock).toHaveBeenCalledTimes(calls);
+    // Positive evidence that the facet actually reset. Asserting only that
+    // nothing happened is equally true when the click does nothing: deleting
+    // the all-option's `@click` left this green, because both fixtures return
+    // `lodash` and the table text is identical either way.
+    expect(wrapper.find("[data-testid='specimen-name']").text()).toBe("All registries");
+  });
+
+  /**
+   * The registry a row belongs to is only worth a column when more than one
+   * registry is in view; inside a selected registry it is noise on every row.
+   */
+  it("names each row's registry only while looking at all of them", async () => {
+    const wrapper = await mountPage();
+    expect(wrapper.find("tbody tr").text()).toContain("npm");
+
+    await wrapper
+      .findAll("aside button")
+      .find((b) => b.text().startsWith("npm"))!
+      .trigger("click");
+    await flushPromises();
+    expect(wrapper.find("tbody tr").text()).not.toContain("npm");
+  });
+
+  it("searches this instance and the upstreams, and marks where a row came from", async () => {
+    exploreUpstreamSearchMock.mockResolvedValue({
+      data: { items: [upstreamHit("left-pad"), upstreamHit("lodash", { already_cached: true })] },
+    });
+    const wrapper = await mountPage();
+
+    await typeSearch(wrapper, "lo");
+
+    expect(explorePackagesMock).toHaveBeenLastCalledWith({
+      query: { page: 0, per_page: 20, sort: "fetched", registry: undefined, name: "lo" },
+    });
+    expect(exploreUpstreamSearchMock).toHaveBeenCalledWith({
+      query: { name: "lo", limit: 10, registry: undefined },
+    });
+
+    // The upstream-only hit is listed and labelled; the one we already hold is
+    // not repeated as an upstream row.
+    const rows = wrapper.findAll("tbody tr");
+    const upstreamRow = rows.find((r) => r.text().includes("left-pad"))!;
+    expect(upstreamRow.text()).toContain("upstream");
+    expect(rows.filter((r) => r.text().includes("lodash"))).toHaveLength(1);
+  });
+
+  it("does not call the upstreams for a single character", async () => {
+    const wrapper = await mountPage();
+    await typeSearch(wrapper, "l");
+    expect(exploreUpstreamSearchMock).not.toHaveBeenCalled();
+  });
+
+  it("reuses the upstream answer instead of asking third parties twice", async () => {
+    exploreUpstreamSearchMock.mockResolvedValue({ data: { items: [upstreamHit("left-pad")] } });
+    const wrapper = await mountPage();
+
+    await typeSearch(wrapper, "left");
+    await typeSearch(wrapper, "");
+    await typeSearch(wrapper, "left");
+
+    expect(exploreUpstreamSearchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("survives an upstream search that fails", async () => {
+    exploreUpstreamSearchMock.mockRejectedValue(new Error("upstream refused"));
+    const wrapper = await mountPage();
+
+    await typeSearch(wrapper, "left");
+
+    expect(wrapper.text()).toContain("lodash");
+  });
+
+  it("re-reads the registry rather than the cache when refreshed", async () => {
+    const wrapper = await mountPage();
+    expect(explorePackagesMock).toHaveBeenCalledTimes(1);
+
+    await wrapper
+      .findAll("button")
+      .find((b) => /refresh/i.test(b.text()))!
+      .trigger("click");
+    await flushPromises();
+
+    expect(explorePackagesMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("pages through a listing longer than one page", async () => {
+    explorePackagesMock.mockResolvedValue(listing(["lodash"], 45));
+    const wrapper = await mountPage();
+
+    expect(wrapper.text()).toContain("45 cached packages total");
+
+    await wrapper
+      .findAll("nav button")
+      .find((b) => /next/i.test(b.text()))!
+      .trigger("click");
+    await flushPromises();
+
+    expect(explorePackagesMock).toHaveBeenLastCalledWith({
+      query: { page: 1, per_page: 20, sort: "fetched", registry: undefined, name: undefined },
+    });
+  });
+
+  it("hides the pager when everything fits on one page", async () => {
+    const wrapper = await mountPage();
+    expect(wrapper.find("nav").exists()).toBe(false);
+  });
+
+  /**
+   * Empty is two states, and telling them apart is the point: a user shown "no
+   * packages" while a filter is applied concludes the registry is broken.
+   */
+  it("distinguishes an empty instance from a search that matched nothing", async () => {
+    explorePackagesMock.mockResolvedValue(listing([]));
+    const wrapper = await mountPage();
+
+    expect(wrapper.text()).toContain("No packages cached yet");
+
+    await typeSearch(wrapper, "nothing-matches");
+    expect(wrapper.text()).toContain("Nothing matches that search");
+
+    await wrapper
+      .findAll("button")
+      .find((b) => /clear search/i.test(b.text()))!
+      .trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("No packages cached yet");
+  });
+
+  it("opens a cached package's page on click, and leaves upstream rows alone", async () => {
+    exploreUpstreamSearchMock.mockResolvedValue({ data: { items: [upstreamHit("left-pad")] } });
+    const wrapper = await mountPage();
+    await typeSearch(wrapper, "l@test");
+
+    const rows = wrapper.findAll("tbody tr");
+    await rows.find((r) => r.text().includes("left-pad"))!.trigger("click");
+    expect(pushMock).not.toHaveBeenCalled();
+
+    await rows.find((r) => r.text().includes("lodash"))!.trigger("click");
+    expect(pushMock).toHaveBeenCalledWith({ path: "/packages/npm/lodash" });
   });
 });

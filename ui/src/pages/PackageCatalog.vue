@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { RouterLink, useRouter } from "vue-router";
 import { useExploreCache, useUpstreamCache } from "@/composables/useExploreCache";
 import { extractMessage } from "@/composables/useApi";
@@ -421,6 +421,14 @@ async function fetchUpstream() {
 // ── Actions ───────────────────────────────────────────────────────────────────
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Routing away within 300 ms of a keystroke otherwise ran `fetchPackages` — and
+// possibly `fetchUpstream` — against a destroyed component. The tests never saw
+// it because `typeSearch` always waits 350 ms, past the deadline.
+onBeforeUnmount(() => {
+  if (searchTimer) clearTimeout(searchTimer);
+});
+
 function onSearchInput(val: string) {
   search.value = val;
   if (searchTimer) clearTimeout(searchTimer);

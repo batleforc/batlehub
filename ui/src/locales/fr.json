@@ -276,6 +276,7 @@
   "adminPackages": {
     "allRegistries": "Tous les registres",
     "blockedOnly": "Bloqués uniquement",
+    "blockNeedsReason": "Un motif est obligatoire pour bloquer — le consommateur le lit dans la réponse 403.",
     "blockNotHereYet": "Pour bloquer un élément que cette instance n'a pas encore mis en cache, collez ses coordonnées dans {link}.",
     "blockSelected": "Bloquer la sélection",
     "bulkBlocked": "{count} paquet bloqué. | {count} paquets bloqués.",

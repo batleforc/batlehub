@@ -84,3 +84,15 @@ import { config } from "@vue/test-utils";
 import { i18n } from "@/i18n";
 
 config.global.plugins = [...(config.global.plugins ?? []), i18n];
+
+/*
+ * Deliberately *not* `enableAutoUnmount(afterEach)` here.
+ *
+ * Polling pages leak intervals when a suite never unmounts, so a global hook
+ * looks like the right altitude — but vitest runs a file's own `afterEach`
+ * before one registered in a setup file, and the suites that mount teleported
+ * dialogs already clear `document.body` in theirs. Unmounting after the body is
+ * gone makes Vue walk a detached teleport fragment and throw on `nextSibling`;
+ * it took 97 tests down. Suites that mount polling pages unmount in their own
+ * teardown instead, before clearing the body.
+ */

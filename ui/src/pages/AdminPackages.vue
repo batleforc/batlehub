@@ -129,7 +129,13 @@ const filteredPackages = computed(() => {
 
 async function block(pkg: AdminPackageSummary) {
   const reason = blockReason.value.trim();
-  if (!reason) return;
+  // Said, not swallowed. `runPending` clears `pending` — closing the dialog —
+  // before dispatching here, so a bare `return` left the operator looking at a
+  // dismissed dialog, an unblocked package and no message at all.
+  if (!reason) {
+    actionError.value = t("adminPackages.blockNeedsReason");
+    return;
+  }
   actionError.value = null;
   try {
     await blockPackage({
@@ -245,7 +251,10 @@ const selectedPackages = computed(() =>
 
 async function bulkBlock() {
   const reason = blockReason.value.trim();
-  if (!reason) return;
+  if (!reason) {
+    actionError.value = t("adminPackages.blockNeedsReason");
+    return;
+  }
   bulkLoading.value = true;
   bulkResultMsg.value = null;
   try {
@@ -329,7 +338,16 @@ async function bulkDelete() {
     const json = (await res.json().catch(() => ({}))) as {
       succeeded_count?: number;
       failed_count?: number;
+      message?: string;
     };
+    if (!res.ok) {
+      // The same defect the comment in `bulkBlock` describes, on the one sibling
+      // that went through raw `authFetch` instead of the generated client: with
+      // no status check a 500 with an empty body parsed to `{}` and announced
+      // "Deleted 0 packages." — a failed bulk delete reported as a success.
+      actionError.value = json.message ?? `HTTP ${res.status}`;
+      return;
+    }
     bulkResultMsg.value = bulkOutcome("deleted", json.succeeded_count ?? 0, json.failed_count ?? 0);
   } catch (e) {
     bulkResultMsg.value = extractMessage(e);
