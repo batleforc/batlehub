@@ -49,9 +49,22 @@ describe("RegistryPathForm", () => {
     expect(wrapper.text()).toContain("(optional)");
   });
 
-  it("renders the note as trusted HTML", () => {
+  /**
+   * The note's markup is rendered, not pasted.
+   *
+   * `find("code").exists()` alone cannot tell this apart from the `v-html` it
+   * replaced — it was true both before and after — so it also asserts what only
+   * the new path guarantees: the `<code>` carries the class `RichText` owns
+   * rather than one written into the data, and no markup reaches the reader as
+   * visible text.
+   */
+  it("renders the note's markup rather than pasting it", () => {
     const wrapper = mountForm("maven");
-    expect(wrapper.find("code").exists()).toBe(true);
+    const code = wrapper.find("code");
+    expect(code.exists()).toBe(true);
+    expect(code.text()).toBe("com.google.guava");
+    expect(code.classes()).toContain("font-mono");
+    expect(wrapper.text()).not.toContain("<code>");
   });
 
   /**

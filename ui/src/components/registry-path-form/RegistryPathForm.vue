@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
 import { computed } from "vue";
+import RichText from "@/components/RichText.vue";
 import { Input } from "@/components/ui/input";
 import { Combobox } from "@/components/ui/combobox";
 import { Label } from "@/components/ui/label";
@@ -76,6 +77,8 @@ const rows = computed<PathFieldDef[][]>(() => {
       </div>
     </div>
 
-    <p v-if="typeDef.note" class="text-xs text-muted-foreground" v-html="typeDef.note" />
+    <p v-if="typeDef.note" class="text-xs text-muted-foreground">
+      <RichText :markup="typeDef.note" />
+    </p>
   </div>
 </template>

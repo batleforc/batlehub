@@ -133,16 +133,18 @@ watch(pastedUrl, parseUrl);
         class="w-full rounded-sm border border-border bg-background px-3 py-2 font-mono text-sm focus:outline-none focus:ring-1 focus:ring-primary"
       >
         <optgroup v-for="group in groupedTypes" :key="group.name" :label="group.name">
-          <option v-for="t in group.types" :key="t.id" :value="t.id">{{ t.label }}</option>
+          <option v-for="type in group.types" :key="type.id" :value="type.id">
+            {{ type.label }}
+          </option>
         </optgroup>
       </select>
     </div>
 
     <RegistryPathForm
-      :type-def="activeTypeDef"
-      :registries="registriesByType[activeTypeDef.id] ?? []"
       v-model:registry-name="registryNameByType[activeTypeDef.id]"
       v-model:values="valuesByType[activeTypeDef.id]"
+      :type-def="activeTypeDef"
+      :registries="registriesByType[activeTypeDef.id] ?? []"
     />
 
     <RegistryPathResults :paths="activePaths" :base-url="API_BASE_URL" />

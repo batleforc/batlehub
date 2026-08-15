@@ -33,6 +33,7 @@
   "exclude": [
     "src/design/tokens.test.ts",
     "src/test/fixtures.test.ts",
-    "src/test/link-targets.test.ts"
+    "src/test/link-targets.test.ts",
+    "src/config/registryTypes.docs.test.ts"
   ]
 }

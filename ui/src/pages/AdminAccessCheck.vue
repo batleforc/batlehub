@@ -126,7 +126,7 @@ async function simulate() {
       :description="t('adminAccessCheck.simulateWhetherAnIdentityWould')"
     />
 
-    <form @submit.prevent="simulate" class="space-y-4 max-w-lg">
+    <form class="space-y-4 max-w-lg" @submit.prevent="simulate">
       <div class="grid grid-cols-2 gap-4">
         <div class="space-y-1">
           <label for="aac-registry" class="text-sm font-medium">{{ t("common.registry") }}</label>

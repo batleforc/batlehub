@@ -7,6 +7,7 @@ import { listRegistries } from "@/client/sdk.gen";
 import type { RegistryInfo } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
+import RichText from "@/components/RichText.vue";
 import { PageHeader } from "@/components/ui/page-header";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -252,9 +253,11 @@ async function copy(key: string, text: string) {
           <CardHeader>
             <div class="flex items-start justify-between gap-4">
               <div class="flex-1 space-y-3">
-                <!-- Description (trusted HTML) -->
                 <CardDescription>
-                  <span v-html="def.description" />
+                  <RichText
+                    :markup="def.description"
+                    code-class="text-xs font-mono bg-muted px-1 rounded"
+                  />
                 </CardDescription>
                 <!-- Registry selector (shown when multiple registries of same type) -->
                 <div v-if="showSelector(def)" class="flex items-center gap-2">
@@ -298,13 +301,13 @@ async function copy(key: string, text: string) {
                     {{ copied === snippet.key ? t("common.copied") : t("common.copy") }}
                   </Button>
                 </CodeBlock>
-                <p
-                  v-if="snippet.note"
-                  class="text-xs text-muted-foreground mt-1.5"
-                  v-html="
-                    typeof snippet.note === 'function' ? snippet.note(ctxFor(def)) : snippet.note
-                  "
-                />
+                <p v-if="snippet.note" class="text-xs text-muted-foreground mt-1.5">
+                  <RichText
+                    :markup="
+                      typeof snippet.note === 'function' ? snippet.note(ctxFor(def)) : snippet.note
+                    "
+                  />
+                </p>
               </div>
             </template>
           </CardContent>

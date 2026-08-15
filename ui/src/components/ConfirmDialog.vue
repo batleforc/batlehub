@@ -19,8 +19,11 @@ const props = withDefaults(
     error?: string | null;
   }>(),
   {
+    title: undefined,
+    description: undefined,
     confirmLabel: undefined,
     cancelLabel: undefined,
+    loadingLabel: undefined,
     destructive: false,
     loading: false,
     error: null,

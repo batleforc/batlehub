@@ -562,7 +562,7 @@ export const REGISTRY_PATH_TYPES: RegistryPathTypeDef[] = [
         row: 2,
       },
     ],
-    note: 'Group IDs use dots (e.g. <code class="font-mono bg-muted px-1 rounded">com.google.guava</code>); the proxy converts them to slashes in the path automatically.',
+    note: "Group IDs use dots (e.g. <code>com.google.guava</code>); the proxy converts them to slashes in the path automatically.",
     buildPaths: (reg, values) => {
       const group = v(values, "group");
       const artifact = v(values, "artifact");
@@ -688,7 +688,7 @@ export const REGISTRY_PATH_TYPES: RegistryPathTypeDef[] = [
         mono: true,
       },
     ],
-    note: 'Package names follow the <code class="font-mono bg-muted px-1 rounded">vendor/package</code> convention. Paste a <code class="font-mono bg-muted px-1 rounded">packagist.org</code> or <code class="font-mono bg-muted px-1 rounded">repo.packagist.org</code> URL above to auto-fill.',
+    note: "Package names follow the <code>vendor/package</code> convention. Paste a <code>packagist.org</code> or <code>repo.packagist.org</code> URL above to auto-fill.",
     buildPaths: (reg, values) => {
       const vendor = v(values, "vendor");
       const pkg = v(values, "package");
@@ -765,7 +765,7 @@ export const REGISTRY_PATH_TYPES: RegistryPathTypeDef[] = [
         row: 2,
       },
     ],
-    note: 'Module paths use <code class="font-mono bg-muted px-1 rounded">namespace/name/provider</code>. Provider paths use <code class="font-mono bg-muted px-1 rounded">namespace/type</code> — leave <em>Name</em> empty for provider-only paths.',
+    note: "Module paths use <code>namespace/name/provider</code>. Provider paths use <code>namespace/type</code> — leave <em>Name</em> empty for provider-only paths.",
     buildPaths: (reg, values) => {
       const ns = v(values, "namespace");
       const name = v(values, "name");
@@ -818,7 +818,7 @@ export const REGISTRY_PATH_TYPES: RegistryPathTypeDef[] = [
       { key: "name", label: "Extension", placeholder: "python", mono: true, row: 1 },
       { key: "version", label: "Version", placeholder: "2024.0.0", mono: true, row: 1 },
     ],
-    note: 'Extension IDs use the <code class="font-mono bg-muted px-1 rounded">publisher.name</code> convention.',
+    note: "Extension IDs use the <code>publisher.name</code> convention.",
     buildPaths: (reg, values) => {
       const pub = v(values, "publisher");
       const name = v(values, "name");

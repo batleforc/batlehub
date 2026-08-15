@@ -21,17 +21,20 @@ const fixtures = JSON.parse(
   readFileSync(resolve(ROOT, "build/fixtures/captured.json"), "utf8"),
 ) as Record<string, unknown>;
 
-type Node = Record<string, any>;
+type Node = Record<string, unknown>;
 
-function deref(schema: Node): Node {
+const isNode = (value: unknown): value is Node =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+function deref(schema: unknown): Node {
   let node = schema;
-  while (node?.$ref) {
+  while (isNode(node) && typeof node.$ref === "string") {
     node = node.$ref
       .replace(/^#\//, "")
       .split("/")
-      .reduce((acc: Node, part: string) => acc?.[part], spec);
+      .reduce<unknown>((acc, part) => (isNode(acc) ? acc[part] : undefined), spec);
   }
-  return node ?? {};
+  return isNode(node) ? node : {};
 }
 
 /** The spec path for a concrete URL, resolving `{param}` segments. */
@@ -51,8 +54,8 @@ function responseSchema(pathname: string): Node | undefined {
   const specPath = specPathFor(pathname);
   const content = specPath && spec.paths[specPath]?.get?.responses?.["200"]?.content;
   if (!content) return undefined;
-  const media = Object.values(content)[0] as Node;
-  return media.schema ? deref(media.schema) : undefined;
+  const media = Object.values(content)[0];
+  return isNode(media) && media.schema ? deref(media.schema) : undefined;
 }
 
 const paths = Object.keys(fixtures);
@@ -97,7 +100,7 @@ describe("stub API fixtures", () => {
       const schema = responseSchema(path);
       if (!schema) continue; // documented below as a spec gap, not a fixture fault
       const item = deref(schema.items ?? schema);
-      const required: string[] = item.required ?? [];
+      const required: string[] = Array.isArray(item.required) ? item.required : [];
       if (!required.length) continue;
 
       const rows = Array.isArray(fixtures[path]) ? (fixtures[path] as Node[]) : [fixtures[path]];

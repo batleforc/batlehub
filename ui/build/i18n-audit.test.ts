@@ -114,4 +114,41 @@ describe("i18n audit", () => {
       expect(findings).toEqual([]);
     });
   });
+
+  /**
+   * Stripping is repeated to a fixed point, because deleting one match can
+   * splice its neighbours into a new one. Code scanning flagged the single pass
+   * as incomplete sanitisation; the reader-visible cost is that a comment the
+   * scanner meant to drop came back as prose it then graded.
+   */
+  describe("strips markup it cannot see through in one pass", () => {
+    it("a comment re-formed by removing an inner comment is still removed", () => {
+      // `<!-` + `<!-- -->` + `-` leaves `<!--` behind after one pass, and the
+      // `>` inside then splits the survivor so its tail reads as prose: one
+      // pass reported `tout de suite -->` as an untranslated string.
+      const findings = scan(vue("", `<!-<!-- -->- Supprimer le cache > tout de suite -->`));
+      expect(findings).toEqual([]);
+    });
+
+    it("a code sample re-formed the same way is still removed", () => {
+      const findings = scan(vue("", `<cod<code>x</code>e>batlehub-cli registry list</code>`));
+      expect(findings).toEqual([]);
+    });
+
+    /**
+     * The loop has to span both patterns, not sit inside each. Stripping
+     * comments to a fixed point and *then* code samples to a fixed point leaves
+     * the second pass free to re-form a comment the first has already finished
+     * looking for.
+     */
+    it("a comment re-formed by removing a code sample is still removed", () => {
+      const findings = scan(vue("", `<!-<code>x</code>-- Supprimer le cache > maintenant -->`));
+      expect(findings).toEqual([]);
+    });
+
+    it("a comment re-formed by removing a pre block is still removed", () => {
+      const findings = scan(vue("", `<!-<pre>x</pre>-- Vider le cache > tout de suite -->`));
+      expect(findings).toEqual([]);
+    });
+  });
 });

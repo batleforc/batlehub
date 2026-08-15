@@ -38,13 +38,7 @@ import { computed, type HTMLAttributes } from "vue";
 import { cn } from "@/lib/utils";
 
 /** The six states, exactly as DESIGN.md's table names them. */
-export type ResolutionState =
-  | "cached"
-  | "stale"
-  | "held"
-  | "pending"
-  | "yanked"
-  | "blocked";
+export type ResolutionState = "cached" | "stale" | "held" | "pending" | "yanked" | "blocked";
 
 interface StateSpec {
   /** Fine 3×3 (held and verified) or coarse 2×2 (not). */

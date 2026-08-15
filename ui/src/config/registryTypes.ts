@@ -86,8 +86,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     fileHint: "mise.toml",
     description:
       `URL replacements intercept all HTTP requests made by mise (aqua, ubi, and other backends). ` +
-      `Add to your global <code class="text-xs font-mono bg-muted px-1 rounded">~/.config/mise/config.toml</code> ` +
-      `or a project-local <code class="text-xs font-mono bg-muted px-1 rounded">mise.toml</code>.`,
+      `Add to your global <code>~/.config/mise/config.toml</code> ` +
+      `or a project-local <code>mise.toml</code>.`,
     apiTypes: ["github", "npm", "cargo"],
     snippets: [
       {
@@ -157,7 +157,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     fileHint: ".npmrc",
     description:
       `Sets the registry for all packages. Place in your project root or ` +
-      `<code class="text-xs font-mono bg-muted px-1 rounded">~/.npmrc</code> for global use.`,
+      `<code>~/.npmrc</code> for global use.`,
     snippets: [
       {
         key: "npmrc",
@@ -166,7 +166,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         template: (ctx) => buildNpmAuthLines(ctx).join("\n"),
         note: (ctx) =>
           `To route only a specific scope through the proxy, use ` +
-          `<code class="font-mono bg-muted px-1 rounded">@myorg:registry=${ctx.registryUrl}/</code> instead.`,
+          `<code>@myorg:registry=${ctx.registryUrl}/</code> instead.`,
       },
       {
         key: "yarn",
@@ -190,8 +190,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "bash",
         template: () => [`npm audit`, `npm audit --fix`].join("\n"),
         note:
-          `Both audit modes (<code class="font-mono bg-muted px-1 rounded">quick</code> and ` +
-          `<code class="font-mono bg-muted px-1 rounded">bulk</code>) are proxied automatically ` +
+          `Both audit modes (<code>quick</code> and ` +
+          `<code>bulk</code>) are proxied automatically ` +
           `once the registry is configured — no extra setup needed.`,
       },
     ],
@@ -204,9 +204,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     fileHint: ".cargo/config.toml",
     description:
       `Replaces crates.io as the default source. Cargo fetches the sparse index and ` +
-      `<code class="text-xs font-mono bg-muted px-1 rounded">.crate</code> files through the proxy. ` +
-      `Add to your project's <code class="text-xs font-mono bg-muted px-1 rounded">.cargo/config.toml</code> ` +
-      `or the global <code class="text-xs font-mono bg-muted px-1 rounded">~/.cargo/config.toml</code>.`,
+      `<code>.crate</code> files through the proxy. ` +
+      `Add to your project's <code>.cargo/config.toml</code> ` +
+      `or the global <code>~/.cargo/config.toml</code>.`,
     snippets: [
       {
         key: "cargo",
@@ -226,11 +226,10 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         },
         note:
           `The proxy implements the ` +
-          `<a href="https://doc.rust-lang.org/cargo/reference/registry-protocols.html#sparse-protocol" ` +
-          `target="_blank" rel="noopener" class="underline underline-offset-2 hover:text-foreground transition-colors">` +
+          `<a href="https://doc.rust-lang.org/cargo/reference/registry-protocols.html#sparse-protocol">` +
           `sparse registry protocol</a>. ` +
-          `Checksums from the index match the cached <code class="font-mono bg-muted px-1 rounded">.crate</code> files, ` +
-          `so <code class="font-mono bg-muted px-1 rounded">cargo verify-project</code> continues to work.`,
+          `Checksums from the index match the cached <code>.crate</code> files, ` +
+          `so <code>cargo verify-project</code> continues to work.`,
       },
     ],
   },
@@ -242,9 +241,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     fileHint: "OpenVSX",
     description:
       `Proxy VS Code extension downloads from ` +
-      `<a href="https://open-vsx.org" target="_blank" rel="noopener" ` +
-      `class="underline underline-offset-2 hover:text-foreground transition-colors">open-vsx.org</a>. ` +
-      `Extension IDs follow the <code class="text-xs font-mono bg-muted px-1 rounded">publisher.name</code> convention.`,
+      `<a href="https://open-vsx.org">open-vsx.org</a>. ` +
+      `Extension IDs follow the <code>publisher.name</code> convention.`,
     snippets: [
       {
         key: "openvsx-direct",
@@ -253,7 +251,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         template: (ctx) => `${ctx.registryUrl}/{publisher}.{extension}/{version}/vsix`,
         note:
           `Example: download and install via CLI — ` +
-          `<code class="font-mono bg-muted px-1 rounded">` +
+          `<code>` +
           `curl -L {proxy}/ms-python.python/2024.0.0/vsix -o ext.vsix &amp;&amp; code --install-extension ext.vsix` +
           `</code>`,
       },
@@ -300,12 +298,12 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           ].join("\n"),
         note: (ctx) =>
           `Requires the proxy to implement the VS Code gallery protocol ` +
-          `(<code class="font-mono bg-muted px-1 rounded">/vscode/gallery</code> endpoints). ` +
+          `(<code>/vscode/gallery</code> endpoints). ` +
           `Only VSIX proxying is supported today.` +
           (ctx.isAuthenticated
             ? ` VSCodium does not support HTTP Basic Auth in ` +
-              `<code class="font-mono bg-muted px-1 rounded">product.json</code>. ` +
-              `Add your credentials to <code class="font-mono bg-muted px-1 rounded">~/.netrc</code> — see the <strong>.netrc</strong> tab.`
+              `<code>product.json</code>. ` +
+              `Add your credentials to <code>~/.netrc</code> — see the <strong>.netrc</strong> tab.`
             : ""),
       },
     ],
@@ -318,10 +316,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     fileHint: "marketplace.visualstudio.com",
     description:
       `Proxy VS Code extension downloads from Microsoft's ` +
-      `<a href="https://marketplace.visualstudio.com" target="_blank" rel="noopener" ` +
-      `class="underline underline-offset-2 hover:text-foreground transition-colors">Visual Studio Marketplace</a> ` +
+      `<a href="https://marketplace.visualstudio.com">Visual Studio Marketplace</a> ` +
       `(marketplace.visualstudio.com). Use this for extensions that are only on the Microsoft marketplace and not mirrored on open-vsx.org. ` +
-      `Extension IDs follow the <code class="text-xs font-mono bg-muted px-1 rounded">publisher.name</code> convention.`,
+      `Extension IDs follow the <code>publisher.name</code> convention.`,
     snippets: [
       {
         key: "vscode-marketplace-direct",
@@ -330,9 +327,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         template: (ctx) => `${ctx.registryUrl}/{publisher}.{extension}/{version}/vsix`,
         note:
           `Example: download and install via CLI — ` +
-          `<code class="font-mono bg-muted px-1 rounded">` +
+          `<code>` +
           `curl -L {proxy}/ms-python.python/2024.0.0/vsix -o ext.vsix &amp;&amp; code --install-extension ext.vsix` +
-          `</code>. Use <code class="font-mono bg-muted px-1 rounded">latest</code> as the version to fetch the newest release.`,
+          `</code>. Use <code>latest</code> as the version to fetch the newest release.`,
       },
       {
         key: "vscode-marketplace-mise",
@@ -377,12 +374,12 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           ].join("\n"),
         note: (ctx) =>
           `Requires the proxy to implement the VS Code gallery protocol ` +
-          `(<code class="font-mono bg-muted px-1 rounded">/vscode/gallery</code> endpoints). ` +
+          `(<code>/vscode/gallery</code> endpoints). ` +
           `Only VSIX proxying is supported today — download extensions with the Direct VSIX URL above.` +
           (ctx.isAuthenticated
             ? ` VSCodium does not support HTTP Basic Auth in ` +
-              `<code class="font-mono bg-muted px-1 rounded">product.json</code>. ` +
-              `Add your credentials to <code class="font-mono bg-muted px-1 rounded">~/.netrc</code> — see the <strong>.netrc</strong> tab.`
+              `<code>product.json</code>. ` +
+              `Add your credentials to <code>~/.netrc</code> — see the <strong>.netrc</strong> tab.`
             : ""),
       },
     ],
@@ -394,10 +391,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     label: "JetBrains Marketplace",
     fileHint: "plugins.jetbrains.com",
     description:
-      `Proxy the <a href="https://plugins.jetbrains.com" target="_blank" rel="noopener" ` +
-      `class="underline underline-offset-2 hover:text-foreground transition-colors">JetBrains Marketplace</a> ` +
+      `Proxy the <a href="https://plugins.jetbrains.com">JetBrains Marketplace</a> ` +
       `plugin ecosystem — IDE search, compatible updates, and plugin downloads — with local/hybrid publishing. ` +
-      `Distinct from the <code class="text-xs font-mono bg-muted px-1 rounded">jetbrains</code> IDE-archive type.`,
+      `Distinct from the <code>jetbrains</code> IDE-archive type.`,
     snippets: [
       {
         key: "jbm-host",
@@ -440,8 +436,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `  -F "file=@my-plugin.zip"`,
           ].join("\n"),
         note:
-          `Also works with JetBrains' <code class="font-mono bg-muted px-1 rounded">plugin-repository-rest-client</code> ` +
-          `and the Gradle <code class="font-mono bg-muted px-1 rounded">publishPlugin</code> task pointed at this host.`,
+          `Also works with JetBrains' <code>plugin-repository-rest-client</code> ` +
+          `and the Gradle <code>publishPlugin</code> task pointed at this host.`,
       },
     ],
   },
@@ -452,9 +448,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     label: "Go",
     fileHint: "Go",
     description:
-      `Set <code class="text-xs font-mono bg-muted px-1 rounded">GOPROXY</code> to route ` +
+      `Set <code>GOPROXY</code> to route ` +
       `Go module downloads through this proxy. Modules are cached after the first download. ` +
-      `Append <code class="text-xs font-mono bg-muted px-1 rounded">,direct</code> so the ` +
+      `Append <code>,direct</code> so the ` +
       `go tool falls back to the original source when the proxy returns 404.`,
     snippets: [
       {
@@ -472,11 +468,10 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         },
         note:
           `The proxy implements the ` +
-          `<a href="https://go.dev/ref/mod#goproxy-protocol" target="_blank" rel="noopener" ` +
-          `class="underline underline-offset-2 hover:text-foreground transition-colors">GOPROXY protocol</a>. ` +
+          `<a href="https://go.dev/ref/mod#goproxy-protocol">GOPROXY protocol</a>. ` +
           `Module zip archives are cached permanently after first download. ` +
-          `<code class="font-mono bg-muted px-1 rounded">@latest</code> and ` +
-          `<code class="font-mono bg-muted px-1 rounded">@v/list</code> responses are also cached — ` +
+          `<code>@latest</code> and ` +
+          `<code>@v/list</code> responses are also cached — ` +
           `clear the proxy storage if you need to pick up newly published versions immediately.`,
       },
       {
@@ -503,16 +498,15 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         },
         note:
           `BatleHub proxies the ` +
-          `<a href="https://vuln.go.dev" target="_blank" rel="noopener" ` +
-          `class="underline underline-offset-2 hover:text-foreground transition-colors">Go Vulnerability Database</a> ` +
-          `(<code class="font-mono bg-muted px-1 rounded">/v1/index.json</code>, ` +
-          `<code class="font-mono bg-muted px-1 rounded">/v1/ID/{id}.json</code>, ` +
-          `<code class="font-mono bg-muted px-1 rounded">POST /v1/query</code>) so ` +
-          `<code class="font-mono bg-muted px-1 rounded">govulncheck</code> works without direct internet access. ` +
+          `<a href="https://vuln.go.dev">Go Vulnerability Database</a> ` +
+          `(<code>/v1/index.json</code>, ` +
+          `<code>/v1/ID/{id}.json</code>, ` +
+          `<code>POST /v1/query</code>) so ` +
+          `<code>govulncheck</code> works without direct internet access. ` +
           `The upstream vuln DB URL defaults to ` +
-          `<code class="font-mono bg-muted px-1 rounded">https://vuln.go.dev</code> and can be ` +
-          `overridden per-registry with <code class="font-mono bg-muted px-1 rounded">vuln_db_url</code> in ` +
-          `<code class="font-mono bg-muted px-1 rounded">config.toml</code>.`,
+          `<code>https://vuln.go.dev</code> and can be ` +
+          `overridden per-registry with <code>vuln_db_url</code> in ` +
+          `<code>config.toml</code>.`,
       },
     ],
   },
@@ -524,9 +518,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     fileHint: "Maven",
     description:
       `Route Maven/Gradle dependency downloads through this proxy, or publish private artifacts ` +
-      `(<code class="text-xs font-mono bg-muted px-1 rounded">mvn deploy</code>) when the registry ` +
-      `is configured in <code class="text-xs font-mono bg-muted px-1 rounded">Local</code> ` +
-      `or <code class="text-xs font-mono bg-muted px-1 rounded">Hybrid</code> mode.`,
+      `(<code>mvn deploy</code>) when the registry ` +
+      `is configured in <code>Local</code> ` +
+      `or <code>Hybrid</code> mode.`,
     snippets: [
       {
         key: "maven-settings",
@@ -593,13 +587,13 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           ].join("\n");
         },
         note:
-          `The registry must be configured with <code class="font-mono bg-muted px-1 rounded">mode = "local"</code> or ` +
-          `<code class="font-mono bg-muted px-1 rounded">mode = "hybrid"</code> in ` +
-          `<code class="font-mono bg-muted px-1 rounded">config.toml</code> to accept publishes. ` +
-          `The <code class="font-mono bg-muted px-1 rounded">server</code> id in ` +
-          `<code class="font-mono bg-muted px-1 rounded">settings.xml</code> must match the ` +
-          `<code class="font-mono bg-muted px-1 rounded">repository id</code> in ` +
-          `<code class="font-mono bg-muted px-1 rounded">distributionManagement</code>.`,
+          `The registry must be configured with <code>mode = "local"</code> or ` +
+          `<code>mode = "hybrid"</code> in ` +
+          `<code>config.toml</code> to accept publishes. ` +
+          `The <code>server</code> id in ` +
+          `<code>settings.xml</code> must match the ` +
+          `<code>repository id</code> in ` +
+          `<code>distributionManagement</code>.`,
       },
     ],
   },
@@ -612,8 +606,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     description:
       `Proxy Terraform provider downloads via network mirror, or publish private modules ` +
       `and providers when the registry is configured in ` +
-      `<code class="text-xs font-mono bg-muted px-1 rounded">Local</code> ` +
-      `or <code class="text-xs font-mono bg-muted px-1 rounded">Hybrid</code> mode.`,
+      `<code>Local</code> ` +
+      `or <code>Hybrid</code> mode.`,
     snippets: [
       {
         key: "terraformrc",
@@ -643,7 +637,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           return lines.join("\n");
         },
         note:
-          `The <code class="font-mono bg-muted px-1 rounded">network_mirror</code> block redirects all ` +
+          `The <code>network_mirror</code> block redirects all ` +
           `provider downloads through this proxy. Providers are cached after first download in ` +
           `Proxy/Hybrid mode, or served entirely locally in Local mode.`,
       },
@@ -668,7 +662,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         },
         note:
           `The response includes an ` +
-          `<code class="font-mono bg-muted px-1 rounded">X-Terraform-Get</code> ` +
+          `<code>X-Terraform-Get</code> ` +
           `header pointing to the artifact download URL. Modules can also be yanked via the admin API.`,
       },
     ],
@@ -682,9 +676,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     description:
       `Mirror rubygems.org through this proxy for Bundler and the gem CLI. ` +
       `Gems are cached after the first download. Publish private gems with ` +
-      `<code class="text-xs font-mono bg-muted px-1 rounded">gem push</code> when the registry ` +
-      `is configured in <code class="text-xs font-mono bg-muted px-1 rounded">Local</code> ` +
-      `or <code class="text-xs font-mono bg-muted px-1 rounded">Hybrid</code> mode.`,
+      `<code>gem push</code> when the registry ` +
+      `is configured in <code>Local</code> ` +
+      `or <code>Hybrid</code> mode.`,
     snippets: [
       {
         key: "gemsrc",
@@ -704,9 +698,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           ].join("\n");
         },
         note:
-          `The <code class="font-mono bg-muted px-1 rounded">bundle config</code> mirror setting ` +
+          `The <code>bundle config</code> mirror setting ` +
           `intercepts all rubygems.org requests transparently — no changes to your ` +
-          `<code class="font-mono bg-muted px-1 rounded">Gemfile</code> needed.`,
+          `<code>Gemfile</code> needed.`,
       },
       {
         key: "gem-publish",
@@ -729,9 +723,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           return lines.join("\n");
         },
         note:
-          `The registry must be configured with <code class="font-mono bg-muted px-1 rounded">mode = "local"</code> or ` +
-          `<code class="font-mono bg-muted px-1 rounded">mode = "hybrid"</code> in ` +
-          `<code class="font-mono bg-muted px-1 rounded">config.toml</code> to accept publishes.`,
+          `The registry must be configured with <code>mode = "local"</code> or ` +
+          `<code>mode = "hybrid"</code> in ` +
+          `<code>config.toml</code> to accept publishes.`,
       },
     ],
   },
@@ -743,12 +737,11 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     fileHint: "Composer",
     description:
       `Proxy PHP Composer package downloads from ` +
-      `<a href="https://packagist.org" target="_blank" rel="noopener" ` +
-      `class="underline underline-offset-2 hover:text-foreground transition-colors">Packagist</a> ` +
+      `<a href="https://packagist.org">Packagist</a> ` +
       `or publish private packages via ZIP upload when the registry is configured in ` +
-      `<code class="text-xs font-mono bg-muted px-1 rounded">Local</code> ` +
-      `or <code class="text-xs font-mono bg-muted px-1 rounded">Hybrid</code> mode. ` +
-      `Authentication uses <code class="text-xs font-mono bg-muted px-1 rounded">auth.json</code> ` +
+      `<code>Local</code> ` +
+      `or <code>Hybrid</code> mode. ` +
+      `Authentication uses <code>auth.json</code> ` +
       `(HTTP Basic) rather than a token header — this is a Composer convention.`,
     snippets: [
       {
@@ -804,11 +797,11 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           ].join("\n");
         },
         note:
-          `Place <code class="font-mono bg-muted px-1 rounded">auth.json</code> in your project root or ` +
-          `<code class="font-mono bg-muted px-1 rounded">~/.config/composer/auth.json</code> for global use. ` +
+          `Place <code>auth.json</code> in your project root or ` +
+          `<code>~/.config/composer/auth.json</code> for global use. ` +
           `When present, Composer sends HTTP Basic credentials automatically — no ` +
-          `<code class="font-mono bg-muted px-1 rounded">options.http.header</code> needed in ` +
-          `<code class="font-mono bg-muted px-1 rounded">composer.json</code>.`,
+          `<code>options.http.header</code> needed in ` +
+          `<code>composer.json</code>.`,
       },
       {
         key: "composer-audit",
@@ -816,8 +809,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "bash",
         template: () => `composer audit`,
         note:
-          `<code class="font-mono bg-muted px-1 rounded">composer audit</code> queries the ` +
-          `<code class="font-mono bg-muted px-1 rounded">/api/security-advisories/</code> endpoint on the ` +
+          `<code>composer audit</code> queries the ` +
+          `<code>/api/security-advisories/</code> endpoint on the ` +
           `configured repository. BatleHub proxies this request to upstream Packagist automatically — ` +
           `no extra configuration needed once the repository is set up.`,
       },
@@ -847,11 +840,11 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           ].join("\n");
         },
         note:
-          `The ZIP must contain a valid <code class="font-mono bg-muted px-1 rounded">composer.json</code> ` +
+          `The ZIP must contain a valid <code>composer.json</code> ` +
           `at its root or inside a single top-level directory (GitHub archive layout). ` +
-          `The <code class="font-mono bg-muted px-1 rounded">name</code> field must use the ` +
-          `<code class="font-mono bg-muted px-1 rounded">vendor/package</code> format and the ` +
-          `<code class="font-mono bg-muted px-1 rounded">version</code> field determines the published version.`,
+          `The <code>name</code> field must use the ` +
+          `<code>vendor/package</code> format and the ` +
+          `<code>version</code> field determines the published version.`,
       },
     ],
   },
@@ -862,13 +855,12 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     label: "PyPI",
     fileHint: "PyPI",
     description:
-      `Proxy <a href="https://pypi.org" target="_blank" rel="noopener" ` +
-      `class="underline underline-offset-2 hover:text-foreground transition-colors">PyPI</a> ` +
+      `Proxy <a href="https://pypi.org">PyPI</a> ` +
       `through BatleHub for pip, uv, Poetry, and other Python package managers. ` +
       `Wheels and source distributions are cached after the first download. ` +
-      `Publish private packages with <code class="text-xs font-mono bg-muted px-1 rounded">twine upload</code> ` +
-      `when the registry is configured in <code class="text-xs font-mono bg-muted px-1 rounded">Local</code> ` +
-      `or <code class="text-xs font-mono bg-muted px-1 rounded">Hybrid</code> mode.`,
+      `Publish private packages with <code>twine upload</code> ` +
+      `when the registry is configured in <code>Local</code> ` +
+      `or <code>Hybrid</code> mode.`,
     snippets: [
       {
         key: "pip-conf",
@@ -899,9 +891,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           return lines.join("\n");
         },
         note:
-          `Alternatively, pass <code class="font-mono bg-muted px-1 rounded">--index-url</code> ` +
+          `Alternatively, pass <code>--index-url</code> ` +
           `on the command line or set the ` +
-          `<code class="font-mono bg-muted px-1 rounded">PIP_INDEX_URL</code> environment variable.`,
+          `<code>PIP_INDEX_URL</code> environment variable.`,
       },
       {
         key: "uv-index",
@@ -955,8 +947,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         },
         note:
           `The registry must be configured with ` +
-          `<code class="font-mono bg-muted px-1 rounded">mode = "local"</code> or ` +
-          `<code class="font-mono bg-muted px-1 rounded">mode = "hybrid"</code>. ` +
+          `<code>mode = "local"</code> or ` +
+          `<code>mode = "hybrid"</code>. ` +
           `The filename, name, and version are derived from the wheel or sdist metadata automatically.`,
       },
     ],
@@ -969,11 +961,11 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     fileHint: "Conda",
     description:
       `Proxy conda channels (conda-forge, defaults, or custom) through BatleHub. ` +
-      `<code class="text-xs font-mono bg-muted px-1 rounded">repodata.json</code> and package files ` +
+      `<code>repodata.json</code> and package files ` +
       `are cached after the first request. Publish private conda packages in ` +
-      `<code class="text-xs font-mono bg-muted px-1 rounded">Local</code> ` +
-      `or <code class="text-xs font-mono bg-muted px-1 rounded">Hybrid</code> mode — packages ` +
-      `appear in the channel's <code class="text-xs font-mono bg-muted px-1 rounded">repodata.json</code> automatically.`,
+      `<code>Local</code> ` +
+      `or <code>Hybrid</code> mode — packages ` +
+      `appear in the channel's <code>repodata.json</code> automatically.`,
     snippets: [
       {
         key: "condarc",
@@ -1000,8 +992,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         },
         note:
           `Credentials are read automatically from ` +
-          `<code class="font-mono bg-muted px-1 rounded">~/.netrc</code>. ` +
-          `Set <code class="font-mono bg-muted px-1 rounded">ssl_verify: false</code> ` +
+          `<code>~/.netrc</code>. ` +
+          `Set <code>ssl_verify: false</code> ` +
           `only for development with self-signed certificates.`,
       },
       {
@@ -1043,10 +1035,10 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           ].join("\n");
         },
         note:
-          `Both <code class="font-mono bg-muted px-1 rounded">.tar.bz2</code> and ` +
-          `<code class="font-mono bg-muted px-1 rounded">.conda</code> package formats are supported. ` +
+          `Both <code>.tar.bz2</code> and ` +
+          `<code>.conda</code> package formats are supported. ` +
           `The name, version, and build string are extracted from ` +
-          `<code class="font-mono bg-muted px-1 rounded">info/index.json</code> inside the archive.`,
+          `<code>info/index.json</code> inside the archive.`,
       },
     ],
   },
@@ -1056,12 +1048,12 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     id: "nuget",
     label: "NuGet",
     description:
-      `Configure <code class="font-mono bg-muted px-1 rounded">dotnet</code> or ` +
-      `<code class="font-mono bg-muted px-1 rounded">nuget.config</code> to use this proxy as a ` +
+      `Configure <code>dotnet</code> or ` +
+      `<code>nuget.config</code> to use this proxy as a ` +
       `NuGet package source. Compatible with ` +
-      `<code class="font-mono bg-muted px-1 rounded">dotnet add package</code>, ` +
-      `<code class="font-mono bg-muted px-1 rounded">dotnet restore</code>, and ` +
-      `<code class="font-mono bg-muted px-1 rounded">dotnet nuget push</code>.`,
+      `<code>dotnet add package</code>, ` +
+      `<code>dotnet restore</code>, and ` +
+      `<code>dotnet nuget push</code>.`,
     snippets: [
       {
         key: "nuget-source",
@@ -1103,8 +1095,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `</configuration>`,
           ].join("\n"),
         note:
-          `Place <code class="font-mono bg-muted px-1 rounded">nuget.config</code> in your project root ` +
-          `or user profile (<code class="font-mono bg-muted px-1 rounded">~/.nuget/NuGet/NuGet.Config</code>).`,
+          `Place <code>nuget.config</code> in your project root ` +
+          `or user profile (<code>~/.nuget/NuGet/NuGet.Config</code>).`,
       },
       {
         key: "nuget-vulnerable",
@@ -1120,8 +1112,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           ].join("\n"),
         note:
           `BatleHub exposes a ` +
-          `<code class="font-mono bg-muted px-1 rounded">VulnerabilitiesUrl/6.7.0</code> resource in the ` +
-          `v3 service index, so <code class="font-mono bg-muted px-1 rounded">dotnet list package --vulnerable</code> ` +
+          `<code>VulnerabilitiesUrl/6.7.0</code> resource in the ` +
+          `v3 service index, so <code>dotnet list package --vulnerable</code> ` +
           `discovers and queries the vulnerability catalogue automatically through the proxy. ` +
           `No extra configuration needed.`,
       },
@@ -1146,10 +1138,10 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           ].join("\n");
         },
         note:
-          `The registry accepts <code class="font-mono bg-muted px-1 rounded">.nupkg</code> files ` +
-          `via <code class="font-mono bg-muted px-1 rounded">multipart/form-data</code> ` +
-          `(as sent by <code class="font-mono bg-muted px-1 rounded">dotnet nuget push</code>). ` +
-          `The <code class="font-mono bg-muted px-1 rounded">.nuspec</code> is automatically ` +
+          `The registry accepts <code>.nupkg</code> files ` +
+          `via <code>multipart/form-data</code> ` +
+          `(as sent by <code>dotnet nuget push</code>). ` +
+          `The <code>.nuspec</code> is automatically ` +
           `extracted from the archive to record package metadata.`,
       },
     ],
@@ -1162,8 +1154,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     fileHint: "Releases",
     description:
       `Proxy release assets, source archives, and raw files from a ` +
-      `<a href="https://forgejo.org" target="_blank" rel="noopener" ` +
-      `class="underline underline-offset-2 hover:text-foreground transition-colors">Forgejo</a> ` +
+      `<a href="https://forgejo.org">Forgejo</a> ` +
       `or Gitea instance. Forgejo registries reuse the GitHub-style URL scheme.`,
     snippets: [
       {
@@ -1196,10 +1187,10 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         },
         note:
           `Configure the upstream instance URL (e.g. ` +
-          `<code class="font-mono bg-muted px-1 rounded">https://codeberg.org</code>) as the ` +
+          `<code>https://codeberg.org</code>) as the ` +
           `registry's upstream. The same adapter serves both Forgejo and Gitea. For ecosystem ` +
           `package registries (npm, Maven, PyPI, …) use the matching typed adapter pointed at the ` +
-          `<code class="font-mono bg-muted px-1 rounded">/api/packages/{owner}/{type}</code> endpoint.`,
+          `<code>/api/packages/{owner}/{type}</code> endpoint.`,
       },
     ],
   },
@@ -1212,7 +1203,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     description:
       `Proxy GitLab releases, release link assets, and source archives. Project paths ` +
       `may include nested groups; the release sub-path is separated by ` +
-      `<code class="text-xs font-mono bg-muted px-1 rounded">/-/</code>, mirroring GitLab's own URLs.`,
+      `<code>/-/</code>, mirroring GitLab's own URLs.`,
     snippets: [
       {
         key: "gitlab-curl",
@@ -1243,9 +1234,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         },
         note:
           `GitLab personal access tokens use the ` +
-          `<code class="font-mono bg-muted px-1 rounded">PRIVATE-TOKEN</code> header — configure ` +
+          `<code>PRIVATE-TOKEN</code> header — configure ` +
           `it as a custom upstream auth header on the registry. Set the upstream URL to your ` +
-          `instance root (e.g. <code class="font-mono bg-muted px-1 rounded">https://gitlab.com</code>). ` +
+          `instance root (e.g. <code>https://gitlab.com</code>). ` +
           `For ecosystem package registries (npm, Maven, PyPI, …) use the matching typed adapter.`,
       },
     ],
@@ -1258,9 +1249,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     fileHint: "/etc/apt/sources.list.d/",
     description:
       `Proxy and host Debian/Ubuntu APT repositories. In local/hybrid mode, publish ` +
-      `<code class="text-xs font-mono bg-muted px-1 rounded">.deb</code> packages and BatleHub ` +
-      `regenerates the <code class="text-xs font-mono bg-muted px-1 rounded">Packages</code>/` +
-      `<code class="text-xs font-mono bg-muted px-1 rounded">Release</code> indexes (Ed25519 ` +
+      `<code>.deb</code> packages and BatleHub ` +
+      `regenerates the <code>Packages</code>/` +
+      `<code>Release</code> indexes (Ed25519 ` +
       `OpenPGP-signed when a key is configured).`,
     snippets: [
       {
@@ -1302,13 +1293,13 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         },
         note: (ctx) =>
           isPublishMode(ctx)
-            ? `For an unsigned local repository (no <code class="font-mono bg-muted px-1 rounded">repo_signing</code> key), replace ` +
-              `<code class="font-mono bg-muted px-1 rounded">[signed-by=…]</code> with <code class="font-mono bg-muted px-1 rounded">[trusted=yes]</code>.`
+            ? `For an unsigned local repository (no <code>repo_signing</code> key), replace ` +
+              `<code>[signed-by=…]</code> with <code>[trusted=yes]</code>.`
             : `Proxy registries relay the upstream's signature, so apt verifies against the <strong>upstream's</strong> key — ` +
-              `<code class="font-mono bg-muted px-1 rounded">${ctx.registryUrl}/deb/key.gpg</code> is not served (it is a local/hybrid signing artifact). ` +
-              `A <code class="font-mono bg-muted px-1 rounded">NO_PUBKEY</code> error means that key isn't in the keyring named by ` +
-              `<code class="font-mono bg-muted px-1 rounded">signed-by</code> — install <code class="font-mono bg-muted px-1 rounded">debian-archive-keyring</code>/` +
-              `<code class="font-mono bg-muted px-1 rounded">ubuntu-keyring</code> (or import the upstream key), or use <code class="font-mono bg-muted px-1 rounded">[trusted=yes]</code>.`,
+              `<code>${ctx.registryUrl}/deb/key.gpg</code> is not served (it is a local/hybrid signing artifact). ` +
+              `A <code>NO_PUBKEY</code> error means that key isn't in the keyring named by ` +
+              `<code>signed-by</code> — install <code>debian-archive-keyring</code>/` +
+              `<code>ubuntu-keyring</code> (or import the upstream key), or use <code>[trusted=yes]</code>.`,
       },
       {
         key: "apt-auth",
@@ -1338,12 +1329,12 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           ].join("\n");
         },
         note:
-          `<code class="font-mono bg-muted px-1 rounded">/etc/apt/auth.conf.d/</code> is the recommended approach — credentials ` +
+          `<code>/etc/apt/auth.conf.d/</code> is the recommended approach — credentials ` +
           `are stored separately from the source list and are never shown in ` +
-          `<code class="font-mono bg-muted px-1 rounded">apt-cache policy</code> output. ` +
-          `On older systems without <code class="font-mono bg-muted px-1 rounded">auth.conf.d</code> support ` +
-          `(pre-Debian 9 / Ubuntu 18.10), use <code class="font-mono bg-muted px-1 rounded">/etc/apt/auth.conf</code> ` +
-          `with the same <code class="font-mono bg-muted px-1 rounded">machine / login / password</code> stanza.`,
+          `<code>apt-cache policy</code> output. ` +
+          `On older systems without <code>auth.conf.d</code> support ` +
+          `(pre-Debian 9 / Ubuntu 18.10), use <code>/etc/apt/auth.conf</code> ` +
+          `with the same <code>machine / login / password</code> stanza.`,
       },
       {
         key: "apt-publish",
@@ -1369,9 +1360,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     fileHint: "/etc/yum.repos.d/",
     description:
       `Proxy and host RPM repositories for DNF/YUM. In local/hybrid mode, publish ` +
-      `<code class="text-xs font-mono bg-muted px-1 rounded">.rpm</code> packages and BatleHub ` +
-      `regenerates <code class="text-xs font-mono bg-muted px-1 rounded">repodata/</code> ` +
-      `(Ed25519 OpenPGP-signed <code class="text-xs font-mono bg-muted px-1 rounded">repomd.xml.asc</code> ` +
+      `<code>.rpm</code> packages and BatleHub ` +
+      `regenerates <code>repodata/</code> ` +
+      `(Ed25519 OpenPGP-signed <code>repomd.xml.asc</code> ` +
       `when a key is configured).`,
     snippets: [
       {
@@ -1404,15 +1395,15 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         },
         note: (ctx) =>
           isPublishMode(ctx)
-            ? `Save to <code class="font-mono bg-muted px-1 rounded">/etc/yum.repos.d/${"{name}"}.repo</code>. ` +
-              `For an unsigned local repo (no <code class="font-mono bg-muted px-1 rounded">repo_signing</code> key), set ` +
-              `<code class="font-mono bg-muted px-1 rounded">repo_gpgcheck=0</code> and omit <code class="font-mono bg-muted px-1 rounded">gpgkey</code>.`
-            : `Proxy registries have no BatleHub key — <code class="font-mono bg-muted px-1 rounded">repodata/repomd.xml.key</code> ` +
-              `is only served for local/hybrid registries with a <code class="font-mono bg-muted px-1 rounded">repo_signing</code> key. ` +
-              `To verify, point <code class="font-mono bg-muted px-1 rounded">gpgkey</code> at the upstream project's key and set ` +
-              `<code class="font-mono bg-muted px-1 rounded">repo_gpgcheck=1</code>. ` +
-              `Credentials in <code class="font-mono bg-muted px-1 rounded">.repo</code> files are read by DNF/YUM; ` +
-              `alternatively, use a <code class="font-mono bg-muted px-1 rounded">~/.netrc</code> entry for the proxy host.`,
+            ? `Save to <code>/etc/yum.repos.d/${"{name}"}.repo</code>. ` +
+              `For an unsigned local repo (no <code>repo_signing</code> key), set ` +
+              `<code>repo_gpgcheck=0</code> and omit <code>gpgkey</code>.`
+            : `Proxy registries have no BatleHub key — <code>repodata/repomd.xml.key</code> ` +
+              `is only served for local/hybrid registries with a <code>repo_signing</code> key. ` +
+              `To verify, point <code>gpgkey</code> at the upstream project's key and set ` +
+              `<code>repo_gpgcheck=1</code>. ` +
+              `Credentials in <code>.repo</code> files are read by DNF/YUM; ` +
+              `alternatively, use a <code>~/.netrc</code> entry for the proxy host.`,
       },
       {
         key: "rpm-publish",
@@ -1436,10 +1427,10 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     fileHint: "/etc/pacman.conf",
     description:
       `Proxy and host Arch Linux pacman repositories. In local/hybrid mode, publish ` +
-      `<code class="text-xs font-mono bg-muted px-1 rounded">.pkg.tar.zst</code> packages and BatleHub ` +
-      `regenerates the repository database (<code class="text-xs font-mono bg-muted px-1 rounded">&lt;repo&gt;.db</code>), ` +
+      `<code>.pkg.tar.zst</code> packages and BatleHub ` +
+      `regenerates the repository database (<code>&lt;repo&gt;.db</code>), ` +
       `signing it and each package (Ed25519 OpenPGP) when a ` +
-      `<code class="text-xs font-mono bg-muted px-1 rounded">repo_signing</code> key is configured.`,
+      `<code>repo_signing</code> key is configured.`,
     snippets: [
       {
         key: "pacman-conf",
@@ -1467,8 +1458,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           return lines.join("\n");
         },
         note: (ctx) =>
-          `Add the block to <code class="font-mono bg-muted px-1 rounded">/etc/pacman.conf</code>. ` +
-          `The DB is served as <code class="font-mono bg-muted px-1 rounded">$arch/${ctx.registryName}.db</code>, ` +
+          `Add the block to <code>/etc/pacman.conf</code>. ` +
+          `The DB is served as <code>$arch/${ctx.registryName}.db</code>, ` +
           `so the section name must match the registry name.`,
       },
       {
@@ -1486,8 +1477,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           ].join("\n"),
         note:
           `Only served for local/hybrid registries with a ` +
-          `<code class="font-mono bg-muted px-1 rounded">repo_signing</code> key. ` +
-          `<code class="font-mono bg-muted px-1 rounded">pacman-key --add</code> prints the key id to lsign.`,
+          `<code>repo_signing</code> key. ` +
+          `<code>pacman-key --add</code> prints the key id to lsign.`,
       },
       {
         key: "pacman-publish",
@@ -1503,7 +1494,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           ].join("\n"),
         note:
           `The package name, version, and architecture are read from the archive's ` +
-          `<code class="font-mono bg-muted px-1 rounded">.PKGINFO</code>; the stored filename is derived from them.`,
+          `<code>.PKGINFO</code>; the stored filename is derived from them.`,
       },
     ],
   },
@@ -1514,10 +1505,10 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     fileHint: "download.jetbrains.com",
     description:
       `Cache JetBrains IDE installer archives (proxy-only). The first download is ` +
-      `streamed from <code class="text-xs font-mono bg-muted px-1 rounded">download.jetbrains.com</code> ` +
+      `streamed from <code>download.jetbrains.com</code> ` +
       `and cached; later downloads of the same file are served locally. ` +
       `IDE archives are large (~1–1.7 GB), so raise ` +
-      `<code class="text-xs font-mono bg-muted px-1 rounded">[limits] max_artifact_size_bytes</code> ` +
+      `<code>[limits] max_artifact_size_bytes</code> ` +
       `(e.g. 2 GiB) or they will be rejected.`,
     snippets: [
       {
@@ -1535,14 +1526,14 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         },
         note:
           `Use the same path as the upstream URL: ` +
-          `<code class="font-mono bg-muted px-1 rounded">download.jetbrains.com/idea/idea-2026.1.3.tar.gz</code> → ` +
-          `<code class="font-mono bg-muted px-1 rounded">/proxy/{name}/jetbrains/idea/idea-2026.1.3.tar.gz</code>. ` +
-          `<code class="font-mono bg-muted px-1 rounded">download.jetbrains.com</code> redirects to a CDN ` +
-          `(<code class="font-mono bg-muted px-1 rounded">download-cdn.jetbrains.com</code>) — the redirect is followed ` +
+          `<code>download.jetbrains.com/idea/idea-2026.1.3.tar.gz</code> → ` +
+          `<code>/proxy/{name}/jetbrains/idea/idea-2026.1.3.tar.gz</code>. ` +
+          `<code>download.jetbrains.com</code> redirects to a CDN ` +
+          `(<code>download-cdn.jetbrains.com</code>) — the redirect is followed ` +
           `automatically, so always use the canonical path, not the CDN host. Use real archive names: ` +
-          `<code class="font-mono bg-muted px-1 rounded">idea-…</code> (unified installer, 2025.3+); ` +
-          `the legacy <code class="font-mono bg-muted px-1 rounded">ideaIU-…</code>/` +
-          `<code class="font-mono bg-muted px-1 rounded">ideaIC-…</code> names only exist for releases ≤ 2025.2.`,
+          `<code>idea-…</code> (unified installer, 2025.3+); ` +
+          `the legacy <code>ideaIU-…</code>/` +
+          `<code>ideaIC-…</code> names only exist for releases ≤ 2025.2.`,
       },
       {
         key: "jetbrains-config",
@@ -1562,8 +1553,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `anonymous = ["releases:read"]`,
           ].join("\n"),
         note:
-          `Override <code class="font-mono bg-muted px-1 rounded">upstreams</code> to cache another host ` +
-          `(e.g. <code class="font-mono bg-muted px-1 rounded">https://plugins.jetbrains.com</code>).`,
+          `Override <code>upstreams</code> to cache another host ` +
+          `(e.g. <code>https://plugins.jetbrains.com</code>).`,
       },
     ],
   },
@@ -1576,8 +1567,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
       `Mirror any plain HTTP file tree — for upstreams with no package protocol at all: ` +
       `toolchain tarballs (Node, rustup, the Go toolchain) and single-binary vendor CDNs ` +
       `(Helm, MinIO, SonarScanner). Proxy-only: there is no publish or index model. ` +
-      `Both <code class="text-xs font-mono bg-muted px-1 rounded">upstreams</code> and ` +
-      `<code class="text-xs font-mono bg-muted px-1 rounded">path_allow</code> are required — ` +
+      `Both <code>upstreams</code> and ` +
+      `<code>path_allow</code> are required — ` +
       `without the allowlist a mirror of a shared host would relay every unrelated path on it.`,
     snippets: [
       {
@@ -1595,8 +1586,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         },
         note:
           `A path outside the registry's ` +
-          `<code class="font-mono bg-muted px-1 rounded">path_allow</code> allowlist returns ` +
-          `<code class="font-mono bg-muted px-1 rounded">403</code>, not 404 — that is the allowlist ` +
+          `<code>path_allow</code> allowlist returns ` +
+          `<code>403</code>, not 404 — that is the allowlist ` +
           `rejecting it locally, before any upstream request is made.`,
       },
       {
@@ -1624,9 +1615,9 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `warm_paths = ["v24.18.0/node-v24.18.0-linux-x64.tar.gz"]`,
           ].join("\n"),
         note:
-          `Run <code class="font-mono bg-muted px-1 rounded">batlehub-cli registry suggest</code> in a project ` +
-          `to generate these blocks from its <code class="font-mono bg-muted px-1 rounded">mise.toml</code> / ` +
-          `<code class="font-mono bg-muted px-1 rounded">mise.lock</code> and manifests.`,
+          `Run <code>batlehub-cli registry suggest</code> in a project ` +
+          `to generate these blocks from its <code>mise.toml</code> / ` +
+          `<code>mise.lock</code> and manifests.`,
       },
       {
         key: "generic-presets",
@@ -1704,8 +1695,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         },
         note:
           `Variables are read at download time, so export them before ` +
-          `<code class="font-mono bg-muted px-1 rounded">mise install</code> / ` +
-          `<code class="font-mono bg-muted px-1 rounded">rustup update</code> — a toolchain already ` +
+          `<code>mise install</code> / ` +
+          `<code>rustup update</code> — a toolchain already ` +
           `on disk is not re-fetched.`,
       },
       {
@@ -1741,8 +1732,8 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         },
         note:
           `Each rewritten URL must still pass its registry's ` +
-          `<code class="font-mono bg-muted px-1 rounded">path_allow</code> allowlist — widen the globs ` +
-          `if <code class="font-mono bg-muted px-1 rounded">mise install</code> reports a 403.`,
+          `<code>path_allow</code> allowlist — widen the globs ` +
+          `if <code>mise install</code> reports a 403.`,
       },
     ],
   },

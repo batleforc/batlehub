@@ -287,6 +287,29 @@ function boundLiterals(template) {
 }
 
 /**
+ * Removes every match of every pattern, until *no* pattern matches any more.
+ *
+ * One pass is not enough when deleting a match splices its neighbours into a
+ * new one — `<!-` + `<!-- -->` + `-` leaves `<!--` behind, and the `>` inside
+ * the survivor then splits it, so the comment that was meant to be dropped
+ * comes back as prose the scanner grades. Code scanning flagged the single pass
+ * as incomplete multi-character sanitisation.
+ *
+ * The loop has to span the patterns rather than sit inside each one. Stripping
+ * comments and then code samples in two separate fixed points leaves the second
+ * to re-form the first: `<!-<code>x</code>-- … > … -->` has no comment in it
+ * until the code sample is removed, and by then the comment pass is over.
+ */
+function stripAll(text, ...patterns) {
+  let out = text;
+  for (let prev; prev !== out; ) {
+    prev = out;
+    for (const re of patterns) out = out.replace(re, "");
+  }
+  return out;
+}
+
+/**
  * Every untranslated string in one file's source. Exported so the gate can be
  * tested on a fixture rather than on the tree it grades — a scanner that cannot
  * be shown to *fail* is the same green as one that found nothing, which is the
@@ -297,9 +320,13 @@ function boundLiterals(template) {
  */
 export function scanSource(source, isVue = true) {
   if (!isVue) return scriptStrings(source);
-  const template = templateOf(source)
-    .replace(/<!--[\s\S]*?-->/g, "") // comments are not user-visible
-    .replace(/<(pre|code)[\s\S]*?<\/\1\s*>/g, ""); // `</code\n>` is still a close tag // code samples are not prose
+  // Comments are not user-visible; code samples are not prose. `</code\n>` is
+  // still a close tag.
+  const template = stripAll(
+    templateOf(source),
+    /<!--[\s\S]*?-->/g,
+    /<(pre|code)[\s\S]*?<\/\1\s*>/g,
+  );
 
   /* Attribute *values* are stripped before splitting on tags: an expression like
      `v-if="count > 0"` contains a `>` that would otherwise end a tag early and

@@ -146,6 +146,26 @@ function slugify(str) {
 }
 
 /**
+ * Strips HTML tags, repeating until the result stops changing.
+ *
+ * Deleting a match can splice its neighbours into a new one, so a single
+ * `replace` sanitises only what survives one pass — the incomplete
+ * multi-character sanitisation code scanning flagged here. Today's pattern
+ * happens to be its own fixed point (every `<` that has a later `>` is consumed
+ * left to right, so nothing can re-form), but that is a property of this exact
+ * regex rather than of the function, and it is not what the next person editing
+ * the regex will check. The loop makes "no tags left" the postcondition.
+ */
+function stripTags(text) {
+  let out = text;
+  for (let prev; prev !== out; ) {
+    prev = out;
+    out = out.replace(/<[^>]+>/g, "");
+  }
+  return out;
+}
+
+/**
  * The anchors a page offers. `markdown-it-anchor` slugifies the heading's
  * *rendered text*, so the inline markup goes first; an explicit `{#id}` wins
  * outright, and a repeated slug gets `-1`, `-2`, … the way the plugin numbers
@@ -170,7 +190,7 @@ function anchorsOf(file) {
         // and VitePress keeps it — which is the difference between
         // `#registry-info-name` and `#registry-info`.
         .split("`")
-        .map((seg, i) => (i % 2 ? seg : seg.replace(/<[^>]+>/g, "").replace(/[*~]/g, "")))
+        .map((seg, i) => (i % 2 ? seg : stripTags(seg).replace(/[*~]/g, "")))
         .join("")
         .trim();
       slug = slugify(text);
@@ -295,7 +315,10 @@ for (const page of publishedPages()) {
   // which is what stops a stub outliving the page it points at.
   const head = readFileSync(page, "utf8").slice(0, 400);
   if (/^moved:\s*\S/m.test(head)) continue;
-  const url = "/" + rel.replace(/(index)?\.md$/, "").replace(/\/$/, "/");
+  // `guide/index.md` → `/guide/`, `guide/install.md` → `/guide/install`: the
+  // directory form keeps the trailing slash the router serves it under, which
+  // dropping `index` already leaves in place.
+  const url = "/" + rel.replace(/(index)?\.md$/, "");
   const bare = "/" + rel.replace(/\.md$/, "");
   if (
     !reachable.has(url) &&
