@@ -4,6 +4,7 @@ use super::{
     HttpRequest, LocalRegistryService, NotificationService, PublishRequest, RegistryMap,
     RegistryModeMap, Responder, Sha256, TerraformYankRequest,
 };
+use crate::handlers::schemas::MessageResponse;
 
 /// Upload a Terraform module tarball to the local registry.
 ///
@@ -22,7 +23,7 @@ use super::{
         ("version"   = String, Path, description = "Module version"),
     ),
     responses(
-        (status = 201, description = "Module uploaded"),
+        (status = 201, description = "Module uploaded", body = MessageResponse),
         (status = 401, description = "Authentication required"),
         (status = 403, description = "Quota exceeded or ownership denied"),
         (status = 404, description = "Registry not found or not in local/hybrid mode"),
@@ -77,7 +78,7 @@ pub async fn terraform_module_upload(
             signature_type,
         },
         actix_web::http::StatusCode::CREATED,
-        serde_json::json!({"message": "module uploaded"}),
+        MessageResponse::new("module uploaded"),
     )
     .await
 }
@@ -97,7 +98,7 @@ pub async fn terraform_module_upload(
         ("version"   = String, Path, description = "Module version to yank"),
     ),
     responses(
-        (status = 200, description = "Version yanked"),
+        (status = 200, description = "Version yanked", body = MessageResponse),
         (status = 401, description = "Authentication required"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Version not found"),
@@ -146,7 +147,7 @@ pub async fn terraform_module_yank(
         ("version"   = String, Path, description = "Module version to unyank"),
     ),
     responses(
-        (status = 200, description = "Version unyanked"),
+        (status = 200, description = "Version unyanked", body = MessageResponse),
         (status = 401, description = "Authentication required"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Version not found"),

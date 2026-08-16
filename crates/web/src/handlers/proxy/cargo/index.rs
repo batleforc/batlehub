@@ -5,6 +5,7 @@ use super::{
     AuthIdentity, CargoIndexMap, CoreError, HttpRequest, HttpResponse, LocalOrProxyArtifactOpts,
     LocalRegistryService, ProxyService, RegistryMap, RegistryMode, RegistryModeMap, Responder,
 };
+use crate::handlers::schemas::{ArtifactBytes, ProtocolDocument, UpstreamDocument};
 
 /// Cargo sparse registry `config.json`.
 #[utoipa::path(
@@ -13,7 +14,7 @@ use super::{
     tag = "proxy/cargo",
     params(("registry" = String, Path, description = "Registry name")),
     responses(
-        (status = 200, description = "Sparse registry configuration"),
+        (status = 200, description = "Sparse registry configuration", body = UpstreamDocument),
         (status = 404, description = "No cargo registry configured"),
     ),
     security(("bearer_token" = [])),
@@ -66,7 +67,7 @@ pub async fn cargo_registry_config(
         ("path"     = String, Path, description = "Crate index path, e.g. se/rd/serde"),
     ),
     responses(
-        (status = 200, description = "Sparse index entry (newline-delimited JSON)"),
+        (status = 200, description = "Sparse index entry (newline-delimited JSON)", body = ProtocolDocument, content_type = "text/plain"),
         (status = 404, description = "Crate not found in index"),
     ),
     security(("bearer_token" = [])),
@@ -167,7 +168,7 @@ async fn proxy_upstream_index(
         ("version"  = String, Path, description = "Version"),
     ),
     responses(
-        (status = 200, description = ".crate file stream"),
+        (status = 200, description = ".crate file stream", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Unknown registry"),
     ),

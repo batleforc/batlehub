@@ -121,7 +121,7 @@ impl TestServer {
             team_namespace: None,
             sbom: None,
             explore_cache: None,
-            access_log: None,
+            package_repo: None,
         });
 
         let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();

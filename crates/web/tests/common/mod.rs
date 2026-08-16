@@ -20,18 +20,23 @@ use utoipa_actix_web::AppExt;
 
 use batlehub_adapters::auth::StaticTokenAuthProvider;
 use batlehub_adapters::cache::InMemoryCacheStore;
+pub use batlehub_adapters::db::InMemoryUserBlockRepository;
 pub use batlehub_adapters::in_memory::InMemoryTeamNamespaceStore;
 use batlehub_adapters::in_memory::{
-    InMemoryPackageRepository as InMemoryRepo, InMemoryStorageBackend as InMemoryStorage,
-    NoopArtifactMetaRepository as NoopArtifactMeta, NullUserTokenRepository as NullTokenRepository,
+    InMemoryPackageRepository as InMemoryRepo, InMemoryStatsHistory,
+    InMemoryStorageBackend as InMemoryStorage, NoopArtifactMetaRepository as NoopArtifactMeta,
+    NullUserTokenRepository as NullTokenRepository,
 };
 use batlehub_adapters::local_registry::InMemoryLocalRegistry;
 use batlehub_adapters::notification::InMemoryNotificationStore;
+pub use batlehub_adapters::rate_limit::InMemoryIpBlockStore;
 use batlehub_config::schema::{NotificationsConfig, RegistryMode};
 use batlehub_core::entities::{NamespacePackage, TeamNamespace, Visibility};
 use batlehub_core::ports::BannerPort;
 use batlehub_core::ports::NotificationPort;
-use batlehub_core::ports::{IpBlockStore, TeamNamespacePort};
+use batlehub_core::ports::{
+    IpBlockStore, StatsHistoryRepository, TeamNamespacePort, UserBlockRepository,
+};
 use batlehub_core::{
     entities::{PackageId, PackageMetadata, Role},
     error::CoreError,
@@ -90,6 +95,40 @@ impl RegistryClient for FixedRegistry {
             stream: Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(bytes) })),
             cache_control: None,
         })
+    }
+
+    /// A minimal but realistically-shaped npm packument: two stable versions and
+    /// a newer pre-release, `latest` on the newest stable, and `dist.tarball`
+    /// URLs pointing at the *upstream* — so a test can tell whether the proxy
+    /// rewrote them.
+    async fn fetch_version_document(&self, package: &str) -> Result<serde_json::Value, CoreError> {
+        if self.registry_type != "npm" {
+            return Err(CoreError::NotSupported(format!(
+                "{} has no version document",
+                self.registry_type
+            )));
+        }
+        let tarball = |v: &str| {
+            serde_json::json!({
+                "version": v,
+                "dist": { "tarball": format!("https://upstream.invalid/{package}/-/{package}-{v}.tgz") }
+            })
+        };
+        Ok(serde_json::json!({
+            "name": package,
+            "dist-tags": { "latest": "1.1.0", "next": "2.0.0-beta.1" },
+            "versions": {
+                "1.0.0": tarball("1.0.0"),
+                "1.1.0": tarball("1.1.0"),
+                "2.0.0-beta.1": tarball("2.0.0-beta.1"),
+            },
+            "time": {
+                "created": "2020-01-01T00:00:00.000Z",
+                "1.0.0": "2020-01-02T00:00:00.000Z",
+                "1.1.0": "2020-02-01T00:00:00.000Z",
+                "2.0.0-beta.1": "2020-03-01T00:00:00.000Z",
+            }
+        }))
     }
 }
 pub const ADMIN_TOKEN: &str = "admin-token";
@@ -154,6 +193,21 @@ pub fn test_auth_providers() -> Vec<Arc<dyn AuthProvider>> {
     ]))]
 }
 pub fn make_local_svc(storage: Arc<dyn StorageBackend>) -> Arc<LocalRegistryService> {
+    make_local_svc_with_repo(storage, None)
+}
+
+/// `make_local_svc` with the admin package store attached, as `server/src/main.rs`
+/// wires it in production.
+///
+/// Without it the local service cannot see administrative blocks, so version
+/// listings would happily advertise a blocked version. Note this does **not**
+/// merge the two in-memory stores (`InMemoryLocalRegistry` holds published
+/// packages, `InMemoryPackageRepository` holds statuses — see CLAUDE.md); it
+/// only lets the local service ask the second one which versions are blocked.
+pub fn make_local_svc_with_repo(
+    storage: Arc<dyn StorageBackend>,
+    package_repo: Option<Arc<dyn PackageRepository>>,
+) -> Arc<LocalRegistryService> {
     Arc::new(LocalRegistryService {
         backend: Arc::new(InMemoryLocalRegistry::new()),
         storage,
@@ -167,7 +221,7 @@ pub fn make_local_svc(storage: Arc<dyn StorageBackend>) -> Arc<LocalRegistryServ
         team_namespace: None,
         sbom: None,
         explore_cache: None,
-        access_log: None,
+        package_repo,
     })
 }
 pub fn rbac_policy(repo: Arc<dyn PackageRepository>) -> RegistryPolicy {
@@ -227,6 +281,12 @@ pub struct ConfigureAppDefaults {
     pub notifications_config: Option<NotificationsConfig>,
     pub warming_map: WarmingServiceMap,
     pub eviction_map: EvictionServiceMap,
+    /// The two block stores the *middleware* enforces and `access-check` now
+    /// consults (RFC 0004-bis A1). Registered on every test app, empty by
+    /// default, so a handler that reads them is exercised rather than 500ing —
+    /// and so a test can seed one and assert the simulator changes its answer.
+    pub user_block_repo: Arc<dyn UserBlockRepository>,
+    pub ip_block_store: Arc<dyn IpBlockStore>,
 }
 
 impl Default for ConfigureAppDefaults {
@@ -240,6 +300,8 @@ impl Default for ConfigureAppDefaults {
             notifications_config: None,
             warming_map: WarmingServiceMap::default(),
             eviction_map: EvictionServiceMap::default(),
+            user_block_repo: Arc::new(InMemoryUserBlockRepository::new()),
+            ip_block_store: Arc::new(InMemoryIpBlockStore::new()),
         }
     }
 }
@@ -288,6 +350,8 @@ pub async fn finish_test_app(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
+    let user_block_repo = Arc::clone(&defaults.user_block_repo);
+    let ip_block_store = Arc::clone(&defaults.ip_block_store);
     let (app, _) = App::new()
         .into_utoipa_app()
         .configure(configure_test_app(
@@ -300,11 +364,16 @@ pub async fn finish_test_app(
         ))
         .split_for_parts();
     let app = app
+        .app_data(actix_web::web::Data::new(user_block_repo))
+        .app_data(actix_web::web::Data::new(ip_block_store))
         .app_data(actix_web::web::Data::new(cargo_indexes))
         .app_data(actix_web::web::Data::new(local_svc))
         .app_data(actix_web::web::Data::new(mode_map))
         .app_data(actix_web::web::Data::new(RepoSignerMap::default()))
-        .app_data(actix_web::web::Data::new(batlehub_web::VulnDbMap::default()));
+        .app_data(actix_web::web::Data::new(batlehub_web::VulnDbMap::default()))
+        .app_data(actix_web::web::Data::new(
+            InMemoryStatsHistory::new() as Arc<dyn StatsHistoryRepository>
+        ));
 
     init_service(app.wrap(AuthMiddlewareFactory::new(auth_providers))).await
 }
@@ -326,6 +395,8 @@ pub async fn finish_test_app_with_extra<E: 'static>(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
+    let user_block_repo = Arc::clone(&defaults.user_block_repo);
+    let ip_block_store = Arc::clone(&defaults.ip_block_store);
     let (app, _) = App::new()
         .into_utoipa_app()
         .configure(configure_test_app(
@@ -338,6 +409,8 @@ pub async fn finish_test_app_with_extra<E: 'static>(
         ))
         .split_for_parts();
     let app = app
+        .app_data(actix_web::web::Data::new(user_block_repo))
+        .app_data(actix_web::web::Data::new(ip_block_store))
         .app_data(actix_web::web::Data::new(cargo_indexes))
         .app_data(actix_web::web::Data::new(local_svc))
         .app_data(actix_web::web::Data::new(mode_map))
@@ -357,6 +430,28 @@ pub async fn make_app(
     make_app_ext(repo, Arc::new(ProxyMetrics::new(&[]))).await
 }
 
+/// `make_app` with the two block stores the middleware enforces and
+/// `access-check` consults (RFC 0004-bis A1), so a test can seed a block and
+/// assert the simulator's answer changes.
+pub async fn make_app_with_blocks(
+    user_block_repo: Arc<dyn UserBlockRepository>,
+    ip_block_store: Arc<dyn IpBlockStore>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    make_app_with_defaults(
+        InMemoryRepo::new(),
+        ConfigureAppDefaults {
+            user_block_repo,
+            ip_block_store,
+            ..Default::default()
+        },
+    )
+    .await
+}
+
 /// Variant of `make_app` that accepts a caller-supplied `proxy_metrics` so
 /// that tests can inspect or mutate counters and verify the stats endpoint.
 pub async fn make_app_ext(
@@ -367,6 +462,26 @@ pub async fn make_app_ext(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
+    make_app_with_defaults(
+        repo,
+        ConfigureAppDefaults {
+            proxy_metrics,
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+/// The full-registry test app, with every knob in `ConfigureAppDefaults` open.
+pub async fn make_app_with_defaults(
+    repo: Arc<InMemoryRepo>,
+    defaults: ConfigureAppDefaults,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let proxy_metrics = Arc::clone(&defaults.proxy_metrics);
     let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
@@ -432,7 +547,7 @@ pub async fn make_app_ext(
     ]
     .into();
 
-    let local_svc = make_local_svc(storage.clone());
+    let local_svc = make_local_svc_with_repo(storage.clone(), Some(repo_dyn.clone()));
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
             registries,
@@ -474,10 +589,7 @@ pub async fn make_app_ext(
         local_svc,
         RegistryModeMap::default(),
         cargo_indexes,
-        ConfigureAppDefaults {
-            proxy_metrics,
-            ..Default::default()
-        },
+        defaults,
         test_auth_providers(),
     )
     .await
@@ -510,7 +622,7 @@ pub fn local_registry_app_parts(
     let policies: HashMap<String, Arc<RegistryPolicy>> =
         [(name.to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
 
-    let local_svc = make_local_svc(storage.clone());
+    let local_svc = make_local_svc_with_repo(storage.clone(), Some(repo_dyn.clone()));
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
             registries,
@@ -596,7 +708,7 @@ pub fn empty_app_parts() -> EmptyAppParts {
     let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let local_svc = make_local_svc(storage.clone());
+    let local_svc = make_local_svc_with_repo(storage.clone(), Some(repo_dyn.clone()));
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig::default()),
         storage,
@@ -615,6 +727,44 @@ pub fn empty_app_parts() -> EmptyAppParts {
         cargo_indexes: batlehub_web::CargoIndexMap::default(),
         local_svc,
     }
+}
+
+/// Build a test app whose stats-history repository is caller-supplied, so a
+/// test can seed rollup rows before reading `/api/v1/admin/stats/history`.
+///
+/// `make_app` registers a fresh, empty one instead — enough for every test that
+/// does not read the series, and the reason those tests need no changes.
+pub async fn make_app_with_stats_history(
+    history: Arc<dyn StatsHistoryRepository>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let EmptyAppParts {
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        cargo_indexes,
+        local_svc,
+    } = empty_app_parts();
+
+    finish_test_app_with_extra(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        RegistryModeMap::default(),
+        cargo_indexes,
+        ConfigureAppDefaults::default(),
+        history,
+        test_auth_providers(),
+    )
+    .await
 }
 
 pub async fn make_app_with_ip_store(
@@ -666,7 +816,7 @@ pub async fn make_app_with_eviction(
     let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let local_svc = make_local_svc(storage.clone());
+    let local_svc = make_local_svc_with_repo(storage.clone(), Some(repo_dyn.clone()));
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig::default()),
         storage: storage.clone(),
@@ -718,7 +868,7 @@ pub async fn make_app_with_warming(
     let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let local_svc = make_local_svc(storage.clone());
+    let local_svc = make_local_svc_with_repo(storage.clone(), Some(repo_dyn.clone()));
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig::default()),
         storage: storage.clone(),
@@ -917,7 +1067,7 @@ pub async fn make_local_nuget_app(
     )]
     .into();
 
-    let local_svc = make_local_svc(storage.clone());
+    let local_svc = make_local_svc_with_repo(storage.clone(), Some(repo_dyn.clone()));
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
             registries,

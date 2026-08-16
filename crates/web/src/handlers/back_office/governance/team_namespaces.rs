@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 use batlehub_core::{
-    entities::{AccessAction, Role, TeamNamespace},
+    entities::{AccessAction, Role, TeamNamespace, Visibility},
     ports::TeamNamespacePort,
     services::AdminService,
 };
@@ -20,17 +20,50 @@ pub struct TeamNamespaceDto {
     pub prefix: String,
     pub group_id: String,
     pub claimed_by: Option<String>,
+    /// How many packages the namespace currently holds (RFC 0004-bis A6).
+    ///
+    /// `count_packages_in_namespace` has been on `TeamNamespacePort` since the
+    /// port was written and had exactly one caller — the *delete* confirmation.
+    /// The list showed a row per claim with no way to tell a namespace holding
+    /// four hundred packages from an abandoned one, which is the question an
+    /// operator opens this page with.
+    pub package_count: u64,
 }
 
-impl From<TeamNamespace> for TeamNamespaceDto {
-    fn from(ns: TeamNamespace) -> Self {
+impl TeamNamespaceDto {
+    fn new(ns: TeamNamespace, package_count: u64) -> Self {
         Self {
             registry: ns.registry,
             prefix: ns.prefix,
             group_id: ns.group_id,
             claimed_by: ns.claimed_by,
+            package_count,
         }
     }
+}
+
+/// Attach a package count to every namespace, counting concurrently.
+///
+/// A claim list is a handful of rows, so this is the same shape the health
+/// endpoint uses for its per-registry storage stats. A count that fails becomes
+/// `0` rather than failing the listing: an operator who cannot see their claims
+/// at all is worse off than one seeing a count they can refresh.
+async fn with_counts(
+    store: &Arc<dyn TeamNamespacePort>,
+    namespaces: Vec<TeamNamespace>,
+) -> Vec<TeamNamespaceDto> {
+    let counts = futures::future::join_all(
+        namespaces
+            .iter()
+            .map(|ns| store.count_packages_in_namespace(&ns.registry, &ns.prefix)),
+    )
+    .await;
+
+    namespaces
+        .into_iter()
+        .zip(counts)
+        .map(|(ns, count)| TeamNamespaceDto::new(ns, count.unwrap_or(0)))
+        .collect()
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -47,7 +80,7 @@ pub struct ClaimNamespaceRequest {
     tag = "back-office",
     params(("registry" = String, Path, description = "Registry name")),
     responses(
-        (status = 200, description = "Namespace list"),
+        (status = 200, description = "Namespace list", body = Vec<TeamNamespaceDto>),
         (status = 403, description = "Admin role required"),
     ),
     security(("bearer_token" = [])),
@@ -60,14 +93,11 @@ pub async fn list_namespaces(
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
     let (registry,) = path.into_inner();
-    let namespaces: Vec<TeamNamespaceDto> = store
+    let namespaces = store
         .list_namespaces(&registry)
         .await
-        .map_err(AppError::from)?
-        .into_iter()
-        .map(TeamNamespaceDto::from)
-        .collect();
-    Ok(HttpResponse::Ok().json(namespaces))
+        .map_err(AppError::from)?;
+    Ok(HttpResponse::Ok().json(with_counts(&store, namespaces).await))
 }
 
 /// Claim a namespace prefix for a team group.
@@ -164,7 +194,7 @@ pub async fn release_namespace(
     path = "/api/v1/me/namespaces",
     tag = "user",
     responses(
-        (status = 200, description = "Namespaces owned by the caller's groups"),
+        (status = 200, description = "Namespaces owned by the caller's groups", body = Vec<TeamNamespaceDto>),
         (status = 403, description = "Authentication required"),
     ),
     security(("bearer_token" = [])),
@@ -179,14 +209,11 @@ pub async fn my_namespaces(
     }
     let normalized_groups: Vec<String> =
         identity.groups.iter().map(|g| g.replace(' ', "")).collect();
-    let namespaces: Vec<TeamNamespaceDto> = store
+    let namespaces = store
         .list_namespaces_for_groups(&normalized_groups)
         .await
-        .map_err(AppError::from)?
-        .into_iter()
-        .map(TeamNamespaceDto::from)
-        .collect();
-    Ok(HttpResponse::Ok().json(namespaces))
+        .map_err(AppError::from)?;
+    Ok(HttpResponse::Ok().json(with_counts(&store, namespaces).await))
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -216,7 +243,7 @@ pub struct NamespacePackageListResponse {
 pub struct NamespacePackageDto {
     pub name: String,
     pub version: String,
-    pub visibility: String,
+    pub visibility: Visibility,
     pub published_by: String,
     pub published_at: DateTime<Utc>,
     pub yanked: bool,
@@ -287,7 +314,7 @@ pub async fn my_namespace_packages(
         .map(|p| NamespacePackageDto {
             name: p.name,
             version: p.version,
-            visibility: p.visibility.to_string(),
+            visibility: p.visibility.clone(),
             published_by: p.published_by,
             published_at: p.published_at,
             yanked: p.yanked,

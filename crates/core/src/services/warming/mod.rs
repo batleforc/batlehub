@@ -14,6 +14,24 @@ use crate::services::metrics::ProxyMetrics;
 /// when the winning replica crashes mid-download.
 const WARM_CLAIM_TTL: Duration = Duration::from_secs(600);
 
+/// One version or path that did not warm, and why.
+///
+/// RFC 0004-bis A3. Every one of these was already `tracing::warn!`-ed with the
+/// registry, package, version and error attached — so the information existed,
+/// went to the server log, and stopped there. An operator warming eleven
+/// packages read `errors: 3` and had no way to learn *which* three without
+/// shell access to the instance they are administering through a console.
+#[derive(Debug, Clone)]
+pub struct WarmFailure {
+    /// Package name, or the upstream path for a path-addressed registry.
+    pub package: String,
+    /// The version that failed. `None` when the failure was listing the
+    /// versions, so no single version is at fault.
+    pub version: Option<String>,
+    /// What went wrong, as the log line records it.
+    pub error: String,
+}
+
 /// Result of a warming run (a single package or a batch).
 #[derive(Debug, Default, Clone)]
 pub struct WarmingReport {
@@ -23,13 +41,36 @@ pub struct WarmingReport {
     pub skipped: usize,
     /// Versions that failed to fetch or store.
     pub errors: usize,
+    /// One entry per counted error. `errors` stays the authority on the count —
+    /// a panicked task increments it with nothing to name.
+    pub failures: Vec<WarmFailure>,
+}
+
+impl WarmingReport {
+    /// A report for one failure, counted and named.
+    pub(crate) fn failed(
+        package: impl Into<String>,
+        version: Option<String>,
+        error: impl std::fmt::Display,
+    ) -> Self {
+        Self {
+            errors: 1,
+            failures: vec![WarmFailure {
+                package: package.into(),
+                version,
+                error: error.to_string(),
+            }],
+            ..Default::default()
+        }
+    }
 }
 
 impl std::ops::AddAssign for WarmingReport {
-    fn add_assign(&mut self, other: Self) {
+    fn add_assign(&mut self, mut other: Self) {
         self.warmed += other.warmed;
         self.skipped += other.skipped;
         self.errors += other.errors;
+        self.failures.append(&mut other.failures);
     }
 }
 

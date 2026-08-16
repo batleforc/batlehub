@@ -41,6 +41,7 @@ function version(over: Partial<PackageVersionDetail> = {}): PackageVersionDetail
     status: { status: "available" },
     storage_backend: null,
     storage_key: "npm/pkg/1.0.0",
+    license: null,
     vulnerabilities: [],
     ...over,
   } as PackageVersionDetail;
@@ -51,7 +52,7 @@ async function mountComp(versions: PackageVersionDetail[]) {
     history: createMemoryHistory(),
     routes: [
       { path: "/", component: { template: "<div />" } },
-      { path: "/packages/detail", component: { template: "<div />" } },
+      { path: "/packages/:registry/:name", component: { template: "<div />" } },
     ],
   });
   await router.push("/");
@@ -125,9 +126,11 @@ describe("PackageVersionsTable", () => {
     const push = vi.spyOn(router, "push");
     const viewBtn = wrapper.findAll("button").find((b) => b.text() === "View")!;
     await viewBtn.trigger("click");
+    /* The package is named by the path now; version and artifact stay as query
+       because they select within a package rather than name a different one. */
     expect(push).toHaveBeenCalledWith({
-      path: "/packages/detail",
-      query: { registry: "npm", name: "pkg", version: "1.0.0", artifact: "pkg-1.0.0.tgz" },
+      path: "/packages/npm/pkg",
+      query: { version: "1.0.0", artifact: "pkg-1.0.0.tgz" },
     });
   });
 
@@ -191,7 +194,8 @@ describe("PackageVersionsTable", () => {
     const { wrapper } = await mountComp([version(), version({ id: "v2", version: "2.0.0" })]);
     const selectAll = wrapper.find('input[aria-label="Select all versions"]');
     await selectAll.setValue(true);
-    expect(wrapper.text()).toContain("2 version(s) selected");
+    /* Real plural forms now, rather than "(s)" — vue-i18n picks the form. */
+    expect(wrapper.text()).toContain("2 versions selected");
 
     const bulkBlockBtn = wrapper.findAll("button").find((b) => b.text() === "Block selected")!;
     await bulkBlockBtn.trigger("click");
@@ -217,9 +221,9 @@ describe("PackageVersionsTable", () => {
         ],
       },
     });
-    expect((wrapper.vm as unknown as { bulkMsg: string }).bulkMsg).toContain(
-      "Blocked 1 version(s)",
-    );
+    // The catalogue owns the whole sentence and pluralises the noun, so the
+    // singular case reads "1 version" rather than the assembled "1 version(s)".
+    expect((wrapper.vm as unknown as { bulkMsg: string }).bulkMsg).toBe("Blocked 1 version.");
     expect(wrapper.emitted("reload")).toHaveLength(1);
   });
 
@@ -230,9 +234,7 @@ describe("PackageVersionsTable", () => {
     await bulkUnblockBtn.trigger("click");
     await flushPromises();
     expect(bulkUnblockPackagesMock).toHaveBeenCalled();
-    expect((wrapper.vm as unknown as { bulkMsg: string }).bulkMsg).toContain(
-      "Unblocked 1 version(s)",
-    );
+    expect((wrapper.vm as unknown as { bulkMsg: string }).bulkMsg).toBe("Unblocked 1 version.");
   });
 
   it("clears the selection via Clear", async () => {
@@ -241,5 +243,23 @@ describe("PackageVersionsTable", () => {
     const clearBtn = wrapper.findAll("button").find((b) => b.text() === "Clear")!;
     await clearBtn.trigger("click");
     expect(wrapper.text()).not.toContain("selected");
+  });
+
+  it("shows the declared licence", async () => {
+    const { wrapper } = await mountComp([version({ license: "MIT OR Apache-2.0" })]);
+    expect(wrapper.text()).toContain("MIT OR Apache-2.0");
+  });
+
+  /**
+   * RFC 0004-bis §13.1: a null licence means the manifest was never read, not
+   * that the package is unlicensed. Rendering nothing would make the two
+   * indistinguishable — the §2.4 defect, a blank that reads as a fact — so the
+   * absence is stated and the title says why.
+   */
+  it("states that an absent licence is unknown, not absent", async () => {
+    const { wrapper } = await mountComp([version({ license: null })]);
+    expect(wrapper.text()).toContain("licence unknown");
+    const cell = wrapper.findAll("p").find((p) => p.text() === "licence unknown")!;
+    expect(cell.attributes("title")).toContain("not the same as unlicensed");
   });
 });

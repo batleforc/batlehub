@@ -1,0 +1,19 @@
+{
+  "detector": {
+    "ignoreRules": [
+      "cream-palette"
+    ],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "cramped-padding",
+        "value": "*",
+        "files": [
+          "*/packages"
+        ],
+        "createdAt": "2026-08-12T13:32:46.363Z",
+        "reason": "Edge-to-edge table in a Card (CardContent p-0): the inset comes from the cells' p-4 one level down. Measured in-browser at 17px left / 13px top against a 8px floor."
+      }
+    ]
+  }
+}

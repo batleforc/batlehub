@@ -31,13 +31,25 @@ use crate::{
 /// optional `xmlId`/`pluginId` (must match the descriptor when present),
 /// `channel`, and `isHidden` (stored as `unlisted`: hidden from listings,
 /// downloadable by exact coordinate).
+/// The marketplace upload acknowledgement, in the shape the JetBrains plugin
+/// publish API returns. `id` and `pluginId` are the same xmlId under both of
+/// the names clients have been seen to read.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct PluginPublishResponse {
+    pub id: String,
+    #[serde(rename = "pluginId")]
+    pub plugin_id: String,
+    pub version: String,
+    pub channel: String,
+}
+
 #[utoipa::path(
     post,
     path = "/proxy/{registry}/api/updates/upload",
     tag = "proxy/jetbrains-marketplace",
     params(("registry" = String, Path, description = "Registry name")),
     responses(
-        (status = 201, description = "Plugin version published"),
+        (status = 201, description = "Plugin version published", body = PluginPublishResponse),
         (status = 400, description = "Malformed upload or xmlId mismatch"),
         (status = 403, description = "Access denied or quota exceeded"),
         (status = 409, description = "Version already published"),
@@ -178,12 +190,12 @@ pub async fn jbm_upload(
 
     let (signature_bytes, signature_type) = extract_signature_headers(&req);
 
-    let response_body = serde_json::json!({
-        "id": xml_id,
-        "pluginId": xml_id,
-        "version": version,
-        "channel": channel,
-    });
+    let response_body = PluginPublishResponse {
+        id: xml_id.clone(),
+        plugin_id: xml_id.clone(),
+        version: version.clone(),
+        channel: channel.clone(),
+    };
 
     publish_and_respond(
         &local_svc,

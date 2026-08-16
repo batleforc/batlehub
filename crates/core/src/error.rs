@@ -47,6 +47,12 @@ pub enum CoreError {
     #[error("Invalid configuration: {0}")]
     Config(String),
 
+    /// The operation is not part of this registry type's protocol — a capability
+    /// probe, not a failure. Callers that have a fallback should match on it
+    /// rather than propagate it.
+    #[error("Not supported: {0}")]
+    NotSupported(String),
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }

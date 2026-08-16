@@ -11,11 +11,24 @@
 ///
 /// ## Running
 ///
+/// Every test here is `#[ignore]`d, because each needs a language toolchain
+/// (via `mise`) and reachable public upstreams — neither of which a plain
+/// `cargo test` can assume. Left un-ignored they returned early when a
+/// prerequisite was missing, and libtest counted that as a pass: the suite could
+/// report "17 passed" without a single request reaching an upstream.
+///
 /// ```
-/// cargo test -p batlehub-examples --test real_proxy
+/// task test:real-proxy      # the deliberate run: prerequisites must be present
 /// ```
 ///
-/// Tests skip gracefully when the required toolchain or network access is unavailable.
+/// That task sets `REAL_PROXY_REQUIRE`, which turns every unmet prerequisite
+/// into a failure (see [`skip!`]) rather than a silent pass. To poke at one
+/// scenario on a machine that may not have its toolchain, run it directly and
+/// unmet prerequisites print and return as before:
+///
+/// ```
+/// cargo test -p batlehub-examples --test real_proxy -- --ignored real_proxy_npm_api
+/// ```
 use std::{
     collections::HashMap,
     fs,
@@ -186,6 +199,44 @@ fn kill_tree(mut child: Child) {
     let _ = child.wait();
 }
 
+/// Report an unmet prerequisite (missing toolchain, unreachable upstream).
+///
+/// Stable libtest has no runtime "ignored" outcome — `#[ignore]` is decided at
+/// compile time, and a test that returns early is counted as a **pass**. These
+/// scenarios can only discover at runtime whether `mise`, a language toolchain
+/// and the network are actually there, so every one of them could report success
+/// having exercised nothing, and a suite of 17 could report "17 passed" without
+/// a single request reaching an upstream.
+///
+/// So the outcome depends on whether the run was deliberate:
+///
+/// - **Ad hoc** (`cargo test --include-ignored`): print and let the caller
+///   return, as before. Someone poking at one scenario on a laptop without Ruby
+///   installed should not get a failure for it.
+/// - **`REAL_PROXY_REQUIRE` set** (as `task test:real-proxy` sets it): panic.
+///   A run that asked for these tests is asserting the prerequisites exist, so a
+///   missing one is a failure of the environment, reported rather than hidden.
+///
+/// The `#[ignore]` on each test covers the other half: a plain `cargo test`
+/// reports them as `ignored`, which is honest, instead of as passes.
+macro_rules! skip {
+    ($($arg:tt)*) => {{
+        let reason = format!($($arg)*);
+        if std::env::var_os("REAL_PROXY_REQUIRE").is_some() {
+            // The call sites all phrase themselves as "SKIP <test>: <cause>",
+            // which reads wrong on a failure line — libtest already names the
+            // test, and nothing was skipped.
+            let cause = reason
+                .strip_prefix("SKIP ")
+                .and_then(|r| r.split_once(": "))
+                .map(|(_, cause)| cause)
+                .unwrap_or(&reason);
+            panic!("unmet prerequisite: {cause} (REAL_PROXY_REQUIRE is set)");
+        }
+        eprintln!("{reason}");
+    }};
+}
+
 fn tool_available(cmd: &str) -> bool {
     Command::new(cmd)
         .arg("--version")
@@ -334,7 +385,7 @@ impl RealProxy {
             team_namespace: None,
             sbom: None,
             explore_cache: None,
-            access_log: None,
+            package_repo: None,
         });
 
         let proxy_svc = Arc::new(ProxyService {
@@ -472,7 +523,7 @@ impl RealProxy {
             team_namespace: None,
             sbom: None,
             explore_cache: None,
-            access_log: None,
+            package_repo: None,
         });
 
         let proxy_svc = Arc::new(ProxyService {
@@ -584,9 +635,10 @@ impl RealProxy {
 // ── npm ───────────────────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "real upstreams + language toolchains; run via task test:real-proxy"]
 fn real_proxy_npm_api() {
     if !tool_available("mise") {
-        eprintln!("SKIP real_proxy_npm_api: mise not available");
+        skip!("SKIP real_proxy_npm_api: mise not available");
         return;
     }
 
@@ -594,7 +646,7 @@ fn real_proxy_npm_api() {
     let npm = match NpmRegistryClient::new("https://registry.npmjs.org/", &opts) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("SKIP real_proxy_npm_api: {e}");
+            skip!("SKIP real_proxy_npm_api: {e}");
             return;
         }
     };
@@ -615,7 +667,7 @@ fn real_proxy_npm_api() {
     let dir = copy_example("npm", tmp.path());
 
     if !mise_install(&dir) {
-        eprintln!("SKIP real_proxy_npm_api: mise install failed (Node unavailable)");
+        skip!("SKIP real_proxy_npm_api: mise install failed (Node unavailable)");
         return;
     }
 
@@ -637,7 +689,7 @@ fn real_proxy_npm_api() {
         .map(|s| s.success())
         .unwrap_or(false);
     if !ok {
-        eprintln!("SKIP real_proxy_npm_api: npm install through proxy failed (network issue?)");
+        skip!("SKIP real_proxy_npm_api: npm install through proxy failed (network issue?)");
         return;
     }
 
@@ -666,9 +718,10 @@ fn real_proxy_npm_api() {
 // ── cargo ─────────────────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "real upstreams + language toolchains; run via task test:real-proxy"]
 fn real_proxy_cargo_fetch() {
     if !tool_available("mise") {
-        eprintln!("SKIP real_proxy_cargo_fetch: mise not available");
+        skip!("SKIP real_proxy_cargo_fetch: mise not available");
         return;
     }
 
@@ -676,7 +729,7 @@ fn real_proxy_cargo_fetch() {
     let client = match CargoRegistryClient::new("https://index.crates.io/", &opts) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("SKIP real_proxy_cargo_fetch: {e}");
+            skip!("SKIP real_proxy_cargo_fetch: {e}");
             return;
         }
     };
@@ -699,7 +752,7 @@ fn real_proxy_cargo_fetch() {
     fs::create_dir_all(&cargo_home).unwrap();
 
     if !mise_install(&dir) {
-        eprintln!("SKIP real_proxy_cargo_fetch: mise install failed (Rust unavailable)");
+        skip!("SKIP real_proxy_cargo_fetch: mise install failed (Rust unavailable)");
         return;
     }
 
@@ -730,7 +783,7 @@ fn real_proxy_cargo_fetch() {
         .unwrap_or(false);
 
     if !ok {
-        eprintln!(
+        skip!(
             "SKIP real_proxy_cargo_fetch: cargo fetch through proxy failed \
              (network or proxy issue)"
         );
@@ -741,9 +794,10 @@ fn real_proxy_cargo_fetch() {
 // ── go ────────────────────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "real upstreams + language toolchains; run via task test:real-proxy"]
 fn real_proxy_go_api() {
     if !tool_available("mise") {
-        eprintln!("SKIP real_proxy_go_api: mise not available");
+        skip!("SKIP real_proxy_go_api: mise not available");
         return;
     }
 
@@ -751,7 +805,7 @@ fn real_proxy_go_api() {
     let client = match GoProxyRegistryClient::new("https://proxy.golang.org/", &opts) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("SKIP real_proxy_go_api: {e}");
+            skip!("SKIP real_proxy_go_api: {e}");
             return;
         }
     };
@@ -772,7 +826,7 @@ fn real_proxy_go_api() {
     let dir = copy_example("go", tmp.path());
 
     if !mise_install(&dir) {
-        eprintln!("SKIP real_proxy_go_api: mise install failed (Go unavailable)");
+        skip!("SKIP real_proxy_go_api: mise install failed (Go unavailable)");
         return;
     }
 
@@ -792,7 +846,7 @@ fn real_proxy_go_api() {
     {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("SKIP real_proxy_go_api: spawn failed: {e}");
+            skip!("SKIP real_proxy_go_api: spawn failed: {e}");
             return;
         }
     };
@@ -800,7 +854,7 @@ fn real_proxy_go_api() {
     // Allow up to 3 min — first run downloads all Go modules through the proxy.
     if !wait_for_port(port, Duration::from_secs(180)) {
         kill_wait(server);
-        eprintln!("SKIP real_proxy_go_api: server did not start within 180 s");
+        skip!("SKIP real_proxy_go_api: server did not start within 180 s");
         return;
     }
 
@@ -815,9 +869,10 @@ fn real_proxy_go_api() {
 // ── pypi ──────────────────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "real upstreams + language toolchains; run via task test:real-proxy"]
 fn real_proxy_pypi_api() {
     if !tool_available("mise") {
-        eprintln!("SKIP real_proxy_pypi_api: mise not available");
+        skip!("SKIP real_proxy_pypi_api: mise not available");
         return;
     }
 
@@ -825,7 +880,7 @@ fn real_proxy_pypi_api() {
     let client = match PypiRegistryClient::new("https://pypi.org", &opts) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("SKIP real_proxy_pypi_api: {e}");
+            skip!("SKIP real_proxy_pypi_api: {e}");
             return;
         }
     };
@@ -847,7 +902,7 @@ fn real_proxy_pypi_api() {
     let venv = tmp.path().join("venv");
 
     if !mise_install(&dir) {
-        eprintln!("SKIP real_proxy_pypi_api: mise install failed (Python unavailable)");
+        skip!("SKIP real_proxy_pypi_api: mise install failed (Python unavailable)");
         return;
     }
 
@@ -858,7 +913,7 @@ fn real_proxy_pypi_api() {
         .map(|s| s.success())
         .unwrap_or(false);
     if !ok {
-        eprintln!("SKIP real_proxy_pypi_api: venv creation failed");
+        skip!("SKIP real_proxy_pypi_api: venv creation failed");
         return;
     }
 
@@ -880,9 +935,7 @@ fn real_proxy_pypi_api() {
         .map(|s| s.success())
         .unwrap_or(false);
     if !ok {
-        eprintln!(
-            "SKIP real_proxy_pypi_api: pip install through proxy failed (network unavailable)"
-        );
+        skip!("SKIP real_proxy_pypi_api: pip install through proxy failed (network unavailable)");
         return;
     }
 
@@ -917,9 +970,10 @@ fn real_proxy_pypi_api() {
 // ── conda ──────────────────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "real upstreams + language toolchains; run via task test:real-proxy"]
 fn real_proxy_conda_repodata() {
     if !tool_available("conda") {
-        eprintln!("SKIP real_proxy_conda_repodata: conda not available");
+        skip!("SKIP real_proxy_conda_repodata: conda not available");
         return;
     }
 
@@ -927,7 +981,7 @@ fn real_proxy_conda_repodata() {
     let client = match CondaRegistryClient::new("https://conda.anaconda.org/conda-forge", &opts) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("SKIP real_proxy_conda_repodata: {e}");
+            skip!("SKIP real_proxy_conda_repodata: {e}");
             return;
         }
     };
@@ -951,7 +1005,7 @@ fn real_proxy_conda_repodata() {
     );
     let status = curl_status(&repodata_url);
     if status != Some(200) {
-        eprintln!("SKIP real_proxy_conda_repodata: upstream unreachable (status={status:?})");
+        skip!("SKIP real_proxy_conda_repodata: upstream unreachable (status={status:?})");
         return;
     }
     assert_eq!(
@@ -964,9 +1018,10 @@ fn real_proxy_conda_repodata() {
 // ── rubygems ──────────────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "real upstreams + language toolchains; run via task test:real-proxy"]
 fn real_proxy_rubygems_api() {
     if !tool_available("mise") {
-        eprintln!("SKIP real_proxy_rubygems_api: mise not available");
+        skip!("SKIP real_proxy_rubygems_api: mise not available");
         return;
     }
 
@@ -974,7 +1029,7 @@ fn real_proxy_rubygems_api() {
     let client = match RubyGemsRegistryClient::new("https://rubygems.org", &opts) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("SKIP real_proxy_rubygems_api: {e}");
+            skip!("SKIP real_proxy_rubygems_api: {e}");
             return;
         }
     };
@@ -996,7 +1051,7 @@ fn real_proxy_rubygems_api() {
     let bundle_path = tmp.path().join("bundle");
 
     if !mise_install(&dir) {
-        eprintln!("SKIP real_proxy_rubygems_api: mise install failed (Ruby unavailable)");
+        skip!("SKIP real_proxy_rubygems_api: mise install failed (Ruby unavailable)");
         return;
     }
 
@@ -1018,7 +1073,7 @@ fn real_proxy_rubygems_api() {
         .map(|s| s.success())
         .unwrap_or(false);
     if !ok {
-        eprintln!("SKIP real_proxy_rubygems_api: bundle install through proxy failed");
+        skip!("SKIP real_proxy_rubygems_api: bundle install through proxy failed");
         return;
     }
 
@@ -1045,7 +1100,7 @@ fn real_proxy_rubygems_api() {
 
     if !wait_for_port(port, Duration::from_secs(20)) {
         kill_wait(server);
-        eprintln!("SKIP real_proxy_rubygems_api: rackup did not start within 20 s");
+        skip!("SKIP real_proxy_rubygems_api: rackup did not start within 20 s");
         return;
     }
 
@@ -1060,9 +1115,10 @@ fn real_proxy_rubygems_api() {
 // ── composer ──────────────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "real upstreams + language toolchains; run via task test:real-proxy"]
 fn real_proxy_composer_console() {
     if !tool_available("mise") {
-        eprintln!("SKIP real_proxy_composer_console: mise not available");
+        skip!("SKIP real_proxy_composer_console: mise not available");
         return;
     }
 
@@ -1070,7 +1126,7 @@ fn real_proxy_composer_console() {
     let client = match ComposerRegistryClient::new("https://repo.packagist.org", &opts) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("SKIP real_proxy_composer_console: {e}");
+            skip!("SKIP real_proxy_composer_console: {e}");
             return;
         }
     };
@@ -1091,9 +1147,7 @@ fn real_proxy_composer_console() {
     let dir = copy_example("composer", tmp.path());
 
     if !mise_install(&dir) {
-        eprintln!(
-            "SKIP real_proxy_composer_console: mise install failed (PHP/Composer unavailable)"
-        );
+        skip!("SKIP real_proxy_composer_console: mise install failed (PHP/Composer unavailable)");
         return;
     }
 
@@ -1123,7 +1177,7 @@ fn real_proxy_composer_console() {
     .map(|s| s.success())
     .unwrap_or(false);
     if !ok {
-        eprintln!("SKIP real_proxy_composer_console: composer install through proxy failed");
+        skip!("SKIP real_proxy_composer_console: composer install through proxy failed");
         return;
     }
 
@@ -1142,9 +1196,10 @@ fn real_proxy_composer_console() {
 // ── maven (Spring Boot) ───────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "real upstreams + language toolchains; run via task test:real-proxy"]
 fn real_proxy_maven_spring_api() {
     if !tool_available("mise") {
-        eprintln!("SKIP real_proxy_maven_spring_api: mise not available");
+        skip!("SKIP real_proxy_maven_spring_api: mise not available");
         return;
     }
 
@@ -1152,7 +1207,7 @@ fn real_proxy_maven_spring_api() {
     let client = match MavenRegistryClient::new("https://repo1.maven.org/maven2", &opts) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("SKIP real_proxy_maven_spring_api: {e}");
+            skip!("SKIP real_proxy_maven_spring_api: {e}");
             return;
         }
     };
@@ -1174,7 +1229,7 @@ fn real_proxy_maven_spring_api() {
     let m2 = tmp.path().join("m2");
 
     if !mise_install(&dir) {
-        eprintln!("SKIP real_proxy_maven_spring_api: mise install failed");
+        skip!("SKIP real_proxy_maven_spring_api: mise install failed");
         return;
     }
 
@@ -1201,7 +1256,7 @@ fn real_proxy_maven_spring_api() {
 
     if !wait_for_port(port, Duration::from_secs(300)) {
         kill_tree(server);
-        eprintln!(
+        skip!(
             "SKIP real_proxy_maven_spring_api: Spring Boot did not start within 300 s \
              (artifact download via proxy may still be in progress)"
         );
@@ -1219,9 +1274,10 @@ fn real_proxy_maven_spring_api() {
 // ── maven-quarkus ─────────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "real upstreams + language toolchains; run via task test:real-proxy"]
 fn real_proxy_maven_quarkus_api() {
     if !tool_available("mise") {
-        eprintln!("SKIP real_proxy_maven_quarkus_api: mise not available");
+        skip!("SKIP real_proxy_maven_quarkus_api: mise not available");
         return;
     }
 
@@ -1229,7 +1285,7 @@ fn real_proxy_maven_quarkus_api() {
     let client = match MavenRegistryClient::new("https://repo1.maven.org/maven2", &opts) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("SKIP real_proxy_maven_quarkus_api: {e}");
+            skip!("SKIP real_proxy_maven_quarkus_api: {e}");
             return;
         }
     };
@@ -1251,7 +1307,7 @@ fn real_proxy_maven_quarkus_api() {
     let m2 = tmp.path().join("m2");
 
     if !mise_install(&dir) {
-        eprintln!("SKIP real_proxy_maven_quarkus_api: mise install failed");
+        skip!("SKIP real_proxy_maven_quarkus_api: mise install failed");
         return;
     }
 
@@ -1279,7 +1335,7 @@ fn real_proxy_maven_quarkus_api() {
 
     if !wait_for_port(port, Duration::from_secs(300)) {
         kill_tree(server);
-        eprintln!(
+        skip!(
             "SKIP real_proxy_maven_quarkus_api: Quarkus did not start within 300 s \
              (artifact download via proxy may still be in progress)"
         );
@@ -1297,9 +1353,10 @@ fn real_proxy_maven_quarkus_api() {
 // ── terraform ─────────────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "real upstreams + language toolchains; run via task test:real-proxy"]
 fn real_proxy_terraform_init() {
     if !tool_available("mise") {
-        eprintln!("SKIP real_proxy_terraform_init: mise not available");
+        skip!("SKIP real_proxy_terraform_init: mise not available");
         return;
     }
 
@@ -1307,7 +1364,7 @@ fn real_proxy_terraform_init() {
     let client = match TerraformRegistryClient::new("https://registry.terraform.io", &opts) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("SKIP real_proxy_terraform_init: {e}");
+            skip!("SKIP real_proxy_terraform_init: {e}");
             return;
         }
     };
@@ -1328,7 +1385,7 @@ fn real_proxy_terraform_init() {
     let dir = copy_example("terraform", tmp.path());
 
     if !mise_install(&dir) {
-        eprintln!("SKIP real_proxy_terraform_init: mise install failed (Terraform unavailable)");
+        skip!("SKIP real_proxy_terraform_init: mise install failed (Terraform unavailable)");
         return;
     }
 
@@ -1345,7 +1402,7 @@ fn real_proxy_terraform_init() {
         .unwrap_or(false);
 
     if !ok {
-        eprintln!(
+        skip!(
             "SKIP real_proxy_terraform_init: terraform init through proxy failed \
              (provider download may have timed out or proxy returned an error)"
         );
@@ -1356,12 +1413,13 @@ fn real_proxy_terraform_init() {
 // ── github ────────────────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "real upstreams + language toolchains; run via task test:real-proxy"]
 fn real_proxy_github_releases() {
     let opts = UpstreamHttpOptions::default();
     let client = match GithubRegistryClient::new("https://api.github.com", &opts) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("SKIP real_proxy_github_releases: {e}");
+            skip!("SKIP real_proxy_github_releases: {e}");
             return;
         }
     };
@@ -1382,7 +1440,7 @@ fn real_proxy_github_releases() {
     // the GitHub API request and returns a valid JSON array.
     let url = format!("{}/proxy/my-github/cli/cli/releases", proxy.base_url());
     match curl_status(&url) {
-        None => eprintln!("SKIP real_proxy_github_releases: curl failed"),
+        None => skip!("SKIP real_proxy_github_releases: curl failed"),
         Some(200) => {
             // Proxy successfully forwarded the GitHub API request.
         }
@@ -1399,12 +1457,13 @@ fn real_proxy_github_releases() {
 // ── openvsx ───────────────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "real upstreams + language toolchains; run via task test:real-proxy"]
 fn real_proxy_openvsx_download() {
     let opts = UpstreamHttpOptions::default();
     let client = match OpenVsxRegistryClient::new("https://open-vsx.org", &opts) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("SKIP real_proxy_openvsx_download: {e}");
+            skip!("SKIP real_proxy_openvsx_download: {e}");
             return;
         }
     };
@@ -1429,7 +1488,7 @@ fn real_proxy_openvsx_download() {
     );
 
     match curl_status(&url) {
-        None => eprintln!("SKIP real_proxy_openvsx_download: curl failed"),
+        None => skip!("SKIP real_proxy_openvsx_download: curl failed"),
         Some(200) => {
             // Proxy successfully retrieved the VSIX from open-vsx.org.
         }
@@ -1442,13 +1501,14 @@ fn real_proxy_openvsx_download() {
 // ── vscode-marketplace ────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "real upstreams + language toolchains; run via task test:real-proxy"]
 fn real_proxy_vscode_marketplace_download() {
     let opts = UpstreamHttpOptions::default();
     let client =
         match VsCodeMarketplaceRegistryClient::new("https://marketplace.visualstudio.com", &opts) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("SKIP real_proxy_vscode_marketplace_download: {e}");
+                skip!("SKIP real_proxy_vscode_marketplace_download: {e}");
                 return;
             }
         };
@@ -1472,7 +1532,7 @@ fn real_proxy_vscode_marketplace_download() {
     );
 
     match curl_status(&url) {
-        None => eprintln!("SKIP real_proxy_vscode_marketplace_download: curl failed"),
+        None => skip!("SKIP real_proxy_vscode_marketplace_download: curl failed"),
         Some(200) => {
             // Proxy successfully retrieved the VSIX from marketplace.visualstudio.com.
         }
@@ -1485,9 +1545,10 @@ fn real_proxy_vscode_marketplace_download() {
 // ── npm publish ───────────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "real upstreams + language toolchains; run via task test:real-proxy"]
 fn real_proxy_npm_publish() {
     if !tool_available("mise") {
-        eprintln!("SKIP real_proxy_npm_publish: mise not available");
+        skip!("SKIP real_proxy_npm_publish: mise not available");
         return;
     }
 
@@ -1507,7 +1568,7 @@ fn real_proxy_npm_publish() {
     fs::write(pkg_dir.join(".mise.toml"), "[tools]\nnode = \"22\"\n").unwrap();
 
     if !mise_install(&pkg_dir) {
-        eprintln!("SKIP real_proxy_npm_publish: mise install failed (Node unavailable)");
+        skip!("SKIP real_proxy_npm_publish: mise install failed (Node unavailable)");
         return;
     }
 
@@ -1533,7 +1594,7 @@ fn real_proxy_npm_publish() {
         .unwrap_or(false);
 
     if !ok {
-        eprintln!("SKIP real_proxy_npm_publish: npm publish failed (proxy or tool issue)");
+        skip!("SKIP real_proxy_npm_publish: npm publish failed (proxy or tool issue)");
         return;
     }
 
@@ -1547,9 +1608,10 @@ fn real_proxy_npm_publish() {
 // ── cargo publish ─────────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "real upstreams + language toolchains; run via task test:real-proxy"]
 fn real_proxy_cargo_publish() {
     if !tool_available("mise") {
-        eprintln!("SKIP real_proxy_cargo_publish: mise not available");
+        skip!("SKIP real_proxy_cargo_publish: mise not available");
         return;
     }
 
@@ -1588,7 +1650,7 @@ fn real_proxy_cargo_publish() {
     ).unwrap();
 
     if !mise_install(&pkg_dir) {
-        eprintln!("SKIP real_proxy_cargo_publish: mise install failed (Rust unavailable)");
+        skip!("SKIP real_proxy_cargo_publish: mise install failed (Rust unavailable)");
         return;
     }
 
@@ -1611,7 +1673,7 @@ fn real_proxy_cargo_publish() {
     .unwrap_or(false);
 
     if !ok {
-        eprintln!("SKIP real_proxy_cargo_publish: cargo publish failed (proxy or tool issue)");
+        skip!("SKIP real_proxy_cargo_publish: cargo publish failed (proxy or tool issue)");
         return;
     }
 
@@ -1629,9 +1691,10 @@ fn real_proxy_cargo_publish() {
 // ── rubygems publish ──────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "real upstreams + language toolchains; run via task test:real-proxy"]
 fn real_proxy_rubygems_publish() {
     if !tool_available("mise") {
-        eprintln!("SKIP real_proxy_rubygems_publish: mise not available");
+        skip!("SKIP real_proxy_rubygems_publish: mise not available");
         return;
     }
 
@@ -1658,7 +1721,7 @@ end
     fs::write(gem_dir.join(".mise.toml"), "[tools]\nruby = \"3.3\"\n").unwrap();
 
     if !mise_install(&gem_dir) {
-        eprintln!("SKIP real_proxy_rubygems_publish: mise install failed (Ruby unavailable)");
+        skip!("SKIP real_proxy_rubygems_publish: mise install failed (Ruby unavailable)");
         return;
     }
 
@@ -1669,7 +1732,7 @@ end
         .map(|s| s.success())
         .unwrap_or(false);
     if !ok {
-        eprintln!("SKIP real_proxy_rubygems_publish: gem build failed");
+        skip!("SKIP real_proxy_rubygems_publish: gem build failed");
         return;
     }
 
@@ -1695,7 +1758,7 @@ end
     .unwrap_or(false);
 
     if !ok {
-        eprintln!("SKIP real_proxy_rubygems_publish: gem push failed (proxy or tool issue)");
+        skip!("SKIP real_proxy_rubygems_publish: gem push failed (proxy or tool issue)");
         return;
     }
 
@@ -1709,9 +1772,10 @@ end
 // ── maven publish ─────────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "real upstreams + language toolchains; run via task test:real-proxy"]
 fn real_proxy_maven_publish() {
     if !tool_available("mise") {
-        eprintln!("SKIP real_proxy_maven_publish: mise not available");
+        skip!("SKIP real_proxy_maven_publish: mise not available");
         return;
     }
 
@@ -1729,7 +1793,7 @@ fn real_proxy_maven_publish() {
     .unwrap();
 
     if !mise_install(&dir) {
-        eprintln!("SKIP real_proxy_maven_publish: mise install failed (Java/Maven unavailable)");
+        skip!("SKIP real_proxy_maven_publish: mise install failed (Java/Maven unavailable)");
         return;
     }
 
@@ -1777,9 +1841,7 @@ fn real_proxy_maven_publish() {
     .unwrap_or(false);
 
     if !ok {
-        eprintln!(
-            "SKIP real_proxy_maven_publish: mvn deploy:deploy-file failed (proxy or tool issue)"
-        );
+        skip!("SKIP real_proxy_maven_publish: mvn deploy:deploy-file failed (proxy or tool issue)");
         return;
     }
 

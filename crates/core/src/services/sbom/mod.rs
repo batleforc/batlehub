@@ -81,12 +81,14 @@ impl SbomService {
             None
         };
 
-        // Extract deps from archive (fallback to empty if no extractor)
-        let deps: Vec<SbomDependency> = self
+        // Extract deps and the declared licence from the archive in one pass
+        // (fallback to empty if no extractor).
+        let manifest = self
             .extractor
             .as_ref()
             .map(|e| e.extract(data, registry_type))
             .unwrap_or_default();
+        let deps: Vec<SbomDependency> = manifest.dependencies;
 
         let source = if upstream_spdx.is_some() {
             SbomSource::Upstream
@@ -98,12 +100,16 @@ impl SbomService {
 
         for format in formats {
             let document = match format {
-                SbomFormat::Spdx => upstream_spdx
-                    .clone()
-                    .unwrap_or_else(|| generate::generate_spdx(meta, artifact_key, &deps)),
-                SbomFormat::CycloneDx => {
-                    generate::generate_cyclonedx(meta, artifact_key, &deps, registry_type)
-                }
+                SbomFormat::Spdx => upstream_spdx.clone().unwrap_or_else(|| {
+                    generate::generate_spdx(meta, artifact_key, &deps, manifest.license.as_deref())
+                }),
+                SbomFormat::CycloneDx => generate::generate_cyclonedx(
+                    meta,
+                    artifact_key,
+                    &deps,
+                    registry_type,
+                    manifest.license.as_deref(),
+                ),
             };
 
             self.repo
@@ -118,6 +124,7 @@ impl SbomService {
                     document,
                     source: source.clone(),
                     created_at: Utc::now(),
+                    license: manifest.license.clone(),
                 })
                 .await?;
         }
@@ -143,11 +150,12 @@ impl SbomService {
             formats,
             required,
         } = opts;
-        let deps: Vec<SbomDependency> = self
+        let manifest = self
             .extractor
             .as_ref()
             .map(|e| e.extract(data, registry_type))
             .unwrap_or_default();
+        let deps: Vec<SbomDependency> = manifest.dependencies;
 
         if required && deps.is_empty() {
             return Err(CoreError::AccessDenied(
@@ -173,10 +181,19 @@ impl SbomService {
 
         for format in formats {
             let document = match format {
-                SbomFormat::Spdx => generate::generate_spdx(&fake_meta, artifact_key, &deps),
-                SbomFormat::CycloneDx => {
-                    generate::generate_cyclonedx(&fake_meta, artifact_key, &deps, registry_type)
-                }
+                SbomFormat::Spdx => generate::generate_spdx(
+                    &fake_meta,
+                    artifact_key,
+                    &deps,
+                    manifest.license.as_deref(),
+                ),
+                SbomFormat::CycloneDx => generate::generate_cyclonedx(
+                    &fake_meta,
+                    artifact_key,
+                    &deps,
+                    registry_type,
+                    manifest.license.as_deref(),
+                ),
             };
 
             self.repo
@@ -191,6 +208,7 @@ impl SbomService {
                     document,
                     source: source.clone(),
                     created_at: Utc::now(),
+                    license: manifest.license.clone(),
                 })
                 .await?;
         }
@@ -253,6 +271,7 @@ mod tests {
 
     use super::*;
     use crate::entities::PackageId;
+    use crate::ports::ExtractedManifest;
 
     struct InMemorySbomRepo {
         items: Mutex<Vec<ArtifactSbom>>,
@@ -308,6 +327,23 @@ mod tests {
                 .cloned())
         }
 
+        async fn get_license_for_coordinate(
+            &self,
+            registry: &str,
+            package_name: &str,
+            version: &str,
+        ) -> Result<Option<String>, CoreError> {
+            Ok(self
+                .items
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|s| {
+                    s.registry == registry && s.package_name == package_name && s.version == version
+                })
+                .find_map(|s| s.license.clone()))
+        }
+
         async fn list_sboms_for_export(
             &self,
             _registry: Option<&str>,
@@ -322,11 +358,15 @@ mod tests {
 
     struct StubExtractor {
         deps: Vec<SbomDependency>,
+        license: Option<String>,
     }
 
     impl SbomExtractor for StubExtractor {
-        fn extract(&self, _data: &Bytes, _registry_type: &str) -> Vec<SbomDependency> {
-            self.deps.clone()
+        fn extract(&self, _data: &Bytes, _registry_type: &str) -> ExtractedManifest {
+            ExtractedManifest {
+                dependencies: self.deps.clone(),
+                license: self.license.clone(),
+            }
         }
     }
 
@@ -395,6 +435,7 @@ mod tests {
         let repo = InMemorySbomRepo::new();
         let extractor = Arc::new(StubExtractor {
             deps: vec![one_dep()],
+            license: None,
         });
         let svc = SbomService::new(repo.clone(), Some(extractor), None);
         let meta = make_meta("express", "4.0.0");
@@ -483,6 +524,7 @@ mod tests {
         let repo = InMemorySbomRepo::new();
         let extractor = Arc::new(StubExtractor {
             deps: vec![one_dep()],
+            license: None,
         });
         let svc = SbomService::new(repo.clone(), Some(extractor), None);
 

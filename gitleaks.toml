@@ -18,6 +18,6 @@ paths = [
     '''crates/adapters/src/auth/actions_oidc/tests\.rs''',
     '''crates/adapters/tests/actions_oidc\.rs''',
     # `curl -H "Authorization: Bearer <token>"` usage examples in the docs.
-    '''website/guide/installation\.md''',
-    '''docs/configuration\.md''',
+    '''docs/guide/installation\.md''',
+    '''docs/guide/configuration\.md''',
 ]

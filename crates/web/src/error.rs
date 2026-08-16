@@ -23,6 +23,16 @@ impl AppError {
         }
     }
 
+    /// The caller could not be identified at all — distinct from
+    /// [`forbidden`](Self::forbidden), which means "we know who you are and the
+    /// answer is no".
+    pub fn unauthorized(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            message: msg.into(),
+        }
+    }
+
     pub fn forbidden(msg: impl Into<String>) -> Self {
         Self {
             status: StatusCode::FORBIDDEN,
@@ -135,6 +145,13 @@ impl From<CoreError> for AppError {
             },
             CoreError::Database(msg) => Self {
                 status: StatusCode::SERVICE_UNAVAILABLE,
+                message: msg,
+            },
+            // Reaching HTTP at all means a handler asked a registry type for
+            // something its protocol has no answer for; 501 says that plainly
+            // rather than dressing a capability gap up as a server fault.
+            CoreError::NotSupported(msg) => Self {
+                status: StatusCode::NOT_IMPLEMENTED,
                 message: msg,
             },
             other => {

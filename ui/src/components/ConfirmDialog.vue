@@ -1,8 +1,12 @@
 <script setup lang="ts">
+import { computed } from "vue";
+import { useI18n } from "vue-i18n";
 import { Dialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 
-withDefaults(
+const { t } = useI18n();
+
+const props = withDefaults(
   defineProps<{
     open: boolean;
     title?: string;
@@ -15,13 +19,22 @@ withDefaults(
     error?: string | null;
   }>(),
   {
-    confirmLabel: "Confirm",
-    cancelLabel: "Cancel",
+    title: undefined,
+    description: undefined,
+    confirmLabel: undefined,
+    cancelLabel: undefined,
+    loadingLabel: undefined,
     destructive: false,
     loading: false,
     error: null,
   },
 );
+
+/* Resolved here rather than in `withDefaults`, which evaluates once at module
+   scope: the English would be frozen in for the life of the tab, including
+   across a locale switch. Every call site that passes its own verb still wins. */
+const confirmText = computed(() => props.confirmLabel ?? t("common.confirm"));
+const cancelText = computed(() => props.cancelLabel ?? t("common.cancel"));
 
 const emit = defineEmits<{
   "update:open": [boolean];
@@ -45,7 +58,7 @@ function cancel() {
       <p v-if="error" class="text-sm text-destructive">{{ error }}</p>
       <div class="flex justify-end gap-2">
         <Button variant="outline" size="sm" :disabled="loading" @click="cancel">
-          {{ cancelLabel }}
+          {{ cancelText }}
         </Button>
         <Button
           :variant="destructive ? 'destructive' : 'default'"
@@ -53,7 +66,7 @@ function cancel() {
           :disabled="loading"
           @click="emit('confirm')"
         >
-          {{ loading ? (loadingLabel ?? confirmLabel) : confirmLabel }}
+          {{ loading ? (loadingLabel ?? confirmText) : confirmText }}
         </Button>
       </div>
     </div>

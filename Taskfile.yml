@@ -6,6 +6,12 @@ includes:
 
 dotenv: [ .env ]
 
+vars:
+  # kubectl hops into the che-browser sidecar of this workspace pod — see the
+  # "Browser sidecar" task group below.
+  BROWSER_EXEC: kubectl exec ${DEVWORKSPACE_NAMESPACE:+-n ${DEVWORKSPACE_NAMESPACE}} ${HOSTNAME} -c browser --
+  BROWSER_LOGS: kubectl logs ${DEVWORKSPACE_NAMESPACE:+-n ${DEVWORKSPACE_NAMESPACE}} ${HOSTNAME} -c browser
+
 tasks:
   init:
     desc: Init project
@@ -69,6 +75,40 @@ tasks:
       - podman run -d --name {{.PG_CONTAINER}} -p {{.PG_PORT}}:5432 -e POSTGRES_PASSWORD={{.PG_PASSWORD}} postgres:17-alpine
       - until podman exec {{.PG_CONTAINER}} pg_isready -U postgres; do sleep 1; done
       - cargo test -p batlehub-adapters --test pg_vulnerability -- --nocapture
+
+  test:pg-stats-history:
+    desc: Run PgStatsHistoryRepository integration tests (starts a temporary Postgres container via Podman)
+    vars:
+      PG_CONTAINER: batlehub-test-pg-stats
+      PG_PORT: "15436"
+      PG_PASSWORD: testpass
+      CONF_OVERRIDE: /tmp/batlehub-containers.conf
+    env:
+      CONTAINERS_CONF_OVERRIDE: "{{.CONF_OVERRIDE}}"
+      DATABASE_URL: "postgresql://postgres:{{.PG_PASSWORD}}@127.0.0.1:{{.PG_PORT}}/postgres"
+    cmds:
+      - printf '[network]\ndefault_rootless_network_cmd = "pasta"\n' > {{.CONF_OVERRIDE}}
+      - defer: podman rm -f {{.PG_CONTAINER}} 2>/dev/null || true
+      - podman run -d --name {{.PG_CONTAINER}} -p {{.PG_PORT}}:5432 -e POSTGRES_PASSWORD={{.PG_PASSWORD}} postgres:17-alpine
+      - until podman exec {{.PG_CONTAINER}} pg_isready -U postgres; do sleep 1; done
+      - cargo test -p batlehub-adapters --test pg_stats_history -- --nocapture
+
+  test:pg-me-scoping:
+    desc: Run the /api/v1/me scoping integration tests (starts a temporary Postgres container via Podman)
+    vars:
+      PG_CONTAINER: batlehub-test-pg-me
+      PG_PORT: "15435"
+      PG_PASSWORD: testpass
+      CONF_OVERRIDE: /tmp/batlehub-containers.conf
+    env:
+      CONTAINERS_CONF_OVERRIDE: "{{.CONF_OVERRIDE}}"
+      DATABASE_URL: "postgresql://postgres:{{.PG_PASSWORD}}@127.0.0.1:{{.PG_PORT}}/postgres"
+    cmds:
+      - printf '[network]\ndefault_rootless_network_cmd = "pasta"\n' > {{.CONF_OVERRIDE}}
+      - defer: podman rm -f {{.PG_CONTAINER}} 2>/dev/null || true
+      - podman run -d --name {{.PG_CONTAINER}} -p {{.PG_PORT}}:5432 -e POSTGRES_PASSWORD={{.PG_PASSWORD}} postgres:17-alpine
+      - until podman exec {{.PG_CONTAINER}} pg_isready -U postgres; do sleep 1; done
+      - cargo test -p batlehub-adapters --test pg_me_scoping -- --nocapture
 
   test:pg-explore:
     desc: Run explore per-package visibility integration tests (starts a temporary Postgres container via Podman)
@@ -177,6 +217,21 @@ tasks:
     desc: Verify real apt + dnf + pacman accept BatleHub's signed Deb/RPM/pacman repos (needs podman or docker)
     cmds:
       - bash tests/interop/verify.sh
+
+  test:real-proxy:
+    desc: "Layer 4 smoke tests through a real proxy to real upstreams (needs mise + network; ~30 min)"
+    env:
+      # Turns every unmet prerequisite into a failure instead of a printed skip.
+      # Without it these tests return early when a toolchain or the network is
+      # missing, and libtest counts that as a pass — a suite of 17 could report
+      # "17 passed" having reached no upstream at all. A run that asks for them
+      # is asserting the prerequisites exist, so say so.
+      REAL_PROXY_REQUIRE: "1"
+    cmds:
+      # `--ignored` rather than `--include-ignored`: this file is entirely
+      # ignored-by-default scenarios, and there is nothing else in the binary to
+      # run alongside them.
+      - cargo test -p batlehub-examples --test real_proxy -- --ignored --nocapture {{.CLI_ARGS}}
 
   test:marketplace-heavy:
     desc: "Heavy marketplace integration: install weebo-bridge-notify into headless VS Code + IntelliJ from a local BatleHub instance (needs DATABASE_URL; downloads the IDEs on first run)"
@@ -303,9 +358,9 @@ tasks:
       # pnpm-lock.yaml, so it needs no install. Exits non-zero on high/critical.
       - pnpm audit --audit-level high
 
-  website:audit:
-    desc: Check docs-website pnpm dependencies for security vulnerabilities
-    dir: website
+  docs:audit:
+    desc: Check the documentation site pnpm dependencies for security vulnerabilities
+    dir: docs
     cmds:
       # --prod: vitepress (and its transitive vite/esbuild) are build-only
       # tooling for the static site, never shipped or run as a service. Their
@@ -337,11 +392,11 @@ tasks:
     cmds:
       - postmortem tree . --online --vulns --fail-on-vuln high
 
-  postmortem:website:
-    desc: "Dependency supply-chain report for the docs website (report-only, like `task website:audit`'s --prod carve-out)"
-    dir: website
+  postmortem:docs:
+    desc: "Dependency supply-chain report for the documentation site (report-only, like `task docs:audit`'s --prod carve-out)"
+    dir: docs
     cmds:
-      # No --fail-on-vuln, for the same reason website:audit runs with --prod:
+      # No --fail-on-vuln, for the same reason docs:audit runs with --prod:
       # vitepress and its transitive build tooling carry advisories with no
       # upstream fix for 1.x, and none of it ships or runs as a service.
       # postmortem has no prod-only filter, so report-only is the equivalent.
@@ -352,7 +407,7 @@ tasks:
     cmds:
       - task: postmortem:rust
       - task: postmortem:ui
-      - task: postmortem:website
+      - task: postmortem:docs
 
   sbom:rust:
     desc: "Generate a CycloneDX SBOM of the shipped server (sbom-rust.cdx.json) — feed to `trivy sbom` / `grype sbom:` to match future CVEs against a shipped build"
@@ -369,7 +424,7 @@ tasks:
       - task: audit
       - task: deny
       - task: ui:audit
-      - task: website:audit
+      - task: docs:audit
       # Needs network (reputation + vuln lookups); the advisory-only audits above
       # can't see an upstream that went archived or got taken over.
       - task: postmortem
@@ -446,6 +501,22 @@ tasks:
     cmds:
       - pnpm run generate
 
+  ui:tokens:
+    desc: Copy the design tokens to the docs site (single source is ui/src/design/tokens.css)
+    cmds:
+      - cp ui/src/design/tokens.css docs/.vitepress/theme/tokens.css
+
+  ui:tokens:check:
+    desc: Fail if the docs site's token copy has drifted from ui/src/design/tokens.css
+    cmds:
+      - task: ui:tokens
+      - |
+        if ! git diff --quiet -- docs/.vitepress/theme/tokens.css; then
+          echo "the docs site's token copy is stale — run 'task ui:tokens' and commit the result" >&2
+          git --no-pager diff -- docs/.vitepress/theme/tokens.css >&2
+          exit 1
+        fi
+
   ui:dev:
     desc: Start the Vite dev server (proxies /api and /proxy to localhost:8080)
     dir: ui
@@ -466,6 +537,265 @@ tasks:
       - pnpm run lint:eslint
       - pnpm run format:check
 
+  ui:i18n:
+    desc: Report user-visible text still hardcoded in templates
+    dir: ui
+    cmds:
+      - pnpm run i18n:audit
+
+  ui:i18n:check:
+    desc: Fail if the untranslated-string count rises above the current budget
+    dir: ui
+    cmds:
+      - pnpm run i18n:check
+
+  # ── Browser sidecar (che-browser) ────────────────────────────────────────────
+  # Headed Chrome in a sidecar of this pod. CDP (9222), chromedriver (9515) and
+  # noVNC (6080) are plain localhost ports because the pod shares one network
+  # namespace; only what lives *inside* the sidecar needs the kubectl exec hop,
+  # which is what BROWSER_EXEC is. Both env vars it reads are exported into every
+  # Che workspace container: $HOSTNAME is the pod name, $DEVWORKSPACE_NAMESPACE
+  # the namespace (the `:+` guard keeps this working outside a workspace too).
+  browser:check:
+    desc: Verify the browser sidecar is up, and print its CDP version
+    cmds:
+      - curl -sf http://localhost:9222/json/version
+
+  browser:tabs:
+    desc: List the browser's open tabs (id, type, title, url)
+    cmds:
+      - |
+        curl -s http://localhost:9222/json | python3 -c '
+        import json, sys
+        for t in json.load(sys.stdin):
+            print("%-34s %-10s %-40s %s" % (t["id"], t["type"], t["title"][:40], t["url"]))
+        '
+
+  browser:open:
+    desc: 'Open a URL in a new tab (task browser:open URL=http://localhost:5173)'
+    requires:
+      vars: [URL]
+    cmds:
+      - curl -s -X PUT "http://localhost:9222/json/new?{{.URL}}"
+
+  browser:close:
+    desc: 'Close a tab by id (task browser:close ID=<id from browser:tabs>)'
+    requires:
+      vars: [ID]
+    cmds:
+      - curl -sf "http://localhost:9222/json/close/{{.ID}}"
+
+  browser:vnc:
+    desc: Print the noVNC password (open the `novnc` endpoint to watch Chrome)
+    cmds:
+      # Written by the sidecar entrypoint at boot onto the shared /projects
+      # mount; the log is the fallback if that mount ever goes away.
+      - |
+        cat /projects/.sidecar/vnc-password-browser.txt 2>/dev/null \
+          || {{.BROWSER_LOGS}} | grep -m1 'noVNC password:'
+      - "echo '→ open the novnc endpoint of this workspace and log in with it'"
+
+  # Chrome is gated behind a flag file the entrypoint's respawn loop watches, so
+  # it can be parked (freeing ~1 GiB) without taking the VNC stack down with it.
+  # `sidecar-app stop` group-kills the whole Chrome process tree — a bare pkill
+  # on the child processes leaves the parent to be respawned in a half state.
+  browser:status:
+    desc: Report whether Chrome is running, parked or starting
+    cmds:
+      - '{{.BROWSER_EXEC}} sidecar-app status'
+
+  browser:start:
+    desc: Launch Chrome in the sidecar and wait for CDP to answer
+    cmds:
+      - '{{.BROWSER_EXEC}} sidecar-app start'
+      - |
+        for _ in $(seq 1 30); do
+          curl -sf http://localhost:9222/json/version >/dev/null && exit 0
+          sleep 1
+        done
+        echo "CDP did not come up within 30s — check 'task browser:logs'" >&2
+        exit 1
+
+  browser:stop:
+    desc: Park Chrome (frees its memory; noVNC and chromedriver stay up)
+    cmds:
+      - '{{.BROWSER_EXEC}} sidecar-app stop'
+
+  browser:restart:
+    desc: Park Chrome and relaunch it with a clean window
+    cmds:
+      - task: browser:stop
+      - task: browser:start
+
+  browser:exec:
+    desc: 'Run a command inside the sidecar (task browser:exec CMD="ps -ef")'
+    requires:
+      vars: [CMD]
+    cmds:
+      - '{{.BROWSER_EXEC}} sh -c {{.CMD | quote}}'
+
+  browser:shell:
+    desc: Open an interactive shell in the browser sidecar
+    interactive: true
+    cmds:
+      - kubectl exec -it ${DEVWORKSPACE_NAMESPACE:+-n ${DEVWORKSPACE_NAMESPACE}} ${HOSTNAME} -c browser -- bash
+
+  browser:logs:
+    desc: Follow the browser sidecar log
+    cmds:
+      - '{{.BROWSER_LOGS}} -f'
+
+  # Chromium cannot run in the tools container (no libglib-2.0, and no root to
+  # install it), so these run *inside* the browser sidecar. That works because
+  # the pod shares one network namespace — the sidecar reaches the dev server on
+  # plain localhost — and shares /home and /projects, so it runs the same
+  # mise-installed node and the same npx cache as every other task here.
+  #
+  # Two env details are load-bearing. PUPPETEER_EXECUTABLE_PATH reuses the
+  # sidecar's Chrome instead of letting puppeteer download a second copy into
+  # the shared cache. CI=1 is what makes impeccable pass --no-sandbox, which
+  # Chrome needs here for exactly the reason it does on a GitHub runner:
+  # unprivileged user namespaces are unavailable, and without it Chrome aborts
+  # with "No usable sandbox!".
+  ui:design:rendered:
+    desc: Run the rendered design gates against a running dev server (needs the browser sidecar)
+    deps: [browser:check]
+    vars:
+      # mise pins the node version, so resolve the bin dir rather than hardcode
+      # it. PATH is then set to a literal (no $PATH) so nothing expands in the
+      # outer shell before kubectl hands the string to the sidecar.
+      NODE_BIN:
+        sh: dirname "$(readlink -f "$(command -v node)")"
+      # 5174, not 5173: the gates run inside the pod, and that is the front
+      # wired to the API on localhost (`task ui:dev:local`).
+      BASE: '{{.BASE | default "http://localhost:5174"}}'
+      # Every route reachable without a session. `/me/*` and `/admin/*` sit
+      # behind requiresAuth/requiresAdmin and would redirect to /login, so
+      # scanning them would measure the login page 14 times over — see the
+      # note in RFC 0003 §13 about what this gate still cannot see.
+      ROUTES: '{{.ROUTES | default "/ /login /packages /setup /tools/access-check /tools/url-mapper"}}'
+      # cd into the repo so the detector loads DESIGN.md and .impeccable/ — a
+      # design-system-aware scan is the whole point of R6.
+      ENV: 'export PATH={{.NODE_BIN}}:/usr/local/bin:/usr/bin:/bin PUPPETEER_EXECUTABLE_PATH=/opt/chrome/chrome CI=1; cd {{.ROOT_DIR}};'
+      # One invocation per route, deliberately. Passing every URL to a single
+      # `detect` run reuses one browser session with a ~100ms settle, and an SPA
+      # that hydrates asynchronously then gets measured mid-hydration: three
+      # identical batched runs returned 1, 2 and 1 findings. Per-route is slower
+      # and repeatable, and a gate that fails at random is a gate people retry
+      # until it passes.
+      SCAN: 'for r in {{.ROUTES}}; do echo "→ $r"; npx --yes impeccable detect --viewport "$V" "{{.BASE}}$r" || fail=1; done; [ -z "$fail" ]'
+    cmds:
+      # The same two viewports CI uses: contrast and hierarchy are width-blind,
+      # overflow and reflow are not.
+      - '{{.BROWSER_EXEC}} sh -c {{printf "%s V=1440x900; %s" .ENV .SCAN | squote}}'
+      - '{{.BROWSER_EXEC}} sh -c {{printf "%s V=390x844; %s" .ENV .SCAN | squote}}'
+      # axe and the ramp check now come from `ui:design:routes`, which measures
+      # these same routes *and* the authenticated ones with one set of
+      # assertions. `@axe-core/cli` used to batch the public routes here; it
+      # does not know what a type ramp is, which is precisely how `/packages`
+      # drifted from its own design proof behind a green gate (RFC 0004-bis
+      # §4.4). Anonymous-only, so this stays runnable without credentials.
+      - task: ui:design:routes
+        vars: { PUBLIC_ONLY: "--public-only", BASE: "{{.BASE}}" }
+
+  # One gate, every rendered route, both viewports — axe plus the type ramp and
+  # the display face (RFC 0004-bis §4.4).
+  #
+  # The 15 admin pages and the 4 account pages sit behind router guards, and
+  # both `impeccable detect` and `@axe-core/cli` scan by URL with no way to
+  # carry a session, so scanning them graded the login page over and over. This
+  # seeds a token instead. The public routes are in the same list because a
+  # separate gate for them measured contrast and hierarchy and never the ramp.
+  #
+  # Tokens come from the environment and are never written to a file — they are
+  # credentials for a running instance. Pass them per invocation:
+  #
+  #   BATLEHUB_ADMIN_TOKEN=… BATLEHUB_USER_TOKEN=… task ui:design:routes
+  #
+  # `/packages` is pinned as an expected failure; see EXPECTED_FAIL in the
+  # script and RFC 0004-bis O3.
+  ui:design:routes:
+    desc: axe + type ramp over every rendered route (needs BATLEHUB_{ADMIN,USER}_TOKEN)
+    deps: [browser:check]
+    dir: ui
+    vars:
+      NODE_BIN:
+        sh: dirname "$(readlink -f "$(command -v node)")"
+      BASE: '{{.BASE | default "http://localhost:5174"}}'
+      PUBLIC_ONLY: '{{.PUBLIC_ONLY | default ""}}'
+    cmds:
+      - |
+        if [ -z "{{.PUBLIC_ONLY}}" ] && { [ -z "$BATLEHUB_ADMIN_TOKEN" ] || [ -z "$BATLEHUB_USER_TOKEN" ]; }; then
+          echo "set BATLEHUB_ADMIN_TOKEN and BATLEHUB_USER_TOKEN (or pass PUBLIC_ONLY=--public-only)" >&2
+          exit 2
+        fi
+        {{.BROWSER_EXEC}} sh -c "export PATH={{.NODE_BIN}}:/usr/bin:/bin BASE={{.BASE}} \
+          BATLEHUB_ADMIN_TOKEN=$BATLEHUB_ADMIN_TOKEN BATLEHUB_USER_TOKEN=$BATLEHUB_USER_TOKEN; \
+          cd {{.ROOT_DIR}}/ui && node build/design-routes.mjs {{.PUBLIC_ONLY}}"
+
+  # Kept as an alias: RFC 0004 and the contributing docs name this target, and
+  # it is now one plan of `ui:design:routes` rather than its own script.
+  ui:design:rendered:authed:
+    desc: Alias for ui:design:routes (RFC 0004-bis §4.4 merged the two gates)
+    cmds:
+      - task: ui:design:routes
+
+  ui:design:
+    desc: Run the console's static design gates locally (detector, i18n)
+    cmds:
+      # The docs site's half of this scan moved to `docs:design`, together with
+      # the token-drift check it belongs with (RFC 0005 phase 4).
+      - npx --yes impeccable detect ui/src
+      - task: ui:i18n:check
+
+  ui:i18n:review:
+    desc: Regenerate the French review sheet from the catalogues
+    cmds:
+      - python3 scripts/i18n-review.py
+
+  # ── Dev servers ──────────────────────────────────────────────────────────────
+  # Two fronts, because the browser deciding what "localhost" means is not the
+  # same browser in the two cases:
+  #
+  #   5173  reached through the workspace's public `front` endpoint, from a real
+  #         browser on your machine. There, `localhost:8080` is *your* laptop, so
+  #         the API has to be named by its public FQDN — which is per-user and
+  #         per-workspace, hence generated by `url` rather than committed.
+  #   5174  reached from inside the pod (the browser sidecar, the rendered design
+  #         gates). The pod shares one network namespace, so plain localhost is
+  #         both correct and faster — no ingress, no TLS, no CORS preflight to a
+  #         public name.
+  #
+  # They differ only by which env file Vite loads: a `--mode` file outranks
+  # `.env`, so one working tree serves both without either clobbering the other.
+  # Both tasks state VITE_API_BASE_URL explicitly, and must. This Taskfile sets
+  # `dotenv: [ .env ]`, so the repo-root `.env` is injected into every task's
+  # environment — and Vite gives `process.env` priority over its own `.env`
+  # files. An inherited value therefore beats `ui/.env.localhost`, which is
+  # exactly how both fronts silently ended up on the same API. Naming it here is
+  # what makes each front's target a property of the task rather than of
+  # whatever happens to be in the root `.env`.
+  ui:dev:
+    desc: Front on 5173 → API via the workspace FQDN (open the `front` endpoint)
+    dir: ui
+    env:
+      # `url back` prints a trailing slash; the generated SDK appends
+      # "/api/v1/…", so leaving it produces a double slash in every request.
+      VITE_API_BASE_URL:
+        sh: url back | sed 's#/$##'
+    cmds:
+      - 'echo "API → $VITE_API_BASE_URL"'
+      - pnpm run dev:fqdn
+
+  ui:dev:local:
+    desc: 'Front on 5174 → API on localhost:8080 (in-pod: sidecar, rendered gates)'
+    dir: ui
+    env:
+      VITE_API_BASE_URL: http://localhost:8080
+    cmds:
+      - 'echo "API → $VITE_API_BASE_URL"'
+      - pnpm run dev:local
+
   ui:test:
     desc: Run the frontend test suite
     dir: ui
@@ -484,6 +814,25 @@ tasks:
     cmds:
       - pnpm run lint:fix
       - pnpm run format
+
+  # ── Design (Impeccable — RFC 0003) ───────────────────────────────────────────
+  # The skill is ~150 vendored files, so it is gitignored and installed on demand
+  # rather than reviewed as a diff. PRODUCT.md and DESIGN.md hold the decisions
+  # and are tracked. Reload the AI harness after installing or updating.
+  impeccable:install:
+    desc: Install the Impeccable design skill into .claude/ (project scope)
+    cmds:
+      - npx --yes impeccable install --providers=claude --scope=project
+
+  impeccable:update:
+    desc: Refresh an existing Impeccable install to the latest release
+    cmds:
+      - npx --yes impeccable update
+
+  impeccable:detect:
+    desc: Scan the UI and docs site for design anti-patterns (no LLM, no API key)
+    cmds:
+      - npx --yes impeccable detect ui/src docs/.vitepress
 
   dev:
     desc: Start Rust backend and Vite frontend in parallel (requires postgres)
@@ -586,25 +935,190 @@ tasks:
       - mc alias set local http://localhost:9900 rustfsadmin rustfsadmin
       - mc mb --ignore-existing local/artifacts
 
-  # ── Docs website (VitePress) ──────────────────────────────────────────────────
+  # ── The documentation site (VitePress) ──────────────────────────────────────────────────
 
-  website:dev:
+  docs:dev:
     desc: Start the VitePress documentation dev server
-    dir: website
+    dir: docs
     cmds:
       - pnpm run docs:dev
 
-  website:build:
+  docs:build:
     desc: Build the VitePress documentation site for production
-    dir: website
+    dir: docs
     cmds:
       - pnpm run docs:build
 
-  website:preview:
+  docs:preview:
     desc: Preview the built VitePress documentation site
-    dir: website
+    dir: docs
     cmds:
       - pnpm run docs:preview
+
+  # ── The published roadmap (RFC 0005 Q5) ──────────────────────────────────────
+  # ROADMAP.md and docs/guide/roadmap.md were two hand-edited documents that
+  # had drifted by 393 lines, with nothing watching. The roadmap is a project
+  # artifact that happens to be worth publishing, so the root file is canonical
+  # and the page is generated from it — the same arrangement, and the same pair
+  # of tasks, as the design tokens.
+
+  docs:roadmap:
+    desc: Regenerate the published roadmap page from the canonical ROADMAP.md
+    cmds:
+      - |
+        {
+          # `reference: true` is the declaration `docs:structure` asks for above
+          # 4 000 words. The roadmap is 4 826 and it is a list a reader scans,
+          # not prose they read — the point of the rule is that the exception is
+          # written down rather than silent.
+          printf '%s\n' '---' 'reference: true' '---' ''
+          echo '<!-- Generated from ROADMAP.md by `task docs:roadmap`. Do not edit this file. -->'
+          echo
+          cat ROADMAP.md
+        } > docs/guide/roadmap.md
+
+  docs:roadmap:check:
+    desc: Fail if the published roadmap page has drifted from ROADMAP.md
+    cmds:
+      - task: docs:roadmap
+      - |
+        if ! git diff --quiet -- docs/guide/roadmap.md; then
+          echo "published roadmap is stale — run 'task docs:roadmap' and commit the result" >&2
+          git --no-pager diff -- docs/guide/roadmap.md >&2
+          exit 1
+        fi
+
+  # ── The docs site's design gates (RFC 0005 phase 4) ──────────────────────────
+  # Until these existed the public site's entire design coverage was one static
+  # source scan, while the internal console had axe plus a type-ramp check over
+  # 30 rendered route/role pairs at two viewports. The surface every prospective
+  # user sees was the one nobody measured in a browser.
+
+  docs:design:
+    desc: Static design gates for the docs site (detector + token drift)
+    cmds:
+      - npx --yes impeccable detect docs/.vitepress
+      # Now load-bearing. Before the token copy was imported by anything, this
+      # check guarded the freshness of a file no stylesheet read.
+      - task: ui:tokens:check
+      - task: docs:roadmap:check
+      - task: docs:links
+      - task: docs:structure
+      - task: docs:audience
+
+  docs:links:
+    desc: Every documentation cross-reference resolves, and no published page is orphaned
+    dir: docs
+    cmds:
+      # Wider than VitePress's own dead-link check on purpose — it covers
+      # `internal/` and the repository's own markdown, treats a code span
+      # naming a `.md` path as the link it is, and knows what an orphan is.
+      # See the header of the script.
+      - node build/check-links.mjs
+
+  docs:structure:
+    desc: Heading depth, section numbering and declared page length (RFC 0005-bis §4.5)
+    dir: docs
+    cmds:
+      # Every other gate here reads rendering. This one reads shape, which is
+      # how a subsection numbered 6.16 sat inside section 11 of the biggest page
+      # in the documentation through every green build there has ever been.
+      - node build/check-structure.mjs
+
+  docs:audience:
+    desc: One sidebar per page, no "see also" loops, and the counts (RFC 0005-bis §4.4)
+    dir: docs
+    cmds:
+      # The other half of the orphan check in `docs:links`: a page listed twice
+      # is as much a defect as a page listed never, and both are computable from
+      # the tree and the sidebars.
+      - node build/check-audience.mjs
+
+  docs:corpus:
+    desc: Words, minutes, headings and depth per published page — a report, not a gate
+    dir: docs
+    cmds:
+      - node build/check-structure.mjs --report
+
+  docs:design:rendered:
+    desc: axe + type ramp + material over every built page, 2 viewports, both renditions
+    deps: [browser:check]
+    dir: docs
+    vars:
+      # DOCS_PORT, not PORT: Taskfile resolves variables from the environment
+      # too, and `dotenv: [ .env ]` puts the repo's `PORT` there — the first run
+      # of this guard aborted on port 5437 because a bare `PORT` had silently
+      # won over the default.
+      DOCS_PORT: '{{.DOCS_PORT | default "4173"}}'
+    cmds:
+      # Builds, serves the build, measures it, and takes the server down again —
+      # the gate has to run against the artifact that ships, not against a dev
+      # server with different asset handling.
+      #
+      # `vitepress preview` maps the output directory once at startup, so a
+      # server left running from an earlier build serves the earlier build. That
+      # is not a hypothetical: it is how three of this gate's own findings first
+      # read as fixed when they were not.
+      - |
+        set -e
+        # Refuse to run against someone else's server. `vitepress preview` fails
+        # to bind a taken port and exits, and the gate then measures whatever is
+        # already listening — which is how a run reported five findings against
+        # a build three edits old, and reported them twice. A gate that measures
+        # the wrong artifact is worse than no gate.
+        if curl -sf "http://localhost:{{.DOCS_PORT}}/" -o /dev/null; then
+          echo "port {{.DOCS_PORT}} is already serving something — stop it first, or pass PORT=…" >&2
+          exit 2
+        fi
+        pnpm run docs:build
+        pnpm exec vitepress preview --port {{.DOCS_PORT}} >/tmp/docs-preview.log 2>&1 &
+        preview=$!
+        # `$preview` is pnpm's pid, and pnpm is not what holds the port —
+        # vitepress is, as its child. Killing the parent alone left a server
+        # listening after every run, so the *next* run tripped the guard above
+        # and refused to measure. Kill the child by what it is.
+        trap 'kill $preview 2>/dev/null || true; pkill -f "vitepress preview --port {{.DOCS_PORT}}" 2>/dev/null || true' EXIT
+        for _ in $(seq 1 100); do
+          curl -sf "http://localhost:{{.DOCS_PORT}}/" -o /dev/null && break
+          sleep 0.2
+        done
+        BASE="http://localhost:{{.DOCS_PORT}}" node build/design-routes.mjs
+
+  docs:design:survey:
+    desc: Same measurements as docs:design:rendered, reported and never failing
+    deps: [browser:check]
+    dir: docs
+    vars:
+      # DOCS_PORT, not PORT: Taskfile resolves variables from the environment
+      # too, and `dotenv: [ .env ]` puts the repo's `PORT` there — the first run
+      # of this guard aborted on port 5437 because a bare `PORT` had silently
+      # won over the default.
+      DOCS_PORT: '{{.DOCS_PORT | default "4173"}}'
+    cmds:
+      - |
+        set -e
+        # Refuse to run against someone else's server. `vitepress preview` fails
+        # to bind a taken port and exits, and the gate then measures whatever is
+        # already listening — which is how a run reported five findings against
+        # a build three edits old, and reported them twice. A gate that measures
+        # the wrong artifact is worse than no gate.
+        if curl -sf "http://localhost:{{.DOCS_PORT}}/" -o /dev/null; then
+          echo "port {{.DOCS_PORT}} is already serving something — stop it first, or pass PORT=…" >&2
+          exit 2
+        fi
+        pnpm run docs:build
+        pnpm exec vitepress preview --port {{.DOCS_PORT}} >/tmp/docs-preview.log 2>&1 &
+        preview=$!
+        # `$preview` is pnpm's pid, and pnpm is not what holds the port —
+        # vitepress is, as its child. Killing the parent alone left a server
+        # listening after every run, so the *next* run tripped the guard above
+        # and refused to measure. Kill the child by what it is.
+        trap 'kill $preview 2>/dev/null || true; pkill -f "vitepress preview --port {{.DOCS_PORT}}" 2>/dev/null || true' EXIT
+        for _ in $(seq 1 100); do
+          curl -sf "http://localhost:{{.DOCS_PORT}}/" -o /dev/null && break
+          sleep 0.2
+        done
+        BASE="http://localhost:{{.DOCS_PORT}}" node build/design-routes.mjs --survey
 
   # ── Performance testing ───────────────────────────────────────────────────────
 

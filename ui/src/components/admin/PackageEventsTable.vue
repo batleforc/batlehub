@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import type { PackageEventDto } from "@/client/types.gen";
 import { formatDate as fmtDate } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
@@ -12,36 +13,42 @@ import {
   TableCell,
 } from "@/components/ui/table";
 
+const { t } = useI18n();
+
 defineProps<{ events: PackageEventDto[] }>();
 
-const ACTION_LABELS: Record<string, string> = {
-  download: "Download",
-  view_metadata: "View metadata",
-  block: "Block",
-  unblock: "Unblock",
+/* Keys, not sentences. An action this table has never seen falls through to
+   the raw verb the server sent, which is the honest answer for a value the
+   console does not know a name for. */
+const ACTION_LABEL_KEYS: Record<string, string> = {
+  download: "common.download",
+  view_metadata: "packageEventsTable.viewMetadata",
+  block: "common.block",
+  unblock: "common.unblock",
 };
 function fmtAction(a: string) {
-  return ACTION_LABELS[a] ?? a;
+  const key = ACTION_LABEL_KEYS[a];
+  return key ? t(key) : a;
 }
 </script>
 
 <template>
   <Card>
     <CardHeader>
-      <CardTitle class="text-base">Recent access events</CardTitle>
+      <CardTitle class="text-base">{{ t("packageEventsTable.recentAccessEvents") }}</CardTitle>
     </CardHeader>
     <CardContent class="p-0">
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>When</TableHead>
-            <TableHead>User</TableHead>
-            <TableHead>Role</TableHead>
-            <TableHead>Version</TableHead>
-            <TableHead>Artifact</TableHead>
-            <TableHead>Action</TableHead>
-            <TableHead>Outcome</TableHead>
-            <TableHead>Reason</TableHead>
+            <TableHead>{{ t("common.when") }}</TableHead>
+            <TableHead>{{ t("common.user") }}</TableHead>
+            <TableHead>{{ t("common.role") }}</TableHead>
+            <TableHead>{{ t("common.version") }}</TableHead>
+            <TableHead>{{ t("common.artifact") }}</TableHead>
+            <TableHead>{{ t("common.action") }}</TableHead>
+            <TableHead>{{ t("common.outcome") }}</TableHead>
+            <TableHead>{{ t("common.reason") }}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -79,7 +86,7 @@ function fmtAction(a: string) {
         </TableBody>
       </Table>
       <p v-if="events.length === 0" class="p-6 text-sm text-muted-foreground text-center">
-        No events recorded yet.
+        {{ t("packageEventsTable.noEventsRecordedYet") }}
       </p>
     </CardContent>
   </Card>

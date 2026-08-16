@@ -1,7 +1,10 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { Badge } from "@/components/ui/badge";
 import { CopyButton } from "@/components/ui/copy-button";
 import type { ProxyPath } from "@/config/registryPathFields";
+
+const { t } = useI18n();
 
 const props = defineProps<{
   paths: ProxyPath[];
@@ -15,7 +18,9 @@ function fullUrl(path: string): string {
 
 <template>
   <div v-if="paths.length" class="space-y-2">
-    <h2 class="text-sm font-medium text-muted-foreground uppercase tracking-wide">Proxy paths</h2>
+    <h2 class="text-sm font-medium text-muted-foreground uppercase tracking-wide">
+      {{ t("registryPathResults.proxyPaths") }}
+    </h2>
     <div class="rounded-sm border divide-y">
       <div
         v-for="entry in paths"
@@ -32,12 +37,14 @@ function fullUrl(path: string): string {
           :text="fullUrl(entry.url)"
           class="shrink-0 h-7 px-2 text-xs"
         />
-        <Badge v-else variant="outline" class="shrink-0 text-xs"> needs more fields </Badge>
+        <Badge v-else variant="outline" class="shrink-0 text-xs">{{
+          t("registryPathResults.needsMoreFields")
+        }}</Badge>
       </div>
     </div>
   </div>
 
   <p v-else class="text-sm text-muted-foreground text-center py-4">
-    Fill in the fields above to see the proxy paths.
+    {{ t("registryPathResults.fillInTheFields") }}
   </p>
 </template>

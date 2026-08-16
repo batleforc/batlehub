@@ -1,9 +1,12 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { computed } from "vue";
 import { Users, User, Shield, KeyRound } from "@lucide/vue";
 import { useAuth } from "@/composables/useAuth";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
+
+const { t } = useI18n();
 
 const { identity, oidcProvider } = useAuth();
 
@@ -37,31 +40,31 @@ function roleVariant(role: string) {
       <CardHeader>
         <CardTitle class="flex items-center gap-2 text-lg">
           <User class="h-4 w-4" />
-          Identity
+          {{ t("common.identity") }}
         </CardTitle>
-        <CardDescription> Your current session information. </CardDescription>
+        <CardDescription>{{ t("myProfile.yourCurrentSessionInformation") }}</CardDescription>
       </CardHeader>
       <CardContent>
         <dl class="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-sm">
-          <dt class="text-muted-foreground font-medium">User ID</dt>
+          <dt class="text-muted-foreground font-medium">{{ t("myProfile.userId") }}</dt>
           <dd class="font-mono">
             {{ identity?.user_id ?? "—" }}
           </dd>
 
-          <dt class="text-muted-foreground font-medium">Role</dt>
+          <dt class="text-muted-foreground font-medium">{{ t("common.role") }}</dt>
           <dd>
             <Badge :variant="roleVariant(identity?.role ?? 'anonymous')">
               {{ identity?.role ?? "anonymous" }}
             </Badge>
           </dd>
 
-          <dt class="text-muted-foreground font-medium">Auth provider</dt>
+          <dt class="text-muted-foreground font-medium">{{ t("myProfile.authProvider") }}</dt>
           <dd>
             <span v-if="displayProvider" class="flex items-center gap-1.5">
               <KeyRound class="h-3.5 w-3.5 text-muted-foreground" />
               <span class="font-mono">{{ displayProvider }}</span>
             </span>
-            <span v-else class="text-muted-foreground">Token / anonymous</span>
+            <span v-else class="text-muted-foreground">{{ t("myProfile.tokenAnonymous") }}</span>
           </dd>
         </dl>
       </CardContent>
@@ -72,15 +75,15 @@ function roleVariant(role: string) {
       <CardHeader>
         <CardTitle class="flex items-center gap-2 text-lg">
           <Users class="h-4 w-4" />
-          Groups
+          {{ t("common.groups") }}
           <span v-if="parsedGroups.length" class="ml-1 text-muted-foreground font-normal text-base">
             ({{ parsedGroups.length }})
           </span>
         </CardTitle>
         <CardDescription>
-          Dynamic groups assigned by your identity provider. Groups with a provider prefix (e.g.
-          <code class="font-mono text-xs">oidc:team-a</code>) are scoped to that provider;
-          unprefixed values were mapped directly to a role.
+          <i18n-t keypath="myProfile.dynamicGroups" tag="span">
+            <template #example><code class="font-mono text-xs">oidc:team-a</code></template>
+          </i18n-t>
         </CardDescription>
       </CardHeader>
 
@@ -88,11 +91,8 @@ function roleVariant(role: string) {
         <!-- No groups -->
         <div v-if="!parsedGroups.length" class="py-8 text-center space-y-2">
           <Shield class="h-8 w-8 mx-auto text-muted-foreground/50" />
-          <p class="text-sm text-muted-foreground">No groups assigned to this session.</p>
-          <p class="text-xs text-muted-foreground">
-            Groups are populated when you authenticate via an OIDC or Kubernetes provider that
-            includes group claims.
-          </p>
+          <p class="text-sm text-muted-foreground">{{ t("myProfile.noGroupsAssignedTo") }}</p>
+          <p class="text-xs text-muted-foreground">{{ t("myProfile.groupsArePopulatedWhen") }}</p>
         </div>
 
         <!-- Group list -->

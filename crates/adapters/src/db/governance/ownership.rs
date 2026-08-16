@@ -182,4 +182,30 @@ impl OwnershipPort for PgOwnershipStore {
             })
             .collect())
     }
+
+    async fn list_owned_by(&self, identity: &Identity) -> Result<Vec<(String, String)>, CoreError> {
+        // An anonymous caller with no groups owns nothing, and the query below
+        // would otherwise compare `principal_id` against NULL for every row.
+        if identity.user_id.is_none() && identity.groups.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let rows = sqlx::query(
+            "SELECT DISTINCT registry, package_name \
+             FROM package_owners \
+             WHERE (principal_type = 'user'  AND principal_id = $1) \
+                OR (principal_type = 'group' AND principal_id = ANY($2::text[])) \
+             ORDER BY registry, package_name",
+        )
+        .bind(&identity.user_id)
+        .bind(&identity.groups)
+        .fetch_all(&self.pool)
+        .await
+        .db_err()?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get("registry"), r.get("package_name")))
+            .collect())
+    }
 }

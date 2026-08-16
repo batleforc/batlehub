@@ -12,7 +12,19 @@ describe("Badge", () => {
   it("applies the default variant classes", () => {
     const wrapper = mount(Badge, { slots: { default: "Stable" } });
     expect(wrapper.classes()).toContain("border-primary/40");
-    expect(wrapper.classes()).toContain("bg-primary/10");
+    expect(wrapper.classes()).toContain("text-primary");
+  });
+
+  /**
+   * The accent variants carry no alpha fill. Accent text on a 10% tint of
+   * itself measured 4.26:1 on paper — under AA, and unmeasurable by
+   * construction, which is what the Undependable Fill Rule is about.
+   */
+  it("never puts accent text on a tint of itself", () => {
+    for (const variant of ["default", "destructive", "copper"] as const) {
+      const classes = mount(Badge, { props: { variant }, slots: { default: "x" } }).classes();
+      expect(classes.filter((c) => /^bg-(primary|destructive|copper)\//.test(c))).toEqual([]);
+    }
   });
 
   it("applies the requested variant classes", () => {

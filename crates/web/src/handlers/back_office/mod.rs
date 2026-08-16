@@ -10,6 +10,7 @@ pub mod ops;
 pub mod packages;
 pub mod sbom;
 pub mod stats;
+pub mod stats_history;
 pub mod visibility;
 
 use std::time::{SystemTime, UNIX_EPOCH};

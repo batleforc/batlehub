@@ -1,7 +1,7 @@
-use batlehub_core::ports::SbomDependency;
+use batlehub_core::ports::{ExtractedManifest, SbomDependency};
 use bytes::Bytes;
 
-pub(super) fn extract_npm_deps(data: &Bytes) -> Vec<SbomDependency> {
+pub(super) fn extract_npm_manifest(data: &Bytes) -> ExtractedManifest {
     use flate2::read::GzDecoder;
     use std::io::Read;
     use tar::Archive;
@@ -11,7 +11,7 @@ pub(super) fn extract_npm_deps(data: &Bytes) -> Vec<SbomDependency> {
 
     let Ok(entries) = archive.entries() else {
         tracing::warn!("sbom: failed to parse npm manifest, treating as no dependencies");
-        return vec![];
+        return ExtractedManifest::default();
     };
 
     for entry in entries.flatten() {
@@ -26,18 +26,18 @@ pub(super) fn extract_npm_deps(data: &Bytes) -> Vec<SbomDependency> {
             let mut content = String::new();
             if reader.read_to_string(&mut content).is_err() {
                 tracing::warn!("sbom: failed to parse npm manifest, treating as no dependencies");
-                return vec![];
+                return ExtractedManifest::default();
             }
             return parse_npm_package_json(&content);
         }
     }
-    vec![]
+    ExtractedManifest::default()
 }
 
-fn parse_npm_package_json(content: &str) -> Vec<SbomDependency> {
+fn parse_npm_package_json(content: &str) -> ExtractedManifest {
     let Ok(val) = serde_json::from_str::<serde_json::Value>(content) else {
         tracing::warn!("sbom: failed to parse npm manifest, treating as no dependencies");
-        return vec![];
+        return ExtractedManifest::default();
     };
 
     let mut deps = Vec::new();
@@ -52,7 +52,57 @@ fn parse_npm_package_json(content: &str) -> Vec<SbomDependency> {
             }
         }
     }
-    deps
+
+    ExtractedManifest {
+        dependencies: deps,
+        license: parse_npm_license(&val),
+    }
+}
+
+/// `"license": "MIT"`, or the pre-2015 `{"type": "MIT", "url": …}` object.
+///
+/// The deprecated `"licenses": [{…}]` array is read too, joined with ` OR ` —
+/// npm's own documented meaning for it is a choice between them, which is what
+/// the SPDX operator says. Packages this old are still in every lockfile that
+/// has not been regenerated, so leaving them unknown would silently exempt them
+/// from the gate.
+fn parse_npm_license(val: &serde_json::Value) -> Option<String> {
+    if let Some(s) = val.get("license").and_then(|v| v.as_str()) {
+        let s = s.trim();
+        if !s.is_empty() {
+            return Some(s.to_owned());
+        }
+    }
+    if let Some(t) = val
+        .get("license")
+        .and_then(|v| v.get("type"))
+        .and_then(|v| v.as_str())
+    {
+        let t = t.trim();
+        if !t.is_empty() {
+            return Some(t.to_owned());
+        }
+    }
+    let joined: Vec<String> = val
+        .get("licenses")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|entry| {
+                    entry
+                        .as_str()
+                        .or_else(|| entry.get("type").and_then(|t| t.as_str()))
+                })
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    if joined.is_empty() {
+        None
+    } else {
+        Some(joined.join(" OR "))
+    }
 }
 
 #[cfg(test)]
@@ -62,7 +112,7 @@ mod tests {
     #[test]
     fn parse_npm_package_json_basic() {
         let json = r#"{"dependencies":{"express":"4.0.0"},"peerDependencies":{"react":"18"}}"#;
-        let deps = parse_npm_package_json(json);
+        let deps = parse_npm_package_json(json).dependencies;
         assert_eq!(deps.len(), 2);
         let names: Vec<_> = deps.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"express"));
@@ -71,9 +121,40 @@ mod tests {
 
     #[test]
     fn parse_npm_package_json_invalid_is_empty() {
-        assert!(parse_npm_package_json("not json").is_empty());
+        assert_eq!(
+            parse_npm_package_json("not json"),
+            ExtractedManifest::default()
+        );
         // Valid JSON without dependency keys → no deps.
-        assert!(parse_npm_package_json(r#"{"name":"x"}"#).is_empty());
+        assert!(parse_npm_package_json(r#"{"name":"x"}"#)
+            .dependencies
+            .is_empty());
+    }
+
+    #[test]
+    fn parse_npm_license_plain_string() {
+        let m = parse_npm_package_json(r#"{"license":"MIT"}"#);
+        assert_eq!(m.license.as_deref(), Some("MIT"));
+    }
+
+    /// The pre-2015 object form is still in published packages.
+    #[test]
+    fn parse_npm_license_object_form() {
+        let m = parse_npm_package_json(r#"{"license":{"type":"ISC","url":"http://x"}}"#);
+        assert_eq!(m.license.as_deref(), Some("ISC"));
+    }
+
+    /// The deprecated array means "any of these", which is SPDX `OR`.
+    #[test]
+    fn parse_npm_license_deprecated_array_joins_with_or() {
+        let m = parse_npm_package_json(r#"{"licenses":[{"type":"MIT"},{"type":"GPL-3.0"}]}"#);
+        assert_eq!(m.license.as_deref(), Some("MIT OR GPL-3.0"));
+    }
+
+    #[test]
+    fn parse_npm_license_absent_is_none() {
+        assert_eq!(parse_npm_package_json(r#"{"name":"x"}"#).license, None);
+        assert_eq!(parse_npm_package_json(r#"{"license":"  "}"#).license, None);
     }
 
     /// Build a gzipped npm-style tarball containing `package/package.json`.
@@ -99,16 +180,23 @@ mod tests {
 
     #[test]
     fn extract_npm_deps_reads_top_level_package_json() {
-        let data = npm_tgz(br#"{"dependencies":{"express":"4.0.0"}}"#);
-        let deps = extract_npm_deps(&data);
-        assert_eq!(deps.len(), 1);
-        assert_eq!(deps[0].name, "express");
-        assert_eq!(deps[0].ecosystem, "npm");
-        assert_eq!(deps[0].version_req.as_deref(), Some("4.0.0"));
+        let data = npm_tgz(br#"{"license":"MIT","dependencies":{"express":"4.0.0"}}"#);
+        let manifest = extract_npm_manifest(&data);
+        assert_eq!(manifest.dependencies.len(), 1);
+        assert_eq!(manifest.dependencies[0].name, "express");
+        assert_eq!(manifest.dependencies[0].ecosystem, "npm");
+        assert_eq!(
+            manifest.dependencies[0].version_req.as_deref(),
+            Some("4.0.0")
+        );
+        assert_eq!(manifest.license.as_deref(), Some("MIT"));
     }
 
     #[test]
     fn extract_npm_deps_on_non_gzip_is_empty() {
-        assert!(extract_npm_deps(&Bytes::from_static(b"not a gzip stream")).is_empty());
+        assert_eq!(
+            extract_npm_manifest(&Bytes::from_static(b"not a gzip stream")),
+            ExtractedManifest::default()
+        );
     }
 }

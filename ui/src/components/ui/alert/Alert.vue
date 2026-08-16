@@ -10,8 +10,10 @@ const alertVariants = cva(
         default: "bg-background text-foreground",
         destructive:
           "border-destructive/50 text-destructive dark:border-destructive [&>svg]:text-destructive",
-        success:
-          "border-green-500/50 bg-green-50 text-green-900 dark:bg-green-950 dark:text-green-100 [&>svg]:text-green-600",
+        // "known" in the One Synthetic Rule's terms: a confirmation is full ink
+        // against a rule that carries more weight, not a fifth hue. Green was
+        // outside this palette entirely and its pairing was never measured.
+        success: "border-foreground/50 bg-background text-foreground [&>svg]:text-foreground",
       },
     },
     defaultVariants: { variant: "default" },

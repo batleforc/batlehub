@@ -42,6 +42,15 @@ impl SbomRepository for NoopSbomRepository {
         Ok(None)
     }
 
+    async fn get_license_for_coordinate(
+        &self,
+        _registry: &str,
+        _package_name: &str,
+        _version: &str,
+    ) -> Result<Option<String>, CoreError> {
+        Ok(None)
+    }
+
     async fn list_sboms_for_export(
         &self,
         _registry: Option<&str>,
@@ -112,6 +121,26 @@ impl SbomRepository for InMemorySbomRepository {
             .cloned())
     }
 
+    async fn get_license_for_coordinate(
+        &self,
+        registry: &str,
+        package_name: &str,
+        version: &str,
+    ) -> Result<Option<String>, CoreError> {
+        // Mirrors the Postgres query: rows with no licence are skipped rather
+        // than being the first match that ends the search, so a CycloneDX row
+        // written before extraction ran does not mask an SPDX row that has one.
+        Ok(self
+            .items
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| {
+                s.registry == registry && s.package_name == package_name && s.version == version
+            })
+            .find_map(|s| s.license.clone()))
+    }
+
     async fn list_sboms_for_export(
         &self,
         registry: Option<&str>,
@@ -153,6 +182,21 @@ mod tests {
             document: serde_json::json!({}),
             source: SbomSource::Generated,
             created_at: Utc::now(),
+            license: None,
+        }
+    }
+
+    fn licensed(
+        key: &str,
+        registry: &str,
+        name: &str,
+        version: &str,
+        fmt: SbomFormat,
+        license: &str,
+    ) -> ArtifactSbom {
+        ArtifactSbom {
+            license: Some(license.into()),
+            ..sbom(key, registry, name, version, fmt)
         }
     }
 
@@ -252,5 +296,59 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn license_lookup_is_format_agnostic() {
+        let repo = InMemorySbomRepository::new();
+        repo.upsert_sbom(licensed("k", "npm", "a", "1", SbomFormat::Spdx, "MIT"))
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get_license_for_coordinate("npm", "a", "1")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("MIT")
+        );
+    }
+
+    /// A row with no licence must not end the search: an SBOM recorded before
+    /// extraction existed sits alongside one that has a licence, and returning
+    /// `None` because the unlicensed row came first would move the package into
+    /// `allow_unknown` territory for no reason.
+    #[tokio::test]
+    async fn license_lookup_skips_rows_without_one() {
+        let repo = InMemorySbomRepository::new();
+        repo.upsert_sbom(sbom("k1", "npm", "a", "1", SbomFormat::CycloneDx))
+            .await
+            .unwrap();
+        repo.upsert_sbom(licensed(
+            "k2",
+            "npm",
+            "a",
+            "1",
+            SbomFormat::Spdx,
+            "Apache-2.0",
+        ))
+        .await
+        .unwrap();
+        assert_eq!(
+            repo.get_license_for_coordinate("npm", "a", "1")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("Apache-2.0")
+        );
+    }
+
+    #[tokio::test]
+    async fn license_lookup_unknown_coordinate_is_none() {
+        let repo = InMemorySbomRepository::new();
+        assert!(repo
+            .get_license_for_coordinate("npm", "nope", "1")
+            .await
+            .unwrap()
+            .is_none());
     }
 }

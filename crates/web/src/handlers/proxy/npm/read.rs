@@ -1,9 +1,11 @@
 use super::{
     get, post, proxy_stream, registry_public_base, require_npm, require_npm_or_cargo,
-    serve_local_or_proxy_artifact, serve_local_or_proxy_json, web, AppError, Arc, AuthIdentity,
-    HttpRequest, HttpResponse, LocalOrProxyArtifactOpts, LocalRegistryService, PackageId,
-    ProxyService, RegistryMap, RegistryModeMap, Responder, UpstreamMap,
+    serve_local_or_proxy_artifact, serve_local_or_proxy_document, serve_local_or_proxy_json, web,
+    AppError, Arc, AuthIdentity, HttpRequest, HttpResponse, LocalOrProxyArtifactOpts,
+    LocalRegistryService, PackageId, ProxyService, RegistryMap, RegistryModeMap, Responder,
+    UpstreamMap,
 };
+use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 
 /// Fetch package metadata (all versions / packument).
 #[utoipa::path(
@@ -15,7 +17,7 @@ use super::{
         ("package"  = String, Path, description = "Package / crate name"),
     ),
     responses(
-        (status = 200, description = "Package metadata JSON"),
+        (status = 200, description = "Package metadata JSON", body = UpstreamDocument),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Unknown registry"),
     ),
@@ -39,7 +41,12 @@ pub async fn get_packument(
         let url = registry_public_base(&req, &registry);
         let not_found_msg = format!("package '{package}' not found");
         let (fetch_registry, fetch_package) = (registry.clone(), package.clone());
-        return serve_local_or_proxy_json(
+        let proxy_url = url.clone();
+        // A packument is a document, not an artifact: the proxy fall-through
+        // fetches and rewrites it (blocked versions out, tarball URLs back to
+        // this host) rather than streaming upstream bytes through, which for
+        // this route would have served the `latest` tarball as the packument.
+        return serve_local_or_proxy_document(
             svc,
             &mode_map,
             &registry,
@@ -52,7 +59,7 @@ pub async fn get_packument(
             not_found_msg,
             pkg,
             batlehub_core::rules::resource_type::RELEASES_READ,
-            None,
+            proxy_url,
         )
         .await;
     }
@@ -78,7 +85,7 @@ pub async fn get_packument(
         ("version"  = String, Path, description = "Version"),
     ),
     responses(
-        (status = 200, description = "Version metadata JSON"),
+        (status = 200, description = "Version metadata JSON", body = UpstreamDocument),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Unknown registry"),
     ),
@@ -148,7 +155,7 @@ pub async fn get_version(
         ("version"  = String, Path, description = "Version"),
     ),
     responses(
-        (status = 200, description = "npm .tgz tarball"),
+        (status = 200, description = "npm .tgz tarball", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Unknown registry"),
     ),
@@ -196,7 +203,7 @@ pub async fn download_tarball(
     ),
     request_body = serde_json::Value,
     responses(
-        (status = 200, description = "Audit advisory data from upstream"),
+        (status = 200, description = "Audit advisory data from upstream", body = UpstreamDocument),
         (status = 404, description = "Unknown or non-npm registry"),
         (status = 502, description = "Upstream audit request failed"),
     ),
@@ -232,7 +239,7 @@ pub async fn audit_quick(
     ),
     request_body = serde_json::Value,
     responses(
-        (status = 200, description = "Bulk audit advisory data from upstream"),
+        (status = 200, description = "Bulk audit advisory data from upstream", body = UpstreamDocument),
         (status = 404, description = "Unknown or non-npm registry"),
         (status = 502, description = "Upstream audit request failed"),
     ),

@@ -2,6 +2,7 @@ import { ref, computed, watch } from "vue";
 import { client } from "@/client/client.gen";
 import { me, oidcRefresh } from "@/client/sdk.gen";
 import type { MeResponse } from "@/client/types.gen";
+import { scopeExploreCacheTo } from "./useExploreCache";
 
 const ACCESS_TOKEN_KEY = "batlehub_access_token";
 const REFRESH_TOKEN_KEY = "batlehub_refresh_token";
@@ -58,6 +59,34 @@ async function refreshIdentity() {
 
 // Re-fetch identity whenever the access token changes.
 watch(token, () => refreshIdentity());
+
+// ── Viewer-scoped caches ───────────────────────────────────────────────────────
+
+/**
+ * Everything the server scopes an explore result on, and nothing else.
+ *
+ * `explore_viewer_for` (`handlers/mod.rs`) carries `is_admin`,
+ * `is_authenticated` and `groups`; `user_id` rides along because two accounts in
+ * the same groups still own different namespaces. The token itself is included
+ * because a token swap is an identity transition even before `/me` has answered
+ * for the new one — waiting for that answer would leave a window where the old
+ * viewer's rows are still readable.
+ */
+function viewerFingerprint(): string {
+  const id = identity.value;
+  return [
+    token.value,
+    id?.user_id ?? "",
+    id?.role ?? "",
+    [...(id?.groups ?? [])].sort().join(","),
+  ].join("::");
+}
+
+// Both, and both matter: the token moves first on login and logout, the
+// identity moves second when `/me` answers — and an anonymous visitor signing
+// in transitions through both. `scopeExploreCacheTo` compares by value, so the
+// second of the pair is a no-op when nothing actually changed.
+watch([token, identity], () => scopeExploreCacheTo(viewerFingerprint()), { immediate: true });
 
 // ── Token refresh ──────────────────────────────────────────────────────────────
 

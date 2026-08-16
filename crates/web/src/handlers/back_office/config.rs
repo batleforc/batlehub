@@ -16,6 +16,7 @@ use super::require_admin;
 use crate::{
     error::AppError,
     extractors::AuthIdentity,
+    handlers::schemas::OkResponse,
     services::{
         BannerService, ConfigChangeRow, ConfigReloadService, PendingReloadSnapshot,
         ReloadApplyError, ReloadDiff,
@@ -198,6 +199,25 @@ pub struct ConfigChangesResponse {
 }
 
 /// List config change history.
+///
+/// **No restore endpoint, and deliberately so** (RFC 0004-bis A5, declined —
+/// see the RFC's decision log for the recorded row).
+///
+/// `config_changes` stores a *diff summary* — added, removed and changed
+/// registry names — and never the config itself. `POST …/history/{id}/restore`
+/// cannot be built on that: a list of registry names does not reconstruct a
+/// TOML file. Making it possible means storing the full config content per
+/// change, and `config.toml` carries `upstream_auth` credentials, static bearer
+/// tokens and OIDC client secrets. That would put every secret this instance
+/// has ever been configured with into a table any admin can read through an
+/// API, retained indefinitely and surviving the rotation that was supposed to
+/// end their life.
+///
+/// The revert path that exists is the config editor: it shows the live content,
+/// accepts a replacement, and validates before staging. What it lacks is the
+/// *previous* content to paste, and closing that honestly is a question about
+/// where config history should live — a git-backed config, or an encrypted
+/// store — not a field on this response.
 #[utoipa::path(
     get,
     path = "/api/v1/admin/config/changes",
@@ -401,7 +421,7 @@ pub struct SetBannerRequest {
     tag = "back-office",
     request_body = SetBannerRequest,
     responses(
-        (status = 200, description = "Banner set"),
+        (status = 200, description = "Banner set", body = OkResponse),
         (status = 403, description = "Admin role required"),
     ),
     security(("bearer_token" = [])),
@@ -427,7 +447,7 @@ pub async fn set_banner(
         })
         .await
         .map_err(AppError::from)?;
-    Ok(HttpResponse::Ok().finish())
+    Ok(HttpResponse::Ok().json(OkResponse::new()))
 }
 
 /// Clear the global admin banner.

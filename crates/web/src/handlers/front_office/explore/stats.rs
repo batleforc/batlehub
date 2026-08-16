@@ -10,6 +10,9 @@ pub struct RegistryStatDto {
     pub registry: String,
     pub package_count: u64,
     pub total_downloads: u64,
+    /// Bytes held for this registry. `null` means unknown, not zero: sizes were
+    /// not recorded for artifacts cached before migration 004.
+    pub cached_bytes: Option<u64>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -53,6 +56,7 @@ pub async fn explore_registry_stats(
             registry: s.registry,
             package_count: s.package_count,
             total_downloads: s.total_downloads,
+            cached_bytes: s.cached_bytes,
         })
         .collect();
 

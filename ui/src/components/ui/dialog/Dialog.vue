@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import {
   DialogRoot,
   DialogPortal,
@@ -10,6 +11,8 @@ import {
 } from "radix-vue";
 import { X } from "@lucide/vue";
 import { cn } from "@/lib/utils";
+
+const { t } = useI18n();
 
 defineProps<{
   open?: boolean;
@@ -46,13 +49,13 @@ defineEmits<{
           </DialogDescription>
         </div>
         <!-- Fallback: visually hidden title when no title slot is provided -->
-        <DialogTitle v-else class="sr-only">Dialog</DialogTitle>
+        <DialogTitle v-else class="sr-only">{{ t("common.dialog") }}</DialogTitle>
         <slot />
         <DialogClose
           class="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none"
         >
           <X class="h-4 w-4" />
-          <span class="sr-only">Close</span>
+          <span class="sr-only">{{ t("common.close") }}</span>
         </DialogClose>
       </DialogContent>
     </DialogPortal>

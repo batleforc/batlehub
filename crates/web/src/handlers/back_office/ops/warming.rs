@@ -34,11 +34,28 @@ pub struct WarmRequest {
     pub versions: Option<usize>,
 }
 
+/// One package or path that did not warm (RFC 0004-bis A3).
+#[derive(Serialize, ToSchema)]
+pub struct WarmFailureDto {
+    /// Package name, or the upstream path for a path-addressed registry.
+    pub package: String,
+    /// The version that failed. Absent when listing the versions is what failed.
+    pub version: Option<String>,
+    pub error: String,
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct WarmResponse {
     pub warmed: usize,
     pub skipped: usize,
     pub errors: usize,
+    /// One entry per named failure, as the bulk endpoints already return.
+    ///
+    /// `errors` remains the count: a warming task that panics is counted here
+    /// and cannot be named, so `failures.len() <= errors`. Reporting only the
+    /// count left an operator with "3 errors" over eleven registries and no way
+    /// to learn which three without reading the server log.
+    pub failures: Vec<WarmFailureDto>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -143,6 +160,16 @@ pub async fn warm_registry(
         warmed: pkg_report.warmed + path_report.warmed,
         skipped: pkg_report.skipped + path_report.skipped,
         errors: pkg_report.errors + path_report.errors,
+        failures: pkg_report
+            .failures
+            .into_iter()
+            .chain(path_report.failures)
+            .map(|f| WarmFailureDto {
+                package: f.package,
+                version: f.version,
+                error: f.error,
+            })
+            .collect(),
     }))
 }
 

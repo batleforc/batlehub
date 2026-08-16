@@ -1,5 +1,8 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+
+const { t } = useI18n();
 
 defineProps<{
   name: string;
@@ -16,7 +19,7 @@ defineProps<{
       <slot name="badges" />
       <slot name="before-upstream" />
       <div>
-        <span class="text-muted-foreground w-28 inline-block">Upstream</span>
+        <span class="text-muted-foreground w-28 inline-block">{{ t("common.upstream") }}</span>
         <a
           v-if="upstreamUrl"
           :href="upstreamUrl"

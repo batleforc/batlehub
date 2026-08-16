@@ -65,6 +65,15 @@ pub struct RegistryHealthDto {
     pub recent_errors: Vec<RecentErrorDto>,
     /// Which roles and groups can access this registry.
     pub access: RegistryAccessInfo,
+    /// `proxy`, `local` or `hybrid` (RFC 0004-bis A2).
+    ///
+    /// The health page reads "Cached artifacts: 0, last pull: never" the same
+    /// way for a broken proxy and for a healthy `local` registry that has
+    /// nothing to pull by definition. Without the mode there is no way to tell
+    /// those apart, and the console was inferring it from a second endpoint.
+    pub mode: String,
+    /// Whether a beta-channel gate is configured for this registry (A2).
+    pub beta_channel_enabled: bool,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -88,6 +97,7 @@ pub struct ClearCacheResponse {
 pub async fn registry_health(
     identity: AuthIdentity,
     registry_map: web::Data<RegistryMap>,
+    mode_map: web::Data<crate::RegistryModeMap>,
     access_config: web::Data<crate::AccessConfigLock>,
     admin_svc: web::Data<Arc<AdminService>>,
     proxy_svc: web::Data<Arc<ProxyService>>,
@@ -114,6 +124,14 @@ pub async fn registry_health(
             ac.admin.clone(),
             ac.groups.clone(),
         )
+    };
+
+    // Which registries have a beta-channel gate. Snapshotted with the other
+    // hot-config reads rather than per-registry, for the same reason the access
+    // config is: N lock acquisitions to answer one question about each.
+    let beta_channel_registries: std::collections::HashSet<String> = {
+        let hot = proxy_svc.hot.read().await;
+        hot.beta_channel.keys().cloned().collect()
     };
 
     // ── Batch query 1: package counts for all registries in one round-trip ────
@@ -190,6 +208,9 @@ pub async fn registry_health(
                 .map(|(g, _)| g.clone())
                 .collect();
 
+            let mode = mode_map.get(&registry).as_str().to_owned();
+            let beta_channel_enabled = beta_channel_registries.contains(&registry);
+
             RegistryHealthDto {
                 registry,
                 registry_type,
@@ -201,6 +222,8 @@ pub async fn registry_health(
                 pulls_last_day,
                 recent_errors,
                 access: RegistryAccessInfo { roles, groups },
+                mode,
+                beta_channel_enabled,
             }
         })
         .collect();

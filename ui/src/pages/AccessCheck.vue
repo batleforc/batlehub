@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
+import { useRoute } from "vue-router";
 import { ref } from "vue";
 import { checkAccess } from "@/client/sdk.gen";
 import type { AccessCheckResponse } from "@/client/types.gen";
@@ -8,11 +10,39 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Select } from "@/components/ui/select";
+import { useRegistryOptions } from "@/composables/useRegistryOptions";
+import { Combobox } from "@/components/ui/combobox";
+import { usePackageNameSuggestions, useVersionSuggestions } from "@/composables/useSuggestions";
 
-const registry = ref("github");
-const name = ref("");
-const version = ref("");
-const artifact = ref("");
+const { t } = useI18n();
+
+/** RFC 0004-bis §6.2: the registry set is closed, small and already fetched. */
+const { options: registryOptions } = useRegistryOptions();
+
+/**
+ * Prefilled from the query when arriving from a denial (RFC 0003 §4.4).
+ *
+ * This is the one place the diagnostics earn their keep: someone reaches this
+ * page because something was refused, and asking them to retype the coordinate
+ * they just looked at is how a tool becomes the thing nobody opens.
+ */
+const route = useRoute();
+const q = (key: string, fallback = ""): string => {
+  const value = route.query[key];
+  return typeof value === "string" && value ? value : fallback;
+};
+
+const registry = ref(q("registry", "github"));
+const name = ref(q("name"));
+const version = ref(q("version"));
+
+/* Suggested from what this instance holds, never blocking a value it does not
+   — the tool exists to explain a refusal, and a refusal is often about a
+   coordinate the instance has never cached (RFC 0004-bis §6.2). */
+const packageSuggestions = usePackageNameSuggestions(name, registry);
+const versionSuggestions = useVersionSuggestions(registry, name);
+const artifact = ref(q("artifact"));
 const result = ref<AccessCheckResponse | null>(null);
 const error = ref<string | null>(null);
 const loading = ref(false);
@@ -46,30 +76,49 @@ async function check() {
 <template>
   <Card class="max-w-lg">
     <CardHeader>
-      <CardTitle class="text-lg"> Access Check </CardTitle>
+      <CardTitle class="text-lg">{{ t("accessCheck.accessCheck") }}</CardTitle>
     </CardHeader>
     <CardContent class="space-y-4">
       <div class="grid gap-3">
         <div class="space-y-1">
-          <Label for="registry">Registry</Label>
-          <Input id="registry" v-model="registry" placeholder="github" />
+          <Label for="registry">{{ t("common.registry") }}</Label>
+          <Select
+            id="registry"
+            v-model="registry"
+            :options="registryOptions"
+            :placeholder="t('adminHealth.chooseRegistry')"
+          />
         </div>
         <div class="space-y-1">
-          <Label for="name">Name (owner/repo)</Label>
-          <Input id="name" v-model="name" placeholder="owner/repo" />
+          <Label for="name">{{ t("accessCheck.nameOwnerRepo") }}</Label>
+          <Combobox
+            id="name"
+            v-model="name"
+            :options="packageSuggestions.options.value"
+            :loading="packageSuggestions.loading.value"
+            placeholder="owner/repo"
+          />
         </div>
         <div class="space-y-1">
-          <Label for="version">Version</Label>
-          <Input id="version" v-model="version" placeholder="v1.0.0" />
+          <Label for="version">{{ t("common.version") }}</Label>
+          <Combobox
+            id="version"
+            v-model="version"
+            :options="versionSuggestions.options.value"
+            :loading="versionSuggestions.loading.value"
+            :disabled="!versionSuggestions.ready()"
+            :disabled-reason="t('accessCheck.versionNeedsPackage')"
+            placeholder="v1.0.0"
+          />
         </div>
         <div class="space-y-1">
-          <Label for="artifact">Artifact (optional)</Label>
+          <Label for="artifact">{{ t("accessCheck.artifactOptional") }}</Label>
           <Input id="artifact" v-model="artifact" placeholder="12345678" />
         </div>
       </div>
 
       <Button :disabled="loading" class="w-full" @click="check">
-        {{ loading ? "Checking…" : "Check Access" }}
+        {{ loading ? t("accessCheck.checking") : t("accessCheck.checkAccess") }}
       </Button>
 
       <p v-if="error" class="text-sm text-destructive">
@@ -79,10 +128,10 @@ async function check() {
       <div v-if="result" class="rounded-sm border p-4 space-y-2">
         <div class="flex items-center gap-2">
           <Badge :variant="result.can_access ? 'default' : 'destructive'">
-            {{ result.can_access ? "Allowed" : "Denied" }}
+            {{ result.can_access ? t("accessCheck.allowed") : t("accessCheck.denied") }}
           </Badge>
           <span v-if="!result.can_access" class="text-sm text-muted-foreground">
-            {{ result.reason ?? "no reason given" }}
+            {{ result.reason ?? t("accessCheck.noReasonGiven") }}
           </span>
         </div>
         <p v-if="result.proxy_url" class="text-xs text-muted-foreground break-all">

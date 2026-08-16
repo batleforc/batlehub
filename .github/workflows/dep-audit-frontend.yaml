@@ -5,16 +5,16 @@ on:
     paths:
       - "ui/package.json"
       - "ui/pnpm-lock.yaml"
-      - "website/package.json"
-      - "website/pnpm-lock.yaml"
+      - "docs/package.json"
+      - "docs/pnpm-lock.yaml"
       - ".github/workflows/dep-audit-frontend.yaml"
   pull_request:
     branches: ["main"]
     paths:
       - "ui/package.json"
       - "ui/pnpm-lock.yaml"
-      - "website/package.json"
-      - "website/pnpm-lock.yaml"
+      - "docs/package.json"
+      - "docs/pnpm-lock.yaml"
       - ".github/workflows/dep-audit-frontend.yaml"
   # Daily so a CVE disclosed against an already-pinned dependency trips CI even
   # when nothing in the repo changed.
@@ -37,8 +37,8 @@ jobs:
           # for the static site, never shipped or run as a service. Their
           # current advisories have no fix available upstream for vitepress 1.x
           # and don't apply to this repo's build; runtime deps (e.g. hash-wasm)
-          # are still audited. Keep in sync with `task website:audit`.
-          - workspace: website
+          # are still audited. Keep in sync with `task docs:audit`.
+          - workspace: docs
             audit-args: "--prod"
     defaults:
       run:

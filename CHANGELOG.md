@@ -8,6 +8,81 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **One documentation tree, and it wears the design system** (RFC 0005). The
+  repository had two: `website/`, published, and `docs/`, in the repo and
+  unpublished, with four documents maintained in both and drifted by up to 296
+  lines. They are now one tree, `docs/`, split into spaces by *who reads it* —
+  `guide/`, `registries/`, `operations/`, `contributing/`, `rfc/`, and an
+  unpublished `internal/`.
+
+  For a reader, the visible change is that things that were only in the
+  repository are now on the site: the 3 666-line configuration reference (the
+  most cross-referenced document in the project, and until now readable only by
+  someone who had cloned it), the operations runbooks and compliance material,
+  the contributor guides, and every RFC — each under a status banner generated
+  from its own `Status` field, so a proposal is never published looking like a
+  description of the product.
+
+  **Published URLs do not change.** The merge only adds paths, and the publish
+  prefix comes from `BASE_URL`, not from the directory name.
+
+  For a contributor: the site builds from `docs/`, `task website:*` is now
+  `task docs:*`, and two files in the tree are generated and must not be
+  hand-edited — `docs/.vitepress/theme/tokens.css` (`task ui:tokens`) and
+  `docs/guide/roadmap.md` (`task docs:roadmap`). Both have a drift check.
+
+- **The public site now uses the design system, and is measured in a browser.**
+  It had been carrying the world `DESIGN.md` replaced: its own colour tokens over
+  the top of the real ones, an out-of-gamut crimson, glows and shadows and
+  rounded corners in a system whose radius is zero, a sans face in a world with
+  no sans, and — the only privacy-relevant part — a Google Fonts `@import`, so
+  every reader's IP reached a third party before the first paragraph rendered.
+  The fonts are self-hosted, the tokens are the console's, both light and dark
+  are authored, and `task docs:design:rendered` measures every published page at
+  two viewports in both renditions: axe at WCAG 2.2 AA, the type ramp, and the
+  material rules.
+
+- **The guide is split by audience, and every instruction has one home**
+  (RFC 0005-bis). `docs/guide/` is now the operator's space — install, configure,
+  administer — and the new `docs/use/` is for the person whose package manager
+  talks to BatleHub: tokens, publishing, the CLI, the Package Explorer,
+  troubleshooting. Pages that moved leave a redirect behind.
+
+  Publishing instructions used to exist twice, sliced two ways: eleven numbered
+  walkthroughs in one 1 118-line page, and a three-line section on each of the 21
+  registry pages, with neither marked as the one to trust. The registry page is
+  now the home and carries the walkthrough; the publishing page keeps only what
+  is the same whatever you are publishing.
+
+  The configuration reference gave up the six other documents it had become:
+  worked examples, the server binary's subcommands, hot reload, private
+  upstreams and capacity planning are pages now, and the SBOM section it
+  duplicated is gone in favour of the SBOM page. It is 24% shorter and is only
+  the reference.
+
+  The home page opens with three cards instead of thirteen. Nothing was deleted
+  — the full feature list is at [`docs/guide/features.md`](docs/guide/features.md).
+
+### Fixed
+
+- **Every hand-written table of contents in the documentation was broken, and
+  had always been.** VitePress prefixes an anchor that starts with a digit with
+  `_`, so every entry pointing at a numbered section — `#1-prerequisites` and its
+  115 siblings — resolved to nothing and silently dropped the reader at the top
+  of the page. Nothing checked fragments. All sixteen typed contents lists are
+  gone (the theme draws the outline from the headings), the surviving
+  cross-references were repaired, and `task docs:links` now checks anchors.
+
+- Two documentation cross-references that had been dead
+  (`docs/post-mortem-template.md`, `docs/monitoring.md`), an accessibility
+  failure in every collapsible sidebar group (a focusable control inside a
+  `role="button"`), code blocks that scrolled but could not be focused by
+  keyboard, and syntax-highlighting colours that missed AA against the light
+  ground. `task docs:links` and the rendered gate keep all of these from
+  recurring.
+
 ## [1.1.0] - 2026-08-10
 
 ### Breaking

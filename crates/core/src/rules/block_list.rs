@@ -15,6 +15,29 @@ impl BlockListRule {
     pub fn new(repo: Arc<dyn PackageRepository>) -> Self {
         Self { repo }
     }
+
+    /// `Some(Deny)` when `id` is blocked, `None` when it is not — so the caller
+    /// can go on to try a broader coordinate.
+    ///
+    /// A repository error also yields `None`. SECURITY: fail-open by design —
+    /// prefer availability over blocking. If the DB is unreachable we allow the
+    /// request through rather than turning the proxy into a brick wall. Accept
+    /// this trade-off only for self-hosted deployments where uptime matters more
+    /// than hard blocks.
+    async fn status_of(&self, id: &crate::entities::PackageId) -> Option<RuleDecision> {
+        match self.repo.get_status(id).await {
+            Ok(PackageStatus::Blocked { reason, .. }) => Some(RuleDecision::Deny { reason }),
+            Ok(PackageStatus::Available) => None,
+            Err(e) => {
+                tracing::warn!(
+                    package = %id,
+                    error = %e,
+                    "BlockListRule: failed to query package status, failing open"
+                );
+                None
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -24,22 +47,33 @@ impl Rule for BlockListRule {
     }
 
     async fn evaluate(&self, ctx: &RuleContext<'_>) -> RuleDecision {
-        match self.repo.get_status(&ctx.package.id).await {
-            Ok(PackageStatus::Blocked { reason, .. }) => RuleDecision::Deny { reason },
-            Ok(PackageStatus::Available) => RuleDecision::Allow,
-            Err(e) => {
-                // SECURITY: fail-open by design — prefer availability over blocking.
-                // If the DB is unreachable we allow the request through rather than
-                // turning the proxy into a brick wall. Accept this trade-off only for
-                // self-hosted deployments where uptime matters more than hard blocks.
-                tracing::warn!(
-                    package = %ctx.package.id,
-                    error = %e,
-                    "BlockListRule: failed to query package status, failing open"
-                );
-                RuleDecision::Allow
+        // The requested coordinate, exactly as asked for.
+        if let Some(decision) = self.status_of(&ctx.package.id).await {
+            return decision;
+        }
+
+        // Downloads address a *file within* a version — `…/1.1.0/tarball` for
+        // npm, `dl` for cargo, a classifier for Maven — so the requested
+        // coordinate carries an `artifact` the operator's block does not:
+        // blocking a version records `artifact = None`, and `get_status` matches
+        // all four fields. Without this second look a blocked npm version stayed
+        // fully downloadable by anyone who knew its number, while the admin UI
+        // showed it as blocked.
+        //
+        // A block on the bare version therefore covers every artifact of it. The
+        // converse does not hold: blocking one artifact leaves the version's
+        // other files alone, which is what makes per-artifact blocks useful.
+        if ctx.package.id.artifact.is_some() {
+            let version_level = crate::entities::PackageId {
+                artifact: None,
+                ..ctx.package.id.clone()
+            };
+            if let Some(decision) = self.status_of(&version_level).await {
+                return decision;
             }
         }
+
+        RuleDecision::Allow
     }
 }
 
@@ -213,6 +247,35 @@ mod tests {
             "expected Deny with correct reason, got {:?}",
             decision,
         );
+    }
+
+    /// The download coordinate carries an artifact suffix (`…/1.0.0/tarball`)
+    /// that the operator's version-level block does not. Before this was
+    /// handled, a blocked npm version stayed downloadable to anyone who knew its
+    /// number while the admin UI reported it blocked.
+    #[tokio::test]
+    async fn version_level_block_covers_an_artifact_of_that_version() {
+        let rule = BlockListRule::new(MemRepo::blocked("security vulnerability"));
+        let m = meta(PackageId::new("npm", "evil", "1.0.0").with_artifact("tarball"));
+        let identity = Identity::anonymous();
+
+        let decision = rule.evaluate(&make_ctx(&m, &identity)).await;
+        assert!(
+            matches!(&decision, crate::rules::RuleDecision::Deny { reason } if reason == "security vulnerability"),
+            "artifact request must inherit the version's block, got {decision:?}",
+        );
+    }
+
+    /// The relationship is one-way: a block on the *version* covers its files,
+    /// but a different version of the same package is unaffected.
+    #[tokio::test]
+    async fn a_block_does_not_leak_to_other_versions() {
+        let rule = BlockListRule::new(MemRepo::blocked("security vulnerability"));
+        let m = meta(PackageId::new("npm", "evil", "2.0.0").with_artifact("tarball"));
+        let identity = Identity::anonymous();
+
+        let decision = rule.evaluate(&make_ctx(&m, &identity)).await;
+        assert!(matches!(decision, crate::rules::RuleDecision::Allow));
     }
 
     #[tokio::test]

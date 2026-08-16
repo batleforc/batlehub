@@ -13,6 +13,7 @@ use batlehub_core::{
 use crate::handlers::proxy::common::{
     proxy_stream, require_registry_type, serve_local_or_proxy_json,
 };
+use crate::handlers::schemas::{ArtifactBytes, ProtocolDocument, UpstreamDocument};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 /// Dispatch a local/hybrid goproxy file request.
@@ -100,7 +101,7 @@ pub(super) fn extract_go_mod(zip_bytes: &[u8], module: &str, version: &str) -> S
         ("module"   = String, Path, description = "Go module path (may contain slashes)"),
     ),
     responses(
-        (status = 200, description = "Latest version info JSON"),
+        (status = 200, description = "Latest version info JSON", body = UpstreamDocument),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Module not found"),
     ),
@@ -150,7 +151,7 @@ pub async fn goproxy_latest(
         ("module"   = String, Path, description = "Go module path (may contain slashes)"),
     ),
     responses(
-        (status = 200, description = "Newline-separated version list"),
+        (status = 200, description = "Newline-separated version list", body = ProtocolDocument, content_type = "text/plain"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Module not found"),
     ),
@@ -208,7 +209,7 @@ pub async fn goproxy_list(
         ("filename" = String, Path, description = "Versioned file: {version}.info, {version}.mod, or {version}.zip"),
     ),
     responses(
-        (status = 200, description = "Requested module file"),
+        (status = 200, description = "Requested module file — `.info` (JSON), `.mod` (text) or `.zip`, per the requested extension", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 400, description = "Unknown file type"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Module or version not found"),

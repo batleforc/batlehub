@@ -81,13 +81,16 @@ pub(super) struct ServerParams {
     pub warming_map: WarmingServiceMap,
     pub eviction_map: EvictionServiceMap,
     pub proxy_metrics: Arc<ProxyMetrics>,
-    pub prometheus_handle: PrometheusHandle,
+    /// `None` when `[stats] metrics_enabled = false`: the recorder is never
+    /// installed, and `/metrics` answers 503 rather than publishing.
+    pub prometheus_handle: Option<PrometheusHandle>,
     pub sbom_svc: Arc<SbomService>,
     pub notification_svc: Option<Arc<NotificationService>>,
     pub notification_store: Arc<dyn NotificationPort>,
     pub notifications_config: Option<NotificationsConfig>,
     pub local_svc: Arc<LocalRegistryService>,
     pub quota_svc: Arc<QuotaService>,
+    pub stats_history: Arc<dyn batlehub_core::ports::StatsHistoryRepository>,
     pub registry_mode_map: RegistryModeMap,
     pub repo_signer_map: batlehub_web::RepoSignerMap,
     pub ip_block_store: Arc<dyn IpBlockStore>,
@@ -137,6 +140,7 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
         notifications_config,
         local_svc,
         quota_svc,
+        stats_history,
         registry_mode_map,
         repo_signer_map,
         ip_block_store,
@@ -170,7 +174,7 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
             warming_map.clone(),
             eviction_map.clone(),
             Arc::clone(&proxy_metrics),
-            Some(prometheus_handle.clone()),
+            prometheus_handle.clone(),
             Some(sbom_svc.clone()),
             notification_svc.clone(),
             Arc::clone(&notification_store),
@@ -191,6 +195,7 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
             .app_data(web::Data::new(vuln_db_map.clone()))
             .app_data(web::Data::new(local_svc.clone()))
             .app_data(web::Data::new(Arc::clone(&quota_svc)))
+            .app_data(web::Data::new(Arc::clone(&stats_history)))
             .app_data(web::Data::new(registry_mode_map.clone()))
             .app_data(web::Data::new(repo_signer_map.clone()))
             .app_data(web::Data::new(Arc::clone(&ip_block_store)))

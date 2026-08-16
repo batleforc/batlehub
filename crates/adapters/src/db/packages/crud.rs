@@ -88,6 +88,38 @@ pub(super) async fn record_access_impl(pool: &PgPool, event: AccessEvent) -> Res
     Ok(())
 }
 
+/// Every blocked version of one package.
+///
+/// Deliberately not routed through `list_packages_impl`: that query LATERAL-joins
+/// `access_events` twice to compute audit counts nobody needs here, and this runs
+/// on every version-listing request. One indexed predicate, one column.
+///
+/// Rows are matched on `(registry, package_name)` regardless of
+/// `package_artifact`, so blocking a single artifact of a multi-file version
+/// (a Maven classifier, say) hides that version from the listing entirely. That
+/// is the safe direction: a version whose bytes are partly blocked should not be
+/// advertised as installable.
+pub(super) async fn blocked_versions_impl(
+    pool: &PgPool,
+    registry: &str,
+    name: &str,
+) -> Result<Vec<String>, CoreError> {
+    let rows = sqlx::query(
+        r#"
+        SELECT DISTINCT package_version
+        FROM package_statuses
+        WHERE registry = $1 AND package_name = $2 AND status = 'blocked'
+        "#,
+    )
+    .bind(registry)
+    .bind(name)
+    .fetch_all(pool)
+    .await
+    .db_err()?;
+
+    Ok(rows.into_iter().map(|r| r.get("package_version")).collect())
+}
+
 pub(super) async fn get_status_impl(
     pool: &PgPool,
     pkg: &PackageId,

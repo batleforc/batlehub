@@ -1,11 +1,27 @@
 <script setup lang="ts">
-import { ref } from "vue";
-import { useAuth } from "@/composables/useAuth";
+import { useI18n } from "vue-i18n";
+import { computed, onMounted, ref } from "vue";
+import { useRoute, RouterLink } from "vue-router";
+import { adminAccessCheck } from "@/client/sdk.gen";
+import type { AccessSimulationResponse } from "@/client/types.gen";
+import { extractMessage } from "@/composables/useApi";
 import SectionTabs from "@/components/admin/SectionTabs.vue";
 import { SECURITY_TABS } from "@/config/adminSections";
 import { PageHeader } from "@/components/ui/page-header";
+import { Select } from "@/components/ui/select";
+import { Combobox } from "@/components/ui/combobox";
+import { useRegistryOptions } from "@/composables/useRegistryOptions";
+import {
+  usePackageNameSuggestions,
+  useSubjectSuggestions,
+  useVersionSuggestions,
+} from "@/composables/useSuggestions";
 
-const { token } = useAuth();
+const { t } = useI18n();
+
+/** RFC 0004-bis §6.2: the registry set is closed, small and already fetched. */
+const { options: registryOptions } = useRegistryOptions();
+const route = useRoute();
 
 const registry = ref("");
 const packageName = ref("");
@@ -14,21 +30,59 @@ const resourceType = ref("releases:read");
 const userId = ref("");
 const role = ref("anonymous");
 const groups = ref("");
+const clientIp = ref("");
 
-const result = ref<null | { decision: string; reason?: string; rule_matched?: string }>(null);
+/**
+ * The three suggesting fields (RFC 0004-bis §6.2).
+ *
+ * Every one still accepts a value the instance has never seen — the simulator's
+ * whole point is answering about a coordinate that may not be cached, so a
+ * field that only took what it could offer would break it.
+ */
+const packageSuggestions = usePackageNameSuggestions(packageName, registry);
+const versionSuggestions = useVersionSuggestions(registry, packageName);
+const subjectSuggestions = useSubjectSuggestions(userId);
+
+const result = ref<AccessSimulationResponse | null>(null);
 const loading = ref(false);
 const error = ref<string | null>(null);
 
+/** The layers the answer did not account for, named so the gap is visible. */
+const uncovered = computed(() => {
+  const covers = result.value?.covers;
+  if (!covers) return [];
+  return [
+    !covers.account_blocks && t("adminAccessCheck.layerAccountBlocks"),
+    !covers.ip_blocks && t("adminAccessCheck.layerIpBlocks"),
+  ].filter((v): v is string => typeof v === "string");
+});
+
 const RESOURCE_TYPES = ["releases:read", "source:read", "releases:write", "source:write"];
+
+/**
+ * Prefill from the query, as `/tools/access-check` already does.
+ *
+ * "Nobody opens an access checker for fun; they open it because something was
+ * refused" — the project's own tested premise for the public checker. This page
+ * had seven empty fields and read no query at all, so an operator who had just
+ * seen a denial in the audit log retyped every coordinate by hand.
+ */
+onMounted(() => {
+  const q = route.query;
+  const one = (v: unknown) => (typeof v === "string" ? v : "");
+  registry.value = one(q.registry) || registry.value;
+  packageName.value = one(q.name) || packageName.value;
+  version.value = one(q.version) || version.value;
+  userId.value = one(q.user_id) || userId.value;
+  role.value = one(q.role) || role.value;
+  clientIp.value = one(q.client_ip) || clientIp.value;
+});
 
 async function simulate() {
   loading.value = true;
   error.value = null;
   result.value = null;
   try {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (token.value) headers["Authorization"] = `Bearer ${token.value}`;
-
     const body: Record<string, unknown> = {
       registry: registry.value,
       package_name: packageName.value,
@@ -37,19 +91,24 @@ async function simulate() {
       role: role.value || "anonymous",
     };
     if (userId.value) body.user_id = userId.value;
+    if (clientIp.value) body.client_ip = clientIp.value;
     const grps = groups.value
       .split(",")
       .map((g) => g.trim())
       .filter(Boolean);
     if (grps.length) body.groups = grps;
 
-    const resp = await fetch("/api/v1/admin/access-check", {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-    });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
-    result.value = await resp.json();
+    // The generated client, not a bare relative `fetch`. There is no `/api`
+    // proxy in front of the SPA (CLAUDE.md), so `fetch("/api/v1/...")` POSTed
+    // to the Vite origin on both dev servers and on every deployment where the
+    // API is not same-origin. `adminAccessCheck` was already generated and
+    // typed, and carries the base URL and the auth header for free.
+    const res = await adminAccessCheck({ body: body as never });
+    if (res.error) {
+      error.value = extractMessage(res.error);
+      return;
+    }
+    result.value = res.data ?? null;
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -62,44 +121,55 @@ async function simulate() {
   <div class="space-y-6">
     <SectionTabs :tabs="SECURITY_TABS" />
     <PageHeader
-      title="RBAC Access Check"
-      description="Simulate whether an identity would be allowed to access a package resource under the current registry policy — without making a real request."
+      variant="display"
+      :title="t('adminAccessCheck.rbacAccessCheck')"
+      :description="t('adminAccessCheck.simulateWhetherAnIdentityWould')"
     />
 
-    <form @submit.prevent="simulate" class="space-y-4 max-w-lg">
+    <form class="space-y-4 max-w-lg" @submit.prevent="simulate">
       <div class="grid grid-cols-2 gap-4">
         <div class="space-y-1">
-          <label for="aac-registry" class="text-sm font-medium">Registry</label>
-          <input
+          <label for="aac-registry" class="text-sm font-medium">{{ t("common.registry") }}</label>
+          <!-- Was a bare `<input>` with hand-rolled border classes rather than
+               the `Input` primitive, so it inherited nothing the system does
+               next. It is a closed set either way. -->
+          <Select
             id="aac-registry"
             v-model="registry"
-            required
-            placeholder="npm"
-            class="w-full rounded border border-border bg-background px-3 py-1.5 text-sm"
+            :options="registryOptions"
+            :placeholder="t('adminHealth.chooseRegistry')"
           />
         </div>
         <div class="space-y-1">
-          <label for="aac-package" class="text-sm font-medium">Package name</label>
-          <input
+          <label for="aac-package" class="text-sm font-medium">{{
+            t("adminAccessCheck.packageName")
+          }}</label>
+          <Combobox
             id="aac-package"
             v-model="packageName"
-            required
+            :options="packageSuggestions.options.value"
+            :loading="packageSuggestions.loading.value"
             placeholder="lodash"
-            class="w-full rounded border border-border bg-background px-3 py-1.5 text-sm"
           />
         </div>
         <div class="space-y-1">
-          <label for="aac-version" class="text-sm font-medium">Version</label>
-          <input
+          <label for="aac-version" class="text-sm font-medium">{{ t("common.version") }}</label>
+          <!-- Closed once its parents are answered, and disabled with a stated
+               reason until then rather than merely dark. -->
+          <Combobox
             id="aac-version"
             v-model="version"
-            required
+            :options="versionSuggestions.options.value"
+            :loading="versionSuggestions.loading.value"
+            :disabled="!versionSuggestions.ready()"
+            :disabled-reason="t('adminAccessCheck.versionNeedsPackage')"
             placeholder="1.0.0"
-            class="w-full rounded border border-border bg-background px-3 py-1.5 text-sm"
           />
         </div>
         <div class="space-y-1">
-          <label for="aac-resource-type" class="text-sm font-medium">Resource type</label>
+          <label for="aac-resource-type" class="text-sm font-medium">{{
+            t("adminAccessCheck.resourceType")
+          }}</label>
           <select
             id="aac-resource-type"
             v-model="resourceType"
@@ -113,12 +183,12 @@ async function simulate() {
       <hr class="border-border" />
 
       <p class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-        Simulated identity
+        {{ t("adminAccessCheck.simulatedIdentity") }}
       </p>
 
       <div class="grid grid-cols-2 gap-4">
         <div class="space-y-1">
-          <label for="aac-role" class="text-sm font-medium">Role</label>
+          <label for="aac-role" class="text-sm font-medium">{{ t("common.role") }}</label>
           <select
             id="aac-role"
             v-model="role"
@@ -131,25 +201,54 @@ async function simulate() {
         </div>
         <div class="space-y-1">
           <label for="aac-user-id" class="text-sm font-medium"
-            >User ID <span class="text-muted-foreground">(optional)</span></label
+            >{{ t("adminAccessCheck.userId") }}
+            <span class="text-muted-foreground">{{ t("adminAccessCheck.optional") }}</span></label
           >
-          <input
+          <!-- The field whose failure was silent: an operator typing `alice`
+               on an instance that stores `oidc:alice` got an answer about a
+               subject that does not exist, with nothing to say so (A8). -->
+          <Combobox
             id="aac-user-id"
             v-model="userId"
+            :options="subjectSuggestions.options.value"
+            :loading="subjectSuggestions.loading.value"
             placeholder="alice"
-            class="w-full rounded border border-border bg-background px-3 py-1.5 text-sm"
           />
         </div>
         <div class="col-span-2 space-y-1">
           <label for="aac-groups" class="text-sm font-medium"
-            >Groups <span class="text-muted-foreground">(comma-separated)</span></label
+            >{{ t("common.groups") }}
+            <span class="text-muted-foreground">{{
+              t("adminAccessCheck.commaSeparated")
+            }}</span></label
           >
           <input
             id="aac-groups"
             v-model="groups"
-            placeholder="oidc1:team-a, team-b"
+            :placeholder="t('adminAccessCheck.oidc1TeamATeam')"
             class="w-full rounded border border-border bg-background px-3 py-1.5 text-sm"
           />
+        </div>
+        <!--
+          A simulated request has no client address, so the IP block layer can
+          only be checked against one you supply. Left blank, the result says so
+          rather than answering as though the address were clean — which is the
+          same defect one level down (RFC 0004-bis B4).
+        -->
+        <div class="col-span-2 space-y-1">
+          <label for="aac-client-ip" class="text-sm font-medium"
+            >{{ t("adminAccessCheck.clientIp") }}
+            <span class="text-muted-foreground">{{ t("adminAccessCheck.optional") }}</span></label
+          >
+          <input
+            id="aac-client-ip"
+            v-model="clientIp"
+            placeholder="10.0.0.7"
+            class="w-full rounded border border-border bg-background px-3 py-1.5 text-sm"
+          />
+          <p class="text-xs text-muted-foreground">
+            {{ t("adminAccessCheck.clientIpHelp") }}
+          </p>
         </div>
       </div>
 
@@ -158,13 +257,13 @@ async function simulate() {
         :disabled="loading"
         class="rounded bg-primary text-primary-foreground px-4 py-1.5 text-sm font-medium disabled:opacity-50"
       >
-        {{ loading ? "Checking…" : "Check access" }}
+        {{ loading ? t("accessCheck.checking") : t("adminAccessCheck.checkAccess") }}
       </button>
     </form>
 
     <div
       v-if="error"
-      class="rounded border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+      class="rounded border border-destructive/50 px-4 py-3 text-sm text-destructive"
     >
       {{ error }}
     </div>
@@ -172,25 +271,44 @@ async function simulate() {
     <div
       v-if="result"
       class="rounded border px-4 py-3 space-y-1"
-      :class="
-        result.decision === 'allow'
-          ? 'border-green-500/50 bg-green-500/10'
-          : 'border-red-500/50 bg-red-500/10'
-      "
+      :class="result.decision === 'allow' ? 'border-foreground/50' : 'border-destructive/50'"
     >
       <p
         class="font-semibold text-sm"
-        :class="
-          result.decision === 'allow'
-            ? 'text-green-700 dark:text-green-400'
-            : 'text-red-700 dark:text-red-400'
-        "
+        :class="result.decision === 'allow' ? 'text-foreground' : 'text-destructive'"
       >
-        {{ result.decision === "allow" ? "✓ ALLOW" : "✗ DENY" }}
+        {{ result.decision === "allow" ? t("adminAccessCheck.allow") : t("adminAccessCheck.deny") }}
       </p>
       <p v-if="result.reason" class="text-sm text-muted-foreground">{{ result.reason }}</p>
       <p v-if="result.rule_matched" class="text-xs text-muted-foreground">
-        Rule: {{ result.rule_matched }}
+        {{ t("adminAccessCheck.ruleMatched", { rule: result.rule_matched }) }}
+      </p>
+      <!--
+        Which layer, not just which answer. The endpoint used to evaluate
+        registry policy rules and nothing else, so this page could say "allow"
+        about an account the next tab showed as blocked; RFC 0004-bis A1 made it
+        consult both block stores, and `blocked_by` is how an operator knows
+        where to go and lift it.
+      -->
+      <p v-if="result.blocked_by === 'account'" class="text-xs text-muted-foreground">
+        {{ t("adminAccessCheck.blockedByAccount") }}
+        <RouterLink to="/admin/security/blocks" class="text-primary hover:underline">{{
+          t("adminAccessCheck.seeBlocks")
+        }}</RouterLink>
+      </p>
+      <p v-else-if="result.blocked_by === 'ip'" class="text-xs text-muted-foreground">
+        {{ t("adminAccessCheck.blockedByIp") }}
+        <RouterLink to="/admin/security/blocks" class="text-primary hover:underline">{{
+          t("adminAccessCheck.seeBlocks")
+        }}</RouterLink>
+      </p>
+      <!--
+        And what it did *not* look at. An `allow` over two unconsulted layers
+        reads identically to an `allow` over three consulted ones, which is the
+        shape of every finding in this RFC.
+      -->
+      <p v-if="uncovered.length" class="border-t border-border pt-2 text-xs text-muted-foreground">
+        {{ t("adminAccessCheck.notCovered", { layers: uncovered.join(", ") }) }}
       </p>
     </div>
   </div>

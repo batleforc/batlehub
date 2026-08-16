@@ -2,6 +2,7 @@ use super::{
     get, proxy_gem_specs, web, AppError, Arc, AuthIdentity, ProxyService, RegistryMap,
     RegistryModeMap, Responder,
 };
+use crate::handlers::schemas::ArtifactBytes;
 
 /// Serve the full gem index (specs.4.8.gz).
 #[utoipa::path(
@@ -10,7 +11,7 @@ use super::{
     tag = "proxy/rubygems",
     params(("registry" = String, Path, description = "Registry name")),
     responses(
-        (status = 200, description = "Gzip-compressed binary specs index"),
+        (status = 200, description = "Gzip-compressed binary specs index", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 404, description = "Not available for local-only registries"),
     ),
     security(("bearer_token" = [])),
@@ -34,7 +35,7 @@ pub async fn gem_specs_full(
     tag = "proxy/rubygems",
     params(("registry" = String, Path, description = "Registry name")),
     responses(
-        (status = 200, description = "Gzip-compressed binary latest-specs index"),
+        (status = 200, description = "Gzip-compressed binary latest-specs index", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 404, description = "Not available for local-only registries"),
     ),
     security(("bearer_token" = [])),
@@ -58,7 +59,7 @@ pub async fn gem_specs_latest(
     tag = "proxy/rubygems",
     params(("registry" = String, Path, description = "Registry name")),
     responses(
-        (status = 200, description = "Gzip-compressed binary prerelease-specs index"),
+        (status = 200, description = "Gzip-compressed binary prerelease-specs index", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 404, description = "Not available for local-only registries"),
     ),
     security(("bearer_token" = [])),

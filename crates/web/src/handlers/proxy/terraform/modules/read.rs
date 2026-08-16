@@ -6,6 +6,7 @@ use super::{
     LocalRegistryService, ProxyService, RegistryMap, RegistryMode, RegistryModeMap, Responder,
     UpstreamMap,
 };
+use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 
 /// List available versions for a Terraform module.
 #[utoipa::path(
@@ -19,7 +20,7 @@ use super::{
         ("provider"  = String, Path, description = "Module provider"),
     ),
     responses(
-        (status = 200, description = "Module versions JSON"),
+        (status = 200, description = "Module versions JSON", body = UpstreamDocument),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Module not found"),
     ),
@@ -159,7 +160,7 @@ pub async fn terraform_module_download(
         ("version"   = String, Path, description = "Module version"),
     ),
     responses(
-        (status = 200, description = "Module tarball"),
+        (status = 200, description = "Module tarball", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 404, description = "Module not found"),
     ),
     security(("bearer_token" = [])),

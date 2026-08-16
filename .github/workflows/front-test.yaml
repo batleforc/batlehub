@@ -9,6 +9,12 @@ on:
       - "ui/pnpm-lock.yaml"
       - "ui/vite.config.ts"
       - ".github/workflows/front-test.yaml"
+      # `registryTypes.docs.test.ts` compares the console's setup snippets
+      # against `docs/registries/*.md`. It lives in `ui/`, but half of what it
+      # asserts lives here — so a docs-only edit that breaks the agreement, or
+      # one that fixes a drift and should lower the pinned baseline, has to run
+      # it too. A gate that does not run is not a gate.
+      - "docs/registries/**"
   pull_request:
     branches: ["main"]
     paths:
@@ -18,6 +24,12 @@ on:
       - "ui/pnpm-lock.yaml"
       - "ui/vite.config.ts"
       - ".github/workflows/front-test.yaml"
+      # `registryTypes.docs.test.ts` compares the console's setup snippets
+      # against `docs/registries/*.md`. It lives in `ui/`, but half of what it
+      # asserts lives here — so a docs-only edit that breaks the agreement, or
+      # one that fixes a drift and should lower the pinned baseline, has to run
+      # it too. A gate that does not run is not a gate.
+      - "docs/registries/**"
   schedule:
     - cron: "50 23 * * *"
   workflow_dispatch:

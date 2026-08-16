@@ -3,12 +3,20 @@ use std::sync::Arc;
 use actix_web::{get, web, HttpResponse, Responder};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use utoipa::IntoParams;
+use utoipa::{IntoParams, ToSchema};
 
 use batlehub_core::{entities::SbomFormat, services::SbomService};
 
 use super::{require_admin, require_authenticated};
 use crate::{error::AppError, extractors::AuthIdentity};
+
+/// An SPDX 2.3 or CycloneDX 1.5 document.
+///
+/// The shape is the SBOM standard's, not this API's — which format you get is
+/// decided by the `format` query parameter, and each is specified elsewhere.
+#[derive(ToSchema)]
+#[schema(value_type = Object)]
+pub struct SbomDocument(pub serde_json::Value);
 
 fn default_sbom_format() -> String {
     "spdx".to_owned()
@@ -35,7 +43,7 @@ pub struct SbomQuery {
         SbomQuery,
     ),
     responses(
-        (status = 200, description = "SBOM document (JSON)"),
+        (status = 200, description = "SBOM document (JSON)", body = SbomDocument),
         (status = 400, description = "Unknown format"),
         (status = 403, description = "Authentication required"),
         (status = 404, description = "No SBOM found for this artifact"),
@@ -97,7 +105,7 @@ pub struct SbomExportQuery {
     tag = "back-office",
     params(SbomExportQuery),
     responses(
-        (status = 200, description = "Merged SBOM document (JSON attachment)"),
+        (status = 200, description = "Merged SBOM document (JSON attachment)", body = SbomDocument),
         (status = 400, description = "Unknown format"),
         (status = 403, description = "Admin role required"),
     ),

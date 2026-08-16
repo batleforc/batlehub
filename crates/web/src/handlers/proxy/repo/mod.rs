@@ -17,6 +17,7 @@ use batlehub_core::{
 use batlehub_config::schema::RegistryMode;
 
 use super::common::{collect_storage_stream, proxy_stream, require_registry_type};
+use crate::handlers::schemas::ArtifactBytes;
 use crate::{
     error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, RepoSignerMap,
 };
@@ -162,7 +163,7 @@ async fn repo_get(
         ("path" = String, Path, description = "Repository file path (e.g. dists/stable/Release, pool/.../x.deb)"),
     ),
     responses(
-        (status = 200, description = "Repository file"),
+        (status = 200, description = "Repository file", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Not found or unknown registry"),
     ),
@@ -195,7 +196,7 @@ pub async fn deb_get(
         ("path" = String, Path, description = "Repository file path (e.g. repodata/repomd.xml, packages/x.rpm)"),
     ),
     responses(
-        (status = 200, description = "Repository file"),
+        (status = 200, description = "Repository file", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Not found or unknown registry"),
     ),
@@ -228,7 +229,7 @@ pub async fn rpm_get(
         ("path" = String, Path, description = "Repository file path (e.g. x86_64/arch.db, x86_64/hello-1.0-1-x86_64.pkg.tar.zst)"),
     ),
     responses(
-        (status = 200, description = "Repository file"),
+        (status = 200, description = "Repository file", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Not found or unknown registry"),
     ),

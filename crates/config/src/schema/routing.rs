@@ -1,4 +1,4 @@
-//! Host-based (subdomain) registry routing — see `docs/future-feature/0001-subdomain-routing.md`.
+//! Host-based (subdomain) registry routing — see `docs/rfc/0001-subdomain-routing.md`.
 //!
 //! A registry is always reachable at `/proxy/{name}/…`. This module adds the
 //! optional second ingress: one or more **hostnames** whose root is that

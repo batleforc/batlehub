@@ -1,5 +1,6 @@
 use actix_web::{get, web, HttpResponse, Responder};
 
+use crate::handlers::schemas::UpstreamDocument;
 use crate::{
     error::AppError, extractors::AuthIdentity, handlers::proxy::common::require_registry_type,
     RegistryMap, UpstreamMap,
@@ -19,7 +20,7 @@ const DEFAULT_NUGET_VULN_BASE: &str = "https://api.nuget.org/v3/vulnerabilities"
         ("registry" = String, Path, description = "Registry name (must be a nuget registry)"),
     ),
     responses(
-        (status = 200, description = "NuGet vulnerability index JSON"),
+        (status = 200, description = "NuGet vulnerability index JSON", body = Vec<UpstreamDocument>),
         (status = 404, description = "Registry not found or not a NuGet registry"),
         (status = 502, description = "Upstream vulnerability DB error"),
     ),
@@ -55,7 +56,7 @@ pub async fn nuget_vuln_index(
         ("page"     = String, Path, description = "Page identifier, e.g. 0.json"),
     ),
     responses(
-        (status = 200, description = "NuGet vulnerability page JSON"),
+        (status = 200, description = "NuGet vulnerability page JSON", body = UpstreamDocument),
         (status = 400, description = "Invalid page identifier"),
         (status = 404, description = "Registry not found, not NuGet, or page unknown"),
         (status = 502, description = "Upstream vulnerability DB error"),

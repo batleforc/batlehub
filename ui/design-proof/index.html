@@ -1,0 +1,707 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BatleHub — catalog (design proof)</title>
+<script>
+/* Resolve the theme before first paint. Like the locale, the stored preference
+   is system|light|dark and the resolved value is what renders — so "System"
+   survives the OS flipping at sunset instead of being frozen at install time. */
+(function(){try{
+  var p=localStorage.getItem("batlehub.theme")||"system";
+  var r=p==="system"?(matchMedia("(prefers-color-scheme: light)").matches?"light":"dark"):p;
+  document.documentElement.dataset.theme=r;
+}catch(e){document.documentElement.dataset.theme="dark";}})();
+</script>
+<link rel="preload" href="fonts/silkscreen-700.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="fonts/silkscreen-400.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="fonts/jetbrainsmono-latin.woff2" as="font" type="font/woff2" crossorigin />
+<style>
+/* FACES — self-hosted; the floor refuses "the closest installed font".
+   `swap`, not `block`: a blank masthead on a cold cache is worse than a reflow. */
+@font-face{font-family:"Silkscreen";src:url("fonts/silkscreen-400.woff2") format("woff2");font-weight:400;font-display:swap}
+@font-face{font-family:"Silkscreen";src:url("fonts/silkscreen-700.woff2") format("woff2");font-weight:700;font-display:swap}
+@font-face{font-family:"JetBrains Mono";src:url("fonts/jetbrainsmono-latin.woff2") format("woff2");font-weight:100 800;font-display:swap}
+
+:root{
+  /* ── Monofolio OKLCH, verbatim from ui/src/assets/index.css (.dark) ─────────
+     Measured on this ground: ink 16.88:1 · ink-dim 5.62:1 · accent 5.76:1 ·
+     copper 8.06:1 · accent-ink on accent 5.69:1 · rule-strong 3.68:1.
+     Two incumbent faults corrected rather than inherited (RFC 0003 R10):
+       - primary-foreground on primary was 3.58:1; crimson now takes dark ink.
+       - card vs background was 1.01:1. Down here the WCAG ratio is dominated by
+         its own constant, so no fill step is dependable — --ground-raised still
+         computes to only 1.06:1. State is therefore carried by rule weight, ink
+         and the dot field, with fill as a secondary cue only. */
+  --ground:oklch(0.07 0.018 18);
+  --ground-raised:oklch(0.155 0.022 18);
+  --ground-sunk:oklch(0.045 0.014 18);
+
+  --ink:oklch(0.93 0.018 25);
+  --ink-dim:oklch(0.62 0.045 30);      /* 5.62:1 — the floor for all small text */
+  --rule-soft:oklch(0.34 0.03 25);     /* separators only, never a control edge */
+  --rule-strong:oklch(0.52 0.06 25);   /* 3.68:1 — every interactive boundary */
+
+  /* Authored at max in-gamut chroma for sRGB (0.2359 at L .65 H 25 → #ff343d).
+     Monofolio ships oklch(0.65 0.26 25), which is OUTSIDE sRGB: engines then
+     disagree — naive clipping paints #ff0e30 (5.32:1), CSS Color 4 chroma
+     reduction paints ~#ff343d (5.76:1). A token that leaves the gamut cannot
+     carry a contrast guarantee, so the value is clamped rather than caveated.
+     Provenance: Monofolio --primary, chroma 0.26 → 0.235. */
+  --accent:oklch(0.65 0.235 25);
+  --accent-ink:oklch(0.10 0.02 18);
+  --copper:oklch(0.72 0.14 52);
+  --focus:oklch(0.85 0.16 85);
+
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:40px;
+
+  /* Discrete, not clamp(): 10vw is an integer multiple of Silkscreen's 8px em
+     only at a handful of viewport widths, which left the thesis's focal
+     element off its own pixel grid across the whole 560–1040px band.
+     56/72/88/104 = 7×/9×/11×/13×. */
+  --t-display:56px;
+  --t-head:20px; --t-sub:16px; --t-row:15px; --t-body:13px; --t-meta:12px;
+
+  /* Silkscreen is drawn on an 8px em; the square pixel only stays square at
+     integer multiples. Every Silkscreen instance uses this second ramp — the
+     text ramp above is for JetBrains Mono, which has no such constraint.
+     104px display = 13×. */
+  --t-px-sm:16px; --t-px-md:24px;
+
+  --resolve:520ms cubic-bezier(.16,1,.3,1);
+}
+/* ── Light rendition ─────────────────────────────────────────────────────────
+   Not a filter over the dark one, and not a concession: paper IS this world's
+   home ground — the specimen board is ink on #F2F0EB, and the dark rendition is
+   the adaptation the use scene earned. Monofolio's light tokens are the
+   provenance, under the same in-gamut rule, which catches a second out-of-gamut
+   value here: light --primary ships oklch(0.52 0.24 25) and the sRGB maximum at
+   that L and H is 0.2108.
+
+   Measured on paper: ink 16.64:1 · ink-dim 7.24:1 · accent 5.63:1 ·
+   copper 5.74:1 · accent-ink on accent 5.97:1 · rule-strong 3.41:1 · focus 4.48:1.
+
+   Copper darkens from Monofolio's L .58 to L .50: at .58 it reads 4.2:1 on paper,
+   under the body-text floor. The hue relationship survives; the lightness cannot.
+
+   The Undependable Fill Rule holds in BOTH renditions — raised vs paper is
+   1.11:1, as untrustworthy as the 1.06:1 on near-black, because the WCAG ratio
+   compresses at both ends of the range. So the state grammar transfers unchanged:
+   rule weight and ink, never fill. That is the system being coherent, not lucky. */
+:root[data-theme="light"]{
+  --ground:oklch(0.97 0.008 18);
+  --ground-raised:oklch(0.935 0.010 18);
+  --ground-sunk:oklch(0.99 0.004 18);
+
+  --ink:oklch(0.20 0.022 20);
+  --ink-dim:oklch(0.44 0.04 25);
+  --rule-soft:oklch(0.80 0.02 25);
+  --rule-strong:oklch(0.62 0.05 25);
+
+  --accent:oklch(0.52 0.21 25);        /* max in-gamut 0.2108 at this L/H */
+  --accent-ink:oklch(0.99 0.004 18);
+  --copper:oklch(0.50 0.12 52);
+  --focus:oklch(0.55 0.11 85);
+}
+/* The plate is ink on paper and glow on black — the same screen, the ink of its
+   own ground. Lower opacity on paper because dark dots on light carry further. */
+:root[data-theme="light"] .plate{opacity:.20}
+@supports ((mask-image:url("halftone-plate.png")) or (-webkit-mask-image:url("halftone-plate.png"))){
+  :root[data-theme="light"] .plate{background:var(--ink)}
+}
+
+@media (min-width:640px){:root{--t-display:72px}}
+@media (min-width:880px){:root{--t-display:88px}}
+@media (min-width:1140px){:root{--t-display:104px}}
+
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--ground);color:var(--ink);
+  font-family:"JetBrains Mono",ui-monospace,monospace;font-size:var(--t-body);line-height:1.6}
+
+a{color:var(--accent);text-underline-offset:3px}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+
+.skip{position:absolute;left:-9999px;top:0;background:var(--accent);color:var(--accent-ink);
+  padding:var(--s3) var(--s4);z-index:100;font-size:var(--t-body)}
+.skip:focus{left:0}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+.display{font-family:"Silkscreen",monospace;font-weight:700;letter-spacing:.02em;
+  line-height:.92;text-transform:uppercase}
+
+/* ── Masthead ─────────────────────────────────────────────────────────────── */
+.masthead{display:flex;align-items:center;gap:var(--s5);padding:var(--s3) var(--s5);
+  background:var(--ground-sunk);border-bottom:1px solid var(--rule-soft);flex-wrap:wrap;
+  position:relative}
+/* Dot-matrix as a material, at 9x9 like the board's texture swatch. It lives in
+   the flex spacer — the one box in the masthead that holds no text and cannot,
+   and which collapses to zero width exactly when the bar wraps. Painting order
+   is not contrast: a field behind wrapped 12px --ink-dim measured 4.50:1, so it
+   is confined rather than tuned. */
+.spacer::after{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:radial-gradient(var(--rule-soft) 1px,transparent 1.5px);
+  background-size:9px 9px;opacity:.55;
+  -webkit-mask-image:linear-gradient(90deg,transparent,#000 40%,transparent);
+  mask-image:linear-gradient(90deg,transparent,#000 40%,transparent)}
+.wordmark{font-family:"Silkscreen",monospace;font-weight:700;font-size:var(--t-px-md);
+  letter-spacing:.04em;color:var(--ink);text-decoration:none;display:flex;align-items:center;gap:var(--s3)}
+.wordmark .dot{color:var(--accent)}
+.masthead nav{display:flex;gap:0;border:1px solid var(--rule-strong)}
+.masthead nav a{font-size:var(--t-meta);letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink-dim);text-decoration:none;padding:var(--s2) var(--s3);
+  border-right:1px solid var(--rule-strong)}
+.masthead nav a:last-child{border-right:0}
+.masthead nav a:hover{color:var(--ink)}
+/* The board reverses its active nav cell to a solid block. Component-scale
+   ink-on-paper: the one contrast event, costing no scanning room. */
+.masthead nav a[aria-current="page"]{color:var(--ground);background:var(--ink);font-weight:700}
+.spacer{margin-left:auto;position:relative;align-self:stretch;min-width:var(--s6)}
+
+/* A preference, not a toggle: language is chosen once and remembered, the way a
+   light/dark/system setting is. Three states, because "System" (follow the
+   browser) is a real answer and a two-way switch cannot express it. */
+.settings{position:relative}
+.pop{position:absolute;right:0;top:calc(100% + var(--s2));z-index:50;min-width:264px;
+  background:var(--ground-sunk);border:1px solid var(--rule-strong);padding:var(--s4)}
+.pop h2{font-family:"Silkscreen",monospace;font-size:var(--t-px-sm);margin:0;
+  text-transform:uppercase;letter-spacing:.04em;color:var(--ink)}
+.pref-label{margin:var(--s4) 0 var(--s2);font-size:var(--t-meta);letter-spacing:.14em;
+  text-transform:uppercase;color:var(--ink-dim)}
+.pref-note{margin:var(--s2) 0 0;font-size:var(--t-meta);color:var(--ink-dim)}
+/* Same segment grammar as the primary nav, so a chosen option reads the same way
+   in both places: a reversed ink block inside one shared bounding box. */
+.segmented{display:flex;border:1px solid var(--rule-strong)}
+.segmented button{flex:1;background:transparent;border:0;border-right:1px solid var(--rule-strong);
+  color:var(--ink-dim);font:inherit;font-size:var(--t-meta);letter-spacing:.06em;
+  text-transform:uppercase;padding:var(--s2) var(--s1);cursor:pointer}
+.segmented button:last-child{border-right:0}
+.segmented button:hover{color:var(--ink)}
+.segmented button[aria-pressed="true"]{background:var(--ink);color:var(--ground);font-weight:700}
+.who{font-size:var(--t-meta);color:var(--ink-dim);display:flex;align-items:center;gap:var(--s2);margin:0}
+.who b{color:var(--copper);font-weight:500}
+.who .role{border:1px solid var(--rule-strong);padding:var(--s1) var(--s2);color:var(--ink);line-height:1}
+
+.ctl{background:transparent;border:1px solid var(--rule-strong);color:var(--ink-dim);
+  font:inherit;font-size:var(--t-meta);letter-spacing:.1em;text-transform:uppercase;
+  padding:var(--s2) var(--s3);cursor:pointer}
+.ctl:hover{color:var(--ink);border-color:var(--ink-dim)}
+.ctl[disabled]{opacity:.5;cursor:not-allowed}
+.ctl[aria-pressed="true"]{color:var(--ink);border-color:var(--copper)}
+
+/* ── Specimen head ────────────────────────────────────────────────────────────
+   A specimen sets one form at poster scale and captions it. The four facts read
+   as that caption on one ruled line — not as a stat row, which the floor refuses
+   and which this build's own thesis refuses by name. */
+.specimen{padding:var(--s6) var(--s5) var(--s5);border-bottom:1px solid var(--rule-soft);
+  position:relative;overflow:hidden}
+.specimen h1{margin:0 0 var(--s3);font-size:var(--t-display);position:relative;z-index:1}
+.caption{position:relative;z-index:1;margin:0;font-size:var(--t-body);color:var(--ink-dim);
+  border-top:1px solid var(--rule-soft);padding-top:var(--s3);max-width:72ch}
+.caption b{color:var(--ink);font-weight:500}
+.caption .sep{color:var(--rule-strong);padding:0 var(--s2)}
+
+/* An authored raster, not a CSS value: a 45° screen at 60 lpi running 99.7% ink
+   to 6.1% across its width, generated as an alpha mask so the ink stays a token. */
+/* background stays transparent unless masking is actually supported: an engine
+   or minifier that drops the mask would otherwise paint a solid copper block
+   over the right half of the specimen — the 3.21:1 condition the flip prevents. */
+.plate{position:absolute;top:0;right:0;bottom:0;width:min(52%,620px);pointer-events:none;
+  background:transparent;opacity:.34;
+  -webkit-mask:url("halftone-plate.png") right center/cover no-repeat;
+  mask:url("halftone-plate.png") right center/cover no-repeat;
+  /* The plate's 99.7% end is its left edge; mirrored so the ink bleeds off the
+     outer margin instead of facing the caption. Copper at .34 over ground
+     composites to ~#513021, where --ink-dim would fall to 3.21:1. */
+  transform:scaleX(-1)}
+
+@supports ((mask-image:url("halftone-plate.png")) or (-webkit-mask-image:url("halftone-plate.png"))){
+  .plate{background:var(--copper)}
+}
+
+/* ── Sheet ────────────────────────────────────────────────────────────────── */
+.sheet{display:grid;grid-template-columns:232px 1fr;align-items:start}
+.bay{border-right:1px solid var(--rule-soft);padding:var(--s5) 0;position:sticky;top:0}
+.bay h2{margin:0 var(--s5) var(--s3);font-size:var(--t-meta);letter-spacing:.16em;
+  text-transform:uppercase;color:var(--ink-dim);font-weight:400}
+.bay ul{list-style:none;margin:0;padding:0}
+.bay a{display:flex;align-items:baseline;gap:var(--s2);padding:var(--s2) var(--s5);
+  text-decoration:none;color:var(--ink-dim);font-size:var(--t-row);border-left:1px solid transparent}
+.bay a:hover{color:var(--ink)}
+/* State on the world's grammar — ink and a 1px lit edge — because no fill step is
+   dependable at this lightness. A thick coloured side stripe is refused. */
+.bay a[aria-current="true"]{color:var(--ink);border-left-color:var(--accent);background:var(--ground-raised)}
+.bay a[aria-current="true"] .nm{color:var(--accent)}
+.bay .nm{font-family:"Silkscreen",monospace;font-size:var(--t-px-sm);letter-spacing:.02em}
+.bay .ct{margin-left:auto;font-size:var(--t-meta);color:var(--ink-dim);font-variant-numeric:tabular-nums}
+
+.catalog{padding:var(--s5);min-width:0}
+
+.toolbar{display:flex;gap:var(--s3);align-items:center;flex-wrap:wrap;margin-bottom:var(--s5)}
+.search{flex:1;min-width:220px;display:flex;align-items:center;gap:var(--s3);
+  border:1px solid var(--rule-strong);padding:var(--s3);background:var(--ground-sunk)}
+.search:focus-within{border-color:var(--accent);outline:2px solid var(--focus);outline-offset:2px}
+.search input{flex:1;background:transparent;border:0;color:var(--ink);font:inherit;
+  font-size:var(--t-row);outline:none;min-width:0}
+.search input::placeholder{color:var(--ink-dim)}
+
+.action{font-family:"Silkscreen",monospace;font-size:var(--t-px-sm);letter-spacing:.04em;
+  text-transform:uppercase;background:var(--accent);color:var(--accent-ink);border:0;
+  padding:var(--s3) var(--s4);cursor:pointer}
+/* The board puts the pixel step on ACTIVE and keeps DEFAULT flat. Matched. */
+.action:hover{box-shadow:0 0 0 2px var(--ground),0 0 0 3px var(--accent)}
+.action:active{box-shadow:3px 0 0 var(--accent-ink),6px 0 0 var(--accent);transform:translateX(-2px)}
+.action[disabled]{background:transparent;color:var(--ink-dim);border:1px solid var(--rule-strong);
+  box-shadow:none;cursor:not-allowed;transform:none}
+
+/* ── Catalog ──────────────────────────────────────────────────────────────── */
+/* Wide content scrolls inside its own container. The body must never scroll
+   horizontally — at 390px the fixed columns alone claimed 260px of a 358px box. */
+.table-wrap{overflow-x:auto;overscroll-behavior-x:contain}
+table{width:100%;border-collapse:collapse;min-width:0}
+.c-state{width:136px}.c-ver{width:124px}.c-size{width:96px}.c-fetch{width:124px}
+caption{text-align:left;font-size:var(--t-meta);color:var(--ink-dim);letter-spacing:.1em;
+  text-transform:uppercase;padding-bottom:var(--s3)}
+thead th{text-align:left;font-size:var(--t-meta);letter-spacing:.14em;text-transform:uppercase;
+  color:var(--ink-dim);font-weight:400;padding:0 var(--s3) var(--s2) 0;
+  border-bottom:1px solid var(--rule-strong)}
+tbody td{padding:var(--s3) var(--s3) var(--s3) 0;border-bottom:1px dashed var(--rule-soft);
+  vertical-align:baseline}
+tbody tr:hover td{background:var(--ground-raised);border-bottom-style:solid;border-bottom-color:var(--rule-strong)}
+tbody tr:hover .pkg{text-decoration:underline;text-decoration-color:var(--rule-strong)}
+.pkg{font-size:var(--t-row);color:var(--ink);overflow-wrap:anywhere}
+.ver{color:var(--ink-dim);font-variant-numeric:tabular-nums}
+.num{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink-dim);white-space:nowrap}
+
+/* ── Resolution as state ──────────────────────────────────────────────────────
+   The world's honest toggle: what BatleHub holds and has verified renders at full
+   resolution; what it does not renders coarse. Sized to survive being read from a
+   second screen. Never colour alone — pattern, word and hue all carry it. */
+.state{display:inline-flex;align-items:center;gap:var(--s3);white-space:nowrap}
+.matrix{display:grid;gap:1px;flex:none}
+.matrix i{display:block;background:currentColor;opacity:.18}
+.matrix i.on{opacity:1}
+.matrix.fine{grid-template-columns:repeat(3,5px);grid-template-rows:repeat(3,5px)}
+.matrix.fine i{width:5px;height:5px}
+.matrix.coarse{grid-template-columns:repeat(2,8px);grid-template-rows:repeat(2,8px)}
+.matrix.coarse i{width:8px;height:8px}
+.state span{font-size:var(--t-meta);letter-spacing:.1em;text-transform:uppercase}
+.s-cached{color:var(--ink)}
+.s-stale,.s-held{color:var(--copper)}
+.s-pending,.s-yanked{color:var(--ink-dim)}
+.s-blocked{color:var(--accent)}
+
+/* Every denial states its rule in its own row, tied to the package by
+   aria-describedby — not one note floating above the table. */
+tr.note-row td{border-bottom:1px dashed var(--rule-soft);padding-top:0}
+.note{margin:0;font-size:var(--t-body);color:var(--ink-dim);display:flex;gap:var(--s3);align-items:stretch}
+.note > span{min-width:0;overflow-wrap:anywhere}
+.note .bar{flex:none;width:1px;background:var(--rule-strong)}
+.note b{color:var(--accent);font-weight:500}
+
+@keyframes resolve{from{filter:blur(2.5px) contrast(1.7);opacity:.55}to{filter:none;opacity:1}}
+.resolving{animation:resolve var(--resolve) both}
+@media (prefers-reduced-motion:reduce){.resolving{animation:none}*{transition:none!important}}
+
+.pager{display:flex;gap:var(--s3);align-items:center;margin-top:var(--s5);
+  font-size:var(--t-body);color:var(--ink-dim);flex-wrap:wrap}
+.pager .page{font-family:"Silkscreen",monospace;color:var(--ink);font-size:var(--t-px-sm)}
+
+.panel{border:1px solid var(--rule-strong);padding:var(--s6) var(--s5);text-align:center}
+.panel h3{font-family:"Silkscreen",monospace;font-size:var(--t-px-sm);margin:0 0 var(--s3);color:var(--ink)}
+.panel p{margin:0 auto;max-width:64ch;color:var(--ink-dim)}
+.panel.error{border-color:var(--accent)}
+.panel.error h3{color:var(--accent)}
+.panel .act{margin-top:var(--s4)}
+
+.synthetic{margin:0;padding:var(--s3) var(--s5);background:var(--ground-sunk);
+  border-top:1px solid var(--rule-soft);font-size:var(--t-meta);color:var(--ink-dim)}
+.synthetic b{color:var(--copper);font-weight:500}
+
+@media (max-width:900px){
+  .sheet{grid-template-columns:1fr}
+  .bay{border-right:0;border-bottom:1px solid var(--rule-soft);position:static;padding:var(--s3) 0}
+  .bay ul{display:flex;overflow-x:auto;gap:var(--s1);padding:0 var(--s4)}
+  .bay a{padding:var(--s2) var(--s3);white-space:nowrap;border-left:0;border-bottom:2px solid transparent}
+  .bay a[aria-current="true"]{border-left:0;border-bottom-color:var(--accent)}
+  .bay h2{margin:0 var(--s4) var(--s2)}
+  .bay .ct{margin-left:var(--s2)}
+  .catalog{padding:var(--s4)}
+  .masthead{padding:var(--s3) var(--s4);gap:var(--s3)}
+  .specimen{padding:var(--s5) var(--s4)}
+  .plate{width:64%;opacity:.26}
+  .num.drop,thead th.drop{display:none}
+  /* Content-sized columns: 260px of fixed width does not fit a 358px box. */
+  .c-state,.c-ver{width:auto}
+  .state{white-space:normal}
+  .sheet,.catalog,.toolbar,.masthead{max-width:100%}
+  .search{min-width:0}
+}
+</style>
+</head>
+<body>
+<!--
+THESIS: The catalog read as a bitmap type specimen, where an artifact's state is
+its resolution. Refuses the card grid and the stat-tile row this category ships.
+OWN-WORLD: Monofolio OKLCH verbatim on near-black — warm off-white ink, crimson
+as the one accent, copper second. Silkscreen bitmap display over JetBrains Mono
+data. Hairline rules and an authored 60lpi halftone plate; no cards.
+STORY: An operator arriving mid-incident sees which artifacts are held, blocked or
+stale before reading a word, and each denial states its rule in its own row.
+FIRST VIEWPORT: Masthead, then the registry in view at poster scale over its
+screened plate, captioned by its facts; registries ranked left; ruled rows.
+FORM: Emigre bitmap specimen, user-chosen over the roll's assignment (Flight
+Progress Strips); seed key 51446004. Palette settled by measurement (RFC 0003 R9).
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+-->
+<a class="skip" href="#main" data-i18n="skip">Skip to catalog</a>
+
+<header class="masthead">
+  <a class="wordmark" href="#">
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+      <rect x="0" y="0" width="4" height="4"/><rect x="6" y="0" width="4" height="4"/><rect x="12" y="0" width="4" height="4"/>
+      <rect x="0" y="6" width="4" height="4"/><rect x="6" y="6" width="4" height="4"/><rect x="12" y="6" width="4" height="4"/>
+      <rect x="0" y="12" width="4" height="4"/><rect x="6" y="12" width="4" height="4"/><rect x="12" y="12" width="4" height="4"/>
+    </svg>
+    BatleHub<span class="dot">.</span>
+  </a>
+  <nav id="primary-nav" aria-label="Primary">
+    <a href="#" aria-current="page" data-i18n="nav.packages">Packages</a>
+    <a href="#" data-i18n="nav.setup">Setup</a>
+    <a href="#" data-i18n="nav.admin">Admin</a>
+  </nav>
+  <div class="spacer"></div>
+  <p class="who">hub.<b>batle.dev</b>
+    <span class="role">admin</span>
+    <span>m.leriche</span></p>
+  <div class="settings">
+    <button class="ctl" id="settings-btn" aria-expanded="false" aria-controls="settings-pop"
+            data-i18n="settings">Settings</button>
+    <div class="pop" id="settings-pop" role="group" aria-labelledby="settings-h" hidden>
+      <h2 id="settings-h" data-i18n="settings.h">Settings</h2>
+      <p class="pref-label" id="lang-label" data-i18n="settings.lang">Language</p>
+      <div class="segmented" role="group" aria-labelledby="lang-label">
+        <button data-lang="system" data-i18n="settings.system">System</button>
+        <button data-lang="en">English</button>
+        <button data-lang="fr">Français</button>
+      </div>
+      <p class="pref-note" id="lang-note"></p>
+      <p class="pref-label" id="theme-label" data-i18n="settings.theme">Theme</p>
+      <div class="segmented" role="group" aria-labelledby="theme-label">
+        <button data-theme-pref="system" data-i18n="settings.system">System</button>
+        <button data-theme-pref="light" data-i18n="settings.light">Light</button>
+        <button data-theme-pref="dark" data-i18n="settings.dark">Dark</button>
+      </div>
+      <p class="pref-note" id="theme-note"></p>
+    </div>
+  </div>
+</header>
+
+<main id="main" tabindex="-1">
+<section class="specimen">
+  <div class="plate" aria-hidden="true"></div>
+  <h1 class="display" id="reg-name">npm1</h1>
+  <p class="caption" id="reg-caption"></p>
+</section>
+
+<div class="sheet">
+  <aside class="bay">
+    <h2 id="bay-title" data-i18n="bay.title">Registries</h2>
+    <ul id="bay" aria-labelledby="bay-title"></ul>
+  </aside>
+
+  <section class="catalog" id="catalog" tabindex="-1" aria-labelledby="catalog-title">
+    <h2 class="sr" id="catalog-title" data-i18n="catalog.title">Package catalog</h2>
+
+    <div class="toolbar">
+      <div class="search">
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" fill="none"
+             stroke="currentColor" stroke-width="1.5" style="color:var(--ink-dim)">
+          <circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 L15 15"/>
+        </svg>
+        <label class="sr" for="q" data-i18n="search.label">Search packages</label>
+        <input id="q" type="search" placeholder="serde, @scope/pkg" data-i18n-ph="search.ph" />
+      </div>
+      <button class="action" id="pull" data-i18n="action.pull">Simulate pull</button>
+    </div>
+
+    <div id="surface"></div>
+    <p class="sr" role="status" aria-live="polite" id="live"></p>
+  </section>
+</div>
+</main>
+
+<p class="synthetic"><b data-i18n="synthetic.tag">Design proof</b> —
+  <span data-i18n="synthetic.body">every package, count and timestamp is synthetic fixture data, not a real instance.</span></p>
+
+<script>
+const REGISTRIES = [
+  {id:"npm1",     mode:"hybrid", up:"registry.npmjs.org", count:1284, size:"6.1 GB"},
+  {id:"cargo1",   mode:"proxy",  up:"index.crates.io",    count:892,  size:"3.4 GB"},
+  {id:"pypi1",    mode:"hybrid", up:"pypi.org",           count:640,  size:"2.8 GB"},
+  {id:"maven1",   mode:"proxy",  up:"repo1.maven.org",    count:411,  size:"9.7 GB"},
+  {id:"goproxy1", mode:"proxy",  up:"proxy.golang.org",   count:318,  size:"1.2 GB"},
+  {id:"nuget1",   mode:"local",  up:"—",                  count:96,   size:"780 MB"},
+  {id:"generic1", mode:"proxy",  up:"nodejs.org/dist",    count:24,   size:"14.2 GB", down:true}
+];
+const STATES = {
+  cached :{cls:"s-cached", fine:true,  on:[1,1,1,1,1,1,1,1,1]},
+  stale  :{cls:"s-stale",  fine:true,  on:[1,1,1,1,0,1,1,1,1]},
+  pending:{cls:"s-pending",fine:false, on:[1,0,0,1]},
+  held   :{cls:"s-held",   fine:false, on:[1,1,1,0]},
+  blocked:{cls:"s-blocked",fine:false, on:[1,1,1,1]},
+  yanked :{cls:"s-yanked", fine:false, on:[1,0,0,0]}
+};
+const PKGS = [
+  {n:"@batlehub/ui-kit",v:"2.4.1",s:"cached",z:"412 KB",t:"2 min"},
+  {n:"serde",v:"1.0.219",s:"cached",z:"78 KB",t:"6 min"},
+  {n:"@internal/auth-client",v:"0.9.0",s:"held",z:"96 KB",t:"9 min",note:"note.age"},
+  {n:"requests",v:"2.32.3",s:"cached",z:"64 KB",t:"14 min"},
+  {n:"org.springframework:spring-core",v:"6.2.1",s:"stale",z:"1.7 MB",t:"3 h"},
+  {n:"left-pad",v:"latest",s:"blocked",z:"—",t:"3 h",note:"note.latest"},
+  {n:"github.com/spf13/cobra",v:"1.8.1",s:"cached",z:"312 KB",t:"5 h"},
+  {n:"tokio",v:"1.44.0",s:"cached",z:"742 KB",t:"5 h"},
+  {n:"@acme/design-tokens",v:"3.1.0",s:"yanked",z:"22 KB",t:"8 h",note:"note.yanked"},
+  {n:"numpy",v:"2.2.4",s:"cached",z:"18 MB",t:"9 h"},
+  {n:"com.fasterxml.jackson:databind",v:"2.18.2",s:"stale",z:"1.6 MB",t:"11 h"},
+  {n:"clap",v:"4.6.8",s:"cached",z:"196 KB",t:"14 h"},
+  {n:"vite",v:"8.2.1",s:"cached",z:"2.9 MB",t:"16 h"},
+  {n:"@types/node",v:"26.2.0",s:"cached",z:"3.4 MB",t:"18 h"},
+  {n:"cryptography",v:"44.0.1",s:"pending",z:"—",t:"—"},
+  {n:"axum",v:"0.9.2",s:"cached",z:"268 KB",t:"1 d"},
+  {n:"pydantic",v:"2.11.0",s:"cached",z:"2.1 MB",t:"1 d"},
+  {n:"sqlx",v:"0.9.1",s:"stale",z:"512 KB",t:"2 d"}
+];
+const STR = {
+ en:{"skip":"Skip to catalog","nav.packages":"Packages","nav.setup":"Setup","nav.admin":"Admin",
+  "nav.aria":"Primary","bay.title":"Registries","catalog.title":"Package catalog",
+  "search.label":"Search packages","search.ph":"serde, @scope/pkg","action.pull":"Simulate pull",
+  "th.state":"State","th.package":"Package","th.version":"Version","th.size":"Size","th.fetched":"Last fetch",
+  "st.cached":"Cached","st.stale":"Stale","st.pending":"Pending","st.held":"Held","st.blocked":"Blocked","st.yanked":"Yanked",
+  "cap":"%n packages · sorted by last fetch","pager":"Page %a of %b","prev":"Previous","next":"Next",
+  "pager.aria":"Catalog pages",
+  "note.age":"Release age gate — published 11 minutes ago, held until 24 h.",
+  "note.latest":"Deny-latest rule — pin an exact version.",
+  "note.yanked":"Yanked by its owner — resolvable only by exact version.",
+  "note.check":"Check access","empty.title":"Nothing matches",
+  "empty.body":"No package in this registry matches that search.","clear":"Clear filter",
+  "err.title":"Upstream unreachable",
+  "err.body":"nodejs.org/dist did not answer in 10 s. Cached artifacts are still served; new fetches fail until it returns.",
+  "err.retry":"Retry now","loading":"Resolving…","pulled":"%p resolved from upstream and cached.",
+  "err.back":"%r is answering again — new fetches resume.",
+  "facts":"%m · %u · %c packages · %s cached","facts.local":"%m · no upstream · %c packages · %s stored",
+  "settings":"Settings","settings.h":"Settings","settings.lang":"Language","settings.system":"System",
+  "settings.theme":"Theme","settings.light":"Light","settings.dark":"Dark",
+  "settings.themenote":"System follows your device — currently %t.",
+  "settings.sysnote":"System follows your browser — currently %l.",
+  "synthetic.tag":"Design proof","synthetic.body":"every package, count and timestamp is synthetic fixture data, not a real instance."},
+ fr:{"skip":"Aller au catalogue","nav.packages":"Paquets","nav.setup":"Configuration","nav.admin":"Administration",
+  "nav.aria":"Principale","bay.title":"Registres","catalog.title":"Catalogue de paquets",
+  "search.label":"Rechercher des paquets","search.ph":"serde, @scope/pkg","action.pull":"Simuler un appel",
+  "th.state":"État","th.package":"Paquet","th.version":"Version","th.size":"Taille","th.fetched":"Dernier appel",
+  "st.cached":"En cache","st.stale":"Périmé","st.pending":"En cours","st.held":"Retenu","st.blocked":"Bloqué","st.yanked":"Retiré",
+  "cap":"%n paquets · triés par dernier appel","pager":"Page %a sur %b","prev":"Précédent","next":"Suivant",
+  "pager.aria":"Pages du catalogue",
+  "note.age":"Fenêtre de quarantaine — publié il y a 11 minutes, retenu jusqu'à 24 h.",
+  "note.latest":"Règle deny-latest — épinglez une version exacte.",
+  "note.yanked":"Retiré par son propriétaire — résolvable uniquement par version exacte.",
+  "note.check":"Vérifier l'accès","empty.title":"Aucun résultat",
+  "empty.body":"Aucun paquet de ce registre ne correspond.","clear":"Effacer le filtre",
+  "err.title":"Amont injoignable",
+  "err.body":"nodejs.org/dist n'a pas répondu en 10 s. Les artefacts en cache sont toujours servis ; les nouveaux appels échouent jusqu'à son retour.",
+  "err.retry":"Réessayer","loading":"Résolution…","pulled":"%p récupéré depuis l'amont et mis en cache.",
+  "err.back":"%r répond à nouveau — les appels reprennent.",
+  "facts":"%m · %u · %c paquets · %s en cache","facts.local":"%m · sans amont · %c paquets · %s stockés",
+  "settings":"Paramètres","settings.h":"Paramètres","settings.lang":"Langue","settings.system":"Système",
+  "settings.theme":"Thème","settings.light":"Clair","settings.dark":"Sombre",
+  "settings.themenote":"Système suit votre appareil — actuellement %t.",
+  "settings.sysnote":"Système suit votre navigateur — actuellement %l.",
+  "synthetic.tag":"Maquette","synthetic.body":"chaque paquet, compteur et horodatage est une donnée fictive, pas une instance réelle."}
+};
+
+/* The stored preference is one of system|en|fr; `lang` is what it resolves to.
+   Keeping them separate is the whole point: "System" must survive a browser
+   language change, which a stored "en" would silently swallow. */
+const LOCALE_KEY="batlehub.locale";
+let langPref=(()=>{try{return localStorage.getItem(LOCALE_KEY)||"system"}catch{return "system"}})();
+const systemLang=()=>(navigator.language||"en").toLowerCase().startsWith("fr")?"fr":"en";
+const THEME_KEY="batlehub.theme";
+let themePref=(()=>{try{return localStorage.getItem(THEME_KEY)||"system"}catch{return "system"}})();
+const systemTheme=()=>matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";
+const applyTheme=()=>{document.documentElement.dataset.theme=
+  themePref==="system"?systemTheme():themePref;};
+/* Re-resolve when the OS flips, but only while the preference is still System. */
+matchMedia("(prefers-color-scheme: light)").addEventListener("change",()=>{
+  if(themePref==="system"){applyTheme();syncPrefs();}});
+let lang=langPref==="system"?systemLang():langPref;
+let active="npm1", query="", loading=false;
+const rows=PKGS.slice();
+const t=k=>STR[lang][k]??k;
+const el=s=>document.querySelector(s);
+const nf=()=>new Intl.NumberFormat(lang==="fr"?"fr-FR":"en-US");   // one formatter, everywhere
+
+function matrix(state){
+  const st=STATES[state];
+  return '<span class="matrix '+(st.fine?"fine":"coarse")+'" aria-hidden="true">'+
+    st.on.map(o=>'<i class="'+(o?"on":"")+'"></i>').join("")+'</span>';
+}
+
+function renderBay(){
+  el("#bay").innerHTML = REGISTRIES.map(r=>
+    '<li><a href="#" data-reg="'+r.id+'"'+(r.id===active?' aria-current="true"':"")+'>'+
+    '<span class="nm">'+r.id+'</span><span class="ct">'+nf().format(r.count)+'</span></a></li>').join("");
+}
+/* Selection flips attributes in place. Rebuilding this list with innerHTML
+   destroyed the element the user had just activated, dropping focus to body. */
+function markBay(){
+  el("#bay").querySelectorAll("[data-reg]").forEach(a=>{
+    if(a.dataset.reg===active) a.setAttribute("aria-current","true");
+    else a.removeAttribute("aria-current");
+  });
+}
+function renderHead(){
+  const r=REGISTRIES.find(x=>x.id===active);
+  el("#reg-name").textContent=r.id;
+  el("#reg-caption").innerHTML = t(r.mode==="local"?"facts.local":"facts")
+    .replace("%m","<b>"+r.mode+"</b>").replace("%u",r.up)
+    .replace("%c","<b>"+nf().format(r.count)+"</b>").replace("%s","<b>"+r.size+"</b>")
+    .replace(/ · /g,'<span class="sep">·</span>');
+}
+
+function renderSurface(animate){
+  const host=el("#surface");
+  const reg=REGISTRIES.find(x=>x.id===active);
+
+  if(loading){
+    host.innerHTML='<div class="panel"><h3>'+t("loading")+'</h3><p>'+matrix("pending")+'</p></div>';
+    return;
+  }
+  if(reg.down){
+    host.innerHTML='<div class="panel error"><h3>'+t("err.title")+'</h3><p>'+t("err.body")+'</p>'+
+      '<p class="act"><button class="action" id="retry">'+t("err.retry")+'</button></p></div>';
+    el("#retry").addEventListener("click",()=>{
+      loading=true; renderSurface();
+      setTimeout(()=>{
+        reg.down=false; loading=false; renderSurface(true);
+        el("#live").textContent=t("err.back").replace("%r",reg.id);
+        /* Re-rendering removed the button that had focus. Same defect the bay
+           fix closed; it has a sibling here. Focus lands on the surface the
+           retry produced, not on document.body. */
+        el("#catalog").focus();
+      },900);
+    });
+    return;
+  }
+
+  const q=query.trim().toLowerCase();
+  const list=q?rows.filter(p=>p.n.toLowerCase().includes(q)):rows;
+
+  if(!list.length){
+    host.innerHTML='<div class="panel"><h3>'+t("empty.title")+'</h3><p>'+t("empty.body")+'</p>'+
+      '<p class="act"><button class="ctl" id="clear">'+t("clear")+'</button></p></div>';
+    el("#clear").addEventListener("click",()=>{query="";el("#q").value="";renderSurface(true);el("#q").focus();});
+    return;
+  }
+
+  const body=list.map((p,i)=>{
+    const st=STATES[p.s];
+    const nid=p.note?"note-"+i:null;
+    let out='<tr class="'+(animate?"resolving":"")+'">'+
+      '<td><span class="state '+st.cls+'">'+matrix(p.s)+'<span>'+t("st."+p.s)+'</span></span></td>'+
+      '<td class="pkg"'+(nid?' aria-describedby="'+nid+'"':"")+'>'+p.n+'</td>'+
+      '<td class="ver">'+p.v+'</td>'+
+      '<td class="num drop">'+p.z+'</td>'+
+      '<td class="num drop">'+p.t+'</td></tr>';
+    if(p.note){
+      out+='<tr class="note-row '+(animate?"resolving":"")+'"><td></td><td colspan="2">'+
+        '<p class="note" id="'+nid+'"><span class="bar" aria-hidden="true"></span>'+
+        '<span>'+t(p.note)+' <a href="#">'+t("note.check")+'</a></span></p></td>'+
+        '<td class="num drop"></td><td class="num drop"></td></tr>';
+    }
+    return out;
+  }).join("");
+
+  host.innerHTML='<div class="table-wrap"><table><caption>'+
+    t("cap").replace("%n",nf().format(list.length===rows.length?reg.count:list.length))+'</caption>'+
+    '<thead><tr>'+
+    '<th scope="col" class="c-state">'+t("th.state")+'</th>'+
+    '<th scope="col">'+t("th.package")+'</th>'+
+    '<th scope="col" class="c-ver">'+t("th.version")+'</th>'+
+    '<th scope="col" class="num drop c-size">'+t("th.size")+'</th>'+
+    '<th scope="col" class="num drop c-fetch">'+t("th.fetched")+'</th>'+
+    '</tr></thead><tbody>'+body+'</tbody></table></div>'+
+    '<nav class="pager" aria-label="'+t("pager.aria")+'">'+
+    '<button class="ctl" disabled>'+t("prev")+'</button>'+
+    '<span class="page">01</span>'+
+    '<span>'+t("pager").replace("%a","1").replace("%b","64")+'</span>'+
+    '<button class="ctl">'+t("next")+'</button></nav>';
+}
+
+function syncPrefs(){
+  document.querySelectorAll("[data-lang]").forEach(b=>
+    b.setAttribute("aria-pressed",String(b.dataset.lang===langPref)));
+  document.querySelectorAll("[data-theme-pref]").forEach(b=>
+    b.setAttribute("aria-pressed",String(b.dataset.themePref===themePref)));
+  el("#lang-note").textContent=langPref==="system"
+    ? t("settings.sysnote").replace("%l",systemLang().toUpperCase()) : "";
+  el("#theme-note").textContent=themePref==="system"
+    ? t("settings.themenote").replace("%t",t("settings."+systemTheme())) : "";
+}
+function applyLang(){
+  document.documentElement.lang=lang;
+  document.querySelectorAll("[data-i18n]").forEach(n=>n.textContent=t(n.dataset.i18n));
+  document.querySelectorAll("[data-i18n-ph]").forEach(n=>n.placeholder=t(n.dataset.i18nPh));
+  el("#primary-nav").setAttribute("aria-label",t("nav.aria"));
+  syncPrefs();
+  renderHead(); renderBay(); renderSurface(false);
+}
+
+el("#bay").addEventListener("click",e=>{
+  const a=e.target.closest("[data-reg]"); if(!a) return;
+  e.preventDefault(); active=a.dataset.reg;
+  markBay(); renderHead();
+  loading=true; renderSurface();
+  setTimeout(()=>{loading=false;renderSurface(true);},420);
+  a.focus();
+});
+el("#q").addEventListener("input",e=>{query=e.target.value;renderSurface(false);});
+const pop=el("#settings-pop"), settingsBtn=el("#settings-btn");
+function setPop(open){
+  pop.hidden=!open; settingsBtn.setAttribute("aria-expanded",String(open));
+  if(open) pop.querySelector("[data-lang]").focus(); else settingsBtn.focus();
+}
+settingsBtn.addEventListener("click",()=>setPop(pop.hidden));
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!pop.hidden) setPop(false);});
+document.addEventListener("click",e=>{
+  if(!pop.hidden && !pop.contains(e.target) && e.target!==settingsBtn) pop.hidden=true,
+    settingsBtn.setAttribute("aria-expanded","false");
+});
+pop.addEventListener("click",e=>{
+  const th=e.target.closest("[data-theme-pref]");
+  if(th){
+    themePref=th.dataset.themePref;
+    try{localStorage.setItem(THEME_KEY,themePref)}catch{/* private mode: session only */}
+    applyTheme(); syncPrefs();
+    el("#live").textContent=t("settings.theme");
+    return;
+  }
+  const b=e.target.closest("[data-lang]"); if(!b) return;
+  langPref=b.dataset.lang;
+  try{localStorage.setItem(LOCALE_KEY,langPref)}catch{/* private mode: session only */}
+  lang=langPref==="system"?systemLang():langPref;
+  applyLang();
+  el("#live").textContent=t("settings.lang");
+});
+el("#pull").addEventListener("click",()=>{
+  const p=rows.find(x=>x.s==="pending"); if(!p) return;
+  p.s="cached"; p.z="4.7 MB"; p.t="now";
+  renderSurface(true);
+  el("#live").textContent=t("pulled").replace("%p",p.n);
+  el("#pull").disabled=true;
+});
+
+applyLang();
+</script>
+</body>
+</html>

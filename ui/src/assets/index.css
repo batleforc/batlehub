@@ -1,12 +1,71 @@
-@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap");
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "../design/tokens.css";
 
-@custom-variant dark (&:where(.dark, .dark *));
+/* Dark is the BASE rendition in ui/src/design/tokens.css — bare `:root` — and
+   light overrides at `:root[data-theme="light"]`. The variant has to mirror
+   that exactly, so it matches "not explicitly light" rather than "explicitly
+   dark": with the latter, a document whose data-theme is not yet set (first
+   paint, or JS disabled) renders dark tokens while every `dark:` utility stays
+   inactive, putting light-variant styles on a dark ground. */
+@custom-variant dark (&:where(:root:not([data-theme="light"]), :root:not([data-theme="light"]) *));
+
+/* ── The two faces ────────────────────────────────────────────────────────────
+   Self-hosted, per DESIGN.md — and not merely for speed. `font-src` is
+   `'self' data:` (build/csp.ts), so the Google Fonts import these replace was
+   being refused by our own policy: the specimen's text face has never actually
+   painted, and every surface has been falling back to `ui-monospace`.
+   `font-display: swap` because a blank masthead on a cold cache is worse than
+   a reflow. Files are preloaded from index.html.
+   ────────────────────────────────────────────────────────────────────────── */
+@font-face {
+  font-family: "Silkscreen";
+  src: url("/fonts/silkscreen-400.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Silkscreen";
+  src: url("/fonts/silkscreen-700.woff2") format("woff2");
+  font-weight: 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/jetbrainsmono-latin.woff2") format("woff2");
+  font-weight: 100 800;
+  font-display: swap;
+}
 
 @theme {
-  --font-family-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-family-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  /* Tailwind 4 reads the `--font-*` namespace; the `--font-family-*` names
+     these replace generated no utility at all, which is why `font-mono` has
+     been resolving to the browser default rather than to the design's face.
+     There is no sans in this world — every fact is set in the mono text face,
+     so `font-sans` and `font-mono` deliberately resolve to the same stack. */
+  --font-sans: var(--face-text);
+  --font-mono: var(--face-text);
+  --font-display: var(--face-display);
+
+  /* The data ramp, mapped onto the utilities the components already use, so
+     the scale applies without every call site being rewritten. DESIGN.md's
+     Row/Body/Meta steps are 15/13/12 — not Tailwind's 16/14/12. */
+  --text-xs: var(--t-meta);
+  --text-sm: var(--t-body);
+  --text-base: var(--t-row);
+  --text-lg: var(--t-head);
+  --text-xl: var(--t-px-md);
+  --text-2xl: var(--t-px-md);
+
+  /* The two steps that were declared in tokens.css and mapped to nothing, so
+     no utility could reach them and every call site reached for the largest
+     one that existed instead (RFC 0004-bis §14.9).
+     `text-2xl` is 24px, which is a legal Silkscreen step — so nothing looked
+     wrong, and `/packages` spent 24px where its own design proof spends 104.
+     Same class as RFC 0003 §13's `--font-family-*`: a token that generates no
+     utility is a token that was never adopted. */
+  --text-sub: var(--t-sub); /* 16 — the Silkscreen small step, --t-px-sm's twin */
+  --text-display: var(--t-display); /* 56 → 72 → 88 → 104, discrete per breakpoint */
 
   --radius-lg: var(--radius);
   --radius-md: var(--radius);
@@ -24,14 +83,27 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--surface-hover);
+  --color-accent-foreground: var(--surface-hover-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-copper: var(--copper);
+
+  /* The two surface tokens the bridge above could not name honestly, exposed
+     under the design system's own names rather than borrowed ones.
+     `--ground-sunk` was only reachable as `bg-popover`, which is a menu's
+     colour that happens to share a value — a re-cut component asking for a
+     *sunk ground* had to write a lie to get one. `--rule-soft` was reachable as
+     nothing at all: it is declared in tokens.css, it means "separator, not a
+     contrast-carrying edge", and every separator in the app was therefore
+     drawn with `--rule-strong` at an opacity instead. Same class of miss as
+     RFC 0004-bis §14.9's display steps: a token with no utility is a token
+     nobody adopted. These retire the aliases as components are re-cut. */
+  --color-ground-sunk: var(--ground-sunk);
+  --color-rule-soft: var(--rule-soft);
 
   --animate-accordion-down: accordion-down 0.2s ease-out;
   --animate-accordion-up: accordion-up 0.2s ease-out;
@@ -61,60 +133,56 @@
   max-width: 1400px;
 }
 
-/* ── Light mode (warm Monofolio adaptation) ──────────────────────────────── */
-:root {
-  --background: oklch(0.97 0.008 18);
-  --foreground: oklch(0.12 0.022 20);
-  --card: oklch(0.95 0.006 18);
-  --card-foreground: oklch(0.12 0.022 20);
-  --popover: oklch(0.95 0.006 18);
-  --popover-foreground: oklch(0.12 0.022 20);
-  --primary: oklch(0.52 0.24 25);
-  --primary-foreground: oklch(0.97 0.01 0);
-  --secondary: oklch(0.92 0.01 18);
-  --secondary-foreground: oklch(0.52 0.24 25);
-  --muted: oklch(0.92 0.01 18);
-  --muted-foreground: oklch(0.44 0.04 25);
-  --accent: oklch(0.52 0.24 25 / 0.1);
-  --accent-foreground: oklch(0.52 0.24 25);
-  --copper: oklch(0.58 0.12 52);
-  --destructive: oklch(0.5 0.26 25);
-  --destructive-foreground: oklch(0.97 0.01 0);
-  --border: oklch(0.52 0.24 25 / 0.2);
-  --input: oklch(0.52 0.24 25 / 0.1);
-  --ring: oklch(0.52 0.24 25 / 0.4);
-  --radius: 0.125rem;
-  --grid-line: oklch(0.52 0.24 25 / 0.06);
-  --cyber-glow: 0 0 6px oklch(0.52 0.24 25 / 0.5), 0 0 20px oklch(0.52 0.24 25 / 0.18);
-  --steam-glow: 0 0 6px oklch(0.58 0.12 52 / 0.5), 0 0 20px oklch(0.58 0.12 52 / 0.18);
-}
+/* ── Bridge: legacy names → the design system ─────────────────────────────────
+   The values live in ui/src/design/tokens.css and nowhere else; these aliases
+   exist only so the 29 existing pages adopt the system without being rewritten,
+   and they retire as components are re-cut (RFC 0003 Phase 3+).
 
-/* ── Dark mode (full Monofolio cyberpunk) ─────────────────────────────────── */
-.dark {
-  --background: oklch(0.07 0.018 18);
-  --foreground: oklch(0.93 0.018 25);
-  --card: oklch(0.1 0.018 18);
-  --card-foreground: oklch(0.93 0.018 25);
-  --popover: oklch(0.1 0.018 18);
-  --popover-foreground: oklch(0.93 0.018 25);
-  --primary: oklch(0.65 0.26 25);
-  --primary-foreground: oklch(0.97 0.01 0);
-  --secondary: oklch(0.14 0.022 18);
-  --secondary-foreground: oklch(0.65 0.26 25);
-  --muted: oklch(0.13 0.016 18);
-  --muted-foreground: oklch(0.58 0.04 30);
-  --accent: oklch(0.65 0.26 25 / 0.12);
-  --accent-foreground: oklch(0.65 0.26 25);
-  --copper: oklch(0.72 0.14 52);
-  --destructive: oklch(0.55 0.28 25);
-  --destructive-foreground: oklch(0.97 0.01 0);
-  --border: oklch(0.65 0.26 25 / 0.22);
-  --input: oklch(0.65 0.26 25 / 0.12);
-  --ring: oklch(0.65 0.26 25 / 0.45);
-  --radius: 0.125rem;
-  --grid-line: oklch(0.65 0.26 25 / 0.06);
-  --cyber-glow: 0 0 6px oklch(0.65 0.26 25 / 0.65), 0 0 22px oklch(0.65 0.26 25 / 0.3);
-  --steam-glow: 0 0 6px oklch(0.72 0.14 52 / 0.6), 0 0 22px oklch(0.72 0.14 52 / 0.25);
+   Three mappings are deliberate corrections rather than renames:
+     - --primary-foreground now resolves to --accent-ink. It was near-white on
+       crimson at 3.58:1, an AA failure on every filled button in the app.
+     - --border and --input resolve to --rule-strong (3.68:1) rather than to a
+       soft separator, so control edges meet 1.4.11. Legacy used one token for
+       both jobs; erring toward the contrast-carrying one is the safe direction.
+     - --accent was the primary hue at 10-12% alpha used as a hover fill. Fill
+       is not a dependable state channel (see The Undependable Fill Rule), so it
+       maps to --ground-raised and hover carries on ink and rule weight.
+   ──────────────────────────────────────────────────────────────────────────── */
+:root {
+  --background: var(--ground);
+  --foreground: var(--ink);
+  --card: var(--ground-raised);
+  --card-foreground: var(--ink);
+  --popover: var(--ground-sunk);
+  --popover-foreground: var(--ink);
+  --primary: var(--accent);
+  --primary-foreground: var(--accent-ink);
+  --secondary: var(--ground-raised);
+  --secondary-foreground: var(--ink);
+  --muted: var(--ground-raised);
+  --muted-foreground: var(--ink-dim);
+  /* This is shadcn's `--accent` — "subtle hover fill" — which is a different
+     thing from the design system's `--accent`, the one synthetic accent. Same
+     name, opposite jobs, and declaring the alias here put it in the *same*
+     `:root` scope as the token, so the later declaration won: every
+     `var(--accent)` reference in this file, `--primary` and `--destructive`
+     included, resolved to near-black and the crimson never painted in either
+     rendition. It gets its own name; `bg-accent` still maps to it via @theme. */
+  --surface-hover: var(--ground-raised);
+  --surface-hover-foreground: var(--ink);
+  --destructive: var(--accent);
+  --destructive-foreground: var(--accent-ink);
+  --border: var(--rule-strong);
+  --input: var(--rule-strong);
+  --ring: var(--focus);
+
+  /* The two-axis grid is gone (RFC 0003 R8) and so is the glow. DESIGN.md's
+     Flat-At-Rest Rule leaves this system exactly two box-shadows, both
+     hard-edged, both zero-blur, and both belonging to the primary action —
+     depth here is inked, never lit. `--cyber-glow` / `--steam-glow` did not
+     survive; the rendered detector is what proved they were still painting. */
+  --action-ring: 0 0 0 2px var(--ground), 0 0 0 3px var(--accent);
+  --pixel-step: 3px 0 0 var(--accent-ink), 6px 0 0 var(--accent);
 }
 
 @layer base {
@@ -123,29 +191,40 @@
   }
   body {
     @apply bg-background text-foreground;
+    /* Every fact on the page is set in the text face; the display face is
+       opted into, never inherited. Body is DESIGN.md's prose step. */
+    font-family: var(--face-text);
+    font-size: var(--t-body);
     font-feature-settings:
       "rlig" 1,
       "calt" 1;
   }
+  /* The Data Face Rule: every number a reader might compare is tabular, so
+     columns of counts, sizes and versions align digit-for-digit. */
+  th,
+  td,
+  time,
+  [data-numeric] {
+    font-variant-numeric: tabular-nums;
+  }
 }
 
-/* ── Signature effect utilities ──────────────────────────────────────────── */
-
-.cyber-grid-bg {
-  background-image:
-    linear-gradient(var(--grid-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
-  background-size: 48px 48px;
-}
-
-.cyber-text-glow {
-  text-shadow: var(--cyber-glow);
-}
-.cyber-glow {
-  box-shadow: var(--cyber-glow);
-}
-.steam-glow {
-  box-shadow: var(--steam-glow);
+/* ── Reduced motion ───────────────────────────────────────────────────────────
+   A blanket neutraliser rather than per-component `motion-safe:`, because the
+   animations that matter most here come from radix's data-[state] transitions
+   and tw-animate-css, which no utility on our side can reach. Near-zero rather
+   than `none` so animation/transition *end* events still fire and any logic
+   waiting on them does not hang. WCAG 2.2 AA, 2.3.3.
+   ────────────────────────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* ── Shiki highlighted code blocks ───────────────────────────────────────── */
@@ -165,8 +244,52 @@
   background-color: var(--shiki-light-bg);
 }
 
-.dark .shiki-wrapper .shiki,
-.dark .shiki-wrapper .shiki span {
+[data-theme="dark"] .shiki-wrapper .shiki,
+[data-theme="dark"] .shiki-wrapper .shiki span {
   color: var(--shiki-dark);
   background-color: var(--shiki-dark-bg);
+}
+
+/* ── The halftone plate ───────────────────────────────────────────────────────
+   DESIGN.md: the system's only image. An authored 45° screen at 60 lpi running
+   99.7% ink to 6.1% across its width, applied as a CSS mask so the ink stays a
+   token rather than being baked into the raster.
+
+   Ported from `ui/design-proof/index.html`, which is runnable source rather
+   than a screenshot — the reason RFC 0004-bis §14.6 could stop treating this as
+   an interpretive redesign.
+
+   The `@supports` flip is load-bearing, not defensive boilerplate: without it,
+   an engine or minifier that drops the mask paints a solid copper block over
+   half the specimen, and `--ink-dim` on that composite falls to 3.21:1. The
+   background stays transparent until masking is known to work. */
+.plate {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: min(52%, 620px);
+  pointer-events: none;
+  background: transparent;
+  opacity: 0.34;
+  -webkit-mask: url("/halftone-plate.png") right center / cover no-repeat;
+  mask: url("/halftone-plate.png") right center / cover no-repeat;
+  /* The dense end is the raster's left edge; mirrored so the ink bleeds off the
+     outer margin instead of facing the caption. */
+  transform: scaleX(-1);
+}
+
+/* Ink on paper, glow on black — the same screen inked with its own ground's
+   colour. Lower on paper because dark dots on light carry further. */
+:root[data-theme="light"] .plate {
+  opacity: 0.2;
+}
+
+@supports ((mask-image: url("/halftone-plate.png")) or
+  (-webkit-mask-image: url("/halftone-plate.png"))) {
+  .plate {
+    background: var(--copper);
+  }
+
+  :root[data-theme="light"] .plate {
+    background: var(--ink);
+  }
 }

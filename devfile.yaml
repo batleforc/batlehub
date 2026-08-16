@@ -20,6 +20,46 @@ parent:
           secure: true
 
 components:
+  # Headed Chrome (Chrome for Testing) behind Xvfb, in a sidecar of this pod.
+  # Every container in the pod shares one network namespace, so CDP and
+  # chromedriver are plain `localhost` ports from the tools container — and the
+  # dev server on 5173 is reachable from Chrome the same way, with no ingress.
+  #
+  # It exists for the checks that only a rendered page can answer: RFC 0003
+  # Phase 9's detector pass at two viewports and the axe scan. Reading source
+  # cannot measure contrast on painted pixels, focus-ring visibility, or reflow
+  # at 390px. Chromium in the tools container cannot run (the image has no
+  # libglib and there is no root), which is precisely the gap this fills.
+  #
+  # Upstream: github.com/batleforc/WeeboDevImage/tree/main/che-browser
+  - name: browser
+    container:
+      image: ghcr.io/batleforc/weebodevimage/che-browser:main
+      memoryLimit: 3Gi
+      memoryRequest: 1Gi
+      cpuLimit: "2"
+      cpuRequest: 500m
+      # Shared so Chrome can open file:///projects/… and so screenshots and
+      # reports can be exchanged with the tools container through /projects.
+      mountSources: true
+      endpoints:
+        # Watch or drive the same Chrome the automation drives. The password is
+        # in /projects/.sidecar/vnc-password-browser.txt — `task browser:vnc`.
+        - name: novnc
+          targetPort: 6080
+          exposure: public
+          protocol: https
+          secure: true
+        # DevTools Protocol. Internal on purpose: anything that can reach it can
+        # drive the browser, and it needs no exposure to be useful from the pod.
+        - name: cdp
+          targetPort: 9222
+          exposure: internal
+          protocol: http
+        - name: webdriver
+          targetPort: 9515
+          exposure: internal
+          protocol: http
   - name: postgres
     container:
       image: postgres:17-alpine

@@ -1,6 +1,8 @@
 <script setup lang="ts">
+import { computed } from "vue";
+import { useI18n } from "vue-i18n";
 import { listBetaMembers, addBetaMember, removeBetaMember } from "@/client/sdk.gen";
-import type { BetaChannelMemberDto } from "@/lib/registry-types";
+import type { BetaChannelMemberDto } from "@/client/types.gen";
 import { useAdminCrudList } from "@/composables/useAdminCrudList";
 import SectionTabs from "@/components/admin/SectionTabs.vue";
 import { NAMESPACES_TABS } from "@/config/adminSections";
@@ -20,6 +22,11 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import { Dialog } from "@/components/ui/dialog";
+import { Combobox } from "@/components/ui/combobox";
+import { useSubjectSuggestions } from "@/composables/useSuggestions";
+import { toRef } from "vue";
+
+const { t } = useI18n();
 
 interface AddMemberForm {
   principal_type: string;
@@ -63,33 +70,44 @@ const {
   canSubmitAdd: (form) => !!form.principal_id.trim(),
 });
 
-const principalTypeOptions = [
-  { value: "user", label: "User" },
-  { value: "group", label: "Group" },
-];
+/* A8: identities this instance has seen, offered rather than typed blind.
+
+   A getter ref, not `toRef(addForm.value, …)`: `useAdminCrudList.submitAdd`
+   replaces `addForm.value` outright after a successful grant, which would leave
+   a property ref bound to an orphaned object and the field dead from the second
+   grant onwards. */
+const grantedBySuggestions = useSubjectSuggestions(toRef(() => addForm.value.granted_by));
+
+// computed, not a bare const: a const is evaluated once at module load and
+// would keep the English labels after a locale change.
+const principalTypeOptions = computed(() => [
+  { value: "user", label: t("common.user") },
+  { value: "group", label: t("common.group") },
+]);
 </script>
 
 <template>
   <div class="space-y-6">
     <SectionTabs :tabs="NAMESPACES_TABS" />
     <PageHeader
-      title="Beta Channel"
-      description="Manage who can access pre-release versions in each registry."
+      variant="display"
+      :title="t('adminBetaChannel.betaChannel')"
+      :description="t('adminBetaChannel.manageWhoCanAccessPre')"
     >
       <template #actions>
-        <Button size="sm" :disabled="!selectedRegistry" @click="addDialogOpen = true">
-          Add member
-        </Button>
+        <Button size="sm" :disabled="!selectedRegistry" @click="addDialogOpen = true">{{
+          t("adminBetaChannel.addMember")
+        }}</Button>
       </template>
     </PageHeader>
 
     <!-- Registry selector -->
     <div class="space-y-1.5 max-w-xs">
-      <Label for="beta-registry">Registry</Label>
+      <Label for="beta-registry">{{ t("common.registry") }}</Label>
       <Select
         id="beta-registry"
         v-model="selectedRegistry"
-        placeholder="Select a registry…"
+        :placeholder="t('adminBetaChannel.selectARegistry')"
         :options="registryOptions"
       />
     </div>
@@ -99,13 +117,13 @@ const principalTypeOptions = [
       <CardHeader>
         <div class="flex items-center justify-between">
           <CardTitle class="text-base">
-            Members
+            {{ t("common.members") }}
             <span v-if="selectedRegistry" class="font-mono text-muted-foreground text-sm ml-1"
               >({{ selectedRegistry }})</span
             >
           </CardTitle>
           <Button variant="outline" size="sm" :disabled="membersLoading" @click="reloadMembers">
-            {{ membersLoading ? "Loading…" : "Refresh" }}
+            {{ membersLoading ? t("common.loading") : t("common.refresh") }}
           </Button>
         </div>
       </CardHeader>
@@ -116,10 +134,10 @@ const principalTypeOptions = [
         <Table v-else>
           <TableHeader>
             <TableRow>
-              <TableHead>Type</TableHead>
-              <TableHead>Principal ID</TableHead>
-              <TableHead>Granted by</TableHead>
-              <TableHead class="text-right"> Actions </TableHead>
+              <TableHead>{{ t("common.type") }}</TableHead>
+              <TableHead>{{ t("adminBetaChannel.principalId") }}</TableHead>
+              <TableHead>{{ t("adminBetaChannel.grantedBy") }}</TableHead>
+              <TableHead class="text-right"> {{ t("common.actions") }} </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -139,19 +157,30 @@ const principalTypeOptions = [
                 {{ m.granted_by ?? "—" }}
               </TableCell>
               <TableCell class="text-right">
-                <Button variant="outline" size="sm" @click="removeTarget = m"> Remove </Button>
+                <Button variant="outline" size="sm" @click="removeTarget = m">
+                  {{ t("common.remove") }}
+                </Button>
               </TableCell>
             </TableRow>
           </TableBody>
         </Table>
+        <p v-if="membersLoading" class="p-6 text-center text-sm text-muted-foreground">
+          {{ t("common.loading") }}
+        </p>
+        <!--
+          `&& !membersLoading`: the empty state rendered while the request was still
+          in flight, so an operator read "none for this registry", opened the
+          dialog and claimed something that already existed. Empty must mean
+          empty, not "we have not looked yet".
+        -->
         <p
-          v-if="!membersError && (!members || members.length === 0)"
+          v-if="!membersError && !membersLoading && (!members || members.length === 0)"
           class="p-6 text-sm text-muted-foreground text-center"
         >
           {{
             selectedRegistry
-              ? "No beta channel members for this registry."
-              : "Select a registry to view members."
+              ? t("adminBetaChannel.noBetaChannelMembersFor")
+              : t("adminBetaChannel.selectARegistryToView")
           }}
         </p>
       </CardContent>
@@ -170,16 +199,18 @@ const principalTypeOptions = [
       }
     "
   >
-    <template #title>Add beta channel member</template>
+    <template #title>{{ t("adminBetaChannel.addBetaChannelMember") }}</template>
     <template #description>
-      Add a user or group to the beta channel for
-      <span class="font-mono">{{ selectedRegistry }}</span
-      >.
+      <i18n-t keypath="adminBetaChannel.addToBetaChannelFor" tag="span">
+        <template #registry
+          ><span class="font-mono">{{ selectedRegistry }}</span></template
+        >
+      </i18n-t>
     </template>
     <div class="space-y-4">
       <div class="space-y-3">
         <div class="space-y-1.5">
-          <Label for="beta-principal-type">Type</Label>
+          <Label for="beta-principal-type">{{ t("common.type") }}</Label>
           <Select
             id="beta-principal-type"
             v-model="addForm.principal_type"
@@ -188,7 +219,7 @@ const principalTypeOptions = [
         </div>
         <div class="space-y-1.5">
           <Label for="beta-principal-id"
-            >Principal ID <span class="text-destructive">*</span></Label
+            >{{ t("adminBetaChannel.principalId") }} <span class="text-destructive">*</span></Label
           >
           <Input
             id="beta-principal-id"
@@ -198,11 +229,13 @@ const principalTypeOptions = [
           />
         </div>
         <div class="space-y-1.5">
-          <Label for="beta-granted-by">Granted by</Label>
-          <Input
+          <Label for="beta-granted-by">{{ t("adminBetaChannel.grantedBy") }}</Label>
+          <Combobox
             id="beta-granted-by"
             v-model="addForm.granted_by"
-            placeholder="Optional — your user ID"
+            :options="grantedBySuggestions.options.value"
+            :loading="grantedBySuggestions.loading.value"
+            :placeholder="t('adminBetaChannel.optionalYourUserId')"
           />
         </div>
       </div>
@@ -219,10 +252,10 @@ const principalTypeOptions = [
             addError = null;
           "
         >
-          Cancel
+          {{ t("common.cancel") }}
         </Button>
         <Button size="sm" :disabled="addLoading || !addForm.principal_id.trim()" @click="submitAdd">
-          {{ addLoading ? "Adding…" : "Add member" }}
+          {{ addLoading ? t("adminBetaChannel.adding") : t("adminBetaChannel.addMember") }}
         </Button>
       </div>
     </div>
@@ -240,12 +273,16 @@ const principalTypeOptions = [
       }
     "
   >
-    <template #title>Remove member?</template>
+    <template #title>{{ t("adminBetaChannel.removeMember") }}</template>
     <template #description>
-      <span class="font-mono">{{ removeTarget?.principal_id }}</span>
-      will lose access to pre-release versions in
-      <span class="font-mono">{{ selectedRegistry }}</span
-      >.
+      <i18n-t keypath="adminBetaChannel.willLoseAccess" tag="span">
+        <template #principal
+          ><span class="font-mono">{{ removeTarget?.principal_id }}</span></template
+        >
+        <template #registry
+          ><span class="font-mono">{{ selectedRegistry }}</span></template
+        >
+      </i18n-t>
     </template>
     <div class="space-y-4">
       <p v-if="removeError" class="text-sm text-destructive">
@@ -261,10 +298,10 @@ const principalTypeOptions = [
             removeError = null;
           "
         >
-          Cancel
+          {{ t("common.cancel") }}
         </Button>
         <Button variant="destructive" size="sm" :disabled="removeLoading" @click="confirmRemove">
-          {{ removeLoading ? "Removing…" : "Remove" }}
+          {{ removeLoading ? t("adminBetaChannel.removing") : t("common.remove") }}
         </Button>
       </div>
     </div>

@@ -8,6 +8,7 @@
 pub mod artifact_meta;
 pub mod package_repo;
 pub mod sbom;
+pub mod stats_history;
 pub mod vulnerability;
 
 // ── Domain subfolders, mirroring `batlehub_core::ports`'s auth/governance/ops/storage split ──
@@ -26,5 +27,6 @@ pub use governance::team_namespace::InMemoryTeamNamespaceStore;
 pub use ops::quota::InMemoryQuotaRepository;
 pub use package_repo::InMemoryPackageRepository;
 pub use sbom::{InMemorySbomRepository, NoopSbomRepository};
+pub use stats_history::InMemoryStatsHistory;
 pub use storage::backend::InMemoryStorageBackend;
 pub use vulnerability::InMemoryVulnerabilityRepository;

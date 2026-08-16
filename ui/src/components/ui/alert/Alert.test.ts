@@ -28,7 +28,7 @@ describe("Alert", () => {
       props: { variant: "success" },
       slots: { default: "Done" },
     });
-    expect(wrapper.classes()).toContain("text-green-900");
+    expect(wrapper.classes()).toContain("text-foreground");
   });
 
   it("merges a custom class with the variant classes", () => {

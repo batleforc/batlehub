@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref, onMounted, computed } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { client } from "@/client/client.gen";
@@ -12,14 +13,22 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
+const { t, te } = useI18n();
+
 const router = useRouter();
 const route = useRoute();
 const { isAuthenticated } = useAuth();
 
 const inputToken = ref("");
 const error = ref<string | null>(
-  // Surface errors forwarded from the OIDC callback.
-  typeof route.query.error === "string" ? route.query.error : null,
+  /* Errors forwarded from the OIDC callback. The router sends a catalogue key
+     (`loginPage.oidcStateMismatch`); the backend may forward its own sentence.
+     `te` tells the two apart, so neither has to know about the other. */
+  typeof route.query.error === "string"
+    ? te(route.query.error)
+      ? t(route.query.error)
+      : route.query.error
+    : null,
 );
 const loading = ref(false);
 const oidcLoadingProvider = ref<string | null>(null);
@@ -47,7 +56,7 @@ onMounted(async () => {
 async function submit() {
   const tok = inputToken.value.trim();
   if (!tok) {
-    error.value = "Please enter a token.";
+    error.value = t("loginPage.enterAToken");
     return;
   }
 
@@ -63,14 +72,14 @@ async function submit() {
       throw new Error("no data returned from server");
     }
     if (id.role === "anonymous") {
-      error.value = "Token is valid but grants only anonymous access.";
+      error.value = t("loginPage.anonymousOnly");
       client.setConfig({ auth: undefined });
     } else {
       storeTokens(tok); // no refresh token or expiry for static tokens
       router.push(redirect.value);
     }
   } catch {
-    error.value = "Invalid token — check the value and try again.";
+    error.value = t("loginPage.invalidToken");
     client.setConfig({ auth: undefined });
   } finally {
     loading.value = false;
@@ -98,11 +107,17 @@ function providerLabel(name: string): string {
 </script>
 
 <template>
-  <div class="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4 cyber-grid-bg">
-    <Card class="w-full max-w-sm [box-shadow:var(--cyber-glow)]">
+  <div class="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
+    <Card class="w-full max-w-sm">
       <CardHeader class="space-y-1">
-        <CardTitle class="font-mono text-2xl font-bold cyber-text-glow"> Sign in </CardTitle>
-        <CardDescription> Authenticate to access protected resources. </CardDescription>
+        <!-- The page's only heading, and its one Display element: this card
+             *is* the page. `font-display` because DESIGN.md gives every view
+             one step in the bitmap face, and an `h1` in the data face is what
+             the ramp gate reads as a page with no display element at all. -->
+        <CardTitle as="h1" class="font-display text-2xl font-bold tracking-[0.04em]">{{
+          t("loginPage.signIn")
+        }}</CardTitle>
+        <CardDescription>{{ t("loginPage.authenticateToAccessProtected") }}</CardDescription>
       </CardHeader>
 
       <CardContent class="space-y-4">
@@ -119,10 +134,10 @@ function providerLabel(name: string): string {
           >
             {{
               oidcLoadingProvider === p.name
-                ? "Redirecting…"
+                ? t("loginPage.redirecting")
                 : oidcProviders.length === 1
-                  ? "Sign in with OIDC"
-                  : `Sign in with ${providerLabel(p.name)}`
+                  ? t("loginPage.signInWithOidc")
+                  : t("loginPage.signInWithProvider", { provider: providerLabel(p.name) })
             }}
           </Button>
 
@@ -132,9 +147,9 @@ function providerLabel(name: string): string {
               <span class="w-full border-t border-border/60" />
             </div>
             <div class="relative flex justify-center text-xs uppercase">
-              <span class="bg-card px-2 font-mono text-muted-foreground tracking-widest"
-                >or use a token</span
-              >
+              <span class="bg-card px-2 font-mono text-muted-foreground tracking-widest">{{
+                t("loginPage.orUseAToken")
+              }}</span>
             </div>
           </div>
         </template>
@@ -142,12 +157,12 @@ function providerLabel(name: string): string {
         <!-- Static-token form -->
         <form class="space-y-4" @submit.prevent="submit">
           <div class="space-y-2">
-            <Label for="token">Bearer token</Label>
+            <Label for="token">{{ t("loginPage.bearerToken") }}</Label>
             <Input
               id="token"
               v-model="inputToken"
               type="password"
-              placeholder="Paste your token here"
+              :placeholder="t('loginPage.pasteYourTokenHere')"
               autocomplete="current-password"
             />
           </div>
@@ -157,13 +172,13 @@ function providerLabel(name: string): string {
           </p>
 
           <Button type="submit" class="w-full" :disabled="loading">
-            {{ loading ? "Signing in…" : "Sign in with token" }}
+            {{ loading ? t("loginPage.signingIn") : t("loginPage.signInWithToken") }}
           </Button>
         </form>
 
-        <Button type="button" variant="ghost" class="w-full" @click="continueAnonymously">
-          Continue without signing in
-        </Button>
+        <Button type="button" variant="ghost" class="w-full" @click="continueAnonymously">{{
+          t("loginPage.continueWithoutSigningIn")
+        }}</Button>
       </CardContent>
     </Card>
   </div>

@@ -1,7 +1,22 @@
 import { ref, watchEffect, type Ref } from "vue";
 
+import { i18n } from "@/i18n";
+
+/**
+ * RFC 0003 §13 recorded these two as deliberately *not* catalogue keys, on the
+ * grounds that a misrouted API is a deployment fault an operator reads. RFC
+ * 0004-bis §4.1 reverses that: the operator reading it is as likely to be
+ * French as the user reading anything else, and an exemption the gate cannot
+ * see is indistinguishable from a string nobody noticed. The gate runs at
+ * `--max 0`, so an exemption has to be declared rather than argued in a comment.
+ *
+ * `i18n.global.t` rather than `useI18n()`: this file is a composable *and* a
+ * module-scope helper, and `extractMessage` is called from outside `setup`.
+ */
+const t = (key: string) => i18n.global.t(key);
+
 export function extractMessage(err: unknown): string {
-  if (err == null) return "Unknown error";
+  if (err == null) return t("common.unknownError");
   if (typeof err === "string") return err;
   if (err instanceof Error) return err.message;
   if (typeof err === "object") {
@@ -35,6 +50,21 @@ export function useApi<T>(
       const result = await fn();
       if (result.error) {
         error.value = extractMessage(result.error);
+        data.value = null;
+      } else if (typeof result.data === "string") {
+        /*
+         * Every endpoint in this API answers with JSON, so a string here means
+         * something else replied: a reverse proxy's HTML error page, or the
+         * SPA's own index.html when `/api` is not routed to the backend. The
+         * generated client hands that text back as `data`, and a component then
+         * calls `.filter()` on a string and throws during render — which kills
+         * the page rather than showing anything.
+         *
+         * That is not hypothetical: it is what a production build served
+         * without an API does, and it is why the CI rendered gate was scanning
+         * an empty shell while reporting the pages clean.
+         */
+        error.value = t("common.apiNotJson");
         data.value = null;
       } else {
         data.value = result.data as T;

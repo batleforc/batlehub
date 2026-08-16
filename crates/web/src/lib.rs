@@ -454,6 +454,7 @@ pub use middleware::UserBlockMiddlewareFactory;
         (name = "proxy/jetbrains-marketplace", description = "JetBrains Marketplace — IDE-facing plugin API (search, compatible updates, meta.json, downloads), updatePlugins.xml custom repository, and marketplace-compatible plugin publishing"),
         (name = "proxy/generic",    description = "Generic file mirror — path-addressed proxy cache for upstreams with no package protocol (toolchain tarballs, vendor CDNs), restricted by a path_allow allowlist"),
         (name = "front-office",     description = "User-facing package information"),
+        (name = "user",             description = "Caller-scoped reads — quota, downloads and advisories for whoever holds the token, never for anyone else"),
         (name = "explore",          description = "Package explorer — browse and search across registries"),
         (name = "back-office",    description = "Admin management (requires Admin role)"),
         (name = "notifications",  description = "Inbound webhook receiver — accepts events from external systems"),
@@ -501,6 +502,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             governance::{
                 beta_channel::{add_beta_member, list_beta_members, remove_beta_member},
                 ownership::{add_package_owner, list_package_owners, remove_package_owner},
+                subjects::list_subjects,
                 team_namespaces::{
                     claim_namespace, list_namespaces, my_namespace_packages, my_namespaces,
                     release_namespace,
@@ -528,6 +530,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             },
             sbom::{export_org_sbom, get_artifact_sbom},
             stats::admin_stats,
+            stats_history::admin_stats_history,
             visibility::{get_package_visibility, set_package_visibility},
         },
         front_office::{
@@ -537,7 +540,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                 explore_package_detail, explore_packages, explore_registry_stats,
                 explore_upstream_search,
             },
-            me::me,
+            me::{me, my_advisories, my_downloads, my_quota},
             packages::{check_access, list_packages},
             registries::list_registries,
         },
@@ -765,6 +768,12 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(get_version);
     cfg.service(get_packument);
     cfg.service(me);
+    // `/api/v1/me/*` — caller-scoped reads (RFC 0004 §5.3). Registered before
+    // `me` would matter only if it were a prefix route; it is exact, but the
+    // grouping keeps them together.
+    cfg.service(my_quota);
+    cfg.service(my_downloads);
+    cfg.service(my_advisories);
     cfg.service(download_cli);
     cfg.service(list_registries);
     // Explore: detail path before list (more specific first); upstream before list
@@ -793,6 +802,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(warm_registry);
     cfg.service(evict_registry);
     cfg.service(delete_cached_artifact);
+    // More specific first: `/stats/history` before `/stats`.
+    cfg.service(admin_stats_history);
     cfg.service(admin_stats);
     cfg.service(admin_access_check);
     // Quota admin (specific user route before registry-level route)
@@ -833,6 +844,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(unblock_ip);
     // User block admin (specific /blocked list before parameterised /{user_id}/block)
     cfg.service(list_blocked_users);
+    cfg.service(list_subjects);
     cfg.service(block_user);
     cfg.service(unblock_user);
     // Config reload admin (pending/apply before pending/delete — more specific first)

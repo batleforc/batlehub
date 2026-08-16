@@ -1,8 +1,12 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022"],
-    "types": ["node"],
+    "lib": [
+      "ES2022"
+    ],
+    "types": [
+      "node"
+    ],
     "module": "ESNext",
     "skipLibCheck": true,
     "moduleResolution": "bundler",
@@ -13,7 +17,19 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ]
+    }
   },
-  "include": ["vite.config.ts", "openapi-ts.config.ts"]
+  "include": [
+    "vite.config.ts",
+    "openapi-ts.config.ts",
+    "build/**/*.ts",
+    "src/design/tokens.test.ts",
+    "src/test/fixtures.test.ts",
+    "src/config/registryTypes.docs.test.ts"
+  ]
 }

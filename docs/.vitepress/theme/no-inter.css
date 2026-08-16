@@ -1,0 +1,10 @@
+/* Replaces VitePress's own `theme-default/styles/fonts.css`, aliased away in
+   `config.ts`. That file declares Inter across seven subsets in roman and
+   italic — 14 woff2 files, 652 KB — and sets `--vp-font-family-base` to it.
+
+   There is no sans in this world: every fact is set in the mono text face, and
+   `vp-bridge.css` points both `--vp-font-family-base` and `--vp-font-family-mono`
+   at `--face-text`. So nothing ever matches the Inter `@font-face` rules and no
+   reader downloads them — but they were still being emitted into every
+   published build, which makes the shipped artifact 652 KB of a typeface the
+   design system does not contain. This file is deliberately empty. */

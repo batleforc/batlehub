@@ -79,6 +79,7 @@ async fn get_artifact_sbom_returns_document() {
         document: serde_json::json!({"spdxVersion": "SPDX-2.3", "name": "my-crate"}),
         source: SbomSource::Generated,
         created_at: Utc::now(),
+        license: Some("MIT".to_owned()),
     })
     .await
     .unwrap();

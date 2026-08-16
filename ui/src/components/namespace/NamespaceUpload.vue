@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref, computed } from "vue";
 import type { RegistryInfo } from "@/client/types.gen";
 import { useAuthFetch } from "@/composables/useAuthFetch";
@@ -9,6 +10,8 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { CodeBlock } from "@/components/ui/code-block";
+
+const { t } = useI18n();
 
 const props = defineProps<{ registries: RegistryInfo[] }>();
 
@@ -194,31 +197,31 @@ function terraformSource(url: string, reg: string): string {
 }
 
 const currentSnippet = computed(
-  () =>
-    cliSnippets.value[registryType.value] ??
-    "# No CLI instructions available for this registry type.",
+  () => cliSnippets.value[registryType.value] ?? t("namespaceUpload.noCliInstructions"),
 );
 </script>
 
 <template>
   <div v-if="!uploadableRegistries.length" class="text-sm text-muted-foreground">
-    No registries in Local or Hybrid mode are configured.
+    {{ t("namespaceUpload.noRegistriesInLocal") }}
   </div>
   <template v-else>
     <div class="space-y-1.5 w-60">
-      <Label for="upload-registry">Registry</Label>
+      <Label for="upload-registry">{{ t("common.registry") }}</Label>
       <Select
         id="upload-registry"
         v-model="selectedRegistry"
         :options="registryOptions"
-        placeholder="Select registry…"
+        :placeholder="t('namespaceUpload.selectRegistry')"
       />
     </div>
 
     <Tabs :default-value="isBinaryUpload ? 'upload' : 'cli'" class="w-full">
       <TabsList>
-        <TabsTrigger v-if="isBinaryUpload" value="upload">File upload</TabsTrigger>
-        <TabsTrigger value="cli">CLI instructions</TabsTrigger>
+        <TabsTrigger v-if="isBinaryUpload" value="upload">{{
+          t("namespaceUpload.fileUpload")
+        }}</TabsTrigger>
+        <TabsTrigger value="cli">{{ t("namespaceUpload.cliInstructions") }}</TabsTrigger>
       </TabsList>
 
       <TabsContent v-if="isBinaryUpload" value="upload" class="space-y-4 pt-4">
@@ -226,8 +229,10 @@ const currentSnippet = computed(
           <div class="grid grid-cols-2 gap-3">
             <div class="space-y-1.5">
               <Label for="upload-ext-id"
-                >Extension ID
-                <span class="text-muted-foreground text-xs">(publisher.name)</span></Label
+                >{{ t("namespaceUpload.extensionId") }}
+                <span class="text-muted-foreground text-xs">{{
+                  t("namespaceUpload.publisherName")
+                }}</span></Label
               >
               <Input
                 id="upload-ext-id"
@@ -237,7 +242,7 @@ const currentSnippet = computed(
               />
             </div>
             <div class="space-y-1.5">
-              <Label for="upload-version-ext">Version</Label>
+              <Label for="upload-version-ext">{{ t("common.version") }}</Label>
               <Input
                 id="upload-version-ext"
                 v-model="uploadVersion"
@@ -250,7 +255,7 @@ const currentSnippet = computed(
         <template v-else-if="registryType === 'goproxy'">
           <div class="grid grid-cols-2 gap-3">
             <div class="space-y-1.5">
-              <Label for="upload-module">Module path</Label>
+              <Label for="upload-module">{{ t("namespaceUpload.modulePath") }}</Label>
               <Input
                 id="upload-module"
                 v-model="uploadModule"
@@ -259,7 +264,7 @@ const currentSnippet = computed(
               />
             </div>
             <div class="space-y-1.5">
-              <Label for="upload-version-module">Version</Label>
+              <Label for="upload-version-module">{{ t("common.version") }}</Label>
               <Input
                 id="upload-version-module"
                 v-model="uploadVersion"
@@ -273,7 +278,10 @@ const currentSnippet = computed(
           <div class="grid grid-cols-2 gap-3">
             <div class="space-y-1.5">
               <Label for="upload-distribution"
-                >Distribution <span class="text-muted-foreground text-xs">(suite)</span></Label
+                >{{ t("common.distribution") }}
+                <span class="text-muted-foreground text-xs">{{
+                  t("namespaceUpload.suite")
+                }}</span></Label
               >
               <Input
                 id="upload-distribution"
@@ -283,7 +291,7 @@ const currentSnippet = computed(
               />
             </div>
             <div class="space-y-1.5">
-              <Label for="upload-component">Component</Label>
+              <Label for="upload-component">{{ t("common.component") }}</Label>
               <Input
                 id="upload-component"
                 v-model="uploadComponent"
@@ -296,7 +304,7 @@ const currentSnippet = computed(
 
         <div class="space-y-1.5">
           <Label for="upload-file"
-            >File
+            >{{ t("common.file") }}
             <span class="text-muted-foreground text-xs ml-1">{{
               acceptFor(registryType)
             }}</span></Label
@@ -312,9 +320,11 @@ const currentSnippet = computed(
 
         <div class="flex items-center gap-3">
           <Button :disabled="!uploadFile || loading" @click="doUpload">
-            {{ loading ? "Uploading…" : "Upload" }}
+            {{ loading ? t("namespaceUpload.uploading") : t("namespaceUpload.upload") }}
           </Button>
-          <span v-if="success" class="text-sm text-primary">Published successfully.</span>
+          <span v-if="success" class="text-sm text-primary">{{
+            t("namespaceUpload.publishedSuccessfully")
+          }}</span>
           <span v-if="error" class="text-sm text-destructive">{{ error }}</span>
         </div>
       </TabsContent>

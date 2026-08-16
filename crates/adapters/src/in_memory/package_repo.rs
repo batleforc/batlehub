@@ -80,6 +80,24 @@ impl PackageRepository for InMemoryPackageRepository {
             .unwrap_or(PackageStatus::Available))
     }
 
+    /// Overrides the port's default (which pages through `list_packages`) with a
+    /// direct scan — the map is already in memory, and the default would build
+    /// and sort a whole `PackageSummary` page to read one field off each row.
+    async fn blocked_versions(&self, registry: &str, name: &str) -> Result<Vec<String>, CoreError> {
+        Ok(self
+            .summaries
+            .read()
+            .await
+            .values()
+            .filter(|s| {
+                s.status.is_blocked()
+                    && s.package_id.registry == registry
+                    && s.package_id.name == name
+            })
+            .map(|s| s.package_id.version.clone())
+            .collect())
+    }
+
     async fn set_status(&self, pkg: &PackageId, status: PackageStatus) -> Result<(), CoreError> {
         let mut sums = self.summaries.write().await;
         let entry = sums
@@ -185,6 +203,66 @@ impl PackageRepository for InMemoryPackageRepository {
             result.truncate(filter.limit as usize);
         }
 
+        Ok(result)
+    }
+
+    /// Distinct subjects, most-recently-active first — the same order and the
+    /// same case-insensitive substring match the Postgres implementation uses,
+    /// so a test written against one holds against the other (RFC 0004-bis A8).
+    async fn distinct_event_subjects(
+        &self,
+        contains: Option<&str>,
+        limit: u64,
+    ) -> Result<Vec<String>, CoreError> {
+        let events = self.events.read().await;
+        let needle = contains.map(str::to_lowercase);
+
+        let mut sorted: Vec<&AccessEvent> = events.iter().collect();
+        sorted.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
+
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for event in sorted {
+            let Some(user_id) = event.user_id.as_deref() else {
+                continue;
+            };
+            if let Some(ref n) = needle {
+                if !user_id.to_lowercase().contains(n.as_str()) {
+                    continue;
+                }
+            }
+            if seen.insert(user_id.to_owned()) {
+                out.push(user_id.to_owned());
+                if limit > 0 && out.len() as u64 >= limit {
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    async fn list_own_downloads(
+        &self,
+        user_id: &str,
+        since: DateTime<Utc>,
+        limit: u64,
+    ) -> Result<Vec<AccessEvent>, CoreError> {
+        let events = self.events.read().await;
+        let mut result: Vec<AccessEvent> = events
+            .iter()
+            .filter(|e| {
+                e.user_id.as_deref() == Some(user_id)
+                    && matches!(e.action, AccessAction::Download)
+                    && matches!(e.result, AccessResult::Allowed)
+                    && e.timestamp >= since
+                    && e.package_id.is_some()
+            })
+            .cloned()
+            .collect();
+        result.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
+        if limit > 0 {
+            result.truncate(limit as usize);
+        }
         Ok(result)
     }
 
@@ -301,7 +379,10 @@ mod tests {
     use chrono::Utc;
 
     use batlehub_core::{
-        entities::{AccessEvent, EventFilter, PackageFilter, PackageId, PackageStatus, Role},
+        entities::{
+            AccessAction, AccessEvent, AccessResult, EventFilter, PackageFilter, PackageId,
+            PackageStatus, Role,
+        },
         ports::PackageRepository,
     };
 
@@ -469,8 +550,6 @@ mod tests {
 
     // ── account-wide events (package_id: None) ────────────────────────────────
 
-    use batlehub_core::entities::AccessAction;
-
     fn account_event(action: AccessAction) -> AccessEvent {
         AccessEvent {
             id: uuid::Uuid::new_v4(),
@@ -533,5 +612,97 @@ mod tests {
             "account-wide event has no registry to match"
         );
         assert!(events[0].package_id.is_some());
+    }
+
+    // ── list_own_downloads (RFC 0004 §6.2) ────────────────────────────────────
+
+    fn download_by(user: &str, name: &str, ago_secs: i64) -> AccessEvent {
+        let mut e =
+            AccessEvent::allowed_download(pkg_id("reg", name), Some(user.to_owned()), Role::User);
+        e.timestamp = Utc::now() - chrono::Duration::seconds(ago_secs);
+        e
+    }
+
+    #[tokio::test]
+    async fn list_own_downloads_excludes_other_users() {
+        let repo = InMemoryPackageRepository::new();
+        repo.record_access(download_by("alice", "mine", 5))
+            .await
+            .unwrap();
+        repo.record_access(download_by("bob", "theirs", 5))
+            .await
+            .unwrap();
+
+        let rows = repo
+            .list_own_downloads("alice", Utc::now() - chrono::Duration::days(1), 10)
+            .await
+            .unwrap();
+        let names: Vec<&str> = rows
+            .iter()
+            .map(|e| e.package_id.as_ref().unwrap().name.as_str())
+            .collect();
+        assert_eq!(names, vec!["mine"], "the port scopes, not the caller");
+    }
+
+    #[tokio::test]
+    async fn list_own_downloads_excludes_denied_and_other_actions() {
+        let repo = InMemoryPackageRepository::new();
+        repo.record_access(download_by("alice", "ok", 5))
+            .await
+            .unwrap();
+
+        let mut denied = download_by("alice", "denied", 4);
+        denied.result = AccessResult::Denied {
+            reason: "blocked".to_owned(),
+        };
+        repo.record_access(denied).await.unwrap();
+
+        let mut viewed = download_by("alice", "viewed", 3);
+        viewed.action = AccessAction::ViewMetadata;
+        repo.record_access(viewed).await.unwrap();
+
+        let rows = repo
+            .list_own_downloads("alice", Utc::now() - chrono::Duration::days(1), 10)
+            .await
+            .unwrap();
+        let names: Vec<&str> = rows
+            .iter()
+            .map(|e| e.package_id.as_ref().unwrap().name.as_str())
+            .collect();
+        assert_eq!(names, vec!["ok"]);
+    }
+
+    #[tokio::test]
+    async fn list_own_downloads_honours_window_and_limit_newest_first() {
+        let repo = InMemoryPackageRepository::new();
+        repo.record_access(download_by("alice", "newest", 1))
+            .await
+            .unwrap();
+        repo.record_access(download_by("alice", "older", 60))
+            .await
+            .unwrap();
+        repo.record_access(download_by("alice", "ancient", 10 * 86_400))
+            .await
+            .unwrap();
+
+        let since = Utc::now() - chrono::Duration::days(7);
+        let rows = repo.list_own_downloads("alice", since, 10).await.unwrap();
+        let names: Vec<&str> = rows
+            .iter()
+            .map(|e| e.package_id.as_ref().unwrap().name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["newest", "older"],
+            "10 days back is outside a 7-day window"
+        );
+
+        let capped = repo.list_own_downloads("alice", since, 1).await.unwrap();
+        assert_eq!(capped.len(), 1);
+        assert_eq!(
+            capped[0].package_id.as_ref().unwrap().name,
+            "newest",
+            "the limit keeps the newest, not an arbitrary row"
+        );
     }
 }

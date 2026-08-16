@@ -15,10 +15,10 @@ use batlehub_config::schema::{
     QuotaEnforcement as ConfigQuotaEnforcement, RegistryConfig, RuleConfig, UpstreamAuthConfig,
 };
 use batlehub_core::{
-    entities::{RegistryKind, Role, Severity},
-    ports::VulnerabilityRepository,
+    entities::{RegistryKind, ReleaseAgeGateParams, ResolutionPolicy, Role, Severity},
+    ports::{SbomRepository, VulnerabilityRepository},
     rules::{
-        BlockListRule, CveGateRule, DenyLatestRule, RbacRule, ReleaseAgeGateRule,
+        BlockListRule, CveGateRule, DenyLatestRule, LicenseGateRule, RbacRule, ReleaseAgeGateRule,
         RequireSignedReleaseRule, TrustedPublisherRule, VersionGateRule,
     },
     services::{QuotaEnforcement, QuotaService, RegistryPolicy, RegistryQuotaConfig},
@@ -237,6 +237,7 @@ pub(super) fn build_policy(
     reg: &RegistryConfig,
     repo: Arc<dyn batlehub_core::ports::PackageRepository>,
     vuln_repo: Arc<dyn VulnerabilityRepository>,
+    sbom_repo: Arc<dyn SbomRepository>,
 ) -> anyhow::Result<RegistryPolicy> {
     // Best-effort: an unrecognized `registry_type` is already rejected by config
     // validation before this runs, but rules that need the kind (e.g.
@@ -290,6 +291,17 @@ pub(super) fn build_policy(
                     cfg.block,
                 )));
             }
+            RuleConfig::LicenseGate(cfg) => {
+                let bypass = parse_bypass_roles(&cfg.bypass_roles)?;
+                rules.push(Box::new(LicenseGateRule::new(
+                    Arc::clone(&sbom_repo),
+                    cfg.allow.clone(),
+                    cfg.deny.clone(),
+                    cfg.allow_unknown,
+                    bypass,
+                    cfg.block,
+                )));
+            }
             RuleConfig::VersionGate(cfg) => {
                 let bypass = parse_bypass_roles(&cfg.bypass_roles)?;
                 rules.push(Box::new(VersionGateRule::new(
@@ -312,6 +324,38 @@ pub(super) fn build_policy(
         serve_stale_metadata: reg.cache.serve_stale,
         artifact_ttl: reg.cache.artifact_ttl_secs.map(Duration::from_secs),
         rules,
+    })
+}
+
+/// The same two settings `build_registry_policy` just consumed, kept as plain
+/// data so the catalog can read them back.
+///
+/// `RegistryPolicy` puts `artifact_ttl` behind a field the web layer does not
+/// hold, and folds the release-age gate into a `Box<dyn Rule>` that exposes
+/// nothing. Both are right for the download path — a rule should be opaque to
+/// its caller — and both make it impossible to answer "would this be
+/// quarantined, is this past its TTL" for a *listing*, which never runs a rule.
+///
+/// Deliberately built here, in the same function body's neighbourhood as the
+/// rule itself and off the identical `RegistryConfig`: the failure mode this
+/// shape invites is the two drifting, and the defence is that changing
+/// `min_age_secs` or `bypass_roles` means editing one config block that both
+/// read. If a third caller ever needs these, it takes them from here rather
+/// than re-deriving them.
+pub(super) fn build_resolution_policy(reg: &RegistryConfig) -> anyhow::Result<ResolutionPolicy> {
+    let mut release_age = None;
+    for rule_cfg in &reg.rules {
+        if let RuleConfig::ReleaseAgeGate(cfg) = rule_cfg {
+            release_age = Some(ReleaseAgeGateParams {
+                min_age: Duration::from_secs(cfg.min_age_secs),
+                bypass_roles: parse_bypass_roles(&cfg.bypass_roles)?,
+                deny_missing_timestamp: cfg.deny_missing_timestamp,
+            });
+        }
+    }
+    Ok(ResolutionPolicy {
+        artifact_ttl: reg.cache.artifact_ttl_secs.map(Duration::from_secs),
+        release_age,
     })
 }
 
@@ -347,7 +391,7 @@ pub(super) fn build_quota_service(
 mod tests {
     use super::*;
     use batlehub_adapters::in_memory::{
-        InMemoryPackageRepository, InMemoryVulnerabilityRepository,
+        InMemoryPackageRepository, InMemoryVulnerabilityRepository, NoopSbomRepository,
     };
     use batlehub_config::schema::UpstreamProxyConfig;
 
@@ -546,7 +590,13 @@ mod tests {
         let r = make_registry("npm", "reg", "");
         let repo: Arc<dyn batlehub_core::ports::PackageRepository> =
             InMemoryPackageRepository::new();
-        let policy = build_policy(&r, repo, InMemoryVulnerabilityRepository::arc()).unwrap();
+        let policy = build_policy(
+            &r,
+            repo,
+            InMemoryVulnerabilityRepository::arc(),
+            NoopSbomRepository::arc(),
+        )
+        .unwrap();
         let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
         assert_eq!(names, vec!["rbac", "block_list"]);
         assert!(!policy.firewall_only);
@@ -584,7 +634,13 @@ mod tests {
         );
         let repo: Arc<dyn batlehub_core::ports::PackageRepository> =
             InMemoryPackageRepository::new();
-        let policy = build_policy(&r, repo, InMemoryVulnerabilityRepository::arc()).unwrap();
+        let policy = build_policy(
+            &r,
+            repo,
+            InMemoryVulnerabilityRepository::arc(),
+            NoopSbomRepository::arc(),
+        )
+        .unwrap();
         let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
         assert_eq!(
             names,
@@ -617,9 +673,43 @@ mod tests {
         );
         let repo: Arc<dyn batlehub_core::ports::PackageRepository> =
             InMemoryPackageRepository::new();
-        let policy = build_policy(&r, repo, InMemoryVulnerabilityRepository::arc()).unwrap();
+        let policy = build_policy(
+            &r,
+            repo,
+            InMemoryVulnerabilityRepository::arc(),
+            NoopSbomRepository::arc(),
+        )
+        .unwrap();
         let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
         assert_eq!(names, vec!["rbac", "block_list", "cve_gate"]);
+    }
+
+    #[test]
+    fn build_policy_appends_license_gate_rule() {
+        let r = make_registry(
+            "npm",
+            "reg",
+            r#"
+            [[registries.rules]]
+            kind = "license_gate"
+            allow = ["MIT", "Apache-2.0"]
+            deny = ["AGPL-3.0"]
+            allow_unknown = false
+            block = true
+            bypass_roles = ["admin"]
+            "#,
+        );
+        let repo: Arc<dyn batlehub_core::ports::PackageRepository> =
+            InMemoryPackageRepository::new();
+        let policy = build_policy(
+            &r,
+            repo,
+            InMemoryVulnerabilityRepository::arc(),
+            NoopSbomRepository::arc(),
+        )
+        .unwrap();
+        let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
+        assert_eq!(names, vec!["rbac", "block_list", "license_gate"]);
     }
 
     #[test]
@@ -636,7 +726,13 @@ mod tests {
         );
         let repo: Arc<dyn batlehub_core::ports::PackageRepository> =
             InMemoryPackageRepository::new();
-        let policy = build_policy(&r, repo, InMemoryVulnerabilityRepository::arc()).unwrap();
+        let policy = build_policy(
+            &r,
+            repo,
+            InMemoryVulnerabilityRepository::arc(),
+            NoopSbomRepository::arc(),
+        )
+        .unwrap();
         let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
         assert_eq!(names, vec!["rbac", "block_list", "trusted_publisher"]);
     }

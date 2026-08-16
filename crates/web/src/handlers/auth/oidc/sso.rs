@@ -6,6 +6,7 @@ use batlehub_adapters::auth::OidcSsoFlow;
 
 use super::{spa_error_redirect, split_combined_state, url_encode, CallbackQuery, LoginQuery};
 use crate::error::AppError;
+use crate::handlers::schemas::OkResponse;
 
 // ── Provider list ──────────────────────────────────────────────────────────────
 
@@ -59,7 +60,7 @@ pub async fn list_oidc_providers(flows: web::Data<Vec<OidcSsoFlow>>) -> impl Res
         ("provider" = Option<String>, Query, description = "Provider name to log in with; defaults to the first configured provider"),
     ),
     responses(
-        (status = 200, description = "OIDC is configured (probe response when state is absent)"),
+        (status = 200, description = "OIDC is configured (probe response when state is absent)", body = OkResponse),
         (status = 302, description = "Redirect to OIDC authorization endpoint"),
         (status = 404, description = "Named provider not found"),
         (status = 503, description = "OIDC not configured"),
@@ -78,7 +79,7 @@ pub async fn oidc_login(
 
     let Some(ref state) = query.state else {
         // Probe request — confirm the endpoint exists and OIDC is configured.
-        return Ok(HttpResponse::Ok().finish());
+        return Ok(HttpResponse::Ok().json(OkResponse::new()));
     };
 
     let sso = if let Some(ref name) = query.provider {

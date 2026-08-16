@@ -12,10 +12,20 @@ use crate::handlers::proxy::common::{
     collect_payload, dispatch_notification, publish_and_respond, require_local_mode,
     require_registry_type,
 };
+use crate::handlers::schemas::MessageResponse;
 use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
     RegistryModeMap,
 };
+
+/// Composer's publish acknowledgement. `status` is always `"success"` — a
+/// failure is a non-2xx, not a `"status": "error"` body.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct ComposerPublishResponse {
+    pub status: String,
+    pub name: String,
+    pub version: String,
+}
 
 // ── Publish (local/hybrid only) ───────────────────────────────────────────────
 
@@ -33,7 +43,7 @@ use crate::{
         ("version"  = String, Query, description = "Version override (optional)"),
     ),
     responses(
-        (status = 200, description = "Package published successfully"),
+        (status = 200, description = "Package published successfully", body = ComposerPublishResponse),
         (status = 403, description = "Access denied or quota exceeded"),
         (status = 409, description = "Version already exists"),
         (status = 422, description = "Invalid ZIP or versioning policy violation"),
@@ -90,11 +100,11 @@ pub async fn composer_upload(
             signature_type: None,
         },
         actix_web::http::StatusCode::OK,
-        serde_json::json!({
-            "status": "success",
-            "name": name,
-            "version": version,
-        }),
+        ComposerPublishResponse {
+            status: "success".to_owned(),
+            name: name.clone(),
+            version: version.clone(),
+        },
     )
     .await
 }
@@ -118,7 +128,7 @@ struct UploadQuery {
         ("version"  = String, Path, description = "Version to yank"),
     ),
     responses(
-        (status = 200, description = "Version yanked"),
+        (status = 200, description = "Version yanked", body = MessageResponse),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Package or version not found"),
     ),
@@ -153,9 +163,9 @@ pub async fn composer_yank(
         &actor,
     );
 
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "message": format!("Successfully yanked {name} ({version})")
-    })))
+    Ok(HttpResponse::Ok().json(MessageResponse::new(format!(
+        "Successfully yanked {name} ({version})"
+    ))))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

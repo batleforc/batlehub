@@ -29,6 +29,7 @@ ui/dist/
 # as a diff of the contract. Refresh it with `task dump-spec`.
 ui/src/client/
 ui/.env
+ui/.env.*.local
 
 # Logs
 *.log
@@ -48,3 +49,27 @@ ui/eslint-results.sarif
 # Local working notes (release trackers, scratch checklists). Kept out of the
 # tree so they do not turn up as review surface on a PR.
 /todo.md
+
+# Impeccable (design skill, RFC 0003). The skill itself is ~150 vendored files
+# that change on every upstream release — install it with `task impeccable:install`
+# rather than reviewing it as a diff. `.impeccable/` is per-developer state (live
+# mode's port, token and inject journal). PRODUCT.md and DESIGN.md, which are the
+# durable design decisions, ARE tracked.
+/.claude/skills/impeccable/
+/.impeccable/
+# ...except the shared detector config. A detector waiver is a design decision
+# with a reason attached, and it has to reach CI to mean anything: the rendered
+# gate re-runs there, so an ignore that lived only on one machine would fail the
+# build for everyone else. One reviewable file; `config.local.json` stays out.
+!/.impeccable/
+/.impeccable/*
+!/.impeccable/config.json
+# ...and the surface briefs, by the same argument one paragraph up. A brief is
+# the recorded intent for a surface — which direction was chosen, what was
+# measured, what is still open — and RFC 0005 leans on it to stop each change
+# re-arguing the design from scratch. A record only its author can read does not
+# do that job, any more than a waiver that never reaches CI does. Everything else
+# under `.impeccable/` stays per-developer state: `live/` (port, token, inject
+# journal), `shots/`, `questions/`, `quality-bar/` and the generated `design.json`
+# sidecar, which is rebuilt from the tracked DESIGN.md.
+!/.impeccable/surfaces/

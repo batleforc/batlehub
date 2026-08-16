@@ -19,6 +19,22 @@ pub enum RegistryMode {
     Hybrid,
 }
 
+impl RegistryMode {
+    /// The wire name, matching the `serde(rename_all = "lowercase")` above and
+    /// the `mode` field on every registry-shaped response.
+    ///
+    /// The `front_office` registry listing hand-rolled this match; RFC 0004-bis
+    /// A2 put a `mode` on the admin health DTO too, and two copies of a mapping
+    /// that must agree is one too many.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Proxy => "proxy",
+            Self::Local => "local",
+            Self::Hybrid => "hybrid",
+        }
+    }
+}
+
 // ── Registry config ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]

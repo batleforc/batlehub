@@ -70,3 +70,29 @@ Element.prototype.scrollIntoView ??= vi.fn();
 Element.prototype.hasPointerCapture ??= () => false;
 Element.prototype.releasePointerCapture ??= () => {};
 Element.prototype.setPointerCapture ??= () => {};
+
+/**
+ * Install the real i18n catalogue for every mount.
+ *
+ * Any component that calls `useI18n()` throws without the plugin, so this would
+ * otherwise have to be repeated in every test that mounts anything translated.
+ * Using the *real* catalogues rather than a stub is deliberate: assertions then
+ * read the strings a user actually sees, and a test that quietly passes against
+ * `t('some.key')` echoed back tells us nothing.
+ */
+import { config } from "@vue/test-utils";
+import { i18n } from "@/i18n";
+
+config.global.plugins = [...(config.global.plugins ?? []), i18n];
+
+/*
+ * Deliberately *not* `enableAutoUnmount(afterEach)` here.
+ *
+ * Polling pages leak intervals when a suite never unmounts, so a global hook
+ * looks like the right altitude — but vitest runs a file's own `afterEach`
+ * before one registered in a setup file, and the suites that mount teleported
+ * dialogs already clear `document.body` in theirs. Unmounting after the body is
+ * gone makes Vue walk a detached teleport fragment and throw on `nextSibling`;
+ * it took 97 tests down. Suites that mount polling pages unmount in their own
+ * teardown instead, before clearing the body.
+ */

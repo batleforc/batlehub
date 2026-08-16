@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref, computed, onUnmounted } from "vue";
 import { Key, Plus, Trash2, Copy, Check, AlertCircle, Clock } from "@lucide/vue";
 import { createToken, listTokens, revokeToken as revokeTokenApi } from "@/client/sdk.gen";
@@ -24,6 +25,8 @@ import { Dialog } from "@/components/ui/dialog";
 import { Alert } from "@/components/ui/alert";
 import { Select } from "@/components/ui/select";
 import { useAuth } from "@/composables/useAuth";
+
+const { t } = useI18n();
 
 const { identity } = useAuth();
 
@@ -52,8 +55,8 @@ const form = ref({
 
 const roleOptions = computed(() => {
   const r = identity.value?.role;
-  const opts = [{ value: "user", label: "User" }];
-  if (r === "admin") opts.push({ value: "admin", label: "Admin" });
+  const opts = [{ value: "user", label: t("common.user") }];
+  if (r === "admin") opts.push({ value: "admin", label: t("common.admin") });
   return opts;
 });
 
@@ -70,7 +73,7 @@ function openCreate() {
 
 async function submitCreate() {
   if (!form.value.name.trim()) {
-    createError.value = "Token name is required.";
+    createError.value = t("tokensPage.tokenNameRequired");
     return;
   }
   creating.value = true;
@@ -159,20 +162,16 @@ const lifetimePresets = [7, 30, 90];
 
 <template>
   <div class="space-y-6">
-    <PageHeader variant="glow">
+    <PageHeader variant="display">
       <template #title>
         <Key class="h-5 w-5 text-primary" />
-        Personal API Tokens
+        {{ t("tokensPage.personalApiTokens") }}
       </template>
-      <template #description>
-        Create long-lived tokens for programmatic access. Tokens inherit your current role (or
-        lower). Maximum lifetime is 90 days. The raw token is shown only once on creation — store it
-        securely.
-      </template>
+      <template #description>{{ t("tokensPage.createLongLivedTokens") }}</template>
       <template #actions>
         <Button class="shrink-0" @click="openCreate">
           <Plus class="h-4 w-4 mr-2" />
-          Create token
+          {{ t("tokensPage.createToken") }}
         </Button>
       </template>
     </PageHeader>
@@ -181,7 +180,7 @@ const lifetimePresets = [7, 30, 90];
     <Alert v-if="newToken" variant="success" class="relative">
       <Check class="h-4 w-4" />
       <div class="pl-2 space-y-2">
-        <p class="font-medium text-sm">Token created — copy it now, it won't be shown again.</p>
+        <p class="font-medium text-sm">{{ t("tokensPage.tokenCreatedCopyIt") }}</p>
         <div class="flex items-center gap-2">
           <code
             class="flex-1 block rounded bg-muted px-3 py-2 text-xs font-mono break-all select-all"
@@ -196,11 +195,11 @@ const lifetimePresets = [7, 30, 90];
           </CopyButton>
         </div>
         <p v-if="newTokenExpiry" class="text-xs text-muted-foreground">
-          Expires: {{ formatDate(newTokenExpiry) }}
+          {{ t("common.expiresLabel") }} {{ formatDate(newTokenExpiry) }}
         </p>
-        <Button variant="ghost" size="sm" class="h-7 text-xs" @click="dismissToken">
-          Dismiss (auto-clears in 60 s)
-        </Button>
+        <Button variant="ghost" size="sm" class="h-7 text-xs" @click="dismissToken">{{
+          t("tokensPage.dismissAutoClearsIn")
+        }}</Button>
       </div>
     </Alert>
 
@@ -213,10 +212,8 @@ const lifetimePresets = [7, 30, 90];
     <!-- Token table -->
     <Card>
       <CardHeader class="pb-3">
-        <CardTitle class="text-base"> Active Tokens </CardTitle>
-        <CardDescription>
-          Tokens that have not been revoked and have not yet expired.
-        </CardDescription>
+        <CardTitle class="text-base">{{ t("tokensPage.activeTokens") }}</CardTitle>
+        <CardDescription>{{ t("tokensPage.tokensThatHaveNot") }}</CardDescription>
       </CardHeader>
       <CardContent>
         <AsyncState :loading="loading" :error="error" :empty="!tokens?.length">
@@ -224,7 +221,7 @@ const lifetimePresets = [7, 30, 90];
             <div class="py-12 text-center space-y-2">
               <Key class="h-8 w-8 mx-auto text-muted-foreground/50" />
               <p class="text-sm text-muted-foreground">
-                No active tokens. Create one to get started.
+                {{ t("tokensPage.noActiveTokensCreate") }}
               </p>
             </div>
           </template>
@@ -232,10 +229,10 @@ const lifetimePresets = [7, 30, 90];
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Role</TableHead>
-                <TableHead>Expires</TableHead>
-                <TableHead>Created</TableHead>
+                <TableHead>{{ t("common.name") }}</TableHead>
+                <TableHead>{{ t("common.role") }}</TableHead>
+                <TableHead>{{ t("common.expires") }}</TableHead>
+                <TableHead>{{ t("common.created") }}</TableHead>
                 <TableHead class="w-16" />
               </TableRow>
             </TableHeader>
@@ -260,7 +257,7 @@ const lifetimePresets = [7, 30, 90];
                   >
                     <Clock v-if="daysUntil(tok.expires_at) <= 7" class="h-3 w-3" />
                     {{ formatDate(tok.expires_at) }}
-                    <span class="text-xs opacity-70">({{ daysUntil(tok.expires_at) }}d)</span>
+                    <span class="text-xs">({{ daysUntil(tok.expires_at) }}d)</span>
                   </span>
                 </TableCell>
                 <TableCell class="text-sm text-muted-foreground">
@@ -272,7 +269,8 @@ const lifetimePresets = [7, 30, 90];
                     size="icon"
                     class="h-7 w-7 text-muted-foreground hover:text-destructive"
                     :disabled="revoking === tok.id"
-                    title="Revoke token"
+                    :title="t('tokensPage.revokeTokenNamed', { name: tok.name })"
+                    :aria-label="t('tokensPage.revokeTokenNamed', { name: tok.name })"
                     @click="revokeToken(tok.id)"
                   >
                     <Trash2 class="h-3.5 w-3.5" />
@@ -287,11 +285,11 @@ const lifetimePresets = [7, 30, 90];
 
     <!-- Create dialog -->
     <Dialog :open="showCreate" @update:open="showCreate = $event">
-      <template #title>Create API Token</template>
-      <template #description>Choose a name, role, and lifetime for your token.</template>
+      <template #title>{{ t("tokensPage.createApiToken") }}</template>
+      <template #description>{{ t("tokensPage.chooseANameRole") }}</template>
       <div class="space-y-4">
         <div class="space-y-1.5">
-          <Label for="token-name">Name</Label>
+          <Label for="token-name">{{ t("common.name") }}</Label>
           <Input
             id="token-name"
             v-model="form.name"
@@ -301,12 +299,12 @@ const lifetimePresets = [7, 30, 90];
         </div>
 
         <div class="space-y-1.5">
-          <Label for="token-role">Role</Label>
+          <Label for="token-role">{{ t("common.role") }}</Label>
           <Select
             id="token-role"
             v-model="form.role"
             :options="roleOptions"
-            placeholder="Select role"
+            :placeholder="t('tokensPage.selectRole')"
           />
         </div>
 
@@ -314,7 +312,7 @@ const lifetimePresets = [7, 30, 90];
           <legend
             class="font-mono text-xs font-semibold uppercase tracking-wide text-muted-foreground leading-none"
           >
-            Lifetime
+            {{ t("common.lifetime") }}
           </legend>
           <div class="flex gap-2">
             <Button
@@ -328,12 +326,12 @@ const lifetimePresets = [7, 30, 90];
             </Button>
           </div>
           <div class="flex items-center gap-2 text-sm text-muted-foreground">
-            <span>or custom:</span>
+            <span>{{ t("tokensPage.orCustom") }}</span>
             <Input
               type="number"
               min="1"
               max="90"
-              aria-label="Custom token expiry in days"
+              :aria-label="t('tokensPage.customTokenExpiryIn')"
               :value="form.expires_in_days"
               class="w-24 h-8"
               @input="
@@ -354,10 +352,10 @@ const lifetimePresets = [7, 30, 90];
 
         <div class="flex justify-end gap-2 pt-2">
           <Button variant="outline" :disabled="creating" @click="showCreate = false">
-            Cancel
+            {{ t("common.cancel") }}
           </Button>
           <Button :disabled="creating" @click="submitCreate">
-            {{ creating ? "Creating…" : "Create token" }}
+            {{ creating ? t("tokensPage.creating") : t("tokensPage.createToken") }}
           </Button>
         </div>
       </div>

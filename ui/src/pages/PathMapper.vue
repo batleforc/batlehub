@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { computed, reactive, ref, watch } from "vue";
 import { API_BASE_URL } from "@/config";
 import { listRegistries } from "@/client/sdk.gen";
@@ -10,6 +11,8 @@ import { PageHeader } from "@/components/ui/page-header";
 import RegistryPathForm from "@/components/registry-path-form/RegistryPathForm.vue";
 import RegistryPathResults from "@/components/registry-path-form/RegistryPathResults.vue";
 import { REGISTRY_PATH_TYPES } from "@/config/registryPathFields";
+
+const { t } = useI18n();
 
 const pastedUrl = ref("");
 const registry = ref("github");
@@ -99,21 +102,21 @@ watch(pastedUrl, parseUrl);
 <template>
   <div class="max-w-2xl space-y-6">
     <PageHeader
-      title="URL Mapper"
-      description="Paste an upstream URL or fill in the fields to get the equivalent proxy path."
-      variant="glow"
+      :title="t('pathMapper.urlMapper')"
+      :description="t('pathMapper.pasteAnUpstreamUrlOr')"
+      variant="display"
     />
 
     <!-- Universal paste input -->
     <Card>
       <CardContent class="pt-5">
-        <Label for="paste-url" class="text-xs uppercase tracking-wide text-muted-foreground">
-          Paste an upstream URL to auto-fill
-        </Label>
+        <Label for="paste-url" class="text-xs text-muted-foreground">{{
+          t("pathMapper.pasteAnUpstreamUrl")
+        }}</Label>
         <Input
           id="paste-url"
           v-model="pastedUrl"
-          placeholder="https://pypi.org/project/requests/… or https://github.com/owner/repo/…"
+          :placeholder="t('pathMapper.httpsPypiOrgProject')"
           class="mt-1.5 font-mono text-sm"
         />
       </CardContent>
@@ -121,25 +124,27 @@ watch(pastedUrl, parseUrl);
 
     <!-- Registry selector -->
     <div class="space-y-1">
-      <Label for="registry-select" class="text-xs uppercase tracking-wide text-muted-foreground">
-        Registry type
-      </Label>
+      <Label for="registry-select" class="text-xs uppercase tracking-wide text-muted-foreground">{{
+        t("pathMapper.registryType")
+      }}</Label>
       <select
         id="registry-select"
         v-model="registry"
         class="w-full rounded-sm border border-border bg-background px-3 py-2 font-mono text-sm focus:outline-none focus:ring-1 focus:ring-primary"
       >
         <optgroup v-for="group in groupedTypes" :key="group.name" :label="group.name">
-          <option v-for="t in group.types" :key="t.id" :value="t.id">{{ t.label }}</option>
+          <option v-for="type in group.types" :key="type.id" :value="type.id">
+            {{ type.label }}
+          </option>
         </optgroup>
       </select>
     </div>
 
     <RegistryPathForm
-      :type-def="activeTypeDef"
-      :registries="registriesByType[activeTypeDef.id] ?? []"
       v-model:registry-name="registryNameByType[activeTypeDef.id]"
       v-model:values="valuesByType[activeTypeDef.id]"
+      :type-def="activeTypeDef"
+      :registries="registriesByType[activeTypeDef.id] ?? []"
     />
 
     <RegistryPathResults :paths="activePaths" :base-url="API_BASE_URL" />

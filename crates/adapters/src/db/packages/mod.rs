@@ -128,6 +128,10 @@ pub(super) fn sort_order_for(sort_by: &ExploreSortBy) -> &'static str {
         ExploreSortBy::Name => "package_name ASC",
         ExploreSortBy::Downloads => "total_downloads DESC NULLS LAST",
         ExploreSortBy::Recent => "last_accessed DESC NULLS LAST",
+        // The proof's catalog ordering: what this instance most recently
+        // fetched from upstream, which is a different question from `Recent`
+        // (what a client most recently downloaded from us).
+        ExploreSortBy::Fetched => "last_fetched_at DESC NULLS LAST",
     }
 }
 
@@ -144,6 +148,10 @@ pub(super) fn map_explore_entry(r: PgRow) -> ExploreEntry {
     let has_local: bool = r.get("has_local");
     let source = determine_package_source(has_proxied, has_local);
     let downloads: i64 = r.get("total_downloads");
+    // Postgres has no unsigned integers, so every count arrives as i64. A
+    // negative one is impossible for COUNT/SUM, but `as u64` on a negative
+    // would wrap to something enormous rather than fail, so the sizes clamp.
+    let cached_bytes: Option<i64> = r.get("cached_bytes");
     ExploreEntry {
         registry: r.get("registry"),
         name: r.get("package_name"),
@@ -152,6 +160,12 @@ pub(super) fn map_explore_entry(r: PgRow) -> ExploreEntry {
         last_accessed: r.get("last_accessed"),
         source,
         has_blocked: r.get("has_blocked"),
+        has_yanked: r.get("has_yanked"),
+        cached_versions: r.get::<i64, _>("cached_versions").max(0) as u64,
+        cached_bytes: cached_bytes.map(|b| b.max(0) as u64),
+        last_fetched_at: r.get("last_fetched_at"),
+        newest_version: r.get("newest_version"),
+        newest_published_at: r.get("newest_published_at"),
     }
 }
 
@@ -279,6 +293,10 @@ impl PackageRepository for PgPackageRepository {
         crud::get_status_impl(&self.pool, pkg).await
     }
 
+    async fn blocked_versions(&self, registry: &str, name: &str) -> Result<Vec<String>, CoreError> {
+        crud::blocked_versions_impl(&self.pool, registry, name).await
+    }
+
     async fn set_status(&self, pkg: &PackageId, status: PackageStatus) -> Result<(), CoreError> {
         crud::set_status_impl(&self.pool, pkg, status).await
     }
@@ -303,8 +321,25 @@ impl PackageRepository for PgPackageRepository {
         explore::count_events_impl(&self.pool, filter).await
     }
 
+    async fn list_own_downloads(
+        &self,
+        user_id: &str,
+        since: DateTime<Utc>,
+        limit: u64,
+    ) -> Result<Vec<AccessEvent>, CoreError> {
+        explore::list_own_downloads_impl(&self.pool, user_id, since, limit).await
+    }
+
     async fn purge_events_before(&self, before: DateTime<Utc>) -> Result<u64, CoreError> {
         explore::purge_events_before_impl(&self.pool, before).await
+    }
+
+    async fn distinct_event_subjects(
+        &self,
+        contains: Option<&str>,
+        limit: u64,
+    ) -> Result<Vec<String>, CoreError> {
+        explore::distinct_event_subjects_impl(&self.pool, contains, limit).await
     }
 
     async fn explore_packages(

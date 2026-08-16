@@ -1,10 +1,13 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref, computed } from "vue";
 import { Upload, CheckCircle2, XCircle } from "@lucide/vue";
 import SectionTabs from "@/components/admin/SectionTabs.vue";
 import { PACKAGES_TABS } from "@/config/adminSections";
 import { PageHeader } from "@/components/ui/page-header";
 import { bulkBlockPackages, bulkUnblockPackages } from "@/client/sdk.gen";
+import { extractMessage } from "@/composables/useApi";
+import { DestructiveConfirm } from "@/components/ui/destructive-confirm";
 import type {
   BulkActionResponse,
   BulkBlockRequestItem,
@@ -15,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Announcer } from "@/components/ui/announcer";
 import {
   Table,
   TableHeader,
@@ -23,6 +27,8 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
+
+const { t } = useI18n();
 
 type Action = "block" | "unblock";
 
@@ -44,6 +50,16 @@ const submitting = ref(false);
 const result = ref<BulkActionResponse | null>(null);
 const submitError = ref<string | null>(null);
 
+/** The bulk outcome as one sentence, for the live region. */
+const resultAnnouncement = computed(() =>
+  result.value
+    ? t("adminBulk.doneSummary", {
+        succeeded: result.value.succeeded_count,
+        failed: result.value.failed_count,
+      })
+    : "",
+);
+
 const validRows = computed(() => parsedRows.value.filter((r) => !r.error));
 const invalidRows = computed(() => parsedRows.value.filter((r) => !!r.error));
 
@@ -55,7 +71,7 @@ function parseCSV() {
 
   const text = csvText.value.trim();
   if (!text) {
-    parseError.value = "Paste some CSV content first.";
+    parseError.value = t("adminBulk.pasteCsvFirst");
     return;
   }
 
@@ -64,7 +80,7 @@ function parseCSV() {
   const dataLines = lines[0].toLowerCase().startsWith("registry") ? lines.slice(1) : lines;
 
   if (dataLines.length === 0 || (dataLines.length === 1 && !dataLines[0].trim())) {
-    parseError.value = "No data rows found.";
+    parseError.value = t("adminBulk.noDataRows");
     return;
   }
 
@@ -75,11 +91,11 @@ function parseCSV() {
       const [registry = "", name = "", version = "", artifact = "", reason = ""] = cols;
       const row: ParsedRow = { registry, name, version, artifact, reason };
 
-      if (!registry) row.error = "registry is required";
-      else if (!name) row.error = "name is required";
-      else if (!version) row.error = "version is required";
+      if (!registry) row.error = t("adminBulk.registryRequired");
+      else if (!name) row.error = t("adminBulk.nameRequired");
+      else if (!version) row.error = t("adminBulk.versionRequired");
       else if (action.value === "block" && !reason && !defaultReason.value) {
-        row.error = "reason is required for block (set per-row or use default reason)";
+        row.error = t("adminBulk.reasonRequiredForBlock");
       }
 
       return row;
@@ -99,6 +115,11 @@ async function submit() {
   submitError.value = null;
   result.value = null;
 
+  // `res.error`, not `catch`. The generated client is built without
+  // `throwOnError`, so an HTTP failure resolves rather than throws: the
+  // `catch` below never fired, `result` was set to `null`, and a bulk block
+  // that returned 405 rendered *nothing at all* — no error, no result, the
+  // button simply re-enabled. Verified in a browser before this fix.
   try {
     if (action.value === "block") {
       const items: BulkBlockRequestItem[] = validRows.value.map((r) => ({
@@ -109,6 +130,10 @@ async function submit() {
         reason: r.reason || defaultReason.value,
       }));
       const res = await bulkBlockPackages({ body: { items } });
+      if (res.error) {
+        submitError.value = extractMessage(res.error);
+        return;
+      }
       result.value = res.data ?? null;
     } else {
       const items: BulkUnblockRequestItem[] = validRows.value.map((r) => ({
@@ -118,6 +143,10 @@ async function submit() {
         artifact: r.artifact || null,
       }));
       const res = await bulkUnblockPackages({ body: { items } });
+      if (res.error) {
+        submitError.value = extractMessage(res.error);
+        return;
+      }
       result.value = res.data ?? null;
     }
   } catch (e) {
@@ -125,6 +154,39 @@ async function submit() {
   } finally {
     submitting.value = false;
   }
+}
+
+/**
+ * The destructive contract (PRODUCT.md principle 2): scope, count and
+ * consequence before confirmation.
+ *
+ * Neither bulk path had one — a single click blocked or released an arbitrary
+ * number of coordinates. `DestructiveConfirm` is the primitive RFC 0003 built
+ * for exactly this, and the sibling tab already routes three actions through
+ * it, so an operator was getting a typed-name confirmation for unblocking on
+ * one route and nothing at all for the same verb on this one.
+ *
+ * `reversible: true` for both: a block is undone by an unblock and vice versa,
+ * so the typed-name step would be ceremony rather than protection. The count
+ * and the scope are what matter here.
+ */
+const confirmOpen = ref(false);
+
+/** The registries the pending action touches, for the dialog's scope line. */
+const affectedScope = computed(() => {
+  const registries = [...new Set(validRows.value.map((r) => r.registry))].sort();
+  if (registries.length === 1) return registries[0];
+  return t("adminBulk.acrossRegistries", { count: registries.length });
+});
+
+function requestSubmit() {
+  if (validRows.value.length === 0) return;
+  confirmOpen.value = true;
+}
+
+async function confirmSubmit() {
+  confirmOpen.value = false;
+  await submit();
 }
 
 function reset() {
@@ -139,28 +201,49 @@ function reset() {
 
 <template>
   <div class="space-y-6 max-w-4xl">
+    <!-- An outcome announced, not only rendered (RFC 0004-bis §2.6). Every bulk
+         result, block, warm and cache invalidation in this console reached
+         sighted users only — on the surface whose audience includes the one
+         person able to perform destructive actions. -->
+    <Announcer :message="resultAnnouncement ?? ''" />
     <SectionTabs :tabs="PACKAGES_TABS" />
     <PageHeader
-      title="Bulk Import"
-      description="Block or unblock multiple packages at once by pasting or uploading a CSV file."
-      variant="glow"
+      :title="t('adminBulk.bulkBlock')"
+      :description="t('adminBulk.blockOrUnblockMultiplePackages')"
+      variant="display"
     />
 
     <!-- Format reference -->
     <Card>
       <CardHeader class="pb-2">
-        <CardTitle class="text-sm font-medium text-muted-foreground"> CSV format </CardTitle>
+        <CardTitle class="text-sm font-medium text-muted-foreground">{{
+          t("adminBulk.csvFormat")
+        }}</CardTitle>
       </CardHeader>
       <CardContent>
-        <pre class="text-xs font-mono bg-muted rounded p-3 overflow-x-auto">
+        <!--
+          A scroll container must be reachable by keyboard: a mouse user can
+          drag it sideways, and without `tabindex` a keyboard user cannot read
+          the part that is off-screen at all. `<pre>` holds no focusable
+          content of its own, so it takes the focus itself and is announced as
+          a group. Only visible at 390px, which is why it appeared the moment
+          the gate started measuring narrow.
+        -->
+        <pre
+          tabindex="0"
+          role="group"
+          :aria-label="t('adminBulk.csvFormat')"
+          class="text-xs font-mono bg-muted rounded p-3 overflow-x-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
 registry,name,version,artifact,reason
 npm,lodash,4.17.21,,CVE-2021-23337
 cargo,serde,1.0.0,,License issue
 github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
         <p class="text-xs text-muted-foreground mt-2">
-          Header row is optional. <code class="font-mono">artifact</code> may be left blank for
-          version-level blocks. <code class="font-mono">reason</code> is used only for block
-          actions.
+          <i18n-t keypath="adminBulk.csvNotes" tag="span">
+            <template #artifact><code class="font-mono">artifact</code></template>
+            <template #reason><code class="font-mono">reason</code></template>
+          </i18n-t>
         </p>
       </CardContent>
     </Card>
@@ -168,7 +251,7 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
     <!-- Action + input -->
     <Card>
       <CardHeader class="pb-3">
-        <CardTitle class="text-base"> Configure import </CardTitle>
+        <CardTitle class="text-base">{{ t("adminBulk.configureAction") }}</CardTitle>
       </CardHeader>
       <CardContent class="space-y-4">
         <!-- Action selector -->
@@ -182,7 +265,7 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
               result = null;
             "
           >
-            Block
+            {{ t("common.block") }}
           </Button>
           <Button
             :variant="action === 'unblock' ? 'default' : 'outline'"
@@ -193,15 +276,15 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
               result = null;
             "
           >
-            Unblock
+            {{ t("common.unblock") }}
           </Button>
         </div>
 
         <!-- Default reason (block only) -->
         <div v-if="action === 'block'" class="space-y-1 max-w-md">
           <Label for="default-reason"
-            >Default reason
-            <span class="text-muted-foreground">(used when the CSV row has no reason)</span></Label
+            >{{ t("adminBulk.defaultReason") }}
+            <span class="text-muted-foreground">{{ t("adminBulk.usedWhenTheCsv") }}</span></Label
           >
           <Input
             id="default-reason"
@@ -212,7 +295,7 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
 
         <!-- CSV textarea -->
         <div class="space-y-1">
-          <Label for="csv-input">Paste CSV</Label>
+          <Label for="csv-input">{{ t("adminBulk.pasteCsv") }}</Label>
           <textarea
             id="csv-input"
             v-model="csvText"
@@ -228,10 +311,10 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
             class="flex items-center gap-2 px-3 py-1.5 rounded-sm border border-input text-sm cursor-pointer hover:bg-accent transition-colors"
           >
             <Upload class="h-3.5 w-3.5" />
-            Upload .csv file
+            {{ t("adminBulk.uploadCsvFile") }}
             <input type="file" accept=".csv,text/csv" class="sr-only" @change="handleFileUpload" />
           </label>
-          <span class="text-xs text-muted-foreground">or paste above</span>
+          <span class="text-xs text-muted-foreground">{{ t("adminBulk.orPasteAbove") }}</span>
         </div>
 
         <p v-if="parseError" class="text-xs text-destructive">
@@ -239,8 +322,8 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
         </p>
 
         <div class="flex gap-2">
-          <Button variant="outline" @click="parseCSV"> Preview rows </Button>
-          <Button variant="ghost" size="sm" @click="reset"> Reset </Button>
+          <Button variant="outline" @click="parseCSV">{{ t("adminBulk.previewRows") }}</Button>
+          <Button variant="ghost" size="sm" @click="reset"> {{ t("common.reset") }} </Button>
         </div>
       </CardContent>
     </Card>
@@ -250,16 +333,19 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
       <CardHeader class="pb-3">
         <div class="flex items-center justify-between">
           <CardTitle class="text-base">
-            Preview
+            {{ t("common.preview") }}
             <span class="font-normal text-muted-foreground ml-1 text-sm">
-              {{ validRows.length }} valid, {{ invalidRows.length }} invalid
+              <i18n-t keypath="adminBulk.validInvalid" tag="span">
+                <template #valid>{{ validRows.length }}</template>
+                <template #invalid>{{ invalidRows.length }}</template>
+              </i18n-t>
             </span>
           </CardTitle>
-          <Button :disabled="validRows.length === 0 || submitting" @click="submit">
+          <Button :disabled="validRows.length === 0 || submitting" @click="requestSubmit">
             {{
               submitting
-                ? "Processing…"
-                : `${action === "block" ? "Block" : "Unblock"} ${validRows.length} package${validRows.length !== 1 ? "s" : ""}`
+                ? t("adminBulk.processing")
+                : `${action === "block" ? t("common.block") : t("common.unblock")} ${validRows.length} package${validRows.length !== 1 ? "s" : ""}`
             }}
           </Button>
         </div>
@@ -268,12 +354,12 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Registry</TableHead>
-              <TableHead>Name</TableHead>
-              <TableHead>Version</TableHead>
-              <TableHead>Artifact</TableHead>
-              <TableHead v-if="action === 'block'"> Reason </TableHead>
-              <TableHead>Status</TableHead>
+              <TableHead>{{ t("common.registry") }}</TableHead>
+              <TableHead>{{ t("common.name") }}</TableHead>
+              <TableHead>{{ t("common.version") }}</TableHead>
+              <TableHead>{{ t("common.artifact") }}</TableHead>
+              <TableHead v-if="action === 'block'"> {{ t("common.reason") }} </TableHead>
+              <TableHead>{{ t("common.status") }}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -309,22 +395,43 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
       </CardContent>
     </Card>
 
+    <DestructiveConfirm
+      :open="confirmOpen"
+      :action="action === 'block' ? t('adminBulk.block') : t('adminBulk.unblock')"
+      :count="validRows.length"
+      :item-noun="t('adminBulk.packageNoun')"
+      :scope="affectedScope"
+      reversible
+      :loading="submitting"
+      :error="submitError"
+      @confirm="confirmSubmit"
+      @update:open="confirmOpen = $event"
+    />
+
     <!-- Results -->
     <Card v-if="result">
       <CardHeader class="pb-3">
         <CardTitle class="text-base flex items-center gap-2">
-          <CheckCircle2 class="h-4 w-4 text-primary" />
-          Done — {{ result.succeeded_count }} succeeded, {{ result.failed_count }} failed
+          <!-- Not unconditional: this rendered a crimson success check over
+               "0 succeeded, 30 failed". The icon is the first thing read, and
+               it was reporting the opposite of what happened. -->
+          <XCircle v-if="result.succeeded_count === 0" class="h-4 w-4 text-destructive" />
+          <CheckCircle2 v-else-if="result.failed_count === 0" class="h-4 w-4 text-primary" />
+          <XCircle v-else class="h-4 w-4 text-copper" />
+          <i18n-t keypath="adminBulk.doneSummary" tag="span">
+            <template #succeeded>{{ result.succeeded_count }}</template>
+            <template #failed>{{ result.failed_count }}</template>
+          </i18n-t>
         </CardTitle>
       </CardHeader>
       <CardContent v-if="result.failures.length > 0" class="p-0">
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Registry</TableHead>
-              <TableHead>Name</TableHead>
-              <TableHead>Version</TableHead>
-              <TableHead>Error</TableHead>
+              <TableHead>{{ t("common.registry") }}</TableHead>
+              <TableHead>{{ t("common.name") }}</TableHead>
+              <TableHead>{{ t("common.version") }}</TableHead>
+              <TableHead>{{ t("common.error") }}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>

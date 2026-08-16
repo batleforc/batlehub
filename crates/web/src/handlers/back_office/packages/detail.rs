@@ -12,7 +12,7 @@ use batlehub_core::{
         PackageStatus,
     },
     ports::StorageAdminRepository,
-    services::{AdminService, ProxyService},
+    services::{AdminService, ProxyService, SbomService},
 };
 
 use super::require_admin;
@@ -69,6 +69,14 @@ pub struct PackageVersionDetail {
     pub last_accessed_by: Option<String>,
     /// Known vulnerabilities for this version (from the periodic SBOM re-scan).
     pub vulnerabilities: Vec<VulnerabilityDto>,
+    /// The licence this version's own manifest declared, verbatim.
+    ///
+    /// Null means *unknown*, never "unlicensed": the licence is read out of the
+    /// archive when it is cached or published, so it is absent for anything
+    /// fetched before extraction existed, and for the sixteen registry types
+    /// with no manifest parser. `license_gate.allow_unknown` decides how a
+    /// null is treated (RFC 0004-bis §13.1).
+    pub license: Option<String>,
     /// socket.dev badge URL when the `socket_badge` feature flag is enabled for
     /// this registry and the registry type is covered by socket.dev; else null.
     pub socket_badge_url: Option<String>,
@@ -126,6 +134,7 @@ pub async fn package_detail(
     proxy_svc: web::Data<Arc<ProxyService>>,
     registry_map: web::Data<RegistryMap>,
     storage_admin_repo: Option<web::Data<Arc<dyn StorageAdminRepository>>>,
+    sbom_svc: Option<web::Data<Arc<SbomService>>>,
 ) -> Result<impl Responder, AppError> {
     require_admin(&identity)?;
 
@@ -196,6 +205,18 @@ pub async fn package_detail(
         } else {
             None
         };
+        // A failed lookup reads as unknown rather than propagating: the licence
+        // is decoration on this page, and an SBOM outage should not take the
+        // package detail with it. The gate is where a lookup failure matters,
+        // and it logs its own.
+        let license = match sbom_svc {
+            Some(ref svc) => svc
+                .repo
+                .get_license_for_coordinate(&query.registry, &query.name, &s.package_id.version)
+                .await
+                .unwrap_or(None),
+            None => None,
+        };
         versions.push(PackageVersionDetail {
             id: s.id,
             version: s.package_id.version,
@@ -209,6 +230,7 @@ pub async fn package_detail(
             last_accessed: s.last_accessed,
             last_accessed_by: s.last_accessed_by,
             vulnerabilities,
+            license,
             socket_badge_url,
         });
     }

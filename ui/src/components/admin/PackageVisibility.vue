@@ -1,14 +1,21 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
+import { computed, ref, watch } from "vue";
 import { getPackageVisibility, setPackageVisibility } from "@/client/sdk.gen";
-import type { Visibility } from "@/lib/registry-types";
-import { VISIBILITY_OPTIONS } from "@/lib/registry-types";
+import type { Visibility } from "@/client/types.gen";
+import { VISIBILITY_OPTIONS } from "@/config/visibility";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
 import { Select } from "@/components/ui/select";
+
+const { t } = useI18n();
+
+const visibilityOptions = computed(() =>
+  VISIBILITY_OPTIONS.map((o) => ({ value: o.value, label: t(o.label) })),
+);
 
 const props = defineProps<{ registry: string; name: string }>();
 
@@ -38,7 +45,7 @@ async function save() {
       path: { registry: props.registry, name: props.name },
       body: { visibility: selected.value },
     });
-    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? "API error");
+    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? t("common.apiError"));
     reload();
   } catch (e) {
     error.value = e instanceof Error ? e.message : "Unknown error";
@@ -51,11 +58,8 @@ async function save() {
 <template>
   <Card>
     <CardHeader>
-      <CardTitle class="text-base">Package visibility</CardTitle>
-      <CardDescription
-        >Controls who can download this package (all versions share the same
-        setting).</CardDescription
-      >
+      <CardTitle class="text-base">{{ t("packageVisibility.packageVisibility") }}</CardTitle>
+      <CardDescription>{{ t("packageVisibility.controlsWhoCanDownload") }}</CardDescription>
     </CardHeader>
     <CardContent>
       <div class="flex items-center gap-3 flex-wrap">
@@ -70,8 +74,8 @@ async function save() {
         </Badge>
         <Select
           v-model="selected"
-          :options="[...VISIBILITY_OPTIONS]"
-          aria-label="Package visibility"
+          :options="visibilityOptions"
+          :aria-label="t('packageVisibility.packageVisibility')"
           class="w-72"
         />
         <Button
@@ -79,7 +83,7 @@ async function save() {
           :disabled="saving || selected === (visibilityData?.visibility ?? 'public')"
           @click="save"
         >
-          {{ saving ? "Saving…" : "Save" }}
+          {{ saving ? t("packageVisibility.saving") : t("packageVisibility.save") }}
         </Button>
       </div>
       <p v-if="error" class="mt-2 text-sm text-destructive">{{ error }}</p>

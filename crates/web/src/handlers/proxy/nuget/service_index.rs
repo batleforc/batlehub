@@ -1,6 +1,7 @@
 use actix_web::{get, web, HttpRequest, HttpResponse, Responder};
 
 use super::super::common::{registry_public_base, require_registry_type};
+use crate::handlers::schemas::UpstreamDocument;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
 /// Return a NuGet v3 service index pointing all resource URLs back to this proxy.
@@ -13,7 +14,7 @@ use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
     tag = "proxy/nuget",
     params(("registry" = String, Path, description = "Registry name")),
     responses(
-        (status = 200, description = "NuGet v3 service index"),
+        (status = 200, description = "NuGet v3 service index", body = UpstreamDocument),
         (status = 404, description = "Registry not found or not a NuGet registry"),
     ),
     security(("bearer_token" = [])),

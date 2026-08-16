@@ -21,6 +21,7 @@ use super::{content_type_for, require_jbm, PLUGIN_ARTIFACT, STABLE_CHANNEL};
 use crate::handlers::proxy::common::{
     proxy_stream, serve_local_or_proxy_artifact, LocalOrProxyArtifactOpts,
 };
+use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
 
 /// Forward a fixed-URL blob through the cached-forward helper (the IDE fetches
@@ -51,7 +52,7 @@ async fn forward_blob(
     tag = "proxy/jetbrains-marketplace",
     params(("registry" = String, Path, description = "Registry name")),
     responses(
-        (status = 200, description = "Array of plugin xmlIds"),
+        (status = 200, description = "Array of plugin xmlIds", body = Vec<String>),
         (status = 404, description = "Unknown or non-marketplace registry"),
     ),
     security(("bearer_token" = [])),
@@ -133,7 +134,7 @@ macro_rules! fixed_blob_route {
             tag = "proxy/jetbrains-marketplace",
             params(("registry" = String, Path, description = "Registry name")),
             responses(
-                (status = 200, description = "Blob content"),
+                (status = 200, description = "Blob content", body = ArtifactBytes, content_type = "application/octet-stream"),
                 (status = 404, description = "Unknown or non-marketplace registry"),
             ),
             security(("bearer_token" = [])),
@@ -239,7 +240,7 @@ async fn load_entries(
         ("plugin" = String, Path, description = "Plugin xmlId"),
     ),
     responses(
-        (status = 200, description = "Plugin metadata"),
+        (status = 200, description = "Plugin metadata", body = UpstreamDocument),
         (status = 404, description = "Unknown registry or plugin"),
     ),
     security(("bearer_token" = [])),
@@ -273,7 +274,7 @@ pub async fn jbm_plugin_meta(
         ("update" = String, Path, description = "Plugin version"),
     ),
     responses(
-        (status = 200, description = "Update metadata"),
+        (status = 200, description = "Update metadata", body = UpstreamDocument),
         (status = 404, description = "Unknown registry, plugin, or version"),
     ),
     security(("bearer_token" = [])),
@@ -317,7 +318,7 @@ pub async fn jbm_update_meta(
         ("file_name" = String, Path, description = "Artifact file name"),
     ),
     responses(
-        (status = 200, description = "Artifact bytes"),
+        (status = 200, description = "Artifact bytes", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 404, description = "Unknown registry or artifact"),
     ),
     security(("bearer_token" = [])),
@@ -395,7 +396,7 @@ pub struct PluginDownloadQuery {
         ("channel" = Option<String>, Query, description = "Release channel"),
     ),
     responses(
-        (status = 200, description = "Plugin archive bytes"),
+        (status = 200, description = "Plugin archive bytes", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 404, description = "Unknown registry or plugin"),
     ),
     security(("bearer_token" = [])),
@@ -469,7 +470,7 @@ pub struct PluginManagerQuery {
         ("build" = Option<String>, Query, description = "IDE build for compatibility"),
     ),
     responses(
-        (status = 200, description = "Plugin archive bytes"),
+        (status = 200, description = "Plugin archive bytes", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 400, description = "Unsupported action"),
         (status = 404, description = "Unknown registry, plugin, or no compatible version"),
     ),

@@ -49,18 +49,39 @@ describe("RegistryPathForm", () => {
     expect(wrapper.text()).toContain("(optional)");
   });
 
-  it("renders the note as trusted HTML", () => {
+  /**
+   * The note's markup is rendered, not pasted.
+   *
+   * `find("code").exists()` alone cannot tell this apart from the `v-html` it
+   * replaced — it was true both before and after — so it also asserts what only
+   * the new path guarantees: the `<code>` carries the class `RichText` owns
+   * rather than one written into the data, and no markup reaches the reader as
+   * visible text.
+   */
+  it("renders the note's markup rather than pasting it", () => {
     const wrapper = mountForm("maven");
-    expect(wrapper.find("code").exists()).toBe(true);
+    const code = wrapper.find("code");
+    expect(code.exists()).toBe(true);
+    expect(code.text()).toBe("com.google.guava");
+    expect(code.classes()).toContain("font-mono");
+    expect(wrapper.text()).not.toContain("<code>");
   });
 
-  it("lists known registry names as datalist options", () => {
+  /**
+   * A real listbox since RFC 0004-bis §6.2. The `<datalist>` this replaced
+   * exposed nothing to assistive tech, behaved differently per browser, and
+   * could not say "nothing matches" — which is the one behaviour the field
+   * needed and the reason the sweep exists.
+   */
+  it("offers known registry names as listbox options", async () => {
     const wrapper = mountForm("npm", {}, [
       { name: "npm-mirror", type: "npm" },
       { name: "other", type: "npm" },
     ]);
-    const options = wrapper.findAll("datalist option");
-    expect(options.map((o) => o.attributes("value"))).toEqual(["npm-mirror", "other"]);
+    await wrapper.find('input[role="combobox"]').trigger("focus");
+
+    const options = wrapper.findAll('[role="option"]');
+    expect(options.map((o) => o.text())).toEqual(["npm-mirrornpm", "othernpm"]);
   });
 
   it("updates the bound values object when a field is edited", async () => {

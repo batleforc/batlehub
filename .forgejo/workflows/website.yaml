@@ -4,9 +4,21 @@ on:
     branches:
       - main
     paths:
-      - website/**
+      - docs/**
       - .forgejo/workflows/website.yaml
+  # A manual run publishes the checked-out ref (any branch) to the page of your
+  # choice, so a docs branch can be previewed on its own page without touching
+  # the canonical `batlehub` one.
   workflow_dispatch:
+    inputs:
+      page:
+        description: "Git Pages page to publish to — the path after <owner>.git.batleforc.fr/"
+        required: false
+        default: batlehub
+      base_url:
+        description: "Vite base path (leave empty to derive /<page>/)"
+        required: false
+        default: ""
 jobs:
   publish:
     runs-on: git-pages
@@ -22,17 +34,54 @@ jobs:
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: 11
-      - name: Build website
+      # `page` and `base_url` are attacker-controllable strings on a dispatch, so
+      # they go through the environment rather than `${{ }}` interpolation into
+      # the script body. The page name also ends up in a URL: keep it to the
+      # characters a Git Pages slug can actually hold.
+      - name: Resolve target page
+        id: target
         env:
-          BASE_URL: /batlehub/
+          # `github.event.inputs`, not the newer `inputs` context: the former is
+          # what Forgejo's runner has always understood, and on a push both are
+          # simply empty — which the `:-` defaults below already handle.
+          PAGE_INPUT: ${{ github.event.inputs.page }}
+          BASE_INPUT: ${{ github.event.inputs.base_url }}
         run: |
-          cd website
+          set -euo pipefail
+          page="${PAGE_INPUT:-batlehub}"
+          page="${page#/}"
+          page="${page%/}"
+          case "$page" in
+            *[!A-Za-z0-9._-]* | "")
+              echo "::error::invalid page name '$page' (allowed: A-Z a-z 0-9 . _ -)"
+              exit 1
+              ;;
+          esac
+          base="${BASE_INPUT:-/$page/}"
+          case "$base" in
+            /*) ;;
+            *) base="/$base" ;;
+          esac
+          case "$base" in
+            */) ;;
+            *) base="$base/" ;;
+          esac
+          echo "page=$page" >>"$GITHUB_OUTPUT"
+          echo "base=$base" >>"$GITHUB_OUTPUT"
+          echo "Publishing '${{ github.ref_name }}' to page '$page' with base '$base'"
+      - name: Build the documentation site
+        env:
+          BASE_URL: ${{ steps.target.outputs.base }}
+        run: |
+          cd docs
           pnpm install --frozen-lockfile
           pnpm run docs:build
           cp -R .vitepress/dist ../dist
           cd ..
           ls -la dist
+      # A push only ever reaches here from `main` (see the trigger); a dispatch
+      # is trusted to publish whatever ref it was started from.
       - name: Publish to Git Pages
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
         run: |
-          git-pages-cli https://${{ github.repository_owner }}.git.batleforc.fr/batlehub --token ${{ secrets.GITHUB_TOKEN }} --upload-dir dist
+          git-pages-cli https://${{ github.repository_owner }}.git.batleforc.fr/${{ steps.target.outputs.page }} --token ${{ secrets.GITHUB_TOKEN }} --upload-dir dist

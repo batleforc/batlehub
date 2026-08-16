@@ -13,8 +13,9 @@ pub mod vulnerability;
 pub use access_log::{AccessAction, AccessEvent, AccessResult, EventFilter};
 pub use banner::{BannerLevel, GlobalBanner};
 pub use explore::{
-    ExploreEntry, ExploreFilter, ExplorePackageDetail, ExploreSortBy, ExploreVersionEntry,
-    ExploreViewer, FirewallInfo, GateInfo, PackageSource, RegistryStat,
+    resolve_state, ExploreEntry, ExploreFilter, ExplorePackageDetail, ExploreSortBy,
+    ExploreVersionEntry, ExploreViewer, FirewallInfo, GateInfo, PackageSource, RegistryStat,
+    ReleaseAgeGateParams, ResolutionPolicy, ResolutionState,
 };
 pub use identity::{Identity, Role};
 pub use local_package::{CargoDep, CargoIndexEntry, PublishedPackage, Visibility};

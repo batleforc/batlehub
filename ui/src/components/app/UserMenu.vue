@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { computed } from "vue";
 import { RouterLink, useRouter } from "vue-router";
-import { User, KeyRound, FolderKey, Terminal, LogOut, ChevronDown } from "@lucide/vue";
+import { User, KeyRound, FolderKey, Terminal, Wrench, LogOut, ChevronDown } from "@lucide/vue";
 import {
   DropdownMenuRoot,
   DropdownMenuTrigger,
@@ -12,6 +13,8 @@ import {
 } from "radix-vue";
 import { useAuth } from "@/composables/useAuth";
 import { Badge } from "@/components/ui/badge";
+
+const { t } = useI18n();
 
 const { identity, isAdmin, isAuthenticated, logout } = useAuth();
 const router = useRouter();
@@ -33,17 +36,19 @@ function handleLogout() {
 <template>
   <template v-if="isAuthenticated">
     <DropdownMenuRoot>
+      <!-- The bar's grammar (AppNav, the design proof's `.masthead`): a ruled
+           cell, meta type, state on ink and rule weight. The tinted hover it
+           replaces rode on `bg-accent`, which resolves to `--ground-raised` at
+           1.06:1 — a fill nobody can see is not a hover state. -->
       <DropdownMenuTrigger
-        class="hidden sm:flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-sm hover:bg-accent/60 transition-colors outline-none"
+        class="hidden sm:flex items-center gap-2 border border-border px-2 py-1 text-xs text-muted-foreground transition-colors outline-none hover:border-muted-foreground hover:text-foreground"
       >
         <div
-          class="h-7 w-7 rounded-sm bg-primary text-primary-foreground flex items-center justify-center text-xs font-mono font-bold shrink-0"
+          class="h-6 w-6 bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold shrink-0"
         >
           {{ userInitials }}
         </div>
-        <span
-          class="text-muted-foreground hidden lg:inline max-w-[10rem] truncate font-mono text-xs"
-        >
+        <span class="hidden lg:inline max-w-[10rem] truncate tracking-[0.1em]">
           {{ identity?.user_id }}
         </span>
         <Badge v-if="isAdmin" variant="copper" class="text-xs">admin</Badge>
@@ -54,7 +59,7 @@ function handleLogout() {
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
-        class="z-50 min-w-[11rem] rounded-sm border border-border bg-popover p-1 shadow-[var(--cyber-glow)]"
+        class="z-50 min-w-[11rem] rounded-sm border border-border bg-popover p-1"
       >
         <DropdownMenuLabel
           class="px-2 py-1.5 text-xs text-muted-foreground font-mono font-normal truncate"
@@ -64,56 +69,77 @@ function handleLogout() {
         <DropdownMenuSeparator class="my-1 h-px bg-border" />
         <DropdownMenuItem as-child>
           <RouterLink
-            to="/profile"
+            to="/me/profile"
             class="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm cursor-pointer hover:bg-accent hover:text-accent-foreground outline-none transition-colors"
           >
             <User class="h-3.5 w-3.5" />
-            My Profile
+            {{ t("userMenu.myProfile") }}
           </RouterLink>
         </DropdownMenuItem>
         <DropdownMenuItem v-if="isOidcUser" as-child>
           <RouterLink
-            to="/tokens"
+            to="/me/tokens"
             class="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm cursor-pointer hover:bg-accent hover:text-accent-foreground outline-none transition-colors"
           >
             <KeyRound class="h-3.5 w-3.5" />
-            My Tokens
+            {{ t("userMenu.myTokens") }}
           </RouterLink>
         </DropdownMenuItem>
         <DropdownMenuItem as-child>
           <RouterLink
-            to="/my-namespace"
+            to="/me/namespace"
             class="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm cursor-pointer hover:bg-accent hover:text-accent-foreground outline-none transition-colors"
           >
             <FolderKey class="h-3.5 w-3.5" />
-            My Namespace
+            {{ t("userMenu.myNamespace") }}
           </RouterLink>
         </DropdownMenuItem>
         <DropdownMenuItem as-child>
           <RouterLink
-            to="/cli"
+            to="/me/cli"
             class="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm cursor-pointer hover:bg-accent hover:text-accent-foreground outline-none transition-colors"
           >
             <Terminal class="h-3.5 w-3.5" />
-            Download CLI
+            {{ t("userMenu.downloadCli") }}
+          </RouterLink>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator class="my-1 h-px bg-border" />
+        <!-- RFC 0003 demoted diagnostics out of the primary bar on the grounds
+             that they are "reachable from the user menu" (`navigation.ts`).
+             They were not: the entry was never written, so `/tools` was
+             unreachable except by URL or from `PackageDetailPage`'s denial
+             link. Demoted, not hidden — this is the half that was owed.
+
+             Points at the first tab rather than `/tools`, which is a
+             `SECTION_INDEXES` key: nothing in a menu should lead to a
+             redirect. Labelled from `tools.title`, the hub's own name, so the
+             place is not called two different things. -->
+        <DropdownMenuItem as-child>
+          <RouterLink
+            to="/tools/access-check"
+            class="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm cursor-pointer hover:bg-accent hover:text-accent-foreground outline-none transition-colors"
+          >
+            <Wrench class="h-3.5 w-3.5" />
+            {{ t("tools.title") }}
           </RouterLink>
         </DropdownMenuItem>
         <DropdownMenuSeparator class="my-1 h-px bg-border" />
         <DropdownMenuItem
-          class="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm cursor-pointer hover:bg-destructive/10 text-destructive hover:text-destructive outline-none transition-colors"
+          class="flex items-center gap-2 px-2 py-1.5 text-sm rounded-sm cursor-pointer hover:bg-accent text-destructive hover:text-destructive outline-none transition-colors"
           @select="handleLogout"
         >
           <LogOut class="h-3.5 w-3.5" />
-          Sign out
+          {{ t("userMenu.signOut") }}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenuRoot>
   </template>
+  <!-- The one action an anonymous viewer has, cut as the bar's `.ctl` so it
+       reads as a control beside Docs rather than as loose prose in a ruled bar. -->
   <RouterLink
     v-else
     to="/login"
-    class="font-mono text-sm text-muted-foreground hover:text-primary transition-colors"
+    class="shrink-0 whitespace-nowrap border border-border px-3 py-2 text-xs uppercase tracking-[0.1em] text-muted-foreground transition-colors hover:border-muted-foreground hover:text-foreground"
+    >{{ t("userMenu.signIn") }}</RouterLink
   >
-    Sign in
-  </RouterLink>
 </template>

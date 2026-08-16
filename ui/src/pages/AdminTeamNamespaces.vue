@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { listNamespaces, claimNamespace, releaseNamespace } from "@/client/sdk.gen";
-import type { TeamNamespaceDto } from "@/lib/registry-types";
+import type { TeamNamespaceDto } from "@/client/types.gen";
 import { useAdminCrudList } from "@/composables/useAdminCrudList";
 import SectionTabs from "@/components/admin/SectionTabs.vue";
 import { NAMESPACES_TABS } from "@/config/adminSections";
@@ -20,6 +21,11 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import { Dialog } from "@/components/ui/dialog";
+import { Combobox } from "@/components/ui/combobox";
+import { useSubjectSuggestions } from "@/composables/useSuggestions";
+import { toRef } from "vue";
+
+const { t } = useI18n();
 
 interface ClaimForm {
   prefix: string;
@@ -63,29 +69,40 @@ const {
   initialAddForm: () => ({ prefix: "", group_id: "", claimed_by: "" }),
   canSubmitAdd: (form) => !!form.prefix.trim() && !!form.group_id.trim(),
 });
+
+/* A8: identities this instance has seen. A claim may still name someone it
+   has not — a namespace is often claimed before its owner's first pull.
+
+   A getter ref, not `toRef(claimForm.value, …)`: `useAdminCrudList.submitAdd`
+   does `addForm.value = initialAddForm()` after a successful claim, so a
+   property ref bound to the object held at setup time points at an orphaned
+   object from the second claim onwards and the field suggests nothing for the
+   rest of the session. A getter re-reads `claimForm.value` on every access. */
+const claimedBySuggestions = useSubjectSuggestions(toRef(() => claimForm.value.claimed_by));
 </script>
 
 <template>
   <div class="space-y-6">
     <SectionTabs :tabs="NAMESPACES_TABS" />
     <PageHeader
-      title="Team Namespaces"
-      description="Assign package name prefixes to auth-provider groups to control who may publish within them."
+      variant="display"
+      :title="t('adminTeamNamespaces.teamNamespaces')"
+      :description="t('adminTeamNamespaces.assignPackageNamePrefixesTo')"
     >
       <template #actions>
-        <Button size="sm" :disabled="!selectedRegistry" @click="claimDialogOpen = true">
-          Claim namespace
-        </Button>
+        <Button size="sm" :disabled="!selectedRegistry" @click="claimDialogOpen = true">{{
+          t("adminTeamNamespaces.claimNamespace")
+        }}</Button>
       </template>
     </PageHeader>
 
     <!-- Registry selector -->
     <div class="space-y-1.5 max-w-xs">
-      <Label for="team-ns-registry">Registry</Label>
+      <Label for="team-ns-registry">{{ t("common.registry") }}</Label>
       <Select
         id="team-ns-registry"
         v-model="selectedRegistry"
-        placeholder="Select a registry…"
+        :placeholder="t('adminTeamNamespaces.selectARegistry')"
         :options="registryOptions"
       />
     </div>
@@ -95,7 +112,7 @@ const {
       <CardHeader>
         <div class="flex items-center justify-between">
           <CardTitle class="text-base">
-            Namespace claims
+            {{ t("adminTeamNamespaces.namespaceClaims") }}
             <span v-if="selectedRegistry" class="font-mono text-muted-foreground text-sm ml-1"
               >({{ selectedRegistry }})</span
             >
@@ -106,7 +123,7 @@ const {
             :disabled="namespacesLoading"
             @click="reloadNamespaces"
           >
-            {{ namespacesLoading ? "Loading…" : "Refresh" }}
+            {{ namespacesLoading ? t("common.loading") : t("common.refresh") }}
           </Button>
         </div>
       </CardHeader>
@@ -117,10 +134,17 @@ const {
         <Table v-else>
           <TableHeader>
             <TableRow>
-              <TableHead>Prefix</TableHead>
-              <TableHead>Group</TableHead>
-              <TableHead>Claimed by</TableHead>
-              <TableHead class="text-right"> Actions </TableHead>
+              <TableHead>{{ t("common.prefix") }}</TableHead>
+              <TableHead>{{ t("common.group") }}</TableHead>
+              <TableHead>{{ t("adminTeamNamespaces.claimedBy") }}</TableHead>
+              <!-- RFC 0004-bis A6. `count_packages_in_namespace` had been on
+                   the port since it was written, with the delete confirmation
+                   as its only caller — so this list showed a row per claim with
+                   no way to tell a namespace holding four hundred packages from
+                   an abandoned one, which is the question an operator opens
+                   this page with. -->
+              <TableHead class="text-right">{{ t("common.packages") }}</TableHead>
+              <TableHead class="text-right"> {{ t("common.actions") }} </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -136,20 +160,38 @@ const {
               <TableCell class="text-sm text-muted-foreground">
                 {{ ns.claimed_by ?? "—" }}
               </TableCell>
+              <TableCell class="text-right font-mono text-sm tabular-nums">
+                <!-- Zero is the answer that matters here, so it is rendered
+                     rather than blanked. -->
+                <span :class="ns.package_count === 0 ? 'text-muted-foreground' : ''">{{
+                  ns.package_count
+                }}</span>
+              </TableCell>
               <TableCell class="text-right">
-                <Button variant="outline" size="sm" @click="releaseTarget = ns"> Release </Button>
+                <Button variant="outline" size="sm" @click="releaseTarget = ns">
+                  {{ t("common.release") }}
+                </Button>
               </TableCell>
             </TableRow>
           </TableBody>
         </Table>
+        <p v-if="namespacesLoading" class="p-6 text-center text-sm text-muted-foreground">
+          {{ t("common.loading") }}
+        </p>
+        <!--
+          `&& !namespacesLoading`: the empty state rendered while the request was still
+          in flight, so an operator read "none for this registry", opened the
+          dialog and claimed something that already existed. Empty must mean
+          empty, not "we have not looked yet".
+        -->
         <p
-          v-if="!namespacesError && (!namespaces || namespaces.length === 0)"
+          v-if="!namespacesError && !namespacesLoading && (!namespaces || namespaces.length === 0)"
           class="p-6 text-sm text-muted-foreground text-center"
         >
           {{
             selectedRegistry
-              ? "No namespace claims for this registry."
-              : "Select a registry to view namespace claims."
+              ? t("adminTeamNamespaces.noNamespaceClaimsForThis")
+              : t("adminTeamNamespaces.selectARegistryToView")
           }}
         </p>
       </CardContent>
@@ -168,15 +210,20 @@ const {
       }
     "
   >
-    <template #title>Claim namespace</template>
+    <template #title>{{ t("adminTeamNamespaces.claimNamespace") }}</template>
     <template #description>
-      Restrict publishing under a prefix in
-      <span class="font-mono">{{ selectedRegistry }}</span> to a specific group.
+      <i18n-t keypath="adminTeamNamespaces.restrictPublishingIn" tag="span">
+        <template #registry
+          ><span class="font-mono">{{ selectedRegistry }}</span></template
+        >
+      </i18n-t>
     </template>
     <div class="space-y-4">
       <div class="space-y-3">
         <div class="space-y-1.5">
-          <Label for="team-ns-prefix">Prefix <span class="text-destructive">*</span></Label>
+          <Label for="team-ns-prefix">
+            {{ t("adminTeamNamespaces.prefix") }} <span class="text-destructive">*</span>
+          </Label>
           <Input
             id="team-ns-prefix"
             v-model="claimForm.prefix"
@@ -184,12 +231,15 @@ const {
             class="font-mono"
           />
           <p class="text-xs text-muted-foreground">
-            Packages whose name equals or starts with <span class="font-mono">prefix/</span> will be
-            restricted.
+            <i18n-t keypath="adminTeamNamespaces.packagesStartingWith" tag="span">
+              <template #prefix><span class="font-mono">prefix/</span></template>
+            </i18n-t>
           </p>
         </div>
         <div class="space-y-1.5">
-          <Label for="team-ns-group-id">Group ID <span class="text-destructive">*</span></Label>
+          <Label for="team-ns-group-id">
+            {{ t("adminTeamNamespaces.groupId") }} <span class="text-destructive">*</span>
+          </Label>
           <Input
             id="team-ns-group-id"
             v-model="claimForm.group_id"
@@ -197,15 +247,20 @@ const {
             class="font-mono"
           />
           <p class="text-xs text-muted-foreground">
-            Must match the group name in your auth provider's claims.
+            {{ t("adminTeamNamespaces.mustMatchTheGroup") }}
           </p>
         </div>
         <div class="space-y-1.5">
-          <Label for="team-ns-claimed-by">Claimed by</Label>
-          <Input
+          <Label for="team-ns-claimed-by">{{ t("adminTeamNamespaces.claimedBy") }}</Label>
+          <!-- A8: identities this instance has actually seen. Typing a subject
+               it has not seen is still allowed — a namespace can be claimed for
+               someone before their first pull. -->
+          <Combobox
             id="team-ns-claimed-by"
             v-model="claimForm.claimed_by"
-            placeholder="Optional — your user ID"
+            :options="claimedBySuggestions.options.value"
+            :loading="claimedBySuggestions.loading.value"
+            :placeholder="t('adminTeamNamespaces.optionalYourUserId')"
           />
         </div>
       </div>
@@ -222,14 +277,18 @@ const {
             claimError = null;
           "
         >
-          Cancel
+          {{ t("common.cancel") }}
         </Button>
         <Button
           size="sm"
           :disabled="claimLoading || !claimForm.prefix.trim() || !claimForm.group_id.trim()"
           @click="submitClaim"
         >
-          {{ claimLoading ? "Claiming…" : "Claim namespace" }}
+          {{
+            claimLoading
+              ? t("adminTeamNamespaces.claiming")
+              : t("adminTeamNamespaces.claimNamespace")
+          }}
         </Button>
       </div>
     </div>
@@ -247,11 +306,16 @@ const {
       }
     "
   >
-    <template #title>Release namespace claim?</template>
+    <template #title>{{ t("adminTeamNamespaces.releaseNamespaceClaim") }}</template>
     <template #description>
-      The prefix <span class="font-mono">{{ releaseTarget?.prefix }}</span> will no longer be
-      restricted to group <span class="font-mono">{{ releaseTarget?.group_id }}</span
-      >. Any authenticated user will be able to publish packages under this prefix.
+      <i18n-t keypath="adminTeamNamespaces.releaseExplanation" tag="span">
+        <template #prefix
+          ><span class="font-mono">{{ releaseTarget?.prefix }}</span></template
+        >
+        <template #group
+          ><span class="font-mono">{{ releaseTarget?.group_id }}</span></template
+        >
+      </i18n-t>
     </template>
     <div class="space-y-4">
       <p v-if="releaseError" class="text-sm text-destructive">
@@ -267,10 +331,14 @@ const {
             releaseError = null;
           "
         >
-          Cancel
+          {{ t("common.cancel") }}
         </Button>
         <Button variant="destructive" size="sm" :disabled="releaseLoading" @click="confirmRelease">
-          {{ releaseLoading ? "Releasing…" : "Release claim" }}
+          {{
+            releaseLoading
+              ? t("adminTeamNamespaces.releasing")
+              : t("adminTeamNamespaces.releaseClaim")
+          }}
         </Button>
       </div>
     </div>

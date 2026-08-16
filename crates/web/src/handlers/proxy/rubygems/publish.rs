@@ -4,6 +4,7 @@ use super::{
     LocalRegistryService, NotificationEventType, NotificationService, PublishRequest, RegistryMap,
     RegistryModeMap, Responder, Sha256,
 };
+use crate::handlers::schemas::MessageResponse;
 
 #[derive(serde::Deserialize)]
 pub struct GemYankQuery {
@@ -21,7 +22,7 @@ pub struct GemYankQuery {
     tag = "proxy/rubygems",
     params(("registry" = String, Path, description = "Registry name")),
     responses(
-        (status = 200, description = "Gem published successfully"),
+        (status = 200, description = "Gem published successfully", body = MessageResponse),
         (status = 403, description = "Access denied or quota exceeded"),
         (status = 409, description = "Version already exists"),
         (status = 422, description = "Invalid gem file or versioning policy violation"),
@@ -81,9 +82,7 @@ pub async fn gem_publish(
             signature_type,
         },
         actix_web::http::StatusCode::OK,
-        serde_json::json!({
-            "message": format!("Successfully registered gem: {name} ({version})")
-        }),
+        MessageResponse::new(format!("Successfully registered gem: {name} ({version})")),
     )
     .await
 }
@@ -99,7 +98,7 @@ pub async fn gem_publish(
         ("version"   = String, Query, description = "Gem version to yank"),
     ),
     responses(
-        (status = 200, description = "Gem yanked"),
+        (status = 200, description = "Gem yanked", body = MessageResponse),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Gem or version not found"),
     ),
@@ -134,9 +133,10 @@ pub async fn gem_yank(
         &actor,
     );
 
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "message": format!("Successfully yanked gem: {} ({})", query.gem_name, query.version)
-    })))
+    Ok(HttpResponse::Ok().json(MessageResponse::new(format!(
+        "Successfully yanked gem: {} ({})",
+        query.gem_name, query.version
+    ))))
 }
 
 /// Unyank a gem version (local/hybrid registries only).
@@ -150,7 +150,7 @@ pub async fn gem_yank(
         ("version"   = String, Query, description = "Gem version to unyank"),
     ),
     responses(
-        (status = 200, description = "Gem unyanked"),
+        (status = 200, description = "Gem unyanked", body = MessageResponse),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Gem or version not found"),
     ),
@@ -185,7 +185,8 @@ pub async fn gem_unyank(
         &actor,
     );
 
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "message": format!("Successfully unyanked gem: {} ({})", query.gem_name, query.version)
-    })))
+    Ok(HttpResponse::Ok().json(MessageResponse::new(format!(
+        "Successfully unyanked gem: {} ({})",
+        query.gem_name, query.version
+    ))))
 }

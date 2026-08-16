@@ -140,7 +140,7 @@ impl LocalRegistryService {
     }
 
     /// Record a successful lifecycle admin action (yank/unyank/deprecate/
-    /// undeprecate/unlist/relist) through `access_log`, when configured. Mirrors
+    /// undeprecate/unlist/relist) through `package_repo`, when configured. Mirrors
     /// `read.rs`'s `record_download` so these mutations aren't a silent audit
     /// gap next to the package-block/visibility/ownership admin actions that
     /// already go through `AdminService::record_admin_action`.
@@ -152,7 +152,7 @@ impl LocalRegistryService {
         action: AccessAction,
         identity: &Identity,
     ) {
-        let Some(repo) = self.access_log.as_ref() else {
+        let Some(repo) = self.package_repo.as_ref() else {
             return;
         };
         let event = AccessEvent {

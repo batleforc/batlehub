@@ -1,0 +1,122 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   BatleHub design tokens — the single place a colour, step, size or duration
+   is decided. Derived from DESIGN.md; see RFC 0003 (docs/future-feature).
+
+   ONE PALETTE, TWO GROUNDS. Paper is this world's home ground — the Emigre
+   specimen board is ink on paper — and near-black is the adaptation the use
+   scene earned (dark room, one tab among twenty, opened in anger, second
+   screen). Light is not a filter over dark, and dark is not a filter over
+   light: both are authored.
+
+   DIRECTION, NOT LIGHTNESS, is what the neutral names mean. `--ground-raised`
+   moves toward the ink pole and `--ground-sunk` away from it, so on near-black
+   raised is *lighter* (L .155 over L .07) and on paper raised is *darker*
+   (L .935 under L .97). A token is named for the job it does.
+
+   EVERY COLOUR IS AUTHORED IN-GAMUT FOR sRGB. Monofolio's source values are
+   kept as provenance comments, never as the computed value: a token outside
+   the gamut cannot carry a contrast guarantee, because engines disagree on
+   what they paint. Enforced by tokens.test.ts, not by this comment.
+
+   Ratios quoted below are computed, not estimated, and are asserted in
+   tokens.test.ts for both renditions.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* ── Dark rendition (default) ──────────────────────────────────────────── */
+
+  --ground: oklch(0.07 0.018 18);
+  --ground-raised: oklch(0.155 0.022 18); /* 1.06:1 — confirmation, not elevation */
+  --ground-sunk: oklch(0.045 0.014 18); /* 1.005:1 — likewise */
+
+  --ink: oklch(0.93 0.018 25); /* 16.88:1 */
+  --ink-dim: oklch(0.62 0.045 30); /* 5.62:1 (5.28:1 on raised) */
+  --rule-soft: oklch(0.34 0.03 25); /* separators only; not contrast-carrying */
+  --rule-strong: oklch(0.52 0.06 25); /* 3.68:1 — every interactive boundary */
+
+  /* Provenance: Monofolio --primary oklch(0.65 0.26 25), which is OUTSIDE sRGB
+     (max chroma 0.2359 at this L/H). Clamped, and it measures better clamped. */
+  --accent: oklch(0.65 0.235 25); /* 5.76:1 */
+  --accent-ink: oklch(0.1 0.02 18); /* 5.69:1 on --accent */
+  --copper: oklch(0.72 0.14 52); /* 8.06:1 */
+  --focus: oklch(0.85 0.16 85); /* 13.07:1 */
+
+  /* ── Rendition-independent ─────────────────────────────────────────────── */
+
+  /* Spacing. Every padding, gap and margin is one of these. */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 40px;
+
+  /* The two faces. Names only — the @font-face declarations that load them are
+     ui-local (index.css), since the docs site resolves its own font paths. */
+  --face-display: "Silkscreen", monospace;
+  --face-text: "JetBrains Mono", ui-monospace, monospace;
+
+  /* Two ramps, because the display face has a constraint the text face does
+     not: Silkscreen is drawn on an 8px em, so its square pixel only stays
+     square at integer multiples. --t-display is therefore discrete, never
+     clamp() — 10vw lands on the grid at only a handful of viewport widths. */
+  --t-px-sm: 16px; /* 2× */
+  --t-px-md: 24px; /* 3× */
+  --t-display: 56px; /* 7× */
+
+  --t-head: 20px;
+  --t-sub: 16px;
+  --t-row: 15px;
+  --t-body: 13px;
+  --t-meta: 12px; /* floor; nothing smaller is painted */
+
+  /* Zero radius everywhere. The world has no rounded corner. */
+  --radius: 0;
+
+  /* One authored motion: a row resolving coarse → crisp, which is what a cache
+     miss becoming a hit looks like. Exponential ease-out from a visible default. */
+  --resolve: 520ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (min-width: 640px) {
+  :root {
+    --t-display: 72px;
+  } /* 9× */
+}
+@media (min-width: 880px) {
+  :root {
+    --t-display: 88px;
+  } /* 11× */
+}
+@media (min-width: 1140px) {
+  :root {
+    --t-display: 104px;
+  } /* 13× */
+}
+
+/* ── Light rendition ──────────────────────────────────────────────────────────
+   Applied by `data-theme="light"` on <html>, resolved before first paint. The
+   stored preference is system|light|dark; the resolved value is what renders,
+   so "System" survives the OS flipping instead of being frozen at install.
+
+   Copper darkens from Monofolio's L .58 to L .50: at .58 it reads 4.2:1 on
+   paper, under the body floor. The hue relationship survives a rendition
+   change; the lightness is re-derived per ground.
+   ────────────────────────────────────────────────────────────────────────── */
+:root[data-theme="light"] {
+  --ground: oklch(0.97 0.008 18);
+  --ground-raised: oklch(0.935 0.01 18); /* 1.11:1 — as undependable as 1.06:1 */
+  --ground-sunk: oklch(0.99 0.004 18);
+
+  --ink: oklch(0.2 0.022 20); /* 16.64:1 */
+  --ink-dim: oklch(0.44 0.04 25); /* 7.24:1 (6.52:1 on raised) */
+  --rule-soft: oklch(0.8 0.02 25);
+  --rule-strong: oklch(0.62 0.05 25); /* 3.41:1 */
+
+  /* Provenance: Monofolio light --primary oklch(0.52 0.24 25), also OUTSIDE
+     sRGB (max chroma 0.2108 at this L/H). The In-Gamut Rule's second case. */
+  --accent: oklch(0.52 0.21 25); /* 5.63:1 */
+  --accent-ink: oklch(0.99 0.004 18); /* 5.97:1 on --accent */
+  --copper: oklch(0.5 0.12 52); /* 5.74:1 */
+  --focus: oklch(0.55 0.11 85); /* 4.48:1 */
+}

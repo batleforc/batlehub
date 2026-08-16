@@ -1,9 +1,14 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { computed } from "vue";
+import RichText from "@/components/RichText.vue";
 import { Input } from "@/components/ui/input";
+import { Combobox } from "@/components/ui/combobox";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { PathFieldDef, RegistryPathTypeDef } from "@/config/registryPathFields";
+
+const { t } = useI18n();
 
 const props = defineProps<{
   typeDef: RegistryPathTypeDef;
@@ -11,6 +16,11 @@ const props = defineProps<{
 }>();
 
 const registryName = defineModel<string>("registryName", { required: true });
+
+/** The prop's registries as combobox options — the set is already here. */
+const registryOptions = computed(() =>
+  props.registries.map((r) => ({ value: r.name, hint: r.type })),
+);
 const values = defineModel<Record<string, string>>("values", { required: true });
 
 const GRID_COLS: Record<number, string> = { 2: "grid-cols-2", 3: "grid-cols-3" };
@@ -32,17 +42,20 @@ const rows = computed<PathFieldDef[][]>(() => {
 <template>
   <div class="space-y-4">
     <div class="space-y-1">
-      <Label :for="`${typeDef.id}-registry`">Registry name</Label>
-      <Input
+      <Label :for="`${typeDef.id}-registry`">{{ t("registryPathForm.registryName") }}</Label>
+      <!--
+        A `<datalist>` here was the improvisation RFC 0004-bis §2.8 names: it
+        cannot be styled to the world, its keyboard behaviour differs per
+        browser, it exposes no listbox to assistive tech, and it cannot say
+        "nothing matches" — which is the behaviour the combobox exists for.
+      -->
+      <Combobox
         :id="`${typeDef.id}-registry`"
         v-model="registryName"
-        :list="`pm-${typeDef.id}-list`"
+        :options="registryOptions"
         :placeholder="typeDef.id"
         class="font-mono"
       />
-      <datalist :id="`pm-${typeDef.id}-list`">
-        <option v-for="r in registries" :key="r.name" :value="r.name" />
-      </datalist>
     </div>
 
     <div
@@ -64,6 +77,8 @@ const rows = computed<PathFieldDef[][]>(() => {
       </div>
     </div>
 
-    <p v-if="typeDef.note" class="text-xs text-muted-foreground" v-html="typeDef.note" />
+    <p v-if="typeDef.note" class="text-xs text-muted-foreground">
+      <RichText :markup="typeDef.note" />
+    </p>
   </div>
 </template>

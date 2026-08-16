@@ -1,14 +1,14 @@
-use batlehub_core::ports::SbomDependency;
+use batlehub_core::ports::{ExtractedManifest, SbomDependency};
 use bytes::Bytes;
 
-pub(super) fn extract_pypi_deps(data: &Bytes) -> Vec<SbomDependency> {
+pub(super) fn extract_pypi_manifest(data: &Bytes) -> ExtractedManifest {
     // Try wheel (zip) first, then sdist (tar.gz).
     extract_pypi_wheel(data)
         .or_else(|| extract_pypi_sdist(data))
         .unwrap_or_default()
 }
 
-fn extract_pypi_wheel(data: &Bytes) -> Option<Vec<SbomDependency>> {
+fn extract_pypi_wheel(data: &Bytes) -> Option<ExtractedManifest> {
     use std::io::{Cursor, Read};
     use zip::ZipArchive;
 
@@ -37,7 +37,7 @@ fn extract_pypi_wheel(data: &Bytes) -> Option<Vec<SbomDependency>> {
     None
 }
 
-fn extract_pypi_sdist(data: &Bytes) -> Option<Vec<SbomDependency>> {
+fn extract_pypi_sdist(data: &Bytes) -> Option<ExtractedManifest> {
     use flate2::read::GzDecoder;
     use std::io::Read;
     use tar::Archive;
@@ -65,8 +65,8 @@ fn extract_pypi_sdist(data: &Bytes) -> Option<Vec<SbomDependency>> {
     None
 }
 
-fn parse_pep_metadata(content: &str) -> Vec<SbomDependency> {
-    content
+fn parse_pep_metadata(content: &str) -> ExtractedManifest {
+    let dependencies = content
         .lines()
         .filter_map(|line| {
             let line = line.trim();
@@ -84,7 +84,78 @@ fn parse_pep_metadata(content: &str) -> Vec<SbomDependency> {
             })
         })
         .filter(|d| !d.name.is_empty())
-        .collect()
+        .collect();
+
+    ExtractedManifest {
+        dependencies,
+        license: parse_pep_license(content),
+    }
+}
+
+/// setuptools wrote `UNKNOWN` into `License:` (and `Summary:`, `Home-page:`, …)
+/// by default for years, so a large share of older wheels and sdists carry it.
+///
+/// It has to read back as *unknown*, not as a licence. `LicenseGateRule` treats
+/// any recorded string as a known declaration, so storing `"UNKNOWN"` takes the
+/// package out of the `allow_unknown` path and judges it against the allow list,
+/// which `UNKNOWN` never matches: an operator with
+/// `allow = ["MIT"], allow_unknown = true` would find `pip install` of an older
+/// MIT-licensed sdist denied — precisely the outcome `allow_unknown` exists to
+/// prevent.
+fn is_placeholder_license(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_uppercase().as_str(),
+        "UNKNOWN" | "NONE" | "N/A" | "NOASSERTION"
+    )
+}
+
+/// PEP 639's `License-Expression` first, then the legacy `License`, then the
+/// `License ::` trove classifier.
+///
+/// The order is the specification's own precedence, and it matters: a package
+/// mid-migration carries both, with `License` holding free text like
+/// `"BSD-3-Clause or later, see LICENSE"` while `License-Expression` holds the
+/// SPDX id. Reading the legacy field first would hand the gate prose.
+///
+/// The classifier fallback keeps only the trailing segment — `License :: OSI
+/// Approved :: MIT License` is a taxonomy path, not an expression, so the
+/// stored value is `MIT License`, which the gate's normalisation handles.
+fn parse_pep_license(content: &str) -> Option<String> {
+    let field = |name: &str| {
+        content.lines().find_map(|line| {
+            line.trim()
+                .strip_prefix(name)
+                .map(str::trim)
+                .filter(|v| !v.is_empty() && !is_placeholder_license(v))
+                .map(str::to_owned)
+        })
+    };
+
+    if let Some(v) = field("License-Expression:") {
+        return Some(v);
+    }
+    if let Some(v) = field("License:") {
+        // A multi-line `License:` continuation is the licence *text* inlined,
+        // which is not an expression. One line is all this reads.
+        return Some(v);
+    }
+
+    let classifiers: Vec<String> = content
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("Classifier:"))
+        .map(str::trim)
+        .filter(|c| c.starts_with("License ::"))
+        .filter_map(|c| c.rsplit("::").next())
+        .map(str::trim)
+        .filter(|c| !c.is_empty() && *c != "OSI Approved")
+        .map(str::to_owned)
+        .collect();
+
+    if classifiers.is_empty() {
+        None
+    } else {
+        Some(classifiers.join(" OR "))
+    }
 }
 
 #[cfg(test)]
@@ -95,7 +166,7 @@ mod tests {
     fn parse_pep_metadata_basic() {
         let metadata =
             "Name: requests\nVersion: 2.31.0\nRequires-Dist: urllib3 >=1.21\nRequires-Dist: certifi\n";
-        let deps = parse_pep_metadata(metadata);
+        let deps = parse_pep_metadata(metadata).dependencies;
         assert_eq!(deps.len(), 2);
         assert_eq!(deps[0].name, "urllib3");
         assert_eq!(deps[0].version_req.as_deref(), Some(">=1.21"));
@@ -105,11 +176,58 @@ mod tests {
 
     #[test]
     fn parse_pep_metadata_strips_environment_markers() {
-        let deps = parse_pep_metadata("Requires-Dist: pytest >=7 ; extra == 'test'\n");
+        let deps = parse_pep_metadata("Requires-Dist: pytest >=7 ; extra == 'test'\n").dependencies;
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "pytest");
         assert_eq!(deps[0].version_req.as_deref(), Some(">=7"));
         assert_eq!(deps[0].ecosystem, "pypi");
+    }
+
+    #[test]
+    fn parse_pep_license_prefers_expression_over_legacy_field() {
+        let metadata =
+            "License: BSD-3-Clause or later, see LICENSE\nLicense-Expression: BSD-3-Clause\n";
+        assert_eq!(parse_pep_license(metadata).as_deref(), Some("BSD-3-Clause"));
+    }
+
+    #[test]
+    fn parse_pep_license_falls_back_to_legacy_field() {
+        assert_eq!(parse_pep_license("License: MIT\n").as_deref(), Some("MIT"));
+    }
+
+    /// `License :: OSI Approved :: MIT License` is a taxonomy path; only the
+    /// leaf is a licence name, and the `OSI Approved` interior node is not one.
+    #[test]
+    fn parse_pep_license_falls_back_to_classifier_leaf() {
+        let metadata = "Classifier: Programming Language :: Python\nClassifier: License :: OSI Approved :: MIT License\n";
+        assert_eq!(parse_pep_license(metadata).as_deref(), Some("MIT License"));
+    }
+
+    #[test]
+    fn parse_pep_license_ignores_license_file_field() {
+        // `License-File` names a file, like Cargo's `license-file`.
+        assert_eq!(parse_pep_license("License-File: LICENSE\n"), None);
+    }
+
+    #[test]
+    fn parse_pep_license_absent_is_none() {
+        assert_eq!(parse_pep_license("Name: x\nVersion: 1.0\n"), None);
+    }
+
+    /// setuptools' default placeholder must read back as unknown, or the gate
+    /// judges it against the allow list and denies an otherwise fine package.
+    #[test]
+    fn parse_pep_license_placeholder_is_none() {
+        assert_eq!(parse_pep_license("License: UNKNOWN\n"), None);
+        assert_eq!(parse_pep_license("License: unknown\n"), None);
+        assert_eq!(parse_pep_license("License-Expression: UNKNOWN\n"), None);
+    }
+
+    /// …but it must not shadow a real declaration further down.
+    #[test]
+    fn parse_pep_license_placeholder_falls_through_to_the_classifier() {
+        let metadata = "License: UNKNOWN\nClassifier: License :: OSI Approved :: MIT License\n";
+        assert_eq!(parse_pep_license(metadata).as_deref(), Some("MIT License"));
     }
 
     #[test]
@@ -127,7 +245,7 @@ mod tests {
             zw.write_all(b"Requires-Dist: urllib3 >=1.21\n").unwrap();
             zw.finish().unwrap();
         }
-        let deps = extract_pypi_deps(&Bytes::from(buf));
+        let deps = extract_pypi_manifest(&Bytes::from(buf)).dependencies;
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "urllib3");
         assert_eq!(deps[0].ecosystem, "pypi");
@@ -151,13 +269,16 @@ mod tests {
         }
         let mut gz = GzEncoder::new(Vec::new(), Compression::default());
         gz.write_all(&tar_buf).unwrap();
-        let deps = extract_pypi_deps(&Bytes::from(gz.finish().unwrap()));
+        let deps = extract_pypi_manifest(&Bytes::from(gz.finish().unwrap())).dependencies;
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "certifi");
     }
 
     #[test]
     fn extract_pypi_deps_on_garbage_is_empty() {
-        assert!(extract_pypi_deps(&Bytes::from_static(b"not an archive")).is_empty());
+        assert_eq!(
+            extract_pypi_manifest(&Bytes::from_static(b"not an archive")),
+            ExtractedManifest::default()
+        );
     }
 }

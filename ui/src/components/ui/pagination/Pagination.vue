@@ -1,6 +1,9 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { computed } from "vue";
 import { Button } from "@/components/ui/button";
+
+const { t } = useI18n();
 
 const props = withDefaults(
   defineProps<{
@@ -30,15 +33,25 @@ function next() {
 </script>
 
 <template>
-  <div class="flex items-center justify-between">
+  <!-- A navigation landmark, so it is reachable by landmark rather than only by
+       tabbing to it; the indicator is a live region because paging changes the
+       table underneath it without moving focus. -->
+  <nav class="flex items-center justify-between" :aria-label="t('pagination.label')">
     <Button variant="outline" size="sm" :disabled="disabled || !hasPrev" @click="prev">
-      Previous
+      {{ t("common.previous") }}
     </Button>
-    <span class="text-xs text-muted-foreground">
-      Page {{ page + 1 }}<template v-if="totalPages !== undefined"> of {{ totalPages }}</template>
+    <!-- Two whole messages rather than a sentence assembled around a value:
+         French does not put "sur" where English puts "of", and the count is not
+         always known. -->
+    <span class="text-xs text-muted-foreground" role="status" aria-live="polite">
+      {{
+        totalPages === undefined
+          ? t("pagination.page", { page: page + 1 })
+          : t("pagination.pageOf", { page: page + 1, total: totalPages })
+      }}
     </span>
     <Button variant="outline" size="sm" :disabled="disabled || !canGoNext" @click="next">
-      Next
+      {{ t("common.next") }}
     </Button>
-  </div>
+  </nav>
 </template>

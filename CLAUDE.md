@@ -39,7 +39,12 @@ task test:s3
 cargo run -p batlehub-server -- --config config.example.toml
 
 # Frontend
-cd ui && pnpm run dev         # Vite dev server (proxies /api → localhost:8080)
+# Two dev servers; there is no /api proxy, each calls VITE_API_BASE_URL directly.
+task ui:dev                   # 5173 → API via the workspace FQDN (`url back`), for a real browser
+task ui:dev:local             # 5174 → API on localhost:8080, for in-pod tools and the rendered gates
+# Both set VITE_API_BASE_URL explicitly: this Taskfile has `dotenv: [ .env ]`, and
+# Vite prioritises process.env over its own .env files, so an inherited value in
+# the repo-root .env otherwise wins and both fronts land on the same API.
 cd ui && pnpm run generate    # regenerate TypeScript client from ui/openapi.json
 task dump-spec                # refresh ui/openapi.json from running server
 
@@ -60,7 +65,8 @@ crates/examples  — integration test helpers and smoke/real-proxy test binaries
 server/          — binary: wires everything together, no domain logic
 cli/             — batlehub-cli binary: clap commands + reqwest API client + ratatui TUI
 ui/              — Vue 3 + Vite SPA (TypeScript, Tailwind, shadcn-inspired components)
-website/         — separate Vite docs/guide site (its own pnpm project; covered by `task website:*`)
+docs/            — the documentation: a VitePress site and the only documentation
+                   tree (its own pnpm project; covered by `task docs:*`)
 ```
 
 Registry adapters are gated behind `registry-*` cargo features (all on by default) declared in `crates/adapters/src/registry/mod.rs` and the `[features]` block of `crates/adapters/Cargo.toml`.
@@ -91,7 +97,7 @@ The dependency direction is strict: `core` ← `adapters` ← `web` ← `server`
    - **Split into a `<name>/` directory** (`client.rs` + a dedicated `models.rs` for the upstream response DTOs, plus `tests.rs` once the test module gets long) once those DTOs would otherwise crowd out the request/auth logic in the client file, or the registry needs more than one protocol facet (e.g. `terraform/` has separate `modules.rs`/`providers.rs`; `composer/` splits `client.rs`/`local.rs`/`impl_registry.rs`). Use `NugetRegistryClient` (`nuget/client.rs` + `nuget/models.rs`) as the reference for the directory layout.
 2. **`crates/adapters/src/registry/mod.rs`** — add `#[cfg(feature = "registry-<name>")] pub mod <name>` entry, **and** declare `registry-<name>` in the `[features]` block of `crates/adapters/Cargo.toml` (add it to `default` so it ships in the standard build). Without the feature declared, the `cfg` never activates.
 3. **`crates/web/src/handlers/proxy/<name>.rs`** — actix-web handlers; use `proxy_stream`, `require_registry_type`, `require_local_mode`, `content_type_for` helpers from `common.rs`. **Validate any package name/version taken from the request** with `batlehub_core::services::validate_package_name` (and reject `..`/separators in version) before it reaches a storage key — see the PyPI/Composer handlers. Two funnels enforce this in depth — `ProxyService::handle` (every proxy read) and `LocalRegistryService::get_artifact` (every local read) call `validate_coordinate` on the `PackageId`, and `ensure_safe_key` guards the storage backends as the last line of defense — but a handler that builds a storage key directly (e.g. the Maven, NuGet flat, and Terraform-provider paths) must still validate at the edge for a clean `400`, not rely on the deeper guards.
-4. **`crates/web/src/lib.rs`** — register routes with `cfg.service(...)` and add the `utoipa` tag.
+4. **`crates/web/src/lib.rs`** — register routes with `cfg.service(...)` and add the `utoipa` tag. **Every `200`/`201` in a `utoipa::path` must declare `body = T`** — `crates/web/tests/openapi_contract.rs` fails on any that does not, because a schema-less success response makes the generated TypeScript client emit `unknown` and leaves the docs site's API reference blank. Use a real DTO where one exists, otherwise the shared markers in `crates/web/src/handlers/schemas.rs` (`ArtifactBytes`, `UpstreamDocument`, `ProtocolDocument`, `OkResponse`, `MessageResponse`); an ad-hoc `json!` of the handler's own invention gets a named `ToSchema` struct in its module and is serialised from that. See `docs/contributing/adding-a-registry.md` §9.
 5. **`crates/core/src/entities/registry_kind.rs`** — add the new variant to the `RegistryKind` enum and its `ALL` slice; `as_str`/`FromStr` and `crates/config/src/schema/mod.rs`'s `validate()` (which just calls `registry_type.parse::<RegistryKind>()`) pick it up automatically. `server/src/builders.rs`'s exhaustive match on `RegistryKind` will then force you to wire up client construction for the new variant.
 6. **`server/src/main.rs`** — instantiate the client and wire it into `HotConfig`.
 7. **`ui/src/config/registryTypes.ts`** — add a `RegistryTypeDef` entry with setup snippets.
@@ -134,11 +140,11 @@ The two invariants above are now also enforced by `cargo-deny`: `rsa`, `sqlx-mys
 
 ### Vulnerability scanning
 
-CVE detection runs continuously across every layer; see `docs/security-scanning.md` for the full matrix and the SBOM re-scan workflow. Reproduce the dependency/SBOM gate locally with `task security` (runs `cargo audit`, `cargo deny`, `pnpm audit` for `ui/` + `website/`, and the Rust SBOM). Scanner tooling is provisioned by `mise install`.
+CVE detection runs continuously across every layer; see `docs/contributing/security-scanning.md` for the full matrix and the SBOM re-scan workflow. Reproduce the dependency/SBOM gate locally with `task security` (runs `cargo audit`, `cargo deny`, `pnpm audit` for `ui/` + `docs/`, and the Rust SBOM). Scanner tooling is provisioned by `mise install`.
 
 - **Rust deps**: `cargo audit` (RUSTSEC) + `cargo deny` (advisories/bans/licenses/sources) — `.github/workflows/back-dep-audit.yaml`.
 - **JS deps**: `pnpm audit --audit-level high` — `.github/workflows/dep-audit-frontend.yaml`.
-- **Dependency supply chain**: [postmortem](https://github.com/mlab-sh/postmortem) (source-repo reputation + vulns from lockfiles) — `.github/workflows/postmortem.yaml`, one job per dependency root (Rust `.`, `ui/`, `website/`), SARIF to Code Scanning.
+- **Dependency supply chain**: [postmortem](https://github.com/mlab-sh/postmortem) (source-repo reputation + vulns from lockfiles) — `.github/workflows/postmortem.yaml`, one job per dependency root (Rust `.`, `ui/`, `docs/`), SARIF to Code Scanning.
 - **Container/OS**: Trivy on the built images, blocking on fixable HIGH/CRITICAL — `.github/workflows/image-scan.yaml` (GitHub, daily rebuild+rescan) and `.forgejo/workflows/build.yaml` (both images).
 - **SBOM**: CycloneDX for the Rust workspace and the image, attached/attested on release (`.github/workflows/build.yaml`).
 - **SAST / secrets / lint**: CodeQL, Semgrep (`semgrep.yaml`), gitleaks (`secret-scan.yaml`, config `gitleaks.toml`), and the clippy/fmt `lint` job in `test.yaml`.
@@ -147,7 +153,7 @@ Stance is **no suppressions**: keep `advisories.ignore = []` in `deny.toml` and 
 
 ### Frontend
 
-**Package manager: pnpm.** Both `ui/` and `website/` are pnpm projects — `pnpm-lock.yaml` is the only lockfile, there is no `package-lock.json`. The version is pinned by the `packageManager` field in each `package.json`, and provisioned by `pnpm/action-setup` (GitHub/Forgejo CI), an explicit `npm install -g pnpm@<version>` (the `Containerfile`s — Node stopped distributing corepack in v25), or `mise install` (local). Use `pnpm install --frozen-lockfile` in scripts/CI (the `npm ci` equivalent).
+**Package manager: pnpm.** Both `ui/` and `docs/` are pnpm projects — `pnpm-lock.yaml` is the only lockfile, there is no `package-lock.json`. The version is pinned by the `packageManager` field in each `package.json`, and provisioned by `pnpm/action-setup` (GitHub/Forgejo CI), an explicit `npm install -g pnpm@<version>` (the `Containerfile`s — Node stopped distributing corepack in v25), or `mise install` (local). Use `pnpm install --frozen-lockfile` in scripts/CI (the `npm ci` equivalent).
 
 **pnpm settings live in `pnpm-workspace.yaml`, not `package.json`.** Since pnpm 10 the `pnpm` field in `package.json` is no longer read: pnpm only *warns* and carries on, so an override left there is silently dropped. Pin a transitive dependency under `overrides:` in `pnpm-workspace.yaml` (that is where the `js-yaml` CVE pin lives). Install-time lifecycle scripts are denied by default; opt a package in under `allowBuilds:` in the same file, with a reason.
 
@@ -164,11 +170,33 @@ The generated use fetch and include the full model spec, so any changes to the A
 
 ## Docs
 
-The doc live in two places:
+**There is one documentation tree, `docs/`, and it is the published site**
+(batleforc.git.batleforc.fr/batlehub). It used to be two — `website/` published
+and `docs/` unpublished — with four documents maintained in both and drifted by
+up to 296 lines. RFC 0005 merged them. A document has exactly one home, and the
+home is chosen by **who reads it**:
 
-- **Docs site** (batleforc.git.batleforc.fr/batlehub) — user-facing documentation, setup guides, API reference (generated from `ui/openapi.json`), architecture overview. Markdown files in `docs/` are copied to the static site.
-- **Base docs** (/docs/) - Internal documentation and helper for some case
-- **Roadmap** (ROADMAP.md) — high-level plans and progress tracking for features and registry types.
+| Space | "I am here because…" |
+| --- | --- |
+| `docs/guide/` | I run this server — install, configure, administer |
+| `docs/use/` | my package manager talks to it — tokens, publishing, the CLI |
+| `docs/registries/` | I need the snippet for *my* package manager |
+| `docs/operations/` | something is broken, or an auditor is asking |
+| `docs/contributing/` | I am changing the code |
+| `docs/rfc/` | I want to know why it works this way |
+| `docs/internal/` | not published — generated artifacts, dated security findings, the RFC template (`srcExclude`d) |
+
+A page belongs to exactly one space and appears in exactly one sidebar
+(`task docs:audience`), a page over 4 000 words declares `reference: true`
+(`task docs:structure`), and an instruction has one home — the others link to it.
+Publishing lives on the registry page, not in a per-ecosystem walkthrough.
+
+Two files in the tree are **generated and must not be hand-edited**:
+`docs/.vitepress/theme/tokens.css` (`task ui:tokens`, from
+`ui/src/design/tokens.css`) and `docs/guide/roadmap.md` (`task docs:roadmap`,
+from `ROADMAP.md`). Both have a drift check that fails the build.
+
+- **Roadmap** (ROADMAP.md at the repo root) — canonical; the published page is generated from it.
 - **Code comments** - doc directly in the codebase, especially for complex logic like the request lifecycle, hot reload, and registry client implementations. Use `///` for public items and `//` for internal comments.
 
 <!-- rtk-instructions v2 -->

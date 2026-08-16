@@ -18,6 +18,7 @@ use batlehub_core::{
 use super::render::{plugin_repository_xml, update_plugins_xml, ExtraMeta, RenderEntry};
 use super::{registry_public_base, require_jbm, STABLE_CHANNEL};
 use crate::handlers::proxy::common::require_local_mode;
+use crate::handlers::schemas::ProtocolDocument;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 #[derive(Debug, Deserialize)]
@@ -36,7 +37,7 @@ pub struct UpdatePluginsQuery {
     tag = "proxy/jetbrains-marketplace",
     params(("registry" = String, Path, description = "Registry name")),
     responses(
-        (status = 200, description = "Custom repository XML", content_type = "application/xml"),
+        (status = 200, description = "Custom repository XML", body = ProtocolDocument, content_type = "application/xml"),
         (status = 404, description = "Unknown registry, wrong type, or proxy-only registry"),
     ),
     security(("bearer_token" = [])),
@@ -105,7 +106,7 @@ fn xml_response(body: String) -> HttpResponse {
         ("pluginId" = Option<String>, Query, description = "Plugin xmlId"),
     ),
     responses(
-        (status = 200, description = "Plugin repository XML", content_type = "application/xml"),
+        (status = 200, description = "Plugin repository XML", body = ProtocolDocument, content_type = "application/xml"),
         (status = 404, description = "Unknown or non-marketplace registry"),
     ),
     security(("bearer_token" = [])),

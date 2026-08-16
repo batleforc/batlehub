@@ -19,7 +19,10 @@ pub struct SetVisibilityRequest {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct VisibilityResponse {
-    pub visibility: String,
+    /// The three-valued enum, not a free string: the console narrowed this by
+    /// hand until RFC 0004, and a narrowing the client invents is one the
+    /// server can break without noticing.
+    pub visibility: Visibility,
 }
 
 /// Passes when the caller is an admin, or is a member of the group that owns
@@ -70,7 +73,7 @@ async fn require_admin_or_namespace_member(
         ("name"     = String, Path, description = "Package name (may contain slashes)"),
     ),
     responses(
-        (status = 200, description = "Current visibility"),
+        (status = 200, description = "Current visibility", body = VisibilityResponse),
         (status = 403, description = "Admin role or namespace membership required"),
     ),
     security(("bearer_token" = [])),
@@ -87,9 +90,7 @@ pub async fn get_package_visibility(
         .get_visibility(&registry, &name)
         .await
         .map_err(AppError::from)?;
-    Ok(HttpResponse::Ok().json(VisibilityResponse {
-        visibility: vis.to_string(),
-    }))
+    Ok(HttpResponse::Ok().json(VisibilityResponse { visibility: vis }))
 }
 
 /// Set the visibility of a package (all versions simultaneously).

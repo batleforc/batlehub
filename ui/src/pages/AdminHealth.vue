@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref } from "vue";
-import { registryHealth, adminStats, clearRegistryCache } from "@/client/sdk.gen";
-import type { RegistryHealthDto, StatsResponse } from "@/client/types.gen";
+import { registryHealth, clearRegistryCache, invalidateExploreCache } from "@/client/sdk.gen";
+import type { RegistryHealthDto } from "@/client/types.gen";
 import { useApi, extractMessage } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
 import {
@@ -27,6 +28,9 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
+import DeleteCachedArtifact from "@/components/admin/DeleteCachedArtifact.vue";
+
+const { t } = useI18n();
 
 const { token } = useAuth();
 
@@ -35,14 +39,43 @@ const { data, error, loading, reload } = useApi<RegistryHealthDto[]>(
   [token],
 );
 
-const { data: statsData } = useApi<StatsResponse>(
-  () => adminStats() as Promise<{ data?: unknown; error?: unknown }>,
-  [token],
-);
-
 const expandedErrors = ref<Set<string>>(new Set());
 
 const clearTarget = ref<string | null>(null);
+
+/**
+ * The explore-cache invalidation, relocated from `/admin/operations/explore-cache`
+ * (RFC 0004 Phase 5, *remove*).
+ *
+ * It was a whole route whose one job was pressing a button. Nobody navigates
+ * Admin → Operations → Explore Cache; they arrive at a registry noticing its
+ * package list looks wrong — which is this page. The control belongs where the
+ * symptom is seen, beside the sibling destructive control that was already
+ * here.
+ */
+const explorePending = ref<string | null>(null);
+const exploreBusy = ref(false);
+const exploreError = ref<string | null>(null);
+const exploreDone = ref<string | null>(null);
+
+async function confirmInvalidateExplore() {
+  if (!explorePending.value) return;
+  exploreBusy.value = true;
+  exploreError.value = null;
+  try {
+    const { error: apiErr } = await invalidateExploreCache({
+      body: { registry: explorePending.value },
+    });
+    if (apiErr) {
+      exploreError.value = extractMessage(apiErr);
+      return;
+    }
+    exploreDone.value = explorePending.value;
+    explorePending.value = null;
+  } finally {
+    exploreBusy.value = false;
+  }
+}
 const clearing = ref(false);
 const clearError = ref<string | null>(null);
 
@@ -52,7 +85,7 @@ async function confirmClearCache() {
   clearError.value = null;
   try {
     const { error: apiErr } = await clearRegistryCache({ path: { registry: clearTarget.value } });
-    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? "API error");
+    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? t("common.apiError"));
     clearTarget.value = null;
     reload();
   } catch (e) {
@@ -71,10 +104,10 @@ function toggleErrors(registry: string) {
   expandedErrors.value = new Set(expandedErrors.value);
 }
 
-const ROLE_LABELS: Record<string, string> = {
-  anonymous: "Anonymous",
-  user: "Users",
-  admin: "Admins",
+const ROLE_LABEL_KEYS: Record<string, string> = {
+  anonymous: "adminHealth.roleAnonymous",
+  user: "adminHealth.roleUsers",
+  admin: "adminHealth.roleAdmins",
 };
 </script>
 
@@ -82,13 +115,13 @@ const ROLE_LABELS: Record<string, string> = {
   <div class="space-y-6">
     <SectionTabs :tabs="OBSERVABILITY_TABS" />
     <PageHeader
-      title="Registry Health"
-      description="Live snapshot of each registry — packages, cache, pull rates, and recent errors."
-      variant="glow"
+      :title="t('adminHealth.registryHealth')"
+      :description="t('adminHealth.liveSnapshotOfEachRegistry')"
+      variant="display"
     >
       <template #actions>
         <Button variant="outline" size="sm" :disabled="loading" @click="reload">
-          {{ loading ? "Refreshing…" : "Refresh" }}
+          {{ loading ? t("adminHealth.refreshing") : t("common.refresh") }}
         </Button>
       </template>
     </PageHeader>
@@ -97,93 +130,67 @@ const ROLE_LABELS: Record<string, string> = {
       :loading="loading && !data"
       :error="error"
       :empty="!!data && data.length === 0"
-      empty-message="No registries configured."
+      :empty-message="t('adminHealth.noRegistriesConfigured')"
     >
-      <!-- Aggregate stats (since last restart) -->
-      <Card v-if="statsData" class="border-muted/60">
-        <CardHeader class="pb-2">
-          <div class="flex items-center justify-between">
-            <CardTitle class="text-sm font-medium text-muted-foreground uppercase tracking-wide">
-              Cache performance since last restart
-            </CardTitle>
-            <span class="text-xs text-muted-foreground"
-              >since {{ fmtRelative(statsData.since_startup) }}</span
-            >
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-              <p class="text-xs text-muted-foreground">Cache hit rate</p>
-              <p
-                class="text-2xl font-semibold tabular-nums"
-                :class="
-                  statsData.aggregate.hit_rate != null && statsData.aggregate.hit_rate >= 0.7
-                    ? 'text-primary'
-                    : statsData.aggregate.hit_rate != null && statsData.aggregate.hit_rate >= 0.4
-                      ? 'text-copper'
-                      : 'text-muted-foreground'
-                "
-              >
-                {{
-                  statsData.aggregate.hit_rate != null
-                    ? `${(statsData.aggregate.hit_rate * 100).toFixed(1)}%`
-                    : "—"
-                }}
-              </p>
-              <p class="text-xs text-muted-foreground">artifact requests</p>
-            </div>
-            <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-              <p class="text-xs text-muted-foreground">Cache hits</p>
-              <p class="text-2xl font-semibold tabular-nums text-primary">
-                {{ formatCount(statsData.aggregate.artifact_hits) }}
-              </p>
-              <p class="text-xs text-muted-foreground">served from cache</p>
-            </div>
-            <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-              <p class="text-xs text-muted-foreground">Cache misses</p>
-              <p class="text-2xl font-semibold tabular-nums">
-                {{ formatCount(statsData.aggregate.artifact_misses) }}
-              </p>
-              <p class="text-xs text-muted-foreground">fetched from upstream</p>
-            </div>
-            <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-              <p class="text-xs text-muted-foreground">Total cached</p>
-              <p class="text-2xl font-semibold">
-                {{ fmtBytes(statsData.aggregate.cached_bytes) }}
-              </p>
-              <p class="text-xs text-muted-foreground">in storage</p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+      <!--
+        The aggregate card is gone (RFC 0004-bis §6.1).
+
+        It restated `adminStats().aggregate` — the same four numbers
+        `AdminDashboard` states as a sentence, rendered as four tiles and
+        *without* the trend that makes them mean something. Its own Refresh
+        button did not refresh it (`useApi` was destructured without `reload`),
+        so the page had a control that lied about a card that duplicated
+        another page. Removing it also removes this page's second fetch.
+
+        What this page owns is per-registry health, which is everything below.
+      -->
 
       <!-- Registry cards grid -->
       <div
         v-if="data && data.length > 0"
         class="grid gap-4 sm:grid-cols-1 lg:grid-cols-2 xl:grid-cols-2"
       >
-        <Card v-for="reg in data" :key="reg.registry" class="flex flex-col">
+        <!-- `min-w-0`: a grid item defaults to `min-width: auto` and will not
+             shrink below its content, so the errors table inside it pushed the
+             whole document sideways instead of scrolling in its own box
+             (DESIGN.md, The Own-Container Overflow Rule). -->
+        <Card v-for="reg in data" :key="reg.registry" class="flex min-w-0 flex-col">
           <CardHeader class="pb-2">
-            <div class="flex items-center justify-between gap-2">
-              <CardTitle class="text-base font-mono">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle class="min-w-0 text-base font-mono">
                 {{ reg.registry }}
               </CardTitle>
-              <div class="flex items-center gap-2 shrink-0">
+              <div class="flex flex-wrap items-center gap-2">
                 <Badge
                   :variant="variantFromMap(reg.registry_type, REGISTRY_TYPE_VARIANTS)"
                   class="text-xs uppercase"
                 >
                   {{ reg.registry_type }}
                 </Badge>
+                <!--
+                  The mode (RFC 0004-bis A2). "0 cached, last pull: never" reads
+                  identically for a broken proxy and for a healthy `local`
+                  registry that has nothing to pull by definition — this row is
+                  what tells them apart, and the page had to guess.
+                -->
+                <Badge variant="outline" class="text-xs uppercase">{{ reg.mode }}</Badge>
+                <Badge v-if="reg.beta_channel_enabled" variant="copper" class="text-xs">{{
+                  t("adminHealth.betaChannelOn")
+                }}</Badge>
                 <Button
                   variant="outline"
                   size="sm"
                   class="text-xs h-6 px-2"
                   @click="clearTarget = reg.registry"
+                  >{{ t("adminHealth.clearCache") }}</Button
                 >
-                  Clear Cache
-                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  class="text-xs h-6 px-2"
+                  @click="explorePending = reg.registry"
+                  >{{ t("adminHealth.refreshExplore") }}</Button
+                >
               </div>
             </div>
           </CardHeader>
@@ -193,7 +200,7 @@ const ROLE_LABELS: Record<string, string> = {
             <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
               <!-- Packages -->
               <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-                <p class="text-xs text-muted-foreground">Packages</p>
+                <p class="text-xs text-muted-foreground">{{ t("common.packages") }}</p>
                 <p class="text-xl font-semibold tabular-nums">
                   {{ formatCount(reg.package_count) }}
                 </p>
@@ -202,7 +209,7 @@ const ROLE_LABELS: Record<string, string> = {
 
               <!-- Cache size -->
               <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-                <p class="text-xs text-muted-foreground">Cache size</p>
+                <p class="text-xs text-muted-foreground">{{ t("adminHealth.cacheSize") }}</p>
                 <p class="text-xl font-semibold">
                   {{ fmtBytes(reg.total_size_bytes ?? null) }}
                 </p>
@@ -213,7 +220,7 @@ const ROLE_LABELS: Record<string, string> = {
 
               <!-- Last pull -->
               <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-                <p class="text-xs text-muted-foreground">Last pull</p>
+                <p class="text-xs text-muted-foreground">{{ t("adminHealth.lastPull") }}</p>
                 <p class="text-base font-semibold">
                   {{ fmtRelative(reg.last_pull_at ?? null) }}
                 </p>
@@ -224,7 +231,7 @@ const ROLE_LABELS: Record<string, string> = {
 
               <!-- Pulls / hour -->
               <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-                <p class="text-xs text-muted-foreground">Pulls / hour</p>
+                <p class="text-xs text-muted-foreground">{{ t("adminHealth.pullsHour") }}</p>
                 <p
                   class="text-xl font-semibold tabular-nums"
                   :class="reg.pulls_last_hour > 0 ? 'text-primary' : 'text-muted-foreground'"
@@ -235,7 +242,7 @@ const ROLE_LABELS: Record<string, string> = {
 
               <!-- Pulls / day -->
               <div class="rounded-sm border bg-muted/30 p-3 space-y-0.5">
-                <p class="text-xs text-muted-foreground">Pulls / day</p>
+                <p class="text-xs text-muted-foreground">{{ t("adminHealth.pullsDay") }}</p>
                 <p class="text-xl font-semibold tabular-nums">
                   {{ formatCount(reg.pulls_last_day) }}
                 </p>
@@ -248,24 +255,28 @@ const ROLE_LABELS: Record<string, string> = {
                 class="flex items-center gap-2 w-full text-left font-mono text-sm font-medium py-1 hover:text-accent-foreground transition-colors"
                 @click="toggleErrors(reg.registry)"
               >
+                <!-- Healthy mirrors the degraded branch below, in ink rather
+                     than in green: this palette has no green, and the pair was
+                     failing AA at 15 nodes. Quiet on purpose — the degraded
+                     state has to stay the loud one (§6.4). The ping went with
+                     it; the only authored motion in this world is the resolve
+                     transition. -->
                 <span
                   v-if="reg.recent_errors.length === 0"
-                  class="flex items-center gap-1.5 text-green-600 dark:text-green-400"
+                  class="flex items-center gap-1.5 text-muted-foreground"
                 >
-                  <span class="relative flex h-2 w-2 shrink-0">
-                    <span
-                      class="animate-ping absolute inline-flex h-full w-full rounded-sm bg-green-500 opacity-75"
-                    />
-                    <span class="relative inline-flex h-2 w-2 rounded-sm bg-green-500" />
-                  </span>
-                  No errors in the last 24 h
+                  <span class="inline-block h-2 w-2 rounded-sm bg-muted-foreground" />
+                  {{ t("adminHealth.noErrors24h") }}
                 </span>
                 <span v-else class="flex items-center gap-1.5 text-destructive">
                   <span class="inline-block h-2 w-2 rounded-sm bg-destructive" />
-                  {{ reg.recent_errors.length }} error{{ reg.recent_errors.length > 1 ? "s" : "" }}
-                  in 24 h
+                  {{ t("adminHealth.errorsIn24h", reg.recent_errors.length) }}
                   <span class="text-muted-foreground text-xs ml-auto">
-                    {{ expandedErrors.has(reg.registry) ? "▲ hide" : "▼ show" }}
+                    {{
+                      expandedErrors.has(reg.registry)
+                        ? t("packageBetaChannel.hide")
+                        : t("packageBetaChannel.show")
+                    }}
                   </span>
                 </span>
               </button>
@@ -277,11 +288,11 @@ const ROLE_LABELS: Record<string, string> = {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead class="text-xs"> When </TableHead>
-                      <TableHead class="text-xs"> User </TableHead>
-                      <TableHead class="text-xs"> Package </TableHead>
-                      <TableHead class="text-xs"> Type </TableHead>
-                      <TableHead class="text-xs"> Reason </TableHead>
+                      <TableHead class="text-xs"> {{ t("common.when") }} </TableHead>
+                      <TableHead class="text-xs"> {{ t("common.user") }} </TableHead>
+                      <TableHead class="text-xs"> {{ t("common.package") }} </TableHead>
+                      <TableHead class="text-xs"> {{ t("common.type") }} </TableHead>
+                      <TableHead class="text-xs"> {{ t("common.reason") }} </TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -305,7 +316,11 @@ const ROLE_LABELS: Record<string, string> = {
                           :variant="err.error_type === 'error' ? 'destructive' : 'secondary'"
                           class="text-xs"
                         >
-                          {{ err.error_type === "error" ? "Upstream error" : "Denied" }}
+                          {{
+                            err.error_type === "error"
+                              ? t("adminHealth.upstreamError")
+                              : t("accessCheck.denied")
+                          }}
                         </Badge>
                       </TableCell>
                       <TableCell
@@ -323,7 +338,7 @@ const ROLE_LABELS: Record<string, string> = {
             <!-- Who has access -->
             <div class="space-y-1.5">
               <p class="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                Who has access
+                {{ t("adminHealth.whoHasAccess") }}
               </p>
               <div class="flex flex-wrap gap-1.5">
                 <Badge
@@ -332,7 +347,7 @@ const ROLE_LABELS: Record<string, string> = {
                   variant="secondary"
                   class="text-xs"
                 >
-                  {{ ROLE_LABELS[role] ?? role }}
+                  {{ ROLE_LABEL_KEYS[role] ? t(ROLE_LABEL_KEYS[role]) : role }}
                 </Badge>
                 <Badge
                   v-for="group in reg.access.groups"
@@ -346,30 +361,31 @@ const ROLE_LABELS: Record<string, string> = {
                   v-if="reg.access.roles.length === 0 && reg.access.groups.length === 0"
                   variant="destructive"
                   class="text-xs"
+                  >{{ t("adminHealth.noAccessConfigured") }}</Badge
                 >
-                  No access configured
-                </Badge>
                 <span
                   v-else-if="
                     !reg.access.roles.includes('anonymous') && !reg.access.roles.includes('user')
                   "
                   class="text-xs text-copper flex items-center gap-1"
+                  >{{ t("adminHealth.restrictedNoPublicAccess") }}</span
                 >
-                  ⚠ Restricted — no public access
-                </span>
               </div>
             </div>
           </CardContent>
         </Card>
       </div>
+      <!-- Split out of `/admin/operations/warming`: the two cache-eviction
+           controls now sit on one route instead of two sections apart. -->
+      <DeleteCachedArtifact :registries="(data ?? []).map((r) => r.registry)" />
     </AsyncState>
   </div>
 
   <!-- Clear cache confirmation dialog -->
   <ConfirmDialog
     :open="clearTarget !== null"
-    confirm-label="Clear Cache"
-    loading-label="Clearing…"
+    :confirm-label="t('adminHealth.clearCache')"
+    :loading-label="t('adminHealth.clearing')"
     destructive
     :loading="clearing"
     :error="clearError"
@@ -384,12 +400,41 @@ const ROLE_LABELS: Record<string, string> = {
     @confirm="confirmClearCache"
   >
     <template #title>
-      Clear cache for <span class="font-mono">{{ clearTarget }}</span
-      >?
+      <i18n-t keypath="adminHealth.clearCacheFor" tag="span">
+        <template #registry
+          ><span class="font-mono">{{ clearTarget }}</span></template
+        >
+      </i18n-t>
     </template>
-    <template #description>
-      All cached artifacts for this registry will be permanently removed. Packages will be
-      re-fetched from upstream on the next request.
+    <template #description>{{ t("adminHealth.allCachedArtifactsFor") }}</template>
+  </ConfirmDialog>
+
+  <!-- Explore-cache invalidation, relocated here from its own route. Confirmed
+       like its neighbour: it is cheap and self-healing, but it is still a
+       control that acts on what other people are reading. -->
+  <ConfirmDialog
+    :open="explorePending !== null"
+    :confirm-label="t('adminHealth.refreshExplore')"
+    :loading-label="t('adminHealth.refreshingExplore')"
+    :loading="exploreBusy"
+    :error="exploreError"
+    @update:open="
+      (v) => {
+        if (!v) {
+          explorePending = null;
+          exploreError = null;
+        }
+      }
+    "
+    @confirm="confirmInvalidateExplore"
+  >
+    <template #title>
+      <i18n-t keypath="adminHealth.refreshExploreFor" tag="span">
+        <template #registry
+          ><span class="font-mono">{{ explorePending }}</span></template
+        >
+      </i18n-t>
     </template>
+    <template #description>{{ t("adminHealth.exploreRepopulates") }}</template>
   </ConfirmDialog>
 </template>

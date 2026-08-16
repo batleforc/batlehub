@@ -39,12 +39,21 @@ describe("CardHeader", () => {
 });
 
 describe("CardTitle", () => {
-  it("renders slot content in an h3 with base classes", () => {
+  /**
+   * `h2` by default, because a card usually sits directly under the page `h1`.
+   * It was a hardcoded `h3`, which skipped a level on every such page.
+   */
+  it("renders slot content in an h2 with base classes", () => {
     const wrapper = mount(CardTitle, { slots: { default: "Title" } });
     expect(wrapper.text()).toBe("Title");
-    expect(wrapper.element.tagName).toBe("H3");
+    expect(wrapper.element.tagName).toBe("H2");
     expect(wrapper.classes()).toContain("font-mono");
     expect(wrapper.classes()).toContain("font-bold");
+  });
+
+  it("takes a deeper level when the card is nested under a section heading", () => {
+    const wrapper = mount(CardTitle, { props: { as: "h3" }, slots: { default: "Title" } });
+    expect(wrapper.element.tagName).toBe("H3");
   });
 
   it("merges a custom class", () => {

@@ -11,7 +11,7 @@ use batlehub_core::{
 };
 
 use super::require_admin;
-use crate::{error::AppError, extractors::AuthIdentity};
+use crate::{error::AppError, extractors::AuthIdentity, handlers::schemas::OkResponse};
 
 /// Flatten a `BulkPackageRequest` into the `(name, version)` pairs expected by
 /// `LocalRegistryBackend::bulk_*`.
@@ -270,7 +270,7 @@ pub struct DeprecateRequest {
     params(("registry" = String, Path, description = "Registry name")),
     request_body = DeprecateRequest,
     responses(
-        (status = 200, description = "Version deprecated"),
+        (status = 200, description = "Version deprecated", body = OkResponse),
         (status = 403, description = "Admin role required"),
     ),
     security(("bearer_token" = [])),
@@ -295,7 +295,7 @@ pub async fn deprecate(
         )
         .await
         .map_err(AppError::from)?;
-    Ok(HttpResponse::Ok().finish())
+    Ok(HttpResponse::Ok().json(OkResponse::new()))
 }
 
 /// Reverse a deprecation (admin).
@@ -306,7 +306,7 @@ pub async fn deprecate(
     params(("registry" = String, Path, description = "Registry name")),
     request_body = PackageVersionRequest,
     responses(
-        (status = 200, description = "Version undeprecated"),
+        (status = 200, description = "Version undeprecated", body = OkResponse),
         (status = 403, description = "Admin role required"),
     ),
     security(("bearer_token" = [])),
@@ -325,7 +325,7 @@ pub async fn undeprecate(
         .undeprecate(&registry, &body.name, &body.version, &identity.0)
         .await
         .map_err(AppError::from)?;
-    Ok(HttpResponse::Ok().finish())
+    Ok(HttpResponse::Ok().json(OkResponse::new()))
 }
 
 /// Hide a version from registry-protocol listings; still downloadable by exact
@@ -337,7 +337,7 @@ pub async fn undeprecate(
     params(("registry" = String, Path, description = "Registry name")),
     request_body = PackageVersionRequest,
     responses(
-        (status = 200, description = "Version unlisted"),
+        (status = 200, description = "Version unlisted", body = OkResponse),
         (status = 403, description = "Admin role required"),
     ),
     security(("bearer_token" = [])),
@@ -356,7 +356,7 @@ pub async fn unlist(
         .unlist(&registry, &body.name, &body.version, &identity.0)
         .await
         .map_err(AppError::from)?;
-    Ok(HttpResponse::Ok().finish())
+    Ok(HttpResponse::Ok().json(OkResponse::new()))
 }
 
 /// Make an unlisted version visible in listings again (admin).
@@ -367,7 +367,7 @@ pub async fn unlist(
     params(("registry" = String, Path, description = "Registry name")),
     request_body = PackageVersionRequest,
     responses(
-        (status = 200, description = "Version relisted"),
+        (status = 200, description = "Version relisted", body = OkResponse),
         (status = 403, description = "Admin role required"),
     ),
     security(("bearer_token" = [])),
@@ -386,5 +386,5 @@ pub async fn relist(
         .relist(&registry, &body.name, &body.version, &identity.0)
         .await
         .map_err(AppError::from)?;
-    Ok(HttpResponse::Ok().finish())
+    Ok(HttpResponse::Ok().json(OkResponse::new()))
 }

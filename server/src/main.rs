@@ -82,9 +82,22 @@ async fn main() -> Result<()> {
     let config = batlehub_config::load(&config_path)
         .with_context(|| format!("loading config from '{config_path}'"))?;
 
-    let prometheus_handle = PrometheusBuilder::new()
-        .install_recorder()
-        .context("installing Prometheus metrics recorder")?;
+    // `/metrics` is unauthenticated and was, until RFC 0004, unconditional —
+    // it publishes cache hit rates, per-registry pull volumes and upstream
+    // latencies to anyone who can reach the port. Consulting config here is
+    // what makes `[stats] metrics_enabled = false` mean anything, and what
+    // makes the handler's existing "metrics not configured" branch reachable
+    // in a real server for the first time rather than only in tests.
+    let prometheus_handle = if config.stats.metrics_enabled {
+        Some(
+            PrometheusBuilder::new()
+                .install_recorder()
+                .context("installing Prometheus metrics recorder")?,
+        )
+    } else {
+        tracing::info!("[stats] metrics_enabled = false — /metrics will report 503");
+        None
+    };
 
     let _tracer_provider = watcher::init_tracing(config.otel.as_ref());
     tracing::info!(config = %config_path, "batlehub starting");
@@ -122,6 +135,12 @@ async fn main() -> Result<()> {
 
     let registry_names: Vec<String> = config.registries.iter().map(|r| r.name.clone()).collect();
     let proxy_metrics = Arc::new(ProxyMetrics::new(&registry_names));
+
+    // Shared between the hourly rollup writer and the admin read endpoint, so
+    // both sides of the series are the same table.
+    let stats_history: Arc<dyn batlehub_core::ports::StatsHistoryRepository> = Arc::new(
+        batlehub_adapters::db::PgStatsHistoryRepository::new(repo.pool()),
+    );
     let artifact_meta = Arc::new(PgArtifactMetaRepository::new(repo.pool()));
     let vuln_repo: Arc<dyn VulnerabilityRepository> =
         Arc::new(PgVulnerabilityRepository::new(repo.pool()));
@@ -143,12 +162,18 @@ async fn main() -> Result<()> {
     let team_namespace_store: Arc<dyn batlehub_core::ports::TeamNamespacePort> =
         Arc::new(PgTeamNamespaceStore::new(repo.pool()));
 
+    // Built before the hot bundle because `license_gate` reads the recorded
+    // licence through it; `build_sbom_service` below wraps the same repository.
+    let sbom_repo: Arc<dyn batlehub_core::ports::SbomRepository> =
+        Arc::new(batlehub_adapters::db::PgSbomRepository::new(repo.pool()));
+
     let (init_hot, init_access, registry_map, registry_mode_map, upstream_map, vuln_db_map) =
         hot_config::build_hot_bundle(
             &config,
             &beta_channel_store,
             &(repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>),
             &vuln_repo,
+            &sbom_repo,
         )?;
     let warming_clients: HashMap<String, Arc<dyn batlehub_core::ports::RegistryClient>> = init_hot
         .registries
@@ -189,7 +214,7 @@ async fn main() -> Result<()> {
         team_namespace: Some(Arc::clone(&team_namespace_store)),
         sbom: Some(Arc::clone(&sbom_svc)),
         explore_cache: Some(Arc::clone(&admin_svc.explore_cache)),
-        access_log: Some(repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>),
+        package_repo: Some(repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>),
     });
 
     let warm_coordinator = stores::create_warm_coordinator(&config).await?;
@@ -217,6 +242,7 @@ async fn main() -> Result<()> {
         Arc::clone(&beta_channel_store),
         repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>,
         Arc::clone(&vuln_repo),
+        Arc::clone(&sbom_repo),
     );
     // Built once here so the same instance is shared with the reload service (for
     // hot-swapping) and registered as actix app_data below.
@@ -262,6 +288,24 @@ async fn main() -> Result<()> {
         "listening"
     );
     watcher::spawn_startup_warming(&config, &warming_map);
+
+    // Hourly cache-statistics rollup, so the dashboard's trend survives a
+    // deploy (RFC 0004 §2.3). `history_enabled = false` restores the previous
+    // behaviour: counters since this process started, and nothing older.
+    if config.stats.history_enabled {
+        let rollup = Arc::new(batlehub_core::services::StatsRollupService::new(
+            Arc::clone(&proxy_metrics),
+            Arc::clone(&stats_history),
+            config.stats.history_retention_days,
+        ));
+        watcher::spawn_stats_rollup(rollup, Arc::clone(&proxy_svc), registry_names.clone());
+        tracing::info!(
+            retention_days = config.stats.history_retention_days,
+            "stats-rollup: hourly cache-statistics history enabled"
+        );
+    } else {
+        tracing::info!("[stats] history_enabled = false — no rollup recorded");
+    }
 
     // Periodic SBOM re-check against the OSV vulnerability database.
     if let Some(vuln_cfg) = config.vulnerability_scan.as_ref().filter(|v| v.enabled) {
@@ -311,6 +355,7 @@ async fn main() -> Result<()> {
         eviction_map,
         proxy_metrics,
         prometheus_handle,
+        stats_history,
         sbom_svc,
         notification_svc,
         notification_store,

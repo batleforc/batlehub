@@ -62,6 +62,7 @@ pub enum RuleConfig {
     RequireSignedRelease(RequireSignedReleaseConfig),
     DenyLatest(DenyLatestConfig),
     CveGate(CveGateConfig),
+    LicenseGate(LicenseGateConfig),
     VersionGate(VersionGateConfig),
     TrustedPublisher(TrustedPublisherConfig),
 }
@@ -143,6 +144,53 @@ pub struct CveGateConfig {
 
 fn default_cve_min_severity() -> String {
     "high".to_owned()
+}
+
+/// Gate downloads by the licence the package's own manifest declares, as read
+/// by the SBOM extractor at cache/publish time (RFC 0004-bis §13.1).
+///
+/// ```toml
+/// [[registries.rules]]
+/// kind = "license_gate"
+/// allow = ["MIT", "Apache-2.0", "BSD-3-Clause"]  # optional allowlist
+/// deny  = ["AGPL-3.0", "SSPL-1.0"]               # always refused
+/// allow_unknown = true                           # default
+/// block = false                                  # default = warn-only
+/// bypass_roles = ["admin"]
+/// ```
+///
+/// **The licence is read from the archive, so it is not known until the
+/// artifact has been fetched once.** The first request for an uncached package
+/// is therefore governed by `allow_unknown`, not by `allow`/`deny`. This is the
+/// same trade `integrity.require_metadata` makes for checksums; see §13.1 for
+/// why it cannot be designed away.
+///
+/// Comparison is case-insensitive and ignores surrounding whitespace, because
+/// manifests are written by hand. It is otherwise literal: `allow = ["MIT"]`
+/// does not match `MIT OR Apache-2.0`, since a compound expression is a
+/// different declaration and silently accepting it would let a package opt out
+/// of the gate by adding an alternative.
+#[derive(Debug, Deserialize)]
+pub struct LicenseGateConfig {
+    /// Approved licences. When non-empty, a declared licence matching none of
+    /// these is refused.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// Refused licences, checked before `allow` so a deny entry always wins.
+    #[serde(default)]
+    pub deny: Vec<String>,
+    /// How to treat a package whose licence is unknown — no manifest parser for
+    /// the registry type, nothing declared, or not fetched yet. `true` (the
+    /// default) lets it through; `false` refuses it.
+    #[serde(default = "default_true")]
+    pub allow_unknown: bool,
+    /// When `true`, deny; when `false` (the default) the rule never blocks and
+    /// the licence is only surfaced in the UI.
+    #[serde(default)]
+    pub block: bool,
+    /// Roles that may bypass the gate even when `block` is `true`.
+    #[serde(default)]
+    pub bypass_roles: Vec<String>,
 }
 
 /// Gate downloads by version: an optional approved-version allowlist plus a

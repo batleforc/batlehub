@@ -172,7 +172,7 @@ fn svc(
         team_namespace: None,
         sbom: None,
         explore_cache: None,
-        access_log: None,
+        package_repo: None,
     }
 }
 
@@ -587,7 +587,7 @@ fn svc_with_beta(
         team_namespace: None,
         sbom: None,
         explore_cache: None,
-        access_log: None,
+        package_repo: None,
     }
 }
 
@@ -920,7 +920,7 @@ fn svc_with_ns(backend: Arc<InMemBackend>, ns: Arc<dyn TeamNamespacePort>) -> Lo
         team_namespace: Some(ns),
         sbom: None,
         explore_cache: None,
-        access_log: None,
+        package_repo: None,
     }
 }
 
@@ -1371,7 +1371,7 @@ fn download_svc_with_access_log(
     storage: Arc<MemStore>,
     integrity: Option<IntegrityPolicy>,
     signing: Option<SigningConfig>,
-    access_log: Option<Arc<dyn crate::ports::PackageRepository>>,
+    package_repo: Option<Arc<dyn crate::ports::PackageRepository>>,
 ) -> LocalRegistryService {
     let mut integrity_map = HashMap::new();
     if let Some(i) = integrity {
@@ -1394,7 +1394,7 @@ fn download_svc_with_access_log(
         team_namespace: None,
         sbom: None,
         explore_cache: None,
-        access_log,
+        package_repo,
     }
 }
 
@@ -2060,7 +2060,7 @@ async fn get_artifact_records_denied_download_when_visibility_check_fails() {
         team_namespace: Some(ns),
         sbom: None,
         explore_cache: None,
-        access_log: Some(spy.clone()),
+        package_repo: Some(spy.clone()),
     };
 
     // Anonymous identity can't see an `Internal` package.
@@ -2080,7 +2080,7 @@ async fn get_artifact_records_denied_download_when_visibility_check_fails() {
 
 #[tokio::test]
 async fn get_artifact_is_a_noop_for_audit_when_access_log_is_none() {
-    // Default construction (access_log: None) must not panic or behave differently —
+    // Default construction (package_repo: None) must not panic or behave differently —
     // audit logging is opt-in, matching the quota/ownership/sbom fields on this struct.
     let body: &[u8] = b"local-artifact-bytes";
     let backend = InMemBackend::arc();

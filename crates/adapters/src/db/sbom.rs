@@ -33,6 +33,7 @@ fn row_to_sbom(r: &sqlx::postgres::PgRow) -> ArtifactSbom {
         document: r.get("document"),
         source: SbomSource::parse(&source_str).unwrap_or(SbomSource::Generated),
         created_at: r.get("created_at"),
+        license: r.get("license"),
     }
 }
 
@@ -43,13 +44,18 @@ impl SbomRepository for PgSbomRepository {
             r#"
             INSERT INTO artifact_sboms
                 (id, artifact_key, registry, package_name, version,
-                 format, spec_version, document, source, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                 format, spec_version, document, source, created_at, license)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (artifact_key, format) DO UPDATE
                 SET document     = EXCLUDED.document,
                     source       = EXCLUDED.source,
                     spec_version = EXCLUDED.spec_version,
-                    created_at   = NOW()
+                    created_at   = NOW(),
+                    -- A re-record that could not read a licence must not erase
+                    -- one an earlier pass did read: the extractor is
+                    -- best-effort, and losing a known licence would silently
+                    -- move the package into `allow_unknown` territory.
+                    license      = COALESCE(EXCLUDED.license, artifact_sboms.license)
             "#,
         )
         .bind(sbom.id)
@@ -62,6 +68,7 @@ impl SbomRepository for PgSbomRepository {
         .bind(&sbom.document)
         .bind(sbom.source.as_str())
         .bind(sbom.created_at)
+        .bind(sbom.license.as_deref())
         .execute(&self.pool)
         .await
         .db_err()?;
@@ -75,7 +82,7 @@ impl SbomRepository for PgSbomRepository {
     ) -> Result<Option<ArtifactSbom>, CoreError> {
         let row = sqlx::query(
             "SELECT id, artifact_key, registry, package_name, version, \
-             format, spec_version, document, source, created_at \
+             format, spec_version, document, source, created_at, license \
              FROM artifact_sboms WHERE artifact_key = $1 AND format = $2",
         )
         .bind(artifact_key)
@@ -96,7 +103,7 @@ impl SbomRepository for PgSbomRepository {
     ) -> Result<Option<ArtifactSbom>, CoreError> {
         let row = sqlx::query(
             "SELECT id, artifact_key, registry, package_name, version, \
-             format, spec_version, document, source, created_at \
+             format, spec_version, document, source, created_at, license \
              FROM artifact_sboms \
              WHERE registry = $1 AND package_name = $2 AND version = $3 AND format = $4 \
              ORDER BY created_at DESC LIMIT 1",
@@ -110,6 +117,30 @@ impl SbomRepository for PgSbomRepository {
         .db_err()?;
 
         Ok(row.as_ref().map(row_to_sbom))
+    }
+
+    async fn get_license_for_coordinate(
+        &self,
+        registry: &str,
+        package_name: &str,
+        version: &str,
+    ) -> Result<Option<String>, CoreError> {
+        // Both formats carry the same licence, so the format is not part of the
+        // question; `LIMIT 1` over the newest row is the answer either way.
+        let row = sqlx::query(
+            "SELECT license FROM artifact_sboms \
+             WHERE registry = $1 AND package_name = $2 AND version = $3 \
+               AND license IS NOT NULL \
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(registry)
+        .bind(package_name)
+        .bind(version)
+        .fetch_optional(&self.pool)
+        .await
+        .db_err()?;
+
+        Ok(row.map(|r| r.get("license")))
     }
 
     async fn list_sboms_for_export(
@@ -126,7 +157,7 @@ impl SbomRepository for PgSbomRepository {
         let rows = sqlx::query(
             r#"
             SELECT id, artifact_key, registry, package_name, version,
-                   format, spec_version, document, source, created_at
+                   format, spec_version, document, source, created_at, license
             FROM artifact_sboms
             WHERE ($1::TEXT IS NULL OR registry = $1)
               AND ($2::TIMESTAMPTZ IS NULL OR created_at >= $2)
@@ -185,6 +216,7 @@ mod tests {
             document: serde_json::json!({"spdxVersion": "SPDX-2.3"}),
             source: SbomSource::Generated,
             created_at: Utc::now(),
+            license: None,
         };
         assert_eq!(sbom.format.as_str(), "spdx");
         assert_eq!(sbom.spec_version, "2.3");

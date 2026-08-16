@@ -6,6 +6,7 @@ import {
   type RouteLocationRaw,
 } from "vue-router";
 import { useAuth, storeTokens } from "@/composables/useAuth";
+import { LEGACY_REDIRECTS, SECTION_INDEXES } from "@/config/navigation";
 
 const OIDC_STATE_KEY = "oidc_state";
 
@@ -19,10 +20,13 @@ function handleOidcCallback(to: RouteLocationNormalized): RouteLocationRaw | nul
   sessionStorage.removeItem(OIDC_STATE_KEY);
 
   if (!incomingState || incomingState !== expectedState) {
-    return {
-      path: "/login",
-      query: { error: "State mismatch — possible CSRF attack. Please try again." },
-    };
+    /* A catalogue *key*, not a sentence. The router has no `setup` and the
+       destination does — and putting a rendered sentence in a query string also
+       pins it to the locale that was active when the redirect was built, which
+       for an OIDC round-trip is a different page load entirely. `LoginPage`
+       translates anything it recognises and shows the rest verbatim, so an
+       error forwarded from the backend still reads. */
+    return { path: "/login", query: { error: "loginPage.oidcStateMismatch" } };
   }
 
   const provider = to.query.oidc_provider ? String(to.query.oidc_provider) : null;
@@ -86,70 +90,121 @@ function checkMetaGuards(
   }
 }
 
+/**
+ * Legacy paths resolve through one guard fed by `LEGACY_REDIRECTS`, rather than
+ * ~20 hand-written `redirect` entries added one per moved page — which is how
+ * the section list and its aliases drifted apart in the first place. Query and
+ * hash are preserved: a bookmark with `?registry=npm1` keeps it (RFC 0003 §9).
+ */
+function handleLegacyPath(to: RouteLocationNormalized): RouteLocationRaw | null {
+  const target = LEGACY_REDIRECTS[to.path] ?? SECTION_INDEXES[to.path];
+  if (!target) return null;
+  return { path: target, query: to.query, hash: to.hash };
+}
+
+/**
+ * The catalog redirects, which need more than a table lookup.
+ *
+ * A package had two addresses — `/packages/detail?registry=&name=` and
+ * `/explore/packages/:registry/:name` — and only one of them survived a
+ * copy-paste. Both now resolve to the canonical path form, so old bookmarks and
+ * anything in `docs/` keep working while a package gains a single identity.
+ */
+function handleCatalogPath(to: RouteLocationNormalized): RouteLocationRaw | null {
+  if (to.path === "/explore") return { path: "/packages", query: to.query, hash: to.hash };
+
+  const explore = /^\/explore\/packages\/([^/]+)\/(.+)$/.exec(to.path);
+  if (explore) {
+    return { path: `/packages/${explore[1]}/${explore[2]}`, query: to.query, hash: to.hash };
+  }
+
+  if (to.path === "/packages/detail" || to.path === "/admin/packages/detail") {
+    const registry = String(to.query.registry ?? "");
+    const name = String(to.query.name ?? "");
+    // Without both we cannot name a package; the catalog is the honest landing.
+    if (!registry || !name) return { path: "/packages" };
+    const { registry: _r, name: _n, ...rest } = to.query;
+    return {
+      path: `/packages/${encodeURIComponent(registry)}/${encodeURIComponent(name)}`,
+      query: rest,
+      hash: to.hash,
+    };
+  }
+  return null;
+}
+
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: "/", redirect: "/packages" },
+    { path: "/", component: () => import("@/pages/HomePage.vue") },
     { path: "/login", component: () => import("@/pages/LoginPage.vue") },
-    { path: "/packages", component: () => import("@/pages/PackageList.vue") },
-    { path: "/packages/detail", component: () => import("@/pages/PackageDetail.vue") },
-    { path: "/explore", component: () => import("@/pages/PackageExplorer.vue") },
+    // One catalog and one canonical package URL (RFC 0003 §4.2). `/explore` and
+    // both former detail URLs redirect here — see `handleCatalogPath`.
+    { path: "/packages", component: () => import("@/pages/PackageCatalog.vue") },
     {
-      path: "/explore/packages/:registry/:name",
-      component: () => import("@/pages/ExplorePackageDetail.vue"),
+      path: "/packages/:registry/:name",
+      component: () => import("@/pages/PackageDetailPage.vue"),
     },
-    { path: "/access-check", component: () => import("@/pages/AccessCheck.vue") },
-    { path: "/path-mapper", component: () => import("@/pages/PathMapper.vue") },
     { path: "/setup", component: () => import("@/pages/SetupGuide.vue") },
+
+    // ── Account hub ────────────────────────────────────────────────────────
+    // Four former top-level routes, reachable only from a dropdown, gathered
+    // behind one heading. Tabs are routed, so each still deep-links — and
+    // tokens only render on the route the user deliberately opened.
     {
-      path: "/tokens",
-      component: () => import("@/pages/TokensPage.vue"),
-      meta: { requiresOidcAuth: true },
-    },
-    {
-      path: "/profile",
-      component: () => import("@/pages/MyProfile.vue"),
+      path: "/me",
+      component: () => import("@/layouts/AccountLayout.vue"),
       meta: { requiresAuth: true },
+      children: [
+        { path: "profile", component: () => import("@/pages/MyProfile.vue") },
+        {
+          path: "tokens",
+          component: () => import("@/pages/TokensPage.vue"),
+          meta: { requiresOidcAuth: true },
+        },
+        { path: "namespace", component: () => import("@/pages/MyNamespace.vue") },
+        { path: "cli", component: () => import("@/pages/CliDownload.vue") },
+      ],
     },
+
+    // ── Diagnostics hub ────────────────────────────────────────────────────
     {
-      path: "/my-namespace",
-      component: () => import("@/pages/MyNamespace.vue"),
-      meta: { requiresAuth: true },
+      path: "/tools",
+      component: () => import("@/layouts/ToolsLayout.vue"),
+      children: [
+        { path: "access-check", component: () => import("@/pages/AccessCheck.vue") },
+        { path: "url-mapper", component: () => import("@/pages/PathMapper.vue") },
+      ],
     },
-    {
-      path: "/cli",
-      component: () => import("@/pages/CliDownload.vue"),
-      meta: { requiresAuth: true },
-    },
+
     {
       path: "/admin",
       component: () => import("@/layouts/AdminLayout.vue"),
       meta: { requiresAdmin: true },
       children: [
-        { path: "", redirect: "/admin/dashboard" },
-        { path: "dashboard", component: () => import("@/pages/AdminDashboard.vue") },
+        /**
+         * Real redirect routes for the section roots, not just `SECTION_INDEXES`.
+         *
+         * That table is consumed by a `beforeEach` guard, which runs on
+         * *navigation*. `RouterLink` resolves its `href` statically, so a link
+         * to `/admin/packages` — which had no route — logged
+         * `[VUE_ROUTER_R0004] No match found` on every render and produced a
+         * wrong `href`: clicking worked because the guard caught it, but
+         * middle-click, open-in-new-tab and copy-link-address did not.
+         *
+         * Generated from the same table so the two can never disagree; the
+         * guard stays as the fallback for typed URLs and old bookmarks.
+         */
+        { path: "", redirect: SECTION_INDEXES["/admin"] },
+        ...Object.entries(SECTION_INDEXES)
+          .filter(([from]) => from.startsWith("/admin/"))
+          .map(([from, to]) => ({ path: from.slice("/admin/".length), redirect: to })),
 
-        // Packages
-        { path: "packages", redirect: "/admin/packages/all" },
+        { path: "dashboard", component: () => import("@/pages/AdminDashboard.vue") },
         { path: "packages/all", component: () => import("@/pages/AdminPackages.vue") },
         { path: "packages/bulk", component: () => import("@/pages/AdminBulk.vue") },
-        { path: "packages/detail", component: () => import("@/pages/AdminPackageDetail.vue") },
-        { path: "bulk", redirect: "/admin/packages/bulk" },
-
-        // Security & Access
-        { path: "security", redirect: "/admin/security/users" },
-        { path: "security/users", component: () => import("@/pages/AdminUsers.vue") },
-        { path: "security/ip-blocks", component: () => import("@/pages/AdminIpBlocks.vue") },
-        {
-          path: "security/access-check",
-          component: () => import("@/pages/AdminAccessCheck.vue"),
-        },
-        { path: "users", redirect: "/admin/security/users" },
-        { path: "ip-blocks", redirect: "/admin/security/ip-blocks" },
-        { path: "access-check", redirect: "/admin/security/access-check" },
-
-        // Namespaces & Channels
-        { path: "namespaces", redirect: "/admin/namespaces/team-namespaces" },
+        { path: "security/blocks", component: () => import("@/pages/AdminBlocks.vue") },
+        { path: "security/access-check", component: () => import("@/pages/AdminAccessCheck.vue") },
         {
           path: "namespaces/team-namespaces",
           component: () => import("@/pages/AdminTeamNamespaces.vue"),
@@ -158,35 +213,22 @@ export const router = createRouter({
           path: "namespaces/beta-channel",
           component: () => import("@/pages/AdminBetaChannel.vue"),
         },
-        { path: "team-namespaces", redirect: "/admin/namespaces/team-namespaces" },
-        { path: "beta-channel", redirect: "/admin/namespaces/beta-channel" },
-
-        // Operations
-        { path: "operations", redirect: "/admin/operations/config-reload" },
         {
           path: "operations/config-reload",
           component: () => import("@/pages/AdminConfigReload.vue"),
         },
         { path: "operations/warming", component: () => import("@/pages/AdminWarming.vue") },
-        {
-          path: "operations/explore-cache",
-          component: () => import("@/pages/AdminExploreCache.vue"),
-        },
-        { path: "config-reload", redirect: "/admin/operations/config-reload" },
-        { path: "warming", redirect: "/admin/operations/warming" },
-        { path: "explore-cache", redirect: "/admin/operations/explore-cache" },
-
-        // Observability
-        { path: "observability", redirect: "/admin/observability/health" },
         { path: "observability/health", component: () => import("@/pages/AdminHealth.vue") },
-        { path: "observability/sbom", component: () => import("@/pages/AdminSbom.vue") },
+        { path: "operations/sbom", component: () => import("@/pages/AdminSbom.vue") },
         { path: "observability/audit-log", component: () => import("@/pages/AuditLog.vue") },
-        { path: "health", redirect: "/admin/observability/health" },
-        { path: "sbom", redirect: "/admin/observability/sbom" },
-        { path: "audit-log", redirect: "/admin/observability/audit-log" },
-
-        // Notifications
-        { path: "notifications", component: () => import("@/pages/AdminNotifications.vue") },
+        {
+          path: "notifications/subscriptions",
+          component: () => import("@/pages/AdminNotificationSubscriptions.vue"),
+        },
+        {
+          path: "notifications/inbound",
+          component: () => import("@/pages/AdminInboundEvents.vue"),
+        },
       ],
     },
   ],
@@ -200,6 +242,12 @@ router.beforeEach(async (to) => {
 
   const oidcError = handleOidcError(to);
   if (oidcError !== null) return oidcError;
+
+  const legacy = handleLegacyPath(to);
+  if (legacy !== null) return legacy;
+
+  const catalog = handleCatalogPath(to);
+  if (catalog !== null) return catalog;
 
   await waitForIdentity(auth.identityReady);
 

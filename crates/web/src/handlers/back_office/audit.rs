@@ -4,7 +4,7 @@ use actix_web::http::header::{ContentDisposition, DispositionParam, DispositionT
 use actix_web::{delete, get, web, HttpResponse, Responder};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use utoipa::IntoParams;
+use utoipa::{IntoParams, ToSchema};
 
 use batlehub_core::{
     entities::{AccessEvent, EventFilter},
@@ -13,7 +13,7 @@ use batlehub_core::{
 };
 
 use super::require_admin;
-use crate::{error::AppError, extractors::AuthIdentity};
+use crate::{error::AppError, extractors::AuthIdentity, handlers::schemas::ProtocolDocument};
 
 #[derive(Deserialize, IntoParams)]
 pub struct AuditQuery {
@@ -35,7 +35,7 @@ fn default_per_page() -> u64 {
 /// Paginated envelope for `GET /api/v1/admin/audit-log`, matching the shape of
 /// its sibling list endpoints (`AdminPackageListResponse`) instead of returning
 /// a bare array with no way to tell if more pages exist.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct AuditLogResponse {
     pub items: Vec<AccessEvent>,
     pub total: u64,
@@ -50,7 +50,7 @@ pub struct AuditLogResponse {
     tag = "back-office",
     params(AuditQuery),
     responses(
-        (status = 200, description = "Paginated access events"),
+        (status = 200, description = "Paginated access events", body = AuditLogResponse),
         (status = 403, description = "Admin role required"),
     ),
     security(("bearer_token" = [])),
@@ -105,6 +105,16 @@ pub struct ExportQuery {
     pub to: Option<DateTime<Utc>>,
     pub registry: Option<String>,
     pub user_id: Option<String>,
+    /// Restrict the export to denied events, as the listing's "Denied only"
+    /// filter does.
+    ///
+    /// The listing accepted this and the export did not, so an operator reading
+    /// a table of denials downloaded a file containing every allowed event too,
+    /// with nothing on screen saying so — on the surface whose whole purpose is
+    /// establishing what happened. An export has to be able to describe the
+    /// same set the table did.
+    #[serde(default)]
+    pub denied_only: bool,
     /// "json" (default) or "csv"
     #[serde(default)]
     pub format: String,
@@ -125,7 +135,10 @@ fn default_export_format(fmt: &str) -> &'static str {
     tag = "back-office",
     params(ExportQuery),
     responses(
-        (status = 200, description = "Audit log export (JSON or CSV)"),
+        (status = 200, description = "Audit log export; `?format=csv` selects CSV, anything else JSON", content(
+            (Vec<AccessEvent> = "application/json"),
+            (ProtocolDocument = "text/csv"),
+        )),
         (status = 403, description = "Admin role required"),
     ),
     security(("bearer_token" = [])),
@@ -144,7 +157,7 @@ pub async fn export_audit_log(
         user_id: query.user_id.clone(),
         from: query.from,
         to: query.to,
-        denied_only: false,
+        denied_only: query.denied_only,
         limit: 100_000,
         offset: 0,
     };

@@ -22,6 +22,7 @@ use super::super::common::{
     collect_payload, collect_storage_stream, dispatch_notification, require_registry_type,
 };
 use super::repo_storage_key;
+use crate::handlers::schemas::ProtocolDocument;
 use crate::{
     error::AppError, extractors::AuthIdentity, handlers::back_office::require_authenticated,
     services::NotificationService, RegistryMap, RegistryModeMap, RepoSignerMap,
@@ -107,7 +108,7 @@ fn http_date() -> String {
         ("component" = String, Path, description = "Component (e.g. main)"),
     ),
     responses(
-        (status = 201, description = "Package published; indexes regenerated"),
+        (status = 201, description = "Package published; indexes regenerated", body = ProtocolDocument, content_type = "text/plain"),
         (status = 400, description = "Invalid .deb"),
         (status = 403, description = "Authentication required"),
         (status = 404, description = "Unknown or non-local registry"),
@@ -332,7 +333,7 @@ async fn regenerate_deb(
     tag = "proxy/rpm",
     params(("registry" = String, Path, description = "Registry name")),
     responses(
-        (status = 201, description = "Package published; repodata regenerated"),
+        (status = 201, description = "Package published; repodata regenerated", body = ProtocolDocument, content_type = "text/plain"),
         (status = 400, description = "Invalid .rpm"),
         (status = 403, description = "Authentication required"),
         (status = 404, description = "Unknown or non-local registry"),
@@ -497,7 +498,7 @@ async fn regenerate_rpm(
     tag = "proxy/pacman",
     params(("registry" = String, Path, description = "Registry name")),
     responses(
-        (status = 201, description = "Package published; repo database regenerated"),
+        (status = 201, description = "Package published; repo database regenerated", body = ProtocolDocument, content_type = "text/plain"),
         (status = 400, description = "Invalid package"),
         (status = 403, description = "Authentication required"),
         (status = 404, description = "Unknown or non-local registry"),

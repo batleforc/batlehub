@@ -54,6 +54,29 @@ pub trait RegistryClient: Send + Sync {
         Ok(vec![])
     }
 
+    /// Fetch the upstream's own *version-listing document* for `package`, as
+    /// received — the document a client resolves a version range against.
+    ///
+    /// Distinct from [`Self::list_versions`], which answers "which versions
+    /// exist" for internal use (cache warming). This returns the document
+    /// itself, because the proxy has to hand the client something in the shape
+    /// its package manager expects: for npm that is the packument, with its
+    /// `versions` map, `dist-tags` and per-version metadata.
+    ///
+    /// The proxy needs the parsed document — rather than streaming the upstream
+    /// response through — so it can remove administratively blocked versions
+    /// before a resolver ever sees them (see
+    /// [`crate::services::blocking::strip_blocked_from_packument`]).
+    ///
+    /// The default returns [`CoreError::NotSupported`]; only registry types
+    /// whose protocol has such a document implement it.
+    async fn fetch_version_document(&self, package: &str) -> Result<serde_json::Value, CoreError> {
+        let _ = package;
+        Err(CoreError::NotSupported(
+            "this registry type has no version-listing document".to_owned(),
+        ))
+    }
+
     /// Search the upstream registry for packages matching `query`.
     ///
     /// Returns up to `limit` results. The default implementation returns an empty

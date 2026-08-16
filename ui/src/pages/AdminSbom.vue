@@ -1,14 +1,34 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { useI18n } from "vue-i18n";
+import { ref, computed } from "vue";
 import { useAuthFetch } from "@/composables/useAuthFetch";
 import { API_BASE_URL } from "@/config";
 import SectionTabs from "@/components/admin/SectionTabs.vue";
-import { OBSERVABILITY_TABS } from "@/config/adminSections";
+import { OPERATIONS_TABS } from "@/config/adminSections";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
+import { useRegistryOptions } from "@/composables/useRegistryOptions";
+
+const { t } = useI18n();
+
+/** RFC 0004-bis §6.2: the registry set is closed, small and already fetched. */
+const { options: registryOptions } = useRegistryOptions();
+
+/**
+ * The registry set plus an explicit "all registries" entry.
+ *
+ * The field is optional by contract, so blank has to be a *choosable* value —
+ * a `Select` that cannot express it would silently narrow every use that
+ * relied on leaving it empty (RFC 0004-bis §6.2).
+ */
+const registryOptionsWithAll = computed(() => [
+  { value: "", label: t("adminPackages.allRegistries") },
+  ...registryOptions.value,
+]);
 
 const { authFetch } = useAuthFetch();
 
@@ -41,7 +61,23 @@ async function downloadBlob(url: string, defaultFilename: string) {
 
 // ── Export action ─────────────────────────────────────────────────────────────
 
+/**
+ * A backwards range is refused here rather than sent (RFC 0004-bis §4.3).
+ *
+ * `from > to` selects nothing by definition, and the endpoint answers it with a
+ * perfectly valid empty SBOM — a file that says this instance has no packages.
+ * On an export an operator may hand to an auditor, an empty answer that reads
+ * as a fact is the failure mode this whole RFC is about.
+ */
+const rangeInverted = computed(
+  () => !!fromDate.value && !!toDate.value && fromDate.value > toDate.value,
+);
+
 async function exportSbom() {
+  if (rangeInverted.value) {
+    errorMsg.value = t("adminSbom.rangeInverted");
+    return;
+  }
   loading.value = true;
   errorMsg.value = null;
   try {
@@ -58,7 +94,7 @@ async function exportSbom() {
       `sbom-export-${label}-${ts}.${ext}`,
     );
   } catch (e: unknown) {
-    errorMsg.value = e instanceof Error ? e.message : "Export failed";
+    errorMsg.value = e instanceof Error ? e.message : t("adminSbom.exportFailed");
   } finally {
     loading.value = false;
   }
@@ -67,13 +103,13 @@ async function exportSbom() {
 
 <template>
   <div class="space-y-6">
-    <SectionTabs :tabs="OBSERVABILITY_TABS" />
-    <PageHeader title="SBOM Export" variant="glow" />
+    <SectionTabs :tabs="OPERATIONS_TABS" />
+    <PageHeader :title="t('adminSbom.sbomExport')" variant="display" />
 
     <!-- Feedback -->
     <div
       v-if="errorMsg"
-      class="rounded-sm bg-destructive/10 border border-destructive/30 px-4 py-2 text-destructive text-sm"
+      class="rounded-sm border border-destructive/40 px-4 py-2 text-destructive text-sm"
     >
       {{ errorMsg }}
     </div>
@@ -81,40 +117,52 @@ async function exportSbom() {
     <!-- Export card -->
     <Card>
       <CardHeader>
-        <CardTitle>Export Org-Level SBOM</CardTitle>
+        <CardTitle>{{ t("adminSbom.exportOrgLevelSbom") }}</CardTitle>
       </CardHeader>
       <CardContent class="space-y-4">
-        <p class="text-sm text-muted-foreground">
-          Generates a merged SBOM covering all artifacts served in the selected time window. Leave
-          filters empty to export everything.
-        </p>
+        <p class="text-sm text-muted-foreground">{{ t("adminSbom.generatesAMergedSbom") }}</p>
 
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-xl">
           <!-- Registry filter -->
           <div class="space-y-1.5">
             <Label for="sbom-registry"
-              >Registry <span class="text-muted-foreground font-normal">(optional)</span></Label
+              >{{ t("common.registry") }}
+              <span class="text-muted-foreground font-normal">{{
+                t("adminSbom.optional")
+              }}</span></Label
             >
-            <Input id="sbom-registry" v-model="registry" placeholder="e.g. crates-io" />
+            <!-- A closed set, already fetched: `Select`, not a box whose placeholder
+                 guesses a naming convention (RFC 0004-bis §6.2). Optional, so it
+                 carries an explicit "all registries" option — a `Select` that
+                 cannot express blank would silently narrow every export. -->
+            <Select
+              id="sbom-registry"
+              v-model="registry"
+              :options="registryOptionsWithAll"
+              :placeholder="t('adminPackages.allRegistries')"
+            />
           </div>
 
           <!-- Format -->
           <div class="space-y-1.5">
-            <Label for="sbom-format">Format</Label>
+            <Label for="sbom-format">{{ t("common.format") }}</Label>
             <select
               id="sbom-format"
               v-model="format"
               class="w-full border border-input rounded-sm px-2 py-2 font-mono text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
             >
-              <option value="spdx">SPDX 2.3</option>
-              <option value="cyclonedx">CycloneDX 1.4</option>
+              <option value="spdx">{{ t("adminSbom.spdx23") }}</option>
+              <option value="cyclonedx">{{ t("adminSbom.cyclonedx14") }}</option>
             </select>
           </div>
 
           <!-- From date -->
           <div class="space-y-1.5">
             <Label for="sbom-from"
-              >From <span class="text-muted-foreground font-normal">(optional)</span></Label
+              >{{ t("common.from") }}
+              <span class="text-muted-foreground font-normal">{{
+                t("adminSbom.optional")
+              }}</span></Label
             >
             <Input id="sbom-from" v-model="fromDate" type="date" />
           </div>
@@ -122,14 +170,22 @@ async function exportSbom() {
           <!-- To date -->
           <div class="space-y-1.5">
             <Label for="sbom-to"
-              >To <span class="text-muted-foreground font-normal">(optional)</span></Label
+              >To
+              <span class="text-muted-foreground font-normal">{{
+                t("adminSbom.optional")
+              }}</span></Label
             >
             <Input id="sbom-to" v-model="toDate" type="date" />
           </div>
         </div>
 
-        <Button :disabled="loading" @click="exportSbom">
-          {{ loading ? "Exporting…" : "Download SBOM" }}
+        <!-- Refused at the edge, and visibly: an operator should see why the
+             button is dark rather than press it and read an error. -->
+        <p v-if="rangeInverted" class="text-sm text-destructive">
+          {{ t("adminSbom.rangeInverted") }}
+        </p>
+        <Button :disabled="loading || rangeInverted" @click="exportSbom">
+          {{ loading ? t("adminSbom.exporting") : t("adminSbom.downloadSbom") }}
         </Button>
       </CardContent>
     </Card>
@@ -137,25 +193,31 @@ async function exportSbom() {
     <!-- About card -->
     <Card>
       <CardHeader>
-        <CardTitle class="text-base">About SBOM Formats</CardTitle>
+        <CardTitle class="text-base">{{ t("adminSbom.aboutSbomFormats") }}</CardTitle>
       </CardHeader>
       <CardContent class="text-sm text-muted-foreground space-y-2">
         <p>
-          <strong class="text-foreground">SPDX 2.3</strong> — ISO/IEC standard widely used for
-          compliance and license tracking. Preferred for legal review and OpenChain-conformant
-          workflows.
+          <i18n-t keypath="adminSbom.spdxBlurb" tag="span">
+            <template #name
+              ><strong class="text-foreground">{{ t("adminSbom.spdx23") }}</strong></template
+            >
+          </i18n-t>
         </p>
         <p>
-          <strong class="text-foreground">CycloneDX 1.4</strong> — OWASP standard optimised for
-          security tooling. Preferred for vulnerability scanning and SBOM-driven dependency
-          analysis.
+          <i18n-t keypath="adminSbom.cyclonedxBlurb" tag="span">
+            <template #name
+              ><strong class="text-foreground">{{ t("adminSbom.cyclonedx14") }}</strong></template
+            >
+          </i18n-t>
         </p>
         <p>
-          Per-artifact SBOMs (SPDX or CycloneDX) are also available from the
-          <RouterLink to="/explore" class="underline hover:text-foreground"
-            >Package Explorer</RouterLink
-          >
-          version detail view.
+          <i18n-t keypath="adminSbom.perArtifactSboms" tag="span">
+            <template #catalog
+              ><RouterLink to="/packages" class="underline hover:text-foreground">{{
+                t("adminSbom.catalog")
+              }}</RouterLink></template
+            >
+          </i18n-t>
         </p>
       </CardContent>
     </Card>

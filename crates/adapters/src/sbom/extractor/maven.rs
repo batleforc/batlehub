@@ -1,14 +1,14 @@
-use batlehub_core::ports::SbomDependency;
+use batlehub_core::ports::{ExtractedManifest, SbomDependency};
 use bytes::Bytes;
 
-pub(super) fn extract_maven_deps(data: &Bytes) -> Vec<SbomDependency> {
+pub(super) fn extract_maven_manifest(data: &Bytes) -> ExtractedManifest {
     use std::io::{Cursor, Read};
     use zip::ZipArchive;
 
     let cursor = Cursor::new(data.as_ref());
     let Ok(mut archive) = ZipArchive::new(cursor) else {
         tracing::warn!("sbom: failed to parse maven manifest, treating as no dependencies");
-        return vec![];
+        return ExtractedManifest::default();
     };
 
     for i in 0..archive.len() {
@@ -20,12 +20,12 @@ pub(super) fn extract_maven_deps(data: &Bytes) -> Vec<SbomDependency> {
             let mut content = String::new();
             if file.read_to_string(&mut content).is_err() {
                 tracing::warn!("sbom: failed to parse maven manifest, treating as no dependencies");
-                return vec![];
+                return ExtractedManifest::default();
             }
             return parse_maven_pom(&content);
         }
     }
-    vec![]
+    ExtractedManifest::default()
 }
 
 fn decode_xml_text(e: &quick_xml::events::BytesText) -> String {
@@ -86,7 +86,7 @@ fn apply_maven_end(
     }
 }
 
-fn parse_maven_pom(content: &str) -> Vec<SbomDependency> {
+fn parse_maven_pom(content: &str) -> ExtractedManifest {
     use quick_xml::{events::Event, Reader};
 
     let mut reader = Reader::from_str(content);
@@ -99,15 +99,33 @@ fn parse_maven_pom(content: &str) -> Vec<SbomDependency> {
     let mut current_version = String::new();
     let mut capture_field: Option<&'static str> = None;
 
+    // `<name>` is also the project's own display name, so the licence capture
+    // is scoped to `<licenses>` rather than matched on the element alone.
+    let mut in_licenses = 0u32;
+    let mut capture_license_name = false;
+    let mut licenses: Vec<String> = Vec::new();
+
     loop {
         match reader.read_event() {
             Ok(Event::Start(ref e)) => {
                 let ln = e.local_name();
                 let local = std::str::from_utf8(ln.as_ref()).unwrap_or("");
                 apply_maven_start(local, &mut in_dependency, &mut capture_field);
+                if local == "licenses" {
+                    in_licenses += 1;
+                } else if local == "name" && in_licenses > 0 {
+                    capture_license_name = true;
+                }
             }
             Ok(Event::Text(ref e)) => {
-                if let Some(field) = capture_field.take() {
+                if capture_license_name {
+                    capture_license_name = false;
+                    let text = decode_xml_text(e);
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        licenses.push(text.to_owned());
+                    }
+                } else if let Some(field) = capture_field.take() {
                     let text = decode_xml_text(e);
                     match field {
                         "groupId" => current_group = text,
@@ -120,6 +138,12 @@ fn parse_maven_pom(content: &str) -> Vec<SbomDependency> {
             Ok(Event::End(ref e)) => {
                 let ln = e.local_name();
                 let local = std::str::from_utf8(ln.as_ref()).unwrap_or("");
+                if local == "licenses" && in_licenses > 0 {
+                    in_licenses -= 1;
+                }
+                if local == "name" {
+                    capture_license_name = false;
+                }
                 apply_maven_end(
                     local,
                     &mut in_dependency,
@@ -133,7 +157,17 @@ fn parse_maven_pom(content: &str) -> Vec<SbomDependency> {
             _ => {}
         }
     }
-    deps
+
+    ExtractedManifest {
+        dependencies: deps,
+        // Several `<license>` entries mean the consumer may pick one, so they
+        // join with the SPDX operator that says exactly that.
+        license: if licenses.is_empty() {
+            None
+        } else {
+            Some(licenses.join(" OR "))
+        },
+    }
 }
 
 #[cfg(test)]
@@ -158,7 +192,7 @@ mod tests {
                 <artifactId>jackson-databind</artifactId>
                 <version>2.15.0</version>
             </dependency>"#);
-        let deps = parse_maven_pom(&xml);
+        let deps = parse_maven_pom(&xml).dependencies;
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "com.fasterxml.jackson.core:jackson-databind");
         assert_eq!(deps[0].version_req.as_deref(), Some("2.15.0"));
@@ -171,7 +205,7 @@ mod tests {
                 <artifactId>standalone</artifactId>
                 <version>1.0</version>
             </dependency>"#);
-        let deps = parse_maven_pom(&xml);
+        let deps = parse_maven_pom(&xml).dependencies;
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "standalone");
     }
@@ -182,7 +216,7 @@ mod tests {
                 <groupId>com.example</groupId>
                 <version>1.0</version>
             </dependency>"#);
-        let deps = parse_maven_pom(&xml);
+        let deps = parse_maven_pom(&xml).dependencies;
         assert!(deps.is_empty());
     }
 
@@ -198,7 +232,7 @@ mod tests {
                 <artifactId>a2</artifactId>
                 <version>2.0</version>
             </dependency>"#);
-        let deps = parse_maven_pom(&xml);
+        let deps = parse_maven_pom(&xml).dependencies;
         assert_eq!(deps.len(), 2);
         assert_eq!(deps[0].name, "g1:a1");
         assert_eq!(deps[0].version_req.as_deref(), Some("1.0"));
@@ -214,15 +248,51 @@ mod tests {
                 <groupId>g1</groupId>
                 <artifactId>a1</artifactId>
             </dependency>"#);
-        let deps = parse_maven_pom(&xml);
+        let deps = parse_maven_pom(&xml).dependencies;
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].version_req, None);
+    }
+
+    /// `<name>` inside `<licenses>` is the licence; the project's own `<name>`
+    /// (which `pom()` emits above the dependencies) is not.
+    #[test]
+    fn parse_maven_pom_license_from_licenses_block() {
+        let xml = r#"<project>
+                <name>My Application</name>
+                <licenses>
+                    <license><name>Apache License, Version 2.0</name><url>http://x</url></license>
+                </licenses>
+                <dependencies></dependencies>
+            </project>"#;
+        let manifest = parse_maven_pom(xml);
+        assert_eq!(
+            manifest.license.as_deref(),
+            Some("Apache License, Version 2.0")
+        );
+    }
+
+    #[test]
+    fn parse_maven_pom_multiple_licenses_join_with_or() {
+        let xml = r#"<project><licenses>
+                <license><name>MIT</name></license>
+                <license><name>EPL-2.0</name></license>
+            </licenses></project>"#;
+        assert_eq!(
+            parse_maven_pom(xml).license.as_deref(),
+            Some("MIT OR EPL-2.0")
+        );
+    }
+
+    #[test]
+    fn parse_maven_pom_without_licenses_is_none() {
+        let xml = pom("");
+        assert_eq!(parse_maven_pom(&xml).license, None);
     }
 
     #[test]
     fn extract_maven_deps_non_zip_returns_empty() {
         let data = Bytes::from_static(b"not a zip archive");
-        assert!(extract_maven_deps(&data).is_empty());
+        assert_eq!(extract_maven_manifest(&data), ExtractedManifest::default());
     }
 
     #[test]
@@ -249,7 +319,7 @@ mod tests {
             writer.finish().unwrap();
         }
 
-        let deps = extract_maven_deps(&Bytes::from(buf));
+        let deps = extract_maven_manifest(&Bytes::from(buf)).dependencies;
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "g:a");
         assert_eq!(deps[0].version_req.as_deref(), Some("1.2.3"));

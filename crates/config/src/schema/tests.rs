@@ -160,6 +160,53 @@ fn cve_gate_rule_parses_full() {
     }
 }
 
+// ── Licence gate rule ─────────────────────────────────────────────────────────
+
+/// The defaults are the whole safety story: warn-only, and an unknown licence
+/// is permitted. A `license_gate` added to a config must not start refusing
+/// traffic the moment it is written (RFC 0004-bis §13.1).
+#[test]
+fn license_gate_rule_parses_with_defaults() {
+    let raw = r#"kind = "license_gate""#;
+    let rule: RuleConfig = toml::from_str(raw).unwrap();
+    match rule {
+        RuleConfig::LicenseGate(c) => {
+            assert!(c.allow.is_empty());
+            assert!(c.deny.is_empty());
+            assert!(
+                c.allow_unknown,
+                "an unknown licence must not deny by default"
+            );
+            assert!(!c.block, "the gate must be warn-only until asked otherwise");
+            assert!(c.bypass_roles.is_empty());
+        }
+        other => panic!("expected LicenseGate, got {other:?}"),
+    }
+}
+
+#[test]
+fn license_gate_rule_parses_full() {
+    let raw = r#"
+        kind = "license_gate"
+        allow = ["MIT", "Apache-2.0"]
+        deny = ["AGPL-3.0"]
+        allow_unknown = false
+        block = true
+        bypass_roles = ["admin"]
+    "#;
+    let rule: RuleConfig = toml::from_str(raw).unwrap();
+    match rule {
+        RuleConfig::LicenseGate(c) => {
+            assert_eq!(c.allow, vec!["MIT".to_owned(), "Apache-2.0".to_owned()]);
+            assert_eq!(c.deny, vec!["AGPL-3.0".to_owned()]);
+            assert!(!c.allow_unknown);
+            assert!(c.block);
+            assert_eq!(c.bypass_roles, vec!["admin".to_owned()]);
+        }
+        other => panic!("expected LicenseGate, got {other:?}"),
+    }
+}
+
 // ── Trusted publisher rule ────────────────────────────────────────────────────
 
 #[test]
@@ -719,4 +766,187 @@ fn a_non_dns_label_registry_name_warns_and_derives_no_wildcard() {
 fn no_dns_label_warning_when_wildcard_derivation_is_off() {
     let cfg = parse_config(&npm_registry("my_registry", ""));
     assert!(!warning_codes(&cfg).contains(&warnings::SUBDOMAIN_INVALID_DNS_LABEL.to_owned()));
+}
+
+// ── Licence gate warnings ─────────────────────────────────────────────────────
+
+/// Base config plus one registry carrying a `license_gate` rule.
+fn config_with_license_gate(registry_type: &str, rule_body: &str) -> AppConfig {
+    parse_config(&format!(
+        r#"
+        [[registries]]
+        type = "{registry_type}"
+        name = "reg"
+
+        [registries.sbom]
+        enabled = true
+
+        [[registries.rules]]
+        kind = "license_gate"
+{rule_body}"#
+    ))
+}
+
+/// A registry type with a manifest parser is the case the rule was written for,
+/// and it must stay quiet — a warning that fires on correct config is noise
+/// that teaches operators to ignore the channel.
+#[test]
+fn license_gate_on_a_supported_type_does_not_warn() {
+    let cfg = config_with_license_gate("npm", r#"        allow = ["MIT"]"#);
+    assert!(!warning_codes(&cfg)
+        .iter()
+        .any(|c| c.starts_with("license-gate")));
+}
+
+/// Sixteen of the twenty-one registry types have no manifest parser, so the
+/// licence is permanently unknown and — with the default `allow_unknown = true`
+/// — the rule never denies anything. Nothing errors at runtime, which is
+/// exactly why it has to be said here (RFC 0004-bis §13.1).
+#[test]
+fn license_gate_on_a_type_with_no_parser_warns_that_it_never_fires() {
+    let cfg = config_with_license_gate("goproxy", r#"        allow = ["MIT"]"#);
+    assert!(warning_codes(&cfg).contains(&warnings::LICENSE_GATE_NO_EXTRACTOR.to_owned()));
+
+    let w = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::LICENSE_GATE_NO_EXTRACTOR)
+        .expect("warning emitted");
+    assert_eq!(w.path, "registries[0].rules[0]");
+    assert!(w.message.contains("never denies"), "{}", w.message);
+    // The message names what *is* covered, so the operator can act on it.
+    assert!(w.message.contains("npm"), "{}", w.message);
+}
+
+/// The opposite consequence from the same missing parser, and the one an
+/// operator will be triaging under pressure: every download refused. It gets
+/// its own code so it can be found by name.
+#[test]
+fn license_gate_that_refuses_everything_gets_its_own_code() {
+    let cfg = config_with_license_gate(
+        "goproxy",
+        "        block = true\n        allow_unknown = false",
+    );
+    let codes = warning_codes(&cfg);
+    assert!(codes.contains(&warnings::LICENSE_GATE_DENIES_EVERYTHING.to_owned()));
+    // Not both: the two states are mutually exclusive, and emitting each would
+    // make the dangerous one harder to see.
+    assert!(!codes.contains(&warnings::LICENSE_GATE_NO_EXTRACTOR.to_owned()));
+}
+
+/// `allow_unknown = false` without `block` is still warn-only, so nothing is
+/// refused — it is the inert case, not the dangerous one.
+#[test]
+fn allow_unknown_false_without_block_is_still_only_inert() {
+    let cfg = config_with_license_gate("goproxy", "        allow_unknown = false");
+    let codes = warning_codes(&cfg);
+    assert!(codes.contains(&warnings::LICENSE_GATE_NO_EXTRACTOR.to_owned()));
+    assert!(!codes.contains(&warnings::LICENSE_GATE_DENIES_EVERYTHING.to_owned()));
+}
+
+/// A registry with no `license_gate` has nothing to say, whatever its type.
+#[test]
+fn a_registry_without_a_license_gate_never_warns_about_one() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "goproxy"
+        name = "reg""#,
+    );
+    assert!(!warning_codes(&cfg)
+        .iter()
+        .any(|c| c.starts_with("license-gate")));
+}
+
+/// The licence is a side effect of SBOM generation, so a `license_gate` on a
+/// registry with SBOM off never sees anything — even on a registry type whose
+/// parser works perfectly. This was found by running the server, not by reading
+/// it: extraction was correct, the rule was loaded, and no licence was ever
+/// stored because `maybe_trigger_sbom` returned early.
+#[test]
+fn license_gate_without_sbom_enabled_warns_that_nothing_is_extracted() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "reg"
+
+        [[registries.rules]]
+        kind = "license_gate"
+        deny = ["AGPL-3.0"]"#,
+    );
+    let codes = warning_codes(&cfg);
+    assert!(codes.contains(&warnings::LICENSE_GATE_SBOM_DISABLED.to_owned()));
+
+    let w = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::LICENSE_GATE_SBOM_DISABLED)
+        .expect("warning emitted");
+    assert!(w.message.contains("never deny anything"), "{}", w.message);
+    assert!(w.message.contains("[registries.sbom]"), "{}", w.message);
+}
+
+/// `enabled = false` is the same state as an absent block, and is the easier
+/// one to overlook because the block is *there*.
+#[test]
+fn license_gate_with_sbom_explicitly_disabled_warns_too() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "reg"
+
+        [registries.sbom]
+        enabled = false
+
+        [[registries.rules]]
+        kind = "license_gate"
+        deny = ["AGPL-3.0"]"#,
+    );
+    assert!(warning_codes(&cfg).contains(&warnings::LICENSE_GATE_SBOM_DISABLED.to_owned()));
+}
+
+/// SBOM off *and* block + allow_unknown = false is the dangerous combination:
+/// nothing is ever extracted, so every download is refused. The message has to
+/// say that rather than the generic "never denies".
+#[test]
+fn sbom_disabled_with_strict_unknown_says_it_refuses_everything() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "reg"
+
+        [[registries.rules]]
+        kind = "license_gate"
+        block = true
+        allow_unknown = false"#,
+    );
+    let w = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::LICENSE_GATE_SBOM_DISABLED)
+        .expect("warning emitted");
+    assert!(w.message.contains("refuse every download"), "{}", w.message);
+}
+
+/// One warning per rule, not two: SBOM being off already makes the licence
+/// unknown, so also reporting the missing parser would be the same fact twice
+/// and would bury whichever one the operator can act on.
+#[test]
+fn sbom_disabled_on_an_unsupported_type_reports_only_the_sbom_problem() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "goproxy"
+        name = "reg"
+
+        [[registries.rules]]
+        kind = "license_gate"
+        deny = ["AGPL-3.0"]"#,
+    );
+    let codes = warning_codes(&cfg);
+    assert!(codes.contains(&warnings::LICENSE_GATE_SBOM_DISABLED.to_owned()));
+    assert!(!codes.contains(&warnings::LICENSE_GATE_NO_EXTRACTOR.to_owned()));
 }

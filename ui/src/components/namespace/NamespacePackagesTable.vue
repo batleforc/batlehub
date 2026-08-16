@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { ref, watch, toRef } from "vue";
+import { useI18n } from "vue-i18n";
+import { EmptyState } from "@/components/ui/empty-state";
+import { computed, ref, watch, toRef } from "vue";
 import { myNamespacePackages, setPackageVisibility } from "@/client/sdk.gen";
-import type { Visibility, TeamNamespaceDto, NamespacePackageDto } from "@/lib/registry-types";
-import { VISIBILITY_OPTIONS } from "@/lib/registry-types";
+import type { Visibility, TeamNamespaceDto, NamespacePackageDto } from "@/client/types.gen";
+import { VISIBILITY_OPTIONS } from "@/config/visibility";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
 import { Pagination } from "@/components/ui/pagination";
@@ -17,6 +19,8 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import { Select } from "@/components/ui/select";
+
+const { t } = useI18n();
 
 const props = defineProps<{ namespace: TeamNamespaceDto }>();
 
@@ -52,10 +56,12 @@ const editing = ref<Record<string, Visibility>>({});
 const saving = ref<Record<string, boolean>>({});
 const saveError = ref<Record<string, string>>({});
 
-const visibilityOptions = VISIBILITY_OPTIONS.map((o) => ({
-  value: o.value,
-  label: o.label.split(" —")[0],
-}));
+// The short form is its own message rather than the long one cut at the dash:
+// French does not put the dash where English does. Both keys live in
+// `config/visibility.ts` so they are greppable and the reference gate sees them.
+const visibilityOptions = computed(() =>
+  VISIBILITY_OPTIONS.map((o) => ({ value: o.value, label: t(o.shortLabel) })),
+);
 
 function pkgKey(pkg: NamespacePackageDto) {
   return `${props.namespace.registry}|${pkg.name}|${pkg.version}`;
@@ -81,13 +87,13 @@ async function saveVis(pkg: NamespacePackageDto) {
       path: { registry: props.namespace.registry, name: pkg.name },
       body: { visibility: vis },
     });
-    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? "API error");
+    if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? t("common.apiError"));
     pkg.visibility = vis;
     cancelEdit(pkg);
   } catch (e) {
     saveError.value = {
       ...saveError.value,
-      [k]: e instanceof Error ? e.message : "Unknown error",
+      [k]: e instanceof Error ? e.message : t("common.unknownError"),
     };
   } finally {
     saving.value = { ...saving.value, [k]: false };
@@ -105,20 +111,25 @@ function formatDate(iso: string) {
 </script>
 
 <template>
-  <p v-if="loading" class="text-sm text-muted-foreground">Loading…</p>
+  <p v-if="loading" class="text-sm text-muted-foreground">
+    {{ t("namespacePackagesTable.loading") }}
+  </p>
   <p v-else-if="error" class="text-sm text-destructive">{{ error }}</p>
   <p v-else-if="!pkgsData?.length" class="text-sm text-muted-foreground">
-    No published packages found under this namespace.
+    <EmptyState
+      :title="t('namespace.noPackagesTitle')"
+      :description="t('namespace.noPackagesBody')"
+    />
   </p>
   <template v-else>
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>Package</TableHead>
-          <TableHead>Version</TableHead>
-          <TableHead>Visibility</TableHead>
-          <TableHead>Published by</TableHead>
-          <TableHead>Date</TableHead>
+          <TableHead>{{ t("common.package") }}</TableHead>
+          <TableHead>{{ t("common.version") }}</TableHead>
+          <TableHead>{{ t("common.visibility") }}</TableHead>
+          <TableHead>{{ t("namespacePackagesTable.publishedBy") }}</TableHead>
+          <TableHead>{{ t("common.date") }}</TableHead>
           <TableHead />
         </TableRow>
       </TableHeader>
@@ -131,7 +142,9 @@ function formatDate(iso: string) {
           <TableCell class="font-mono text-xs">{{ pkg.name }}</TableCell>
           <TableCell class="font-mono text-xs">
             {{ pkg.version }}
-            <span v-if="pkg.yanked" class="ml-1 text-destructive">(yanked)</span>
+            <span v-if="pkg.yanked" class="ml-1 text-destructive">{{
+              t("namespacePackagesTable.yanked")
+            }}</span>
           </TableCell>
           <TableCell>
             <template v-if="editing[pkgKey(pkg)] !== undefined">
@@ -139,7 +152,7 @@ function formatDate(iso: string) {
                 <Select
                   v-model="editing[pkgKey(pkg)]"
                   :options="visibilityOptions"
-                  aria-label="Package visibility"
+                  :aria-label="t('namespacePackagesTable.packageVisibility')"
                   class="w-32 text-xs"
                 />
                 <Button
@@ -149,10 +162,14 @@ function formatDate(iso: string) {
                   class="text-xs h-7 px-2"
                   @click="saveVis(pkg)"
                 >
-                  {{ saving[pkgKey(pkg)] ? "…" : "Save" }}
+                  {{ saving[pkgKey(pkg)] ? "…" : t("common.save") }}
                 </Button>
-                <Button size="sm" variant="ghost" class="text-xs h-7 px-2" @click="cancelEdit(pkg)"
-                  >Cancel</Button
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="text-xs h-7 px-2"
+                  @click="cancelEdit(pkg)"
+                  >{{ t("common.cancel") }}</Button
                 >
               </div>
               <p v-if="saveError[pkgKey(pkg)]" class="text-xs text-destructive mt-0.5">
@@ -178,9 +195,8 @@ function formatDate(iso: string) {
               variant="ghost"
               class="text-xs h-7 px-2"
               @click="startEdit(pkg)"
+              >{{ t("namespacePackagesTable.editVisibility") }}</Button
             >
-              Edit visibility
-            </Button>
           </TableCell>
         </TableRow>
       </TableBody>

@@ -51,6 +51,9 @@ pub mod config_change;
 pub mod packages;
 
 #[cfg(feature = "db-postgres")]
+pub mod stats_history;
+
+#[cfg(feature = "db-postgres")]
 pub mod vulnerability;
 
 // ── Domain subfolders, mirroring `batlehub_core::ports`'s auth/governance/ops/storage split ──
@@ -95,6 +98,9 @@ pub use ops::quota::PgQuotaRepository;
 
 #[cfg(feature = "db-postgres")]
 pub use packages::PgPackageRepository;
+
+#[cfg(feature = "db-postgres")]
+pub use stats_history::PgStatsHistoryRepository;
 
 #[cfg(feature = "db-postgres")]
 pub use sbom::PgSbomRepository;

@@ -11,7 +11,7 @@ use batlehub_core::{
 };
 
 use super::super::require_admin;
-use crate::{error::AppError, extractors::AuthIdentity};
+use crate::{error::AppError, extractors::AuthIdentity, handlers::schemas::OkResponse};
 
 #[cfg(test)]
 mod tests {
@@ -82,7 +82,7 @@ impl From<QuotaUsage> for QuotaUsageDto {
     path = "/api/v1/admin/quota",
     tag = "back-office",
     responses(
-        (status = 200, description = "All quota usage rows"),
+        (status = 200, description = "All quota usage rows", body = Vec<QuotaUsageDto>),
         (status = 403, description = "Admin role required"),
     ),
     security(("bearer_token" = [])),
@@ -105,7 +105,7 @@ pub async fn list_quota(
     tag = "back-office",
     params(("registry" = String, Path, description = "Registry name")),
     responses(
-        (status = 200, description = "Quota usage rows for registry"),
+        (status = 200, description = "Quota usage rows for registry", body = Vec<QuotaUsageDto>),
         (status = 403, description = "Admin role required"),
     ),
     security(("bearer_token" = [])),
@@ -136,7 +136,7 @@ pub async fn list_quota_for_registry(
         ("user_id"  = String, Path, description = "User identifier"),
     ),
     responses(
-        (status = 200, description = "Quota usage for the user"),
+        (status = 200, description = "Quota usage for the user", body = QuotaUsageDto),
         (status = 403, description = "Admin role required"),
     ),
     security(("bearer_token" = [])),
@@ -166,7 +166,7 @@ pub async fn get_quota_for_user(
         ("user_id"  = String, Path, description = "User identifier"),
     ),
     responses(
-        (status = 200, description = "Quota reset"),
+        (status = 200, description = "Quota reset", body = OkResponse),
         (status = 403, description = "Admin role required"),
     ),
     security(("bearer_token" = [])),
@@ -189,5 +189,5 @@ pub async fn reset_quota_for_user(
         .record_account_action(AccessAction::ResetQuota, &identity.0)
         .await;
 
-    Ok(HttpResponse::Ok().json(serde_json::json!({ "ok": true })))
+    Ok(HttpResponse::Ok().json(OkResponse::new()))
 }

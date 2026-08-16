@@ -1,20 +1,56 @@
 <script setup lang="ts">
-import { useDark, useToggle } from "@vueuse/core";
-import { Sun, Moon } from "@lucide/vue";
+/**
+ * Theme as a stored preference, not a two-way switch.
+ *
+ * The stored value is `system | light | dark`; the *resolved* value is what
+ * renders. They are deliberately separate: storing "dark" when the user meant
+ * "follow my device" silently swallows every later change the OS makes, which
+ * is precisely what a two-state toggle cannot express (RFC 0003 R12).
+ *
+ * `data-theme` on <html> is what the token layer keys off — see
+ * ui/src/design/tokens.css. The same three-state pattern backs the locale.
+ */
+import { computed } from "vue";
+import { useI18n } from "vue-i18n";
+import { useColorMode } from "@vueuse/core";
+import { Sun, Moon, Monitor } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 
-const isDark = useDark();
-const toggle = useToggle(isDark);
+const { t } = useI18n();
+
+const mode = useColorMode({
+  attribute: "data-theme",
+  storageKey: "batlehub.theme",
+  emitAuto: true,
+});
+
+const ORDER = ["auto", "light", "dark"] as const;
+
+/**
+ * `auto` is vueuse's name for the stored preference; `theme.system` is the
+ * catalogue's. Mapped rather than renamed because `emitAuto` decides the former
+ * and `catalogues.test.ts` decides the latter.
+ *
+ * These three keys were translated, correct, and referenced zero times while
+ * this map held the English — RFC 0004-bis §2.2, from the inside.
+ */
+const LABEL_KEYS: Record<string, string> = {
+  auto: "theme.system",
+  light: "theme.light",
+  dark: "theme.dark",
+};
+
+const icon = computed(() => (mode.value === "auto" ? Monitor : mode.value === "dark" ? Moon : Sun));
+const label = computed(() => t(LABEL_KEYS[mode.value] ?? LABEL_KEYS.auto));
+
+function cycle(): void {
+  const index = ORDER.indexOf(mode.value as (typeof ORDER)[number]);
+  mode.value = ORDER[(index + 1) % ORDER.length];
+}
 </script>
 
 <template>
-  <Button
-    variant="ghost"
-    size="icon"
-    :title="isDark ? 'Switch to light mode' : 'Switch to dark mode'"
-    @click="toggle()"
-  >
-    <Sun v-if="isDark" class="h-4 w-4" />
-    <Moon v-else class="h-4 w-4" />
+  <Button variant="ghost" size="icon" :title="label" :aria-label="label" @click="cycle()">
+    <component :is="icon" class="h-4 w-4" />
   </Button>
 </template>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildCsp } from "./csp.ts";
+import { buildCsp, resolveLivePort } from "./csp.ts";
 
 const API_ORIGIN = "https://api.example.com";
 
@@ -111,5 +111,86 @@ describe("buildCsp", () => {
    */
   it("omits frame-ancestors, which meta CSP cannot enforce", () => {
     expect(buildCsp("")).not.toContain("frame-ancestors");
+  });
+});
+
+/**
+ * Impeccable's live mode (RFC 0003 §7) loads a helper script from
+ * `http://localhost:<port>/live.js`. It is the only thing allowed to widen
+ * `script-src`, it is dev-only, and it is opt-in — so these tests pin both
+ * halves: that the relaxation does what live mode needs, and that it cannot
+ * reach a production build or express anything beyond one localhost port.
+ */
+describe("buildCsp — live mode", () => {
+  const LIVE_ORIGIN = "http://localhost:4849";
+
+  it("allows the live helper on script-src and connect-src", () => {
+    const parsed = directives(buildCsp("", 4849));
+    expect(parsed["script-src"]).toEqual(["'self'", LIVE_ORIGIN]);
+    expect(parsed["connect-src"]).toEqual(["'self'", LIVE_ORIGIN]);
+  });
+
+  /** The overlay screenshots the page into a `blob:` URL. */
+  it("allows blob: images for the live overlay", () => {
+    expect(directives(buildCsp("", 4849))["img-src"]).toEqual(["'self'", "data:", "blob:"]);
+  });
+
+  it("widens nothing else", () => {
+    const parsed = directives(buildCsp(API_ORIGIN, 4849));
+    const widened = Object.entries(parsed)
+      .filter(([, sources]) => sources.some((source) => source === LIVE_ORIGIN))
+      .map(([name]) => name);
+    expect(widened).toEqual(["script-src", "connect-src"]);
+  });
+
+  /**
+   * The default call is what every build that has not opted in produces, and it
+   * must be byte-identical to the policy from before live mode existed.
+   */
+  it.each([undefined, null, 0, -1, 65536, Number.NaN, 1.5] as const)(
+    "emits the untouched policy for %p",
+    (port) => {
+      expect(buildCsp(API_ORIGIN, port as number | null | undefined)).toBe(buildCsp(API_ORIGIN));
+    },
+  );
+
+  it("never widens script-src without an opt-in port", () => {
+    expect(buildCsp(API_ORIGIN)).toContain("script-src 'self';");
+  });
+});
+
+/**
+ * The gate itself. `buildCsp` will happily widen for any port it is handed; the
+ * guarantee that a shipped build is never handed one lives here.
+ */
+describe("resolveLivePort", () => {
+  it("refuses in a production build even when the variable is set", () => {
+    expect(resolveLivePort("production", { VITE_IMPECCABLE_LIVE_PORT: "4849" })).toBeNull();
+  });
+
+  it("returns the port for a development build that opted in", () => {
+    expect(resolveLivePort("development", { VITE_IMPECCABLE_LIVE_PORT: "4849" })).toBe(4849);
+  });
+
+  it("returns null when the variable is absent", () => {
+    expect(resolveLivePort("development", {})).toBeNull();
+  });
+
+  /**
+   * The variable is a port, never a source expression. Anything that is not a
+   * plain in-range integer is refused rather than coerced, so a value like
+   * `"4849 https://evil.test"` cannot smuggle a second source into the policy.
+   */
+  it.each([
+    "",
+    "   ",
+    "0",
+    "-1",
+    "65536",
+    "not-a-port",
+    "4849 https://evil.test",
+    "'unsafe-inline'",
+  ])("refuses the value %p", (value) => {
+    expect(resolveLivePort("development", { VITE_IMPECCABLE_LIVE_PORT: value })).toBeNull();
   });
 });

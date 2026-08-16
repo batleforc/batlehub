@@ -126,7 +126,7 @@ mod tests {
         ("name" = String, Path, description = "Package name"),
     ),
     responses(
-        (status = 200, description = "Owner list"),
+        (status = 200, description = "Owner list", body = Vec<OwnerEntryDto>),
         (status = 403, description = "Admin role required"),
         (status = 503, description = "Ownership not configured"),
     ),

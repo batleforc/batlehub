@@ -1,0 +1,352 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   The bridge — VitePress's `--vp-*` contract, expressed in design tokens.
+
+   VitePress's default theme is styled entirely through a set of `--vp-*` custom
+   properties. The design system's contract is `tokens.css`. This file is the
+   only place the two meet, and it is the ONLY file in the theme allowed to
+   declare a `--vp-*` variable. `custom.css` next door contains component rules
+   and no colour at all; if a component needs one it reaches for a design token,
+   and if VitePress needs one it gets it from here.
+
+   That is what makes `ui:tokens:check` mean something. Before RFC 0005 the task
+   copied `ui/src/design/tokens.css` into this directory on every check and
+   nothing imported the result — a gate guarding the freshness of a file no
+   stylesheet read. With this file in the load order, a drifted token repaints
+   the site.
+
+   ONE MAPPING, TWO RENDITIONS. Every declaration below is `var(--token)` and
+   never a value, so the whole file is rendition-independent: `tokens.css`
+   re-declares those tokens under `:root[data-theme="light"]` and the site
+   changes ground without a second copy of the mapping. There is deliberately no
+   light-mode block here — a `--vp-*` variable that needed one would mean the
+   mapping had a colour decision in it, which is the defect this file removes.
+
+   The selector is `:root, :root.dark` because `vars.css` declares its dark
+   values under a bare `.dark`, which has the same specificity as `:root`; the
+   compound raises ours above it rather than relying on import order alone.
+   `data-theme` is kept in step with VitePress's own `.dark` class by the sync
+   snippet in `config.ts` — VitePress already stores and resolves the
+   preference before first paint, and The Stored-Preference Rule wants one
+   mechanism, not two.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── The two faces ───────────────────────────────────────────────────────────
+   Self-hosted, per DESIGN.md, and for the reason `ui/` learned the hard way:
+   it shipped the same `fonts.googleapis.com` import this replaces, its own CSP
+   refused the request, and the specimen's text face never painted. This site
+   has no CSP, so the import *did* resolve — the cost was instead that every
+   reader's IP reached Google before the first paragraph rendered, on a page
+   whose whole job is to be read by someone evaluating a self-hosted product.
+
+   `tokens.css` names the faces (`--face-display`, `--face-text`) and
+   deliberately does not load them: "the docs site resolves its own font paths".
+   These are that resolution. Files live in `public/fonts/` and are preloaded
+   from `config.ts`, the same arrangement `ui/index.html` uses.
+   ────────────────────────────────────────────────────────────────────────── */
+@font-face {
+  font-family: "Silkscreen";
+  src: url("/fonts/silkscreen-400.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Silkscreen";
+  src: url("/fonts/silkscreen-700.woff2") format("woff2");
+  font-weight: 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/jetbrainsmono-latin.woff2") format("woff2");
+  font-weight: 100 800;
+  font-display: swap;
+}
+
+:root,
+:root.dark {
+  /* ── Grounds ──────────────────────────────────────────────────────────────
+     DIRECTION, NOT LIGHTNESS. `--ground-raised` moves toward the ink pole and
+     `--ground-sunk` away from it, so the mapping holds on paper as well as on
+     near-black: `bg-alt` (the sidebar/masthead well) is the sunk ground in both
+     renditions even though its lightness inverts. */
+  --vp-c-bg: var(--ground);
+  --vp-c-bg-alt: var(--ground-sunk);
+  --vp-c-bg-soft: var(--ground-raised);
+  --vp-c-bg-elv: var(--ground-raised);
+  --vp-c-gutter: var(--rule-soft);
+
+  --vp-nav-bg-color: var(--ground);
+  --vp-nav-screen-bg-color: var(--ground);
+  --vp-local-nav-bg-color: var(--ground);
+  --vp-sidebar-bg-color: var(--ground);
+  --vp-backdrop-bg-color: color-mix(in oklab, var(--ground) 72%, transparent);
+
+  --vp-input-bg-color: var(--ground-sunk);
+  --vp-input-border-color: var(--rule-strong);
+  --vp-input-switch-bg-color: var(--ground-raised);
+
+  /* ── Ink ──────────────────────────────────────────────────────────────────
+     The world has exactly two inks. VitePress asks for three, and the third
+     resolves to the dim one rather than to an invented lighter value: dim ink
+     is DESIGN.md's floor for small text ("nothing smaller than 15px is ever
+     painted in a lighter value than this"), and `--vp-c-text-3` is spent on
+     exactly the small chrome that floor exists for. */
+  --vp-c-text-1: var(--ink);
+  --vp-c-text-2: var(--ink-dim);
+  --vp-c-text-3: var(--ink-dim);
+
+  /* ── Rules ────────────────────────────────────────────────────────────────
+     Split by the job each does, which is the distinction the console's
+     `--border` alias got wrong once already: separators take the soft rule,
+     interactive edges take the strong one (3.68:1, so control edges meet
+     1.4.11). */
+  --vp-c-divider: var(--rule-soft);
+  --vp-c-border: var(--rule-strong);
+
+  /* ── The one synthetic colour ─────────────────────────────────────────────
+     VitePress spends brand-1 on link and accent text, brand-2 on hover and
+     brand-3 on filled backgrounds. This world has one crimson, in-gamut and
+     measured (5.76:1 dark, 5.63:1 on paper) — a "slightly lighter brand-2" is
+     an unmeasured value, so all three resolve to it and the states are carried
+     by rule weight and underline instead (`custom.css`). `--vp-c-brand` is the
+     pre-1.0 alias a few default-theme rules still read. */
+  --vp-c-brand-1: var(--accent);
+  --vp-c-brand-2: var(--accent);
+  --vp-c-brand-3: var(--accent);
+  --vp-c-brand: var(--accent);
+  --vp-c-brand-soft: color-mix(in oklab, var(--accent) 12%, var(--ground));
+
+  /* Neutral tier — badges and the alt button. */
+  --vp-c-default-1: var(--ink);
+  --vp-c-default-2: var(--ink-dim);
+  --vp-c-default-3: var(--rule-strong);
+  --vp-c-default-soft: var(--ground-raised);
+
+  /* ── The raw palette ──────────────────────────────────────────────────────
+     `vars.css` also ships six literal hues — gray, green, yellow, red, indigo,
+     purple — which the semantic tiers above are built from. Nothing in the
+     default theme reaches past the semantic layer, so these were left unmapped
+     until `ConfigGenerator.vue` turned out to use `--vp-c-green-2` and
+     `--vp-c-yellow-2` for a status indicator: two hues that do not exist in
+     this world, painting VitePress's own values in the published config
+     generator, behind the claim that the bridge repainted that component for
+     free (RFC 0005 §6.9 — it did not).
+
+     The names are VitePress's and cannot be changed; the values are this
+     world's, chosen by the *job* each hue conventionally carries rather than by
+     its name. Green means "done, known" and that is `--ink`. Yellow means
+     "waiting, not yet a refusal" and DESIGN.md gives copper exactly that. Red
+     is the one that maps by hue as well as by job.
+
+     Mapping the whole tier rather than the two in use is the same reasoning as
+     the sponsor button below: an unmapped token is one edit away from
+     painting. */
+  --vp-c-gray-1: var(--ink-dim);
+  --vp-c-gray-2: var(--rule-strong);
+  --vp-c-gray-3: var(--rule-soft);
+  --vp-c-gray-soft: var(--ground-raised);
+
+  --vp-c-green-1: var(--ink);
+  --vp-c-green-2: var(--ink);
+  --vp-c-green-3: var(--ink);
+  --vp-c-green-soft: var(--ground-raised);
+
+  --vp-c-yellow-1: var(--copper);
+  --vp-c-yellow-2: var(--copper);
+  --vp-c-yellow-3: var(--copper);
+  --vp-c-yellow-soft: color-mix(in oklab, var(--copper) 10%, var(--ground));
+
+  --vp-c-red-1: var(--accent);
+  --vp-c-red-2: var(--accent);
+  --vp-c-red-3: var(--accent);
+  --vp-c-red-soft: color-mix(in oklab, var(--accent) 10%, var(--ground));
+
+  /* Indigo and purple have no job in this world at all; they resolve to ink so
+     that a component reaching for one gets a legible neutral rather than a hue
+     the palette never authorised. */
+  --vp-c-indigo-1: var(--ink);
+  --vp-c-indigo-2: var(--ink);
+  --vp-c-indigo-3: var(--ink);
+  --vp-c-indigo-soft: var(--ground-raised);
+
+  --vp-c-purple-1: var(--ink);
+  --vp-c-purple-2: var(--ink);
+  --vp-c-purple-3: var(--ink);
+  --vp-c-purple-soft: var(--ground-raised);
+
+  /* ── Callouts ─────────────────────────────────────────────────────────────
+     The One Synthetic Rule caps this palette, so a callout does not get a hue
+     per category. Three tiers, each derived from a colour that already has a
+     job:
+
+       neutral  note · info · tip · details · success   — no hue; rule + word
+       copper   warning · important                     — "not yet a refusal"
+       crimson  danger · caution                        — refusal
+
+     Copper is the right colour for a warning and the wrong one for a tip:
+     DESIGN.md gives it "waiting, held, and a measured value moving the wrong
+     way but not yet refused", and adds that *copper never means good*. Signal
+     amber is not available here at all — it is reserved entirely for the focus
+     ring, "nowhere else, at no size, for no other reason".
+
+     Each block still says its own word in its title, so the hue is never the
+     only channel (The Three Channel Rule). `vars.css` derives every
+     `--vp-custom-block-*` and `--vp-badge-*` from these, so mapping this tier
+     is enough. The `soft` values mix into `--ground` rather than into
+     transparency so the ratio a callout's text carries is computable. */
+  --vp-c-note-1: var(--ink);
+  --vp-c-note-2: var(--ink-dim);
+  --vp-c-note-3: var(--rule-strong);
+  --vp-c-note-soft: var(--ground-raised);
+
+  --vp-c-tip-1: var(--ink);
+  --vp-c-tip-2: var(--ink-dim);
+  --vp-c-tip-3: var(--rule-strong);
+  --vp-c-tip-soft: var(--ground-raised);
+
+  --vp-c-success-1: var(--ink);
+  --vp-c-success-2: var(--ink-dim);
+  --vp-c-success-3: var(--rule-strong);
+  --vp-c-success-soft: var(--ground-raised);
+
+  --vp-c-warning-1: var(--copper);
+  --vp-c-warning-2: var(--copper);
+  --vp-c-warning-3: var(--copper);
+  --vp-c-warning-soft: color-mix(in oklab, var(--copper) 10%, var(--ground));
+
+  --vp-c-important-1: var(--copper);
+  --vp-c-important-2: var(--copper);
+  --vp-c-important-3: var(--copper);
+  --vp-c-important-soft: color-mix(in oklab, var(--copper) 10%, var(--ground));
+
+  --vp-c-danger-1: var(--accent);
+  --vp-c-danger-2: var(--accent);
+  --vp-c-danger-3: var(--accent);
+  --vp-c-danger-soft: color-mix(in oklab, var(--accent) 10%, var(--ground));
+
+  --vp-c-caution-1: var(--accent);
+  --vp-c-caution-2: var(--accent);
+  --vp-c-caution-3: var(--accent);
+  --vp-c-caution-soft: color-mix(in oklab, var(--accent) 10%, var(--ground));
+
+  /* ── Code ─────────────────────────────────────────────────────────────────
+     Inline code is copper: it is a fact quoted out of the prose, and copper is
+     the only hue in the system whose job ("known, but not the page's own
+     voice") fits. Code blocks sit on the sunk ground, which is what the sunk
+     token is for on every other surface in the project. */
+  --vp-code-color: var(--copper);
+  --vp-code-bg: var(--ground-raised);
+  --vp-code-block-bg: var(--ground-sunk);
+  --vp-code-block-color: var(--ink);
+  --vp-code-block-divider-color: var(--rule-soft);
+  --vp-code-lang-color: var(--ink-dim);
+  --vp-code-line-number-color: var(--ink-dim);
+  --vp-code-link-color: var(--accent);
+  --vp-code-link-hover-color: var(--accent);
+  --vp-code-copy-code-bg: var(--ground-raised);
+  --vp-code-copy-code-hover-bg: var(--ground-raised);
+  --vp-code-copy-code-border-color: var(--rule-strong);
+  --vp-code-copy-code-hover-border-color: var(--accent);
+  --vp-code-copy-code-active-text: var(--ink);
+  --vp-code-tab-divider: var(--rule-soft);
+  --vp-code-tab-text-color: var(--ink-dim);
+  --vp-code-tab-hover-text-color: var(--ink);
+  --vp-code-tab-active-text-color: var(--ink);
+  --vp-code-tab-active-bar-color: var(--accent);
+  --vp-code-line-highlight-color: var(--ground-raised);
+  --vp-code-line-diff-add-color: color-mix(in oklab, var(--copper) 12%, var(--ground-sunk));
+  --vp-code-line-diff-add-symbol-color: var(--copper);
+  --vp-code-line-diff-remove-color: color-mix(in oklab, var(--accent) 12%, var(--ground-sunk));
+  --vp-code-line-diff-remove-symbol-color: var(--accent);
+  --vp-code-line-warning-color: color-mix(in oklab, var(--copper) 12%, var(--ground-sunk));
+  --vp-code-line-error-color: color-mix(in oklab, var(--accent) 12%, var(--ground-sunk));
+
+  /* ── Buttons ──────────────────────────────────────────────────────────────
+     The Counter-Ink Rule: every crimson fill takes `--accent-ink` — the pole
+     that clears AA against *that rendition's* crimson (5.69:1 dark, 5.97:1 on
+     paper), not white by habit. The incumbent pairing measured 3.58:1 and
+     failed AA on every filled button in the console.
+
+     Hover and active resolve to the same fill deliberately. Fill is not a
+     dependable state channel in either rendition (The Undependable Fill Rule),
+     so the state is carried in `custom.css` by an inked ring instead. */
+  --vp-button-brand-bg: var(--accent);
+  --vp-button-brand-text: var(--accent-ink);
+  --vp-button-brand-border: var(--accent);
+  --vp-button-brand-hover-bg: var(--accent);
+  --vp-button-brand-hover-text: var(--accent-ink);
+  --vp-button-brand-hover-border: var(--accent);
+  --vp-button-brand-active-bg: var(--accent);
+  --vp-button-brand-active-text: var(--accent-ink);
+  --vp-button-brand-active-border: var(--accent);
+
+  --vp-button-alt-bg: transparent;
+  --vp-button-alt-text: var(--ink);
+  --vp-button-alt-border: var(--rule-strong);
+  --vp-button-alt-hover-bg: transparent;
+  --vp-button-alt-hover-text: var(--accent);
+  --vp-button-alt-hover-border: var(--accent);
+  --vp-button-alt-active-bg: transparent;
+  --vp-button-alt-active-text: var(--accent);
+  --vp-button-alt-active-border: var(--accent);
+
+  /* Never rendered — there is no sponsor link — but left unmapped they are the
+     default theme's indigo, one config edit away from painting. */
+  --vp-button-sponsor-bg: transparent;
+  --vp-button-sponsor-text: var(--ink);
+  --vp-button-sponsor-border: var(--rule-strong);
+  --vp-button-sponsor-hover-bg: transparent;
+  --vp-button-sponsor-hover-text: var(--accent);
+  --vp-button-sponsor-hover-border: var(--accent);
+  --vp-button-sponsor-active-bg: transparent;
+  --vp-button-sponsor-active-text: var(--accent);
+  --vp-button-sponsor-active-border: var(--accent);
+  --vp-c-sponsor: var(--accent);
+
+  /* ── Search ───────────────────────────────────────────────────────────────
+     The highlight is a crimson fill, so it takes the counter-ink like every
+     other crimson fill. */
+  --vp-local-search-bg: var(--ground);
+  --vp-local-search-result-bg: var(--ground);
+  --vp-local-search-result-border: var(--rule-soft);
+  --vp-local-search-result-selected-bg: var(--ground-raised);
+  --vp-local-search-result-selected-border: var(--accent);
+  --vp-local-search-highlight-bg: var(--accent);
+  --vp-local-search-highlight-text: var(--accent-ink);
+
+  /* ── Home hero ────────────────────────────────────────────────────────────
+     The default theme paints the product name with a clipped gradient. A
+     gradient carries no single contrast ratio, so the name is ink and the
+     background is removed rather than re-tinted. */
+  --vp-home-hero-name-color: var(--ink);
+  --vp-home-hero-name-background: none;
+  --vp-home-hero-image-background-image: none;
+  --vp-home-hero-image-filter: none;
+
+  /* ── Type ─────────────────────────────────────────────────────────────────
+     There is no sans in this world; every fact is set in the mono text face,
+     so base and mono deliberately resolve to the same stack — the same choice
+     `ui/`'s `@theme` block makes for `font-sans` / `font-mono`.
+
+     Sizes come from the data ramp: a code block or a callout is data quoted
+     inside prose, not prose, so neither takes the Reading step. Prose itself
+     is set in `custom.css`, where the 68ch measure lives with it. */
+  --vp-font-family-base: var(--face-text);
+  --vp-font-family-mono: var(--face-text);
+
+  /* ── Flat at rest ─────────────────────────────────────────────────────────
+     The default theme spends these five on the nav, the sidebar, popovers, the
+     search box and the flyout menus. Nothing casts a shadow at rest in this
+     world: depth here is inked, never lit, and the system's only two
+     box-shadows are hard-edged, zero-blur and belong to the primary action. */
+  --vp-shadow-1: none;
+  --vp-shadow-2: none;
+  --vp-shadow-3: none;
+  --vp-shadow-4: none;
+  --vp-shadow-5: none;
+
+  --vp-code-font-size: var(--t-body);
+  --vp-code-line-height: 1.6;
+  --vp-custom-block-font-size: var(--t-row);
+  --vp-custom-block-code-font-size: var(--t-body);
+}

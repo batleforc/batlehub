@@ -6,15 +6,19 @@ const { banner } = useBanner();
 </script>
 
 <template>
+  <!-- Ruled below, not above: this is now the topmost strip on the page, so the
+       hairline it needs is the one separating it from the masthead underneath.
+       Edge padding matches the bars it sits with (`px-4 md:px-6`), so the three
+       full-bleed rows of the shell share one margin. -->
   <div
     v-if="banner"
     :class="[
-      'border-t px-4 py-1.5 flex items-center gap-2 text-sm font-mono font-medium',
+      'border-b px-4 md:px-6 py-1.5 flex items-center gap-2 text-sm font-medium',
       banner.level === 'error'
-        ? 'bg-destructive/10 border-destructive/40 text-destructive'
+        ? 'border-destructive/40 text-destructive'
         : banner.level === 'warning'
-          ? 'bg-copper/10 border-copper/40 text-copper'
-          : 'bg-primary/10 border-primary/30 text-primary',
+          ? 'border-copper/40 text-copper'
+          : 'border-foreground/40 text-foreground',
     ]"
   >
     <XCircle v-if="banner.level === 'error'" class="h-3.5 w-3.5 shrink-0" />

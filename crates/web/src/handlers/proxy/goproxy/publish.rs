@@ -15,6 +15,7 @@ use crate::{
 };
 
 use super::read::extract_go_mod;
+use crate::handlers::schemas::OkResponse;
 
 /// Publish a Go module version by uploading its zip archive.
 ///
@@ -36,7 +37,7 @@ use super::read::extract_go_mod;
     ),
     request_body(content_type = "application/zip", description = "Go module zip archive"),
     responses(
-        (status = 200, description = "Module published"),
+        (status = 200, description = "Module published", body = OkResponse),
         (status = 400, description = "Invalid payload or filename"),
         (status = 403, description = "Access denied"),
         (status = 409, description = "Version already published"),
@@ -98,7 +99,7 @@ pub async fn goproxy_publish(
             signature_type,
         },
         actix_web::http::StatusCode::OK,
-        serde_json::json!({ "ok": true }),
+        OkResponse::new(),
     )
     .await
 }

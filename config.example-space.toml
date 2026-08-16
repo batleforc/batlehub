@@ -8,7 +8,8 @@ port = 8080
 # static_dir = "./ui/dist"
 # Restrict CORS to specific frontend origins in production.
 # When absent, all origins are allowed (fine for local dev).
-# cors_allowed_origins = ["https://batlehub.example.com"]
+cors_allowed_origins = ["http://localhost:5173","http://localhost:5174","https://max-proxy-cache-g4tc-front.cde.batleforc.fr"]
+
 
 [database]
 type = "postgresql"

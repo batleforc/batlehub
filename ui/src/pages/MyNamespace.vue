@@ -1,10 +1,12 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
+import { EmptyState } from "@/components/ui/empty-state";
 import { ref, computed } from "vue";
 import { listRegistries, myNamespaces as myNamespacesApi } from "@/client/sdk.gen";
 import type { RegistryInfo } from "@/client/types.gen";
 import { useApi } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
-import type { TeamNamespaceDto } from "@/lib/registry-types";
+import type { TeamNamespaceDto } from "@/client/types.gen";
 import { PageHeader } from "@/components/ui/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
@@ -18,6 +20,8 @@ import {
 } from "@/components/ui/table";
 import NamespacePackagesTable from "@/components/namespace/NamespacePackagesTable.vue";
 import NamespaceUpload from "@/components/namespace/NamespaceUpload.vue";
+
+const { t } = useI18n();
 
 const { token, identity } = useAuth();
 
@@ -48,24 +52,23 @@ function selectNamespace(ns: TeamNamespaceDto) {
 <template>
   <div class="space-y-6 max-w-4xl">
     <PageHeader
-      title="Team Namespace"
-      description="View and manage the packages and namespaces owned by your groups."
-      variant="glow"
+      :title="t('myNamespace.teamNamespace')"
+      :description="t('myNamespace.viewAndManageThePackages')"
+      variant="display"
     />
 
     <Card v-if="!hasGroups">
       <CardContent class="pt-6">
-        <p class="text-sm text-muted-foreground">
-          You are not a member of any groups. Contact your administrator to be added to a team
-          namespace.
-        </p>
+        <p class="text-sm text-muted-foreground">{{ t("myNamespace.youAreNotA") }}</p>
       </CardContent>
     </Card>
 
     <template v-else>
       <!-- Groups -->
       <Card>
-        <CardHeader><CardTitle class="text-base">Your groups</CardTitle></CardHeader>
+        <CardHeader
+          ><CardTitle class="text-base">{{ t("myNamespace.yourGroups") }}</CardTitle></CardHeader
+        >
         <CardContent>
           <div class="flex flex-wrap gap-2">
             <Badge v-for="g in groups" :key="g" variant="secondary" class="font-mono text-xs">
@@ -78,21 +81,26 @@ function selectNamespace(ns: TeamNamespaceDto) {
       <!-- Namespaces list -->
       <Card>
         <CardHeader>
-          <CardTitle class="text-base">My namespaces</CardTitle>
-          <CardDescription>Click a row to browse its packages.</CardDescription>
+          <CardTitle class="text-base">{{ t("myNamespace.myNamespaces") }}</CardTitle>
+          <CardDescription>{{ t("myNamespace.clickARowTo") }}</CardDescription>
         </CardHeader>
         <CardContent>
-          <p v-if="namespacesLoading" class="text-sm text-muted-foreground">Loading…</p>
+          <p v-if="namespacesLoading" class="text-sm text-muted-foreground">
+            {{ t("myNamespace.loading") }}
+          </p>
           <p v-else-if="namespacesError" class="text-sm text-destructive">{{ namespacesError }}</p>
           <p v-else-if="!myNamespaces?.length" class="text-sm text-muted-foreground">
-            No namespace claims found for your groups.
+            <EmptyState
+              :title="t('namespace.noClaimsTitle')"
+              :description="t('namespace.noClaimsBody')"
+            />
           </p>
           <Table v-else>
             <TableHeader>
               <TableRow>
-                <TableHead>Registry</TableHead>
-                <TableHead>Prefix</TableHead>
-                <TableHead>Group</TableHead>
+                <TableHead>{{ t("common.registry") }}</TableHead>
+                <TableHead>{{ t("common.prefix") }}</TableHead>
+                <TableHead>{{ t("common.group") }}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -122,7 +130,7 @@ function selectNamespace(ns: TeamNamespaceDto) {
       <Card>
         <CardHeader>
           <CardTitle class="text-base">
-            Packages
+            {{ t("common.packages") }}
             <span
               v-if="selectedNs"
               class="ml-2 font-mono text-muted-foreground text-sm font-normal"
@@ -133,8 +141,8 @@ function selectNamespace(ns: TeamNamespaceDto) {
           <CardDescription>
             {{
               selectedNs
-                ? "Published versions under the selected namespace."
-                : "Select a namespace row above to browse its packages."
+                ? t("myNamespace.publishedVersionsUnderTheSelected")
+                : t("myNamespace.selectANamespaceRowAbove")
             }}
           </CardDescription>
         </CardHeader>
@@ -146,8 +154,8 @@ function selectNamespace(ns: TeamNamespaceDto) {
       <!-- Upload -->
       <Card>
         <CardHeader>
-          <CardTitle class="text-base">Upload package</CardTitle>
-          <CardDescription>Publish a new package to one of your registries.</CardDescription>
+          <CardTitle class="text-base">{{ t("myNamespace.uploadPackage") }}</CardTitle>
+          <CardDescription>{{ t("myNamespace.publishANewPackage") }}</CardDescription>
         </CardHeader>
         <CardContent class="space-y-4">
           <NamespaceUpload :registries="registriesData ?? []" />

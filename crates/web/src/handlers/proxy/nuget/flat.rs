@@ -14,6 +14,7 @@ use super::super::common::{
     append_signature_headers, collect_storage_stream, proxy_stream, require_registry_type,
 };
 use super::nuspec::{content_type_for, extract_nuspec_from_nupkg};
+use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 // ── Flat container — version list ─────────────────────────────────────────────
@@ -31,7 +32,7 @@ use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryMode
         ("id" = String, Path, description = "Package ID (case-insensitive)"),
     ),
     responses(
-        (status = 200, description = "Version list JSON"),
+        (status = 200, description = "Version list JSON", body = UpstreamDocument),
         (status = 404, description = "Package not found"),
     ),
     security(("bearer_token" = [])),
@@ -109,7 +110,7 @@ pub async fn nuget_flat_versions(
         ("filename" = String, Path, description = "Artifact filename"),
     ),
     responses(
-        (status = 200, description = "Artifact bytes"),
+        (status = 200, description = "Artifact bytes", body = ArtifactBytes, content_type = "application/octet-stream"),
         (status = 404, description = "Artifact not found"),
     ),
     security(("bearer_token" = [])),

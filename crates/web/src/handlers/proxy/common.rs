@@ -150,13 +150,15 @@ pub fn dispatch_notification(
 /// response carrying the publish quota headers.
 ///
 /// Collapses the publish→notify→respond tail shared by every local/hybrid publish
-/// handler. `status` is the success status (200/201) and `body` the JSON payload.
+/// handler. `status` is the success status (200/201) and `body` a serialisable
+/// payload — a named DTO, so the schema the endpoint documents and the bytes it
+/// sends come from the same type (RFC 0004 §6.1).
 pub async fn publish_and_respond(
     local_svc: &LocalRegistryService,
     notification_svc: &web::Data<Option<Arc<NotificationService>>>,
     req: PublishRequest,
     status: actix_web::http::StatusCode,
-    body: serde_json::Value,
+    body: impl serde::Serialize,
 ) -> Result<HttpResponse, AppError> {
     let registry = req.registry.clone();
     let name = req.name.clone();
@@ -414,6 +416,62 @@ where
         }
     }
     proxy_stream(svc, pkg, identity, resource_type, proxy_content_type).await
+}
+
+/// [`serve_local_or_proxy_json`] for routes whose proxy fall-through serves a
+/// *document* the proxy composes, not an artifact it streams.
+///
+/// The difference matters for version listings. `serve_local_or_proxy_json`
+/// falls through to `proxy_stream`, which asks the registry client for an
+/// artifact — for an npm packument route that yields the `latest` tarball,
+/// served as `application/octet-stream` under a URL npm expects JSON from. This
+/// helper calls [`ProxyService::version_document`] instead, which fetches the
+/// upstream document, removes administratively blocked versions and repoints
+/// artifact URLs at this proxy.
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_local_or_proxy_document<T, F, Fut>(
+    svc: web::Data<Arc<ProxyService>>,
+    mode_map: &RegistryModeMap,
+    registry: &str,
+    identity: AuthIdentity,
+    local_fetch: F,
+    not_found_msg: String,
+    pkg: PackageId,
+    resource_type: &str,
+    public_base: String,
+) -> Result<HttpResponse, AppError>
+where
+    T: serde::Serialize,
+    F: FnOnce(batlehub_core::entities::Identity) -> Fut,
+    Fut: std::future::Future<Output = Result<T, CoreError>>,
+{
+    let mode = mode_map.get(registry);
+    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        svc.authorize_read(&pkg, &identity.0, resource_type)
+            .await
+            .map_err(AppError::from)?;
+        match local_fetch(identity.0.clone()).await {
+            Ok(x) => return Ok(HttpResponse::Ok().content_type("application/json").json(x)),
+            Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}
+            Err(CoreError::NotFound(_)) => return Err(AppError::not_found(not_found_msg)),
+            Err(e) => return Err(AppError::from(e)),
+        }
+    }
+
+    let req = ProxyRequest {
+        package_id: pkg,
+        identity: identity.0,
+        resource_type: resource_type.to_owned(),
+        ip_address: None,
+        user_agent: None,
+    };
+    let doc = svc
+        .version_document(&req, &public_base)
+        .await
+        .map_err(AppError::from)?;
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .json(doc))
 }
 
 #[cfg(test)]

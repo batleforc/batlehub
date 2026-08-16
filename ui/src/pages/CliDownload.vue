@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { ref, computed } from "vue";
 import { Terminal, Download, Package, AlertCircle } from "@lucide/vue";
 import { useAuth } from "@/composables/useAuth";
@@ -9,6 +10,8 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/com
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Alert } from "@/components/ui/alert";
+
+const { t, te } = useI18n();
 
 const { token } = useAuth();
 
@@ -33,7 +36,7 @@ async function triggerDownload() {
       const detail = text ? ` — ${text}` : "";
       downloadError.value =
         resp.status === 404
-          ? "The CLI binary has not been configured on this server. Ask your administrator to set `[server] cli_binary_path` in the server config."
+          ? t("cliDownload.binaryNotConfigured")
           : `Download failed: HTTP ${resp.status}${detail}`;
       return;
     }
@@ -67,7 +70,7 @@ const installSnippets: Record<string, { label: string; lang: string; code: strin
 mise use "github:batleforc/batlehub[asset_pattern=batlehub-cli-*]"`,
   },
   server: {
-    label: "From this server",
+    label: "cliDownload.fromThisServer",
     lang: "bash",
     get code() {
       return `# Download the binary served by this BatleHub instance
@@ -113,7 +116,7 @@ Expand-Archive batlehub-cli.zip -DestinationPath .
 Move-Item batlehub-cli.exe "$env:LOCALAPPDATA\Microsoft\WindowsApps\batlehub-cli.exe"`,
   },
   cargo: {
-    label: "Build from source",
+    label: "cliDownload.buildFromSource",
     lang: "bash",
     code: `# Requires Rust toolchain (https://rustup.rs)
 cargo install --git https://git.batleforc.fr/batleforc/batlehub batlehub-cli
@@ -131,23 +134,33 @@ token      = "your-api-token"`,
 );
 
 const usageSnippets = [
-  { key: "registry", label: "List registries", lang: "bash", code: "batlehub-cli registry list" },
-  { key: "whoami", label: "Check identity", lang: "bash", code: "batlehub-cli auth whoami" },
+  {
+    key: "registry",
+    label: "cliDownload.listRegistries",
+    lang: "bash",
+    code: "batlehub-cli registry list",
+  },
+  {
+    key: "whoami",
+    label: "cliDownload.checkIdentity",
+    lang: "bash",
+    code: "batlehub-cli auth whoami",
+  },
   {
     key: "list",
-    label: "List packages",
+    label: "cliDownload.listPackages",
     lang: "bash",
     code: "batlehub-cli package list --registry <name>",
   },
   {
     key: "publish",
-    label: "Publish",
+    label: "cliDownload.publish",
     lang: "bash",
     code: "batlehub-cli publish MyLib.1.0.0.nupkg --registry <name>",
   },
   {
     key: "yank",
-    label: "Yank version",
+    label: "cliDownload.yankVersion",
     lang: "bash",
     code: "batlehub-cli version yank <registry> <name> <version>",
   },
@@ -161,7 +174,9 @@ const usageSnippets = [
       <Terminal class="h-6 w-6 text-primary shrink-0" />
       <PageHeader title="CLI" class="flex-1">
         <template #description>
-          Download and configure <code class="font-mono text-xs">batlehub-cli</code>
+          <i18n-t keypath="cliDownload.downloadAndConfigure" tag="span">
+            <template #cli><code class="font-mono text-xs">batlehub-cli</code></template>
+          </i18n-t>
         </template>
       </PageHeader>
     </div>
@@ -171,11 +186,9 @@ const usageSnippets = [
       <CardHeader>
         <CardTitle class="flex items-center gap-2 text-base">
           <Download class="h-4 w-4" />
-          Download
+          {{ t("common.download") }}
         </CardTitle>
-        <CardDescription>
-          Get the pre-built binary served by this server, or build from source.
-        </CardDescription>
+        <CardDescription>{{ t("cliDownload.getThePreBuilt") }}</CardDescription>
       </CardHeader>
       <CardContent class="space-y-4">
         <!-- Error alert -->
@@ -188,7 +201,7 @@ const usageSnippets = [
         <div class="flex flex-wrap gap-3 items-center">
           <Button class="font-mono gap-2" :disabled="downloading" @click="triggerDownload">
             <Download class="h-4 w-4" />
-            {{ downloading ? "Downloading…" : "Download batlehub-cli" }}
+            {{ downloading ? t("cliDownload.downloading") : t("cliDownload.downloadBatlehubCli") }}
           </Button>
           <span class="text-xs text-muted-foreground font-mono">{{ downloadUrl }}</span>
         </div>
@@ -204,7 +217,7 @@ const usageSnippets = [
               :value="key"
               class="font-mono text-xs"
             >
-              {{ s.label }}
+              {{ te(s.label) ? t(s.label) : s.label }}
             </TabsTrigger>
           </TabsList>
 
@@ -230,11 +243,17 @@ const usageSnippets = [
       <CardHeader>
         <CardTitle class="flex items-center gap-2 text-base">
           <Package class="h-4 w-4" />
-          Configuration
+          {{ t("common.configuration") }}
         </CardTitle>
         <CardDescription>
-          Create <code class="font-mono text-xs">~/.config/batlehub/config.toml</code> or run
-          <code class="font-mono text-xs">batlehub-cli config init</code>.
+          <i18n-t keypath="cliDownload.createConfigOrRun" tag="span">
+            <template #path
+              ><code class="font-mono text-xs">~/.config/batlehub/config.toml</code></template
+            >
+            <template #command
+              ><code class="font-mono text-xs">batlehub-cli config init</code></template
+            >
+          </i18n-t>
         </CardDescription>
       </CardHeader>
       <CardContent class="space-y-4">
@@ -251,7 +270,7 @@ const usageSnippets = [
         </div>
 
         <p class="text-xs text-muted-foreground">
-          Override any setting with environment variables:
+          {{ t("cliDownload.overrideWithEnv") }}
           <code class="font-mono">BATLEHUB_SERVER</code>,
           <code class="font-mono">BATLEHUB_TOKEN</code>,
           <code class="font-mono">BATLEHUB_REGISTRY</code>.
@@ -264,9 +283,9 @@ const usageSnippets = [
       <CardHeader>
         <CardTitle class="flex items-center gap-2 text-base">
           <Terminal class="h-4 w-4" />
-          Quick reference
+          {{ t("cliDownload.quickReference") }}
         </CardTitle>
-        <CardDescription>Common commands to get started.</CardDescription>
+        <CardDescription>{{ t("cliDownload.commonCommandsToGet") }}</CardDescription>
       </CardHeader>
       <CardContent>
         <div class="space-y-3">
@@ -276,7 +295,7 @@ const usageSnippets = [
             class="relative rounded-sm border border-border bg-muted/40 overflow-hidden"
           >
             <div class="px-3 pt-2 pb-0.5 text-xs text-muted-foreground font-mono">
-              {{ s.label }}
+              {{ te(s.label) ? t(s.label) : s.label }}
             </div>
             <pre class="px-3 pb-3 pt-1 text-xs font-mono text-foreground/90 leading-relaxed">{{
               s.code

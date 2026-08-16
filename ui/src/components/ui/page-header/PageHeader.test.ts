@@ -12,12 +12,23 @@ describe("PageHeader", () => {
   it("uses the plain style by default", () => {
     const wrapper = mount(PageHeader, { props: { title: "Health" } });
     expect(wrapper.find("h1").classes()).toContain("text-2xl");
-    expect(wrapper.find("h1").classes()).not.toContain("cyber-text-glow");
+    expect(wrapper.find("h1").classes()).not.toContain("font-display");
   });
 
-  it("applies the glow variant", () => {
-    const wrapper = mount(PageHeader, { props: { title: "Health", variant: "glow" } });
-    expect(wrapper.find("h1").classes()).toContain("cyber-text-glow");
+  // The display variant is the only step above the data ramp, so it is the one
+  // place the bitmap face is opted into.
+  it("applies the display variant", () => {
+    const wrapper = mount(PageHeader, { props: { title: "Health", variant: "display" } });
+    expect(wrapper.find("h1").classes()).toContain("font-display");
+  });
+
+  // The Flat-At-Rest Rule: no title in this system carries a glow. Pinned so a
+  // reinstated text-shadow fails here rather than in a rendered-page scan.
+  it("never glows in either variant", () => {
+    for (const variant of ["default", "display"] as const) {
+      const wrapper = mount(PageHeader, { props: { title: "Health", variant } });
+      expect(wrapper.find("h1").classes()).not.toContain("cyber-text-glow");
+    }
   });
 
   it("renders the actions slot", () => {

@@ -6,6 +6,7 @@ pub mod notification;
 pub mod ops;
 pub mod registry;
 pub mod sbom;
+pub mod stats_history;
 pub mod storage;
 pub mod vulnerability;
 
@@ -30,7 +31,11 @@ pub use registry::{
     ArtifactStream, BulkResult, FetchedArtifact, LocalRegistryBackend, PackageRepository,
     RecentErrorRecord, RegistryClient, UpstreamPackage,
 };
-pub use sbom::{SbomDependency, SbomExtractor, SbomRepository, UpstreamSbomFetcher};
+pub use sbom::{
+    ExtractedManifest, SbomDependency, SbomExtractor, SbomRepository, UpstreamSbomFetcher,
+    LICENSE_EXTRACTION_TYPES,
+};
+pub use stats_history::{StatsHistoryRepository, StatsRollupRow};
 pub use storage::{
     collect_byte_stream, ArtifactStorageRecord, ByteStream, CacheEntry, CacheStore,
     S3StorageConfig, StorageAdminRepository, StorageBackend, StorageMeta, StoreOutcome,

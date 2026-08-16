@@ -676,14 +676,65 @@ async fn warming_report_add_assign_aggregates() {
         warmed: 1,
         skipped: 2,
         errors: 3,
+        failures: vec![failure("a")],
     };
     let b = WarmingReport {
         warmed: 10,
         skipped: 20,
         errors: 30,
+        failures: vec![failure("b")],
     };
     a += b;
     assert_eq!(a.warmed, 11);
     assert_eq!(a.skipped, 22);
     assert_eq!(a.errors, 33);
+    // Concatenated, not summed: the point of RFC 0004-bis A3 is that a batch
+    // report names each failure, and a merge that kept only one side would put
+    // the count and the list out of step.
+    assert_eq!(
+        a.failures
+            .iter()
+            .map(|f| f.package.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+}
+
+fn failure(package: &str) -> crate::services::WarmFailure {
+    crate::services::WarmFailure {
+        package: package.to_owned(),
+        version: Some("1.0.0".to_owned()),
+        error: "boom".to_owned(),
+    }
+}
+
+/// A named failure, not just a count (RFC 0004-bis A3).
+///
+/// An operator warming eleven registries read `errors: 3` and had no way to
+/// learn which three without shell access to the instance they are
+/// administering through a console — the information existed, and went only to
+/// the server log.
+#[tokio::test]
+async fn a_failed_fetch_names_the_package_and_version() {
+    let svc = active_svc(StubClient::failing_fetch(), StubStorage::new());
+    let report = svc.warm_package("mylib@1.0.0").await;
+
+    assert_eq!(report.errors, 1);
+    assert_eq!(report.failures.len(), 1);
+    assert_eq!(report.failures[0].package, "mylib");
+    assert_eq!(report.failures[0].version.as_deref(), Some("1.0.0"));
+    assert!(!report.failures[0].error.is_empty());
+}
+
+/// When *listing* the versions fails there is no single version at fault, and
+/// naming one would be a guess.
+#[tokio::test]
+async fn a_failed_version_listing_names_the_package_and_no_version() {
+    let svc = active_svc(StubClient::failing_list(), StubStorage::new());
+    let report = svc.warm_package("mylib").await;
+
+    assert_eq!(report.errors, 1);
+    assert_eq!(report.failures.len(), 1);
+    assert_eq!(report.failures[0].package, "mylib");
+    assert_eq!(report.failures[0].version, None);
 }
