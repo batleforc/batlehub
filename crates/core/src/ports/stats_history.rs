@@ -38,9 +38,18 @@ pub struct StatsRollupRow {
 pub trait StatsHistoryRepository: Send + Sync {
     /// Append one window's rows.
     ///
-    /// Idempotent per `(registry, window_start)`: a writer that runs twice for
-    /// the same hour must not double-count, so implementations upsert rather
-    /// than insert.
+    /// Merges per `(registry, window_start)` rather than inserting: a writer
+    /// that runs twice for the same hour leaves one row, not two.
+    ///
+    /// It merges by **summing** `hits`/`misses`. Every row is a delta since the
+    /// caller's previous tick ([`StatsRollupService`](crate::services::StatsRollupService)),
+    /// and several ticks land in each hourly bucket carrying disjoint deltas, so
+    /// an implementation that replaced on conflict would keep only the last —
+    /// turning a redeploy at 11:20 into an erased 11:00 window rather than the
+    /// lost partial tick the rollup's contract promises.
+    ///
+    /// `cached_bytes` is the opposite kind of number — a level read from
+    /// storage, not a delta — and is replaced by the later value.
     async fn append(&self, rows: &[StatsRollupRow]) -> Result<(), CoreError>;
 
     /// Rows whose window starts within `[from, to)`, oldest first.

@@ -41,6 +41,15 @@ fn ukey(registry: &str, name: &str) -> String {
 // Embedding the PID guarantees a fresh content hash on every test run, so the
 // dedup system always writes a new physical blob (ref_count == 1) rather than
 // reusing a blob from a previous run that no longer exists on disk.
+//
+// **`label` must also be unique per test.** Two tests passing the same label
+// produce the same bytes, hence the same content hash, hence one shared row in
+// the dedup table — which records the backend by *name*. Every test here names
+// its filesystem backend "default" while pointing it at its own directory, so
+// the second test's `exists`/`retrieve` resolves the blob to whichever
+// directory won the race to store it and looks for it in its own. That made
+// `delete_by_prefix_treats_percent_as_literal_not_wildcard` fail only when the
+// full suite ran in parallel and only sometimes.
 fn upayload(label: &str) -> Bytes {
     Bytes::from(format!("{label}-pid{}", std::process::id()))
 }
@@ -347,11 +356,15 @@ async fn stat_by_prefix_treats_percent_as_literal_not_wildcard() {
     let decoy_key = format!("{base}-501-other");
 
     router
-        .store(&matching_key, upayload("match"), StorageMeta::default())
+        .store(
+            &matching_key,
+            upayload("stat-match"),
+            StorageMeta::default(),
+        )
         .await
         .unwrap();
     router
-        .store(&decoy_key, upayload("decoy"), StorageMeta::default())
+        .store(&decoy_key, upayload("stat-decoy"), StorageMeta::default())
         .await
         .unwrap();
 
@@ -373,11 +386,11 @@ async fn delete_by_prefix_treats_percent_as_literal_not_wildcard() {
     let decoy_key = format!("{base}-501-other");
 
     router
-        .store(&matching_key, upayload("match"), StorageMeta::default())
+        .store(&matching_key, upayload("del-match"), StorageMeta::default())
         .await
         .unwrap();
     router
-        .store(&decoy_key, upayload("decoy"), StorageMeta::default())
+        .store(&decoy_key, upayload("del-decoy"), StorageMeta::default())
         .await
         .unwrap();
 

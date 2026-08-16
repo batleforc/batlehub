@@ -1,8 +1,8 @@
 //! Integration tests for `PgStatsHistoryRepository` (RFC 0004 §10).
 //!
 //! Worth a real database: the upsert is what keeps a second tick inside one
-//! hour from double-counting, and an in-memory double agreeing with itself
-//! proves nothing about `ON CONFLICT`.
+//! hour from losing the first one's delta, and an in-memory double agreeing
+//! with itself proves nothing about `ON CONFLICT`.
 //!
 //!   task test:pg-stats-history
 //!   DATABASE_URL=postgresql://postgres:pass@localhost/postgres \
@@ -33,16 +33,31 @@ impl TestRepo {
     }
 }
 
+/// The prefix has to be unique per *run*, not just per test, because `append`
+/// accumulates on conflict: a second run against the same database would find
+/// the previous run's row for `(registry, window_start)` and add to it, and the
+/// suite would fail with counters that grow by one run's worth each time. The
+/// process id supplies that, as it does in `pg_explore_resolution.rs`.
+///
+/// Pids are recycled eventually, so the fixture also clears any rows left under
+/// its own prefix by a long-dead namesake. It touches nothing else.
 async fn make_repo(url: &str) -> TestRepo {
     let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let prefix = format!("t{pid}-{id}");
     let pool = PgPool::connect(url).await.expect("connect to postgres");
     batlehub_adapters::migrations::embedded_migrator()
         .run(&pool)
         .await
         .expect("run migrations");
+    sqlx::query("DELETE FROM stats_history WHERE registry LIKE $1")
+        .bind(format!("%-{prefix}"))
+        .execute(&pool)
+        .await
+        .expect("clear rows from a previous run under this prefix");
     TestRepo {
         repo: PgStatsHistoryRepository::new(pool),
-        prefix: format!("t{id}"),
+        prefix,
     }
 }
 
@@ -51,14 +66,30 @@ fn at(hour: u32) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2020, 1, 1, hour, 0, 0).unwrap()
 }
 
-fn row(registry: &str, hour: u32, hits: u64, misses: u64) -> StatsRollupRow {
+/// The day `prune_deletes_strictly_before_the_cutoff` works on.
+///
+/// `prune_before` is global — it deletes every registry's rows before the
+/// cutoff, which is the contract, since retention is an operational setting and
+/// not a per-registry one. So that test cannot share a day with the others: its
+/// cutoff would delete rows a concurrently-running test had just written and
+/// was about to read. Living a day *earlier* than every other test's rows is
+/// what keeps its blast radius to its own.
+fn at_prune_day(hour: u32) -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2019, 12, 31, hour, 0, 0).unwrap()
+}
+
+fn row_at(registry: &str, window_start: DateTime<Utc>, hits: u64, misses: u64) -> StatsRollupRow {
     StatsRollupRow {
         registry: registry.to_owned(),
-        window_start: at(hour),
+        window_start,
         hits,
         misses,
         cached_bytes: 2_048,
     }
+}
+
+fn row(registry: &str, hour: u32, hits: u64, misses: u64) -> StatsRollupRow {
+    row_at(registry, at(hour), hits, misses)
 }
 
 #[tokio::test]
@@ -85,9 +116,20 @@ async fn append_then_read_window_round_trips() {
 }
 
 /// The property `ON CONFLICT … DO UPDATE` exists for: a writer that runs twice
-/// inside one hour must overwrite, not add.
+/// inside one hour must merge into one row rather than duplicate it — and it
+/// merges by *summing* the counters, because each row is a delta since the
+/// previous tick and two ticks in one hour carry disjoint deltas. Replacing
+/// would mean a redeploy at 11:20 overwrote the 11:00 window the previous
+/// process had already recorded, losing the hour instead of the partial window
+/// the rollup's contract promises.
+///
+/// `cached_bytes` goes the other way: it is a level read from storage, not a
+/// delta, so the later value replaces rather than adds. The in-memory double
+/// asserts the same two properties in
+/// `in_memory::stats_history`'s `append_accumulates_deltas_within_one_window`
+/// and `append_replaces_cached_bytes_rather_than_summing_it`.
 #[tokio::test]
-async fn appending_the_same_window_twice_upserts() {
+async fn appending_the_same_window_twice_accumulates_deltas() {
     let Some(url) = db_url() else {
         eprintln!("skipping: DATABASE_URL not set");
         return;
@@ -107,7 +149,10 @@ async fn appending_the_same_window_twice_upserts() {
         .filter(|r| r.registry == reg)
         .collect();
     assert_eq!(mine.len(), 1, "one row per (registry, window)");
-    assert_eq!(mine[0].hits, 9, "the later write wins");
+    assert_eq!(mine[0].hits, 14, "5 + 9 — deltas of the same hour");
+    assert_eq!(mine[0].misses, 6, "5 + 1");
+    // Both writes carry 2 048; summing would report 4 096 bytes held.
+    assert_eq!(mine[0].cached_bytes, 2_048, "a level, replaced not summed");
 }
 
 #[tokio::test]
@@ -166,18 +211,18 @@ async fn prune_deletes_strictly_before_the_cutoff() {
 
     t.repo
         .append(&[
-            row(&reg, 10, 1, 0),
-            row(&reg, 11, 2, 0),
-            row(&reg, 12, 3, 0),
+            row_at(&reg, at_prune_day(10), 1, 0),
+            row_at(&reg, at_prune_day(11), 2, 0),
+            row_at(&reg, at_prune_day(12), 3, 0),
         ])
         .await
         .unwrap();
 
-    t.repo.prune_before(at(12)).await.unwrap();
+    t.repo.prune_before(at_prune_day(12)).await.unwrap();
 
     let mine: Vec<_> = t
         .repo
-        .read_window(at(0), at(23))
+        .read_window(at_prune_day(0), at(23))
         .await
         .unwrap()
         .into_iter()
@@ -186,7 +231,7 @@ async fn prune_deletes_strictly_before_the_cutoff() {
     assert_eq!(mine.len(), 1);
     assert_eq!(
         mine[0].window_start,
-        at(12),
+        at_prune_day(12),
         "the cutoff row itself survives"
     );
 }

@@ -51,8 +51,13 @@ impl TestCtx {
     }
 }
 
+/// Unique per *run* as well as per test: `access_events` is append-only, so a
+/// user id reused by a later run against the same database still owns the
+/// earlier run's downloads and the exact-match assertions below see both. The
+/// process id supplies that, as it does in `pg_explore_resolution.rs`.
 async fn make_ctx(url: &str) -> TestCtx {
     let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
     let repo = PgPackageRepository::new(
         url,
         PoolOptions {
@@ -68,7 +73,7 @@ async fn make_ctx(url: &str) -> TestCtx {
     TestCtx {
         ownership: PgOwnershipStore::new(pool),
         repo,
-        prefix: format!("t{id}"),
+        prefix: format!("t{pid}-{id}"),
     }
 }
 
