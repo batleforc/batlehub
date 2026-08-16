@@ -2,7 +2,7 @@ pub mod publish;
 pub mod simple;
 
 pub use publish::pypi_publish;
-pub use simple::{pypi_file_download, pypi_simple_package, pypi_simple_root};
+pub use simple::{pypi_file_download, pypi_json, pypi_simple_package, pypi_simple_root};
 
 /// Parse a PyPI distribution filename into `(normalized_name, version)`.
 ///

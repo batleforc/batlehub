@@ -16,7 +16,7 @@ use crate::handlers::proxy::common::{
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 use super::parse_pypi_filename;
-use crate::handlers::schemas::{ArtifactBytes, ProtocolDocument};
+use crate::handlers::schemas::{ArtifactBytes, ProtocolDocument, UpstreamDocument};
 
 // ── Proxy routes ──────────────────────────────────────────────────────────────
 
@@ -170,6 +170,98 @@ pub async fn pypi_simple_package(
         .body(rewritten))
 }
 
+/// The PyPI JSON API — `GET /pypi/{package}/json`.
+///
+/// RFC 0009 §7.6. pip does not need it (the simple index is the resolver's
+/// input), but Poetry reads it for some sources and a good deal of ad-hoc
+/// tooling assumes it exists.
+///
+/// Rendered from the **filtered** simple index rather than fetched separately,
+/// so it cannot list a release the simple page hides — two documents describing
+/// one package have to agree, and the cheapest way to guarantee that is to give
+/// them one source.
+#[utoipa::path(
+    get,
+    path = "/proxy/{registry}/pypi/{package}/json",
+    tag = "proxy/pypi",
+    params(
+        ("registry" = String, Path, description = "Registry name"),
+        ("package"  = String, Path, description = "Project name"),
+    ),
+    responses(
+        (status = 200, description = "PyPI JSON API document", body = UpstreamDocument),
+        (status = 403, description = "Access denied"),
+        (status = 404, description = "Unknown registry or project"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[get("/proxy/{registry}/pypi/{package}/json")]
+pub async fn pypi_json(
+    path: web::Path<(String, String)>,
+    identity: AuthIdentity,
+    svc: web::Data<Arc<ProxyService>>,
+    map: web::Data<RegistryMap>,
+    req: HttpRequest,
+) -> Result<impl Responder, AppError> {
+    let (registry, package) = path.into_inner();
+    require_registry_type(&registry, "pypi", &map)?;
+    batlehub_core::services::validate_package_name(&package)
+        .map_err(|e| AppError::bad_request(format!("invalid project name: {e}")))?;
+
+    let proxy_base = registry_public_base(&req, &registry);
+    let pkg = batlehub_core::entities::PackageId::new(&registry, &package, "latest");
+    let proxy_req = batlehub_core::services::ProxyRequest {
+        package_id: pkg,
+        identity: identity.0,
+        resource_type: batlehub_core::rules::resource_type::RELEASES_READ.to_owned(),
+        ip_address: None,
+        user_agent: None,
+    };
+
+    // PEP 691 JSON rather than the HTML page: same filtered content, already
+    // structured, so nothing here has to parse anchors.
+    let doc = svc
+        .version_document(
+            &proxy_req,
+            batlehub_core::ports::DocumentKind::SIMPLE_JSON,
+            &proxy_base,
+        )
+        .await
+        .map_err(AppError::from)?;
+
+    let files = doc
+        .body
+        .as_json()
+        .and_then(|j| j.get("files"))
+        .and_then(|f| f.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let urls: Vec<serde_json::Value> = files
+        .iter()
+        .map(|f| {
+            serde_json::json!({
+                "filename": f.get("filename").cloned().unwrap_or(serde_json::Value::Null),
+                "url": f.get("url").cloned().unwrap_or(serde_json::Value::Null),
+                "digests": f.get("hashes").cloned().unwrap_or(serde_json::json!({})),
+                "yanked": f.get("yanked").cloned().unwrap_or(serde_json::json!(false)),
+            })
+        })
+        .collect();
+
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .json(serde_json::json!({
+            "info": { "name": package },
+            "urls": urls,
+            // Deliberately empty: `releases` is a version→files map, and the
+            // simple index this renders from is a flat file list with no
+            // version grouping. Synthesising one would mean parsing versions out
+            // of filenames — which is exactly the guessing PEP 691 exists to end.
+            "releases": {},
+        })))
+}
+
 /// Download a PyPI distribution file through the proxy cache.
 #[utoipa::path(
     get,
@@ -198,7 +290,12 @@ pub async fn pypi_file_download(
     let (registry, filename) = path.into_inner();
     require_registry_type(&registry, "pypi", &map)?;
 
-    let (name, version) = parse_pypi_filename(&filename).ok_or_else(|| {
+    // PEP 658: `{file}.metadata` is a sibling of the distribution, not a
+    // distribution of its own, so the coordinate comes from the stripped name
+    // while the full filename stays the artifact sub-coordinate — that is what
+    // tells the adapter to fetch the sibling and keeps the two cached apart.
+    let coordinate_name = filename.strip_suffix(".metadata").unwrap_or(&filename);
+    let (name, version) = parse_pypi_filename(coordinate_name).ok_or_else(|| {
         AppError::unprocessable(format!("cannot parse PyPI filename: {filename}"))
     })?;
 

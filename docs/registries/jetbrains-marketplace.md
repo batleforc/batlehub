@@ -108,16 +108,30 @@ curl -s -H "Authorization: Bearer <your-token>" \
 
 ### Endpoint reference
 
+<!-- BEGIN endpoints: proxy/jetbrains-marketplace -->
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/proxy/{registry}/api/updates/upload` | Publish a plugin archive (multipart) |
-| `GET` | `/proxy/{registry}/updatePlugins.xml` | Custom-repository XML (local content) |
-| `GET` | `/proxy/{registry}/plugins/list?pluginId={xmlId}` | Plugin-repository XML (all versions) |
-| `GET` | `/proxy/{registry}/plugin/download?pluginId=&version=[&channel=]` | Download a plugin archive |
-| `GET` | `/proxy/{registry}/pluginManager?action=download&id=&build=` | Newest build-compatible download |
-| `GET` | `/proxy/{registry}/api/searchPlugins?search=` | Search (`{plugins, total}` shape) |
-| `POST` | `/proxy/{registry}/api/search/updates/compatible` | Compatible updates for a build |
-| `GET` | `/proxy/{registry}/files/{xmlId}/{version}/{file}` | Artifact passthrough |
+| `GET` | `/proxy/{registry}/api/plugins/{id}` | `/api/plugins/{id}` — plugin object (id = xmlId). |
+| `GET` | `/proxy/{registry}/api/plugins/{id}/updates` | `/api/plugins/{id}/updates` — every version, newest first. |
+| `GET` | `/proxy/{registry}/api/products/intellij/plugins/{id}/comments` | `/api/products/intellij/plugins/{id}/comments` — plugin comments. |
+| `GET` | `/proxy/{registry}/api/search/aggregation/{field}` | `/api/search/aggregation/{field}` — facet values for the marketplace UI. |
+| `GET` | `/proxy/{registry}/api/search/plugins` | `/api/search/plugins?search=&build=` — array shape used by the IDE's |
+| `POST` | `/proxy/{registry}/api/search/updates/compatible` | `POST /api/search/updates/compatible` — newest compatible update per |
+| `GET` | `/proxy/{registry}/api/searchPlugins` | `/api/searchPlugins?search=&max=` — `{plugins, total}` shape. |
+| `POST` | `/proxy/{registry}/api/updates/upload` |  |
+| `GET` | `/proxy/{registry}/feature/getImplementations` | `/feature/getImplementations` — feature-implementation lookup. |
+| `GET` | `/proxy/{registry}/files/{plugin}/{update}/{file_name}` | `files/{plugin}/{update}/{fileName}` — the IDE `/files/` artifact |
+| `GET` | `/proxy/{registry}/files/{plugin}/{update}/meta.json` | `files/{plugin}/{update}/meta.json` — update-level metadata blob. |
+| `GET` | `/proxy/{registry}/files/{plugin}/meta.json` | `files/{plugin}/meta.json` — plugin-level metadata blob. |
+| `GET` | `/proxy/{registry}/files/brokenPlugins.json` | `files/brokenPlugins.json` — the IDE's known-broken plugin list. |
+| `GET` | `/proxy/{registry}/files/IDE/extensions.json` | `files/IDE/extensions.json` — IDE extension descriptors. |
+| `GET` | `/proxy/{registry}/files/jbPluginsXMLIds.json` | `files/jbPluginsXMLIds.json` — JetBrains-authored plugin ids. |
+| `GET` | `/proxy/{registry}/files/pluginsXMLIds.json` | `files/pluginsXMLIds.json` — every known plugin xmlId. |
+| `GET` | `/proxy/{registry}/plugin/download` | `plugin/download?pluginId=&version=[&channel=]` — the canonical download |
+| `GET` | `/proxy/{registry}/pluginManager` | `pluginManager?action=download&id=&build=` — resolve the newest |
+| `GET` | `/proxy/{registry}/plugins/list` | `/plugins/list?pluginId=` — classic plugin-repository XML: every version of |
+| `GET` | `/proxy/{registry}/updatePlugins.xml` | `updatePlugins.xml` — the custom-plugin-repository document the IDE polls |
+<!-- END endpoints -->
 
 ---
 

@@ -27,25 +27,54 @@ pub struct ListingDocument {
     /// How the admin guide names it — "packument", "`maven-metadata.xml`".
     pub label: &'static str,
     pub support: ListingSupport,
+    /// The `DocumentKind` discriminants this row covers — the same strings
+    /// `DocumentKind::as_str()` returns and the metadata cache key uses.
+    ///
+    /// Strings rather than the enum because `entities` does not depend on
+    /// `ports`, and this is the one fact it needs from there. They are checked
+    /// against the real enum in `blocking`'s
+    /// `every_advertised_filter_is_reachable_from_dispatch`, which resolves each
+    /// one and fails on a name no `DocumentKind` answers to — so a typo here is
+    /// a test failure, not a silently skipped document.
+    ///
+    /// One row may cover several: PyPI's HTML and PEP 691 JSON pages are one
+    /// *document* to a reader of the admin guide and two `DocumentKind`s to the
+    /// cache (RFC 0006 §13.4). Empty means the row describes something that
+    /// never travels through `strip` at all — a signed index, or a kind that
+    /// filters at a handler chokepoint.
+    ///
+    /// RFC 0009 §4.1: the reachability contract used to be exhaustive over
+    /// *kinds* and blind to *documents*, so a kind already answering "filtered"
+    /// for one document could grow a second, unfiltered one in silence. This
+    /// field is what closes that.
+    pub documents: &'static [&'static str],
 }
 
 impl ListingDocument {
-    const fn filtered(label: &'static str) -> Self {
+    const fn filtered(label: &'static str, documents: &'static [&'static str]) -> Self {
         Self {
             label,
             support: ListingSupport::Filtered,
+            documents,
         }
     }
-    const fn qualified(label: &'static str, note: &'static str) -> Self {
+    const fn qualified(
+        label: &'static str,
+        note: &'static str,
+        documents: &'static [&'static str],
+    ) -> Self {
         Self {
             label,
             support: ListingSupport::Qualified(note),
+            documents,
         }
     }
+    /// No `documents`: an unsupported row names something `strip` never sees.
     const fn unsupported(label: &'static str, reason: &'static str) -> Self {
         Self {
             label,
             support: ListingSupport::Unsupported(reason),
+            documents: &[],
         }
     }
 }
@@ -193,50 +222,96 @@ impl RegistryKind {
         // Named consts rather than inline slice literals: a `&[...]` holding
         // const-fn calls is not promoted to `'static`, so each arm needs a
         // const item to borrow from.
-        const NPM: &[ListingDocument] = &[ListingDocument::filtered("packument")];
+        const NPM: &[ListingDocument] = &[ListingDocument::filtered("packument", &["versions"])];
         const NUGET: &[ListingDocument] = &[
-            ListingDocument::filtered("flat index"),
+            ListingDocument::filtered("flat index", &["versions"]),
             ListingDocument::qualified(
                 "registration pages",
                 "inline pages only; paged registrations pass through, and are logged",
+                &["registration"],
             ),
         ];
-        const MAVEN: &[ListingDocument] = &[ListingDocument::filtered("`maven-metadata.xml`")];
+        const MAVEN: &[ListingDocument] = &[ListingDocument::filtered(
+            "`maven-metadata.xml`",
+            &["versions"],
+        )];
         const PYPI: &[ListingDocument] = &[ListingDocument::filtered(
             "simple index (HTML and PEP 691 JSON)",
+            &["versions", "simple-json"],
         )];
         const CARGO: &[ListingDocument] = &[ListingDocument::qualified(
             "sparse index",
             "blocked versions are marked `yanked` rather than removed, which is cargo's own \
              mechanism for \"exists, do not select\" and keeps lockfile diagnostics honest",
+            &["versions"],
         )];
-        const GOPROXY: &[ListingDocument] = &[ListingDocument::filtered("`@v/list` and `@latest`")];
+        const GOPROXY: &[ListingDocument] = &[ListingDocument::filtered(
+            "`@v/list` and `@latest`",
+            &["versions", "latest"],
+        )];
         const RUBYGEMS: &[ListingDocument] = &[
-            ListingDocument::filtered("versions and gem JSON APIs"),
+            // `/versions` is whole-registry and filters through `dispatch_multi`,
+            // so it carries the same up-to-30-second snapshot lag conda does.
+            ListingDocument::qualified(
+                "compact index (`/versions`, `/info/{gem}`)",
+                "`/versions` describes the whole registry, so a new block reaches it within \
+                 the blocked-set snapshot's 30-second TTL rather than instantly; `/info` is \
+                 per-gem and immediate",
+                &["compact-versions", "compact-info"],
+            ),
+            ListingDocument::filtered("versions and gem JSON APIs", &["versions", "gem"]),
             ListingDocument::unsupported(
                 "`specs.4.8.gz`, `quick/Marshal.4.8`",
                 "hiding a version from a Ruby Marshal index would need a Marshal encoder in \
-                 Rust, to hide what the JSON APIs already hide for every client released this \
-                 decade",
+                 Rust, and nothing reads it: Bundler resolves from the compact index above, \
+                 and the JSON APIs answer every other client released this decade",
             ),
         ];
-        const COMPOSER: &[ListingDocument] = &[ListingDocument::filtered("p2 metadata")];
-        const TERRAFORM: &[ListingDocument] =
-            &[ListingDocument::filtered("module and provider versions")];
-        const CONDA: &[ListingDocument] = &[ListingDocument::filtered(
-            "`repodata.json`, `current_repodata.json`",
+        const COMPOSER: &[ListingDocument] = &[ListingDocument::filtered(
+            "p2 metadata",
+            &["versions", "p2-dev"],
         )];
+        const TERRAFORM: &[ListingDocument] = &[ListingDocument::filtered(
+            "module and provider versions",
+            &["versions"],
+        )];
+        // Filtered through `dispatch_multi` (a whole-channel blocked set), so
+        // the documents are listed for the admin table but `strip` never sees
+        // them — the exemption is `FILTERED_ELSEWHERE`.
+        const CONDA: &[ListingDocument] = &[
+            ListingDocument::filtered(
+                "`repodata.json`, `current_repodata.json` (and their `.zst`/`.bz2` encodings)",
+                &["versions", "current-repodata"],
+            ),
+            ListingDocument::qualified(
+                "`channeldata.json`",
+                "a blocked newest release drops the package from the channel summary rather \
+                 than moving it to an older one: channeldata names one version and carries no \
+                 list to pick a replacement from, so `conda search` stops showing it while \
+                 `conda install` still resolves it from `repodata.json`",
+                &["channeldata"],
+            ),
+        ];
+        // Filtered at a handler chokepoint, not through `strip` — three
+        // rendered documents from one intermediate version list.
         const JETBRAINS_MARKETPLACE: &[ListingDocument] = &[ListingDocument::filtered(
             "`updatePlugins.xml`, `/plugins/list` and the plugin-updates API",
+            &[],
         )];
-        const FORGE: &[ListingDocument] = &[ListingDocument::filtered("release listings")];
+        const FORGE: &[ListingDocument] =
+            &[ListingDocument::filtered("release listings", &["versions"])];
         const SIGNED: &[ListingDocument] = &[ListingDocument::unsupported(
             "signed repository indexes",
             "editing one invalidates its signature and the client rejects the whole \
              repository, which is a worse failure than the one filtering fixes",
         )];
+        // Filtered on the entries in `vsx/source.rs`: the gallery response is
+        // selected by a POST body rather than a URL, so `strip`'s
+        // `(kind, document, package)` signature cannot address it, and the same
+        // entries render into two protocols (RFC 0006 §13.1-bis).
         const EXTENSION_GALLERY: &[ListingDocument] = &[ListingDocument::filtered(
             "extension gallery (`extensionquery`) and the OpenVSX API",
+            &[],
         )];
 
         match self {

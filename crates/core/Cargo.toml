@@ -28,6 +28,10 @@ semver.workspace = true
 quick-xml.workspace = true
 sha1 = "0.11"
 sha2.workspace = true
+# The RubyGems compact index identifies each `/info/{gem}` document by the MD5
+# of its bytes, and Bundler compares that against what it fetched. Not a
+# security use — a wire format that names the algorithm.
+md-5 = "0.11"
 hex.workspace = true
 base64.workspace = true
 # Ed25519-only signature verification (download path). RSA-based crypto (the

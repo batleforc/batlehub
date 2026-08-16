@@ -161,11 +161,12 @@ mvn dependency:get -Dartifact=com.example:mylib:1.0.0
 
 ### Endpoint reference
 
+<!-- BEGIN endpoints: proxy/maven -->
 | Method | Path | Description |
 |--------|------|-------------|
-| `PUT` | `/proxy/{registry}/maven2/{group}/{artifact}/{version}/{file}` | Upload artifact (`.pom` triggers version record) |
-| `GET` | `/proxy/{registry}/maven2/{group}/{artifact}/maven-metadata.xml` | Generated version list XML |
-| `GET` | `/proxy/{registry}/maven2/{group}/{artifact}/{version}/{file}` | Download artifact |
+| `GET` | `/proxy/{registry}/maven2/{path}` | Proxy or serve a Maven repository request. |
+| `PUT` | `/proxy/{registry}/maven2/{path}` | Upload a Maven artifact to the local registry. |
+<!-- END endpoints -->
 
 `{group}` uses path segments: `com/example` maps to groupId `com.example`.
 

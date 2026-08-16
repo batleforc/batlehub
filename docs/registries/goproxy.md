@@ -39,6 +39,29 @@ export GONOSUMDB="example.com/internal/*"
 export GOPRIVATE="example.com/internal/*"
 ```
 
+For **public modules**, no such variable is needed: BatleHub proxies the
+checksum database too, at `/sumdb/{path}`. That is the other half of the GOPROXY
+protocol, and without it the go tool would still open a direct connection to
+`sum.golang.org` for every module it has not seen — the proxy would have moved
+the egress rather than removed it, and an air-gapped build would fail closed on
+a lookup it could not make.
+
+Checksum responses are cached, which is what makes the offline case work: the
+second build needs no route off the site. Caching is sound because the log is
+signed — the signature travels with the bytes, so a cached record is exactly as
+trustworthy as a live one, and BatleHub neither parses nor rewrites it.
+
+Point `GOSUMDB` at the proxy, or leave it at its default and let `GOPROXY` carry
+the lookups:
+
+```bash
+export GOSUMDB="sum.golang.org https://batlehub.example.com/proxy/<registry>/sumdb/sum.golang.org"
+```
+
+Set `sumdb_url = ""` on a registry that serves **only** private modules: a
+lookup there would publish private module paths to a public transparency log,
+and `GONOSUMDB` above is the correct answer for those instead.
+
 To persist any of these, use `go env -w`, e.g. `go env -w GOPROXY="https://batlehub.example.com/proxy/<registry>"`.
 
 ## Publishing (local / hybrid)
@@ -110,14 +133,18 @@ go get example.com/mymod@v1.0.0
 
 ### Endpoint reference
 
+<!-- BEGIN endpoints: proxy/goproxy -->
 | Method | Path | Description |
 |--------|------|-------------|
-| `PUT` | `/proxy/{registry}/{module}/@v/{version}.zip` | Upload module zip |
-| `GET` | `/proxy/{registry}/{module}/@latest` | Latest version info JSON |
-| `GET` | `/proxy/{registry}/{module}/@v/list` | All version list |
-| `GET` | `/proxy/{registry}/{module}/@v/{version}.info` | Version metadata JSON |
-| `GET` | `/proxy/{registry}/{module}/@v/{version}.mod` | `go.mod` content |
-| `GET` | `/proxy/{registry}/{module}/@v/{version}.zip` | Module source zip |
+| `GET` | `/proxy/{registry}/{module}/@latest` | Fetch the latest version info for a Go module. |
+| `GET` | `/proxy/{registry}/{module}/@v/{filename}` | Fetch a versioned Go module file: `.info`, `.mod`, or `.zip`. |
+| `PUT` | `/proxy/{registry}/{module}/@v/{filename}` | Publish a Go module version by uploading its zip archive. |
+| `GET` | `/proxy/{registry}/{module}/@v/list` | List known versions for a Go module. |
+| `GET` | `/proxy/{registry}/sumdb/{path}` | Proxy the Go checksum database. |
+| `GET` | `/proxy/{registry}/v1/ID/{id}.json` | Proxy a single Go vulnerability record by its ID (e.g. `GO-2023-1234`). |
+| `GET` | `/proxy/{registry}/v1/index.json` | Proxy the Go Vulnerability Database index. |
+| `POST` | `/proxy/{registry}/v1/query` | Proxy a Go vulnerability database query. |
+<!-- END endpoints -->
 
 ---
 

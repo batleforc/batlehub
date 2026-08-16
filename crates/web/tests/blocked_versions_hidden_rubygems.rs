@@ -145,3 +145,169 @@ async fn proxy_direct_request_for_a_blocked_version_is_still_denied() {
         .to_request();
     assert_eq!(call_service(&app, req).await.status(), 403);
 }
+
+// ── The compact index (RFC 0009 §7.3) ─────────────────────────────────────────
+//
+// The tests above cover the JSON APIs, which were filtered all along. They are
+// also not what Bundler reads. Bundler resolves from the compact index first,
+// and until this phase we served none of it — so `bundle install` fell back to
+// `specs.4.8.gz`, the one index `listing_filter()` marks `Unsupported`, and a
+// blocked gem version was offered to the resolver, chosen, written to
+// `Gemfile.lock`, and only then refused at download.
+//
+// These assert the leak is closed on the documents the default client uses.
+
+async fn get_text<S>(app: &S, uri: &str) -> String
+where
+    S: actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+{
+    let req = TestRequest::get()
+        .uri(uri)
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(app, req).await;
+    assert_eq!(resp.status(), 200, "{uri} should be served");
+    String::from_utf8(actix_web::test::read_body(resp).await.to_vec()).unwrap()
+}
+
+#[actix_web::test]
+async fn compact_info_hides_a_blocked_version_from_bundler() {
+    let app = app().await;
+    let uri = "/proxy/local-gems/info/rails";
+
+    let before = get_text(&app, uri).await;
+    assert!(
+        before.contains("1.1.0"),
+        "the fixture serves it to begin with"
+    );
+
+    block_version(&app, "local-gems", "rails", "1.1.0").await;
+
+    let after = get_text(&app, uri).await;
+    assert!(
+        !after.contains("1.1.0"),
+        "the blocked version is still offered to the resolver:\n{after}"
+    );
+    assert!(after.contains("1.0.0"), "the allowed versions survive");
+    assert!(after.contains("2.0.0-beta.1"));
+    assert!(after.starts_with("---\n"), "the separator must survive");
+}
+
+/// `/versions` is whole-registry, so its blocked set comes from the 30-second
+/// snapshot rather than a per-request query — the same trade conda's
+/// `repodata.json` makes, for the same reason. So this must block **before**
+/// reading, or it warms the snapshot first and measures the lag instead of the
+/// filter. `a_block_does_not_reach_an_already_warm_snapshot` pins that lag.
+#[actix_web::test]
+async fn compact_versions_hides_a_blocked_version_from_the_registry_index() {
+    let app = app().await;
+
+    block_version(&app, "local-gems", "rails", "1.1.0").await;
+
+    let after = get_text(&app, "/proxy/local-gems/versions").await;
+    let rails = after
+        .lines()
+        .find(|l| l.starts_with("rails "))
+        .expect("rails still listed");
+    assert!(
+        !rails.contains("1.1.0"),
+        "the blocked version survived in /versions: {rails}"
+    );
+    assert!(rails.contains("1.0.0") && rails.contains("2.0.0-beta.1"));
+    assert!(
+        after.contains("rack 1.0.0"),
+        "an unrelated gem's line is untouched"
+    );
+    assert!(
+        after.starts_with("created_at: "),
+        "the header must survive so the document stays parseable"
+    );
+}
+
+/// The other half of that trade, stated rather than left implicit: a client
+/// that read `/versions` before the block keeps seeing the unfiltered index
+/// until the snapshot expires.
+///
+/// The download gate does **not** lag — a direct request for the blocked
+/// version is refused immediately either way, which is what keeps the window
+/// from being a hole.
+#[actix_web::test]
+async fn a_block_does_not_reach_an_already_warm_snapshot() {
+    let app = app().await;
+
+    // Warm it.
+    let before = get_text(&app, "/proxy/local-gems/versions").await;
+    assert!(before.contains("rails 1.0.0,1.1.0,2.0.0-beta.1"));
+
+    block_version(&app, "local-gems", "rails", "1.1.0").await;
+
+    let after = get_text(&app, "/proxy/local-gems/versions").await;
+    assert!(
+        after.contains("1.1.0"),
+        "the snapshot is still warm, so the listing lags by up to its TTL"
+    );
+
+    // ...and the gate that actually refuses the bytes does not lag.
+    let denied = TestRequest::get()
+        .uri("/proxy/local-gems/gems/rails-1.1.0.gem")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    assert_eq!(
+        call_service(&app, denied).await.status(),
+        403,
+        "the download gate is the half that is never late"
+    );
+}
+
+/// The checksum keys Bundler's cached copy of `/info/{gem}`. If it did not move
+/// when the version list did, a client could keep serving an `/info` fetched
+/// before the block — so the block would never reach the resolver.
+///
+/// Two apps rather than one, because reading the baseline from the app under
+/// test would warm its snapshot and the block would not land (see above).
+#[actix_web::test]
+async fn a_block_moves_the_info_checksum_so_bundler_refetches() {
+    fn rails_checksum(doc: &str) -> String {
+        doc.lines()
+            .find(|l| l.starts_with("rails "))
+            .and_then(|l| l.split(' ').nth(2))
+            .expect("rails line with a checksum")
+            .to_owned()
+    }
+
+    let unblocked = app().await;
+    let before = rails_checksum(&get_text(&unblocked, "/proxy/local-gems/versions").await);
+
+    let blocked = app().await;
+    block_version(&blocked, "local-gems", "rails", "1.1.0").await;
+    let after_doc = get_text(&blocked, "/proxy/local-gems/versions").await;
+
+    assert_ne!(
+        before,
+        rails_checksum(&after_doc),
+        "a cached /info would still be served, and the block would not reach the resolver"
+    );
+    // The untouched gem must NOT churn, or every block change re-downloads
+    // every gem's info document.
+    assert!(after_doc.contains("rack 1.0.0 99887766554433221100ffeeddccbbaa"));
+}
+
+/// `/names` lists gem names and no versions, so a block has nothing to hide in
+/// it. Removing the name would tell Bundler the gem does not exist, which is a
+/// different and worse answer than "some of its versions are restricted".
+#[actix_web::test]
+async fn a_block_does_not_remove_the_gem_from_names() {
+    let app = app().await;
+
+    block_version(&app, "local-gems", "rails", "1.1.0").await;
+
+    let names = get_text(&app, "/proxy/local-gems/names").await;
+    assert!(
+        names.contains("rails"),
+        "the gem still exists; only one of its versions is restricted"
+    );
+}

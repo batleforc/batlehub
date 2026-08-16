@@ -186,6 +186,7 @@ impl TestServer {
             cargo_index_map: batlehub_web::CargoIndexMap::default(),
             repo_signer_map: batlehub_web::RepoSignerMap::default(),
             vuln_db_map: batlehub_web::VulnDbMap::default(),
+            sumdb_map: batlehub_web::SumDbMap::default(),
             registry_host_map: batlehub_web::RegistryHostMap::default(),
             proxy_trust: batlehub_web::ProxyTrust::default(),
             config_path: "config.toml".to_owned(),

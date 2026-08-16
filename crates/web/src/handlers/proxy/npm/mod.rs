@@ -13,10 +13,15 @@ use super::common::{
 };
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
 
+pub mod cli;
 pub mod read;
 pub mod write;
 
-pub use read::{audit_bulk, audit_quick, download_tarball, get_packument, get_version};
+pub use cli::{npm_dist_tag_add, npm_dist_tag_remove, npm_dist_tags, npm_ping, npm_whoami};
+pub use read::{
+    audit_bulk, audit_bulk_legacy, audit_quick, audit_quick_legacy, download_tarball,
+    get_packument, get_version,
+};
 pub use write::npm_publish;
 
 /// The npm-shaped `{name}` / `{name}/{version}` metadata routes are shared with

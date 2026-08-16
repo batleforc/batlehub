@@ -1,6 +1,68 @@
 # Registry protocol coverage — what each client asks for, and what we answer
 
-**Status:** survey, 2026-08-16. Not published (`docs/internal/` is `srcExclude`d).
+**Status:** **closed, 2026-08-16.** Every finding below was acted on by
+[RFC 0009](../rfc/0009-protocol-coverage.md), phases 0–9. Not published
+(`docs/internal/` is `srcExclude`d).
+
+The survey is kept rather than deleted because the RFC's implementation notes
+argue against several of its conclusions, and the disagreement is the useful
+part. Where the two differ the RFC is current — it was written after, and
+resolving its open questions turned up §3.6, which this survey's method could
+not have found.
+
+## Outcome, per finding
+
+| Finding | Outcome |
+| --- | --- |
+| §3.1 npm audit on a path npm never calls | **Fixed** (phase 1). npm's real paths served, the invented ones kept as deprecated aliases, and answers now cached so an unreachable advisory database does not fail the pipeline. |
+| §3.2 Terraform: no discovery, docs configure the wrong protocol | **Fixed** (phase 5). Both protocols served; discovery is host-rooted and declines with a reason under path routing; the docs were rewritten. |
+| §3.3 RubyGems: blocks leak to the default client | **Fixed** (phase 2). The compact index is served and filtered, so `bundle install` no longer falls through to the one index that is not. The dependency API was **declined** — it is Marshal-encoded and now unreachable (RFC §13.6). |
+| §3.4 Go: no checksum-database proxy | **Fixed** (phase 4), and cached — an uncacheable sumdb lookup moves the egress rather than removing it. |
+| §3.5 conda: only uncompressed repodata | **Fixed** (phase 3). `.zst`, `.bz2` and `channeldata.json`, keyed on the blocked-set fingerprint so compression is cached without pinning a stale block. |
+| §3.6 NuGet search is a stub the service index advertises | **Fixed** (phase 6), together with `vsx` free-text and three ecosystems that had no search route at all. |
+| §2 Terraform's proxy-mode download is not gated | **Fixed** (phase 5). Both the module `X-Terraform-Get` and the provider `download_url` now point at gated routes; the adapter resolves the upstream pointer server-side. |
+| §4 the long tail | **Fixed** (phases 7–8), except the items below. |
+
+**Deliberately not done**, each with its reason recorded where the code is:
+
+- **RubyGems' dependency API** — Marshal-encoded, and unreachable now that the
+  compact index answers (RFC §13.6).
+- **`git::`/`s3::` Terraform module sources** — a clone is not an archive, and
+  caching one means manufacturing bytes nobody upstream has stated a checksum
+  for (RFC §13.19). The narrower work that *should* happen first is named there.
+- **`npm dist-tag add`/`rm`** — `dist-tags` are derived from the version set, so
+  a stored tag would be overwritten by the next read. Answers `501` with the
+  reason (RFC §13.17).
+- **Terraform provider `shasums_url`** — the archive is gated, its checksum
+  manifest is not, so a fully offline provider install is still incomplete.
+  Recorded on the registry page.
+- **GitHub Packages** — not a `github`-kind gap: `npm.pkg.github.com` speaks npm
+  and is proxied by configuring an npm registry (RFC §3, non-goals).
+
+## What the survey got wrong
+
+Worth keeping, because the method that produced these is the method someone will
+reuse:
+
+- **§4 claimed `/names` and `channeldata.json` needed filtering.** Neither does
+  in the way stated — `/names` names no version at all, and `channeldata.json`
+  has no version list to repair against, so it drops rather than repairs
+  (RFC §13.7, §13.11).
+- **§3.3 implied the dependency API was cheap.** It is Marshal (RFC §13.6).
+- **§1 verdicts were derived from route presence**, which cannot distinguish an
+  implementation from a stub — the omission that let §3.6 hide until the RFC's
+  open questions were resolved, and the reason RFC 0009 §5.1 exists.
+- **Every verdict was per-*endpoint*, and half the bugs were not.** Running the
+  fixes back against a real server found six more (RFC 0009 §12.10–§12.15), and
+  most were not a missing route: they were a present route answering `200` with
+  the wrong document, or with the right document for the wrong registry, or with
+  one cached from before a publish. A survey of what exists cannot see any of
+  those. Neither can a survey of what routes — that was already the lesson of
+  §5.1, and this is how much further it goes.
+- **Mode was never a column.** Three of the six (`available-packages` in proxy
+  and hybrid, conda's compressed channel in local, the RubyGems compact index in
+  local) are endpoints that work in one mode and not another. The table has one
+  verdict per endpoint, so it could not have recorded them.
 
 RFC 0006 §13.1-bis found that `openvsx`/`vscode-marketplace` cached VSIX *bytes*
 but exposed none of the gallery routes an editor actually calls — a feature gap
@@ -24,6 +86,12 @@ correct — RFC 0006 covers listing correctness, and the security constraints in
 
 ## 1. Verdict per kind
 
+::: warning This table records the state **as surveyed**, not the state now
+Every ⚠️ and ◐ below was acted on — see the outcome table at the top. The rows
+are kept unedited because the whole point of this document is what was true
+before, and rewriting them would erase the finding while keeping the prose.
+:::
+
 | Kind | Verdict | The gap in one line |
 | --- | --- | --- |
 | `npm` | ⚠️ **broken feature** | `npm audit` is served on a path npm does not call (§3.1). Plus no search / dist-tags / whoami / unpublish. |
@@ -32,7 +100,7 @@ correct — RFC 0006 covers listing correctness, and the security constraints in
 | `goproxy` | ⚠️ gap | No `/sumdb/` proxying — the checksum-database half of `GOPROXY` is absent (§3.4). |
 | `conda` | ◐ degraded | Only uncompressed `repodata.json`; modern conda/mamba ask for `.zst` first and get a 404 (§3.5). |
 | `cargo` | ◐ partial | Index + publish + yank complete; no `cargo search`, owners is read-only (§4.1). |
-| `nuget` | ◐ partial | Service index omits autocomplete and symbol publish; paged registrations pass through (§4.2). |
+| `nuget` | ⚠️ **stub advertised as a feature** | `/v3/query` returns a hardcoded empty result in proxy/hybrid while the service index advertises `SearchQueryService` (§3.6). Plus: omits autocomplete and symbol publish (§4.2). |
 | `composer` | ◐ partial | Composer 2 path complete; no `search.json`/`list.json` route (§4.3). |
 | `pypi` | ✅ complete for pip | Simple index (HTML + PEP 691), download, upload. No JSON API — optional (§4.4). |
 | `maven` | ✅ complete | Path-addressed `GET`/`PUT` on `maven2/**` covers the whole protocol (§4.5). |
@@ -76,7 +144,7 @@ mode does go through the gate.
 
 ---
 
-## 3. The four findings worth acting on
+## 3. The findings worth acting on
 
 ### 3.1 npm — `npm audit` is served on a path npm never calls
 
@@ -95,8 +163,16 @@ POST {registry}/-/npm/v1/security/advisories/bulk
 ```
 
 The two paths do not overlap, so `npm audit` against a BatleHub registry gets a
-404 on the bulk endpoint, falls back to quick, and gets a 404 there too. The
-forward is wrong in the same way on the upstream side —
+404 on the bulk endpoint.
+
+> **Corrected 2026-08-16, after measuring it.** This section originally said npm
+> then "falls back to quick, and gets a 404 there too". It does not. npm 11.17.0
+> sends the bulk request, gets the 404, and **exits 1** with
+> `npm error audit endpoint returned an error` — one request, no fallback. The
+> finding is therefore worse than described: in CI `npm audit` fails the build
+> rather than quietly reporting nothing. See RFC 0009 §12.
+
+The forward is wrong in the same way on the upstream side —
 `npm/read.rs:284` builds `{upstream}/-/npm/v1/audit/{endpoint}`, which is not a
 path `registry.npmjs.org` answers either. So both halves of the round trip are
 addressed to an endpoint that exists in neither direction.
@@ -176,6 +252,15 @@ Bundler's source resolution tries the compact index first, falls back to the
 dependency API, and falls back again to the full Marshal index. With both
 middle rungs missing, every `bundle install` lands on `specs.4.8.gz`.
 
+> **Corrected 2026-08-16, after measuring it.** Bundler **4.0.17** has no such
+> fallback chain. It requests `/versions`, and on `404` stops with
+> `Could not find gem … in rubygems repository` — one request, no dependency
+> API, no `specs.4.8.gz`. So the pre-fix failure on the current client was
+> `bundle install` breaking outright, not resolving a blocked version from an
+> unfiltered index. The chain described above is Bundler 2.x behaviour and was
+> not measured. The conclusion below — that BatleHub served none of what Bundler
+> reads — holds either way, and is what phase 2 fixed. See RFC 0009 §12.2.
+
 That is the rung `RegistryKind::listing_filter()` marks
 `Unsupported` — "hiding a version from a Ruby Marshal index would need a Marshal
 encoder in Rust, to hide what the JSON APIs already hide for every client
@@ -235,6 +320,37 @@ discovery. Its absence degrades search, not install.
 **Fix shape:** serve the compressed variants of the document we already
 synthesise. The filter runs before compression, so RFC 0006's guarantees carry
 over unchanged.
+
+### 3.6 NuGet search is a stub, and the service index advertises it
+
+Added 2026-08-16, found while resolving RFC 0009's open questions rather than by
+this survey's own method — which is itself the finding worth recording.
+
+`nuget_search` (`nuget/search_publish.rs:59`) has two branches. Local mode scans
+published names. **Proxy and hybrid mode return
+`{"totalHits": 0, "data": []}` unconditionally** (`:103-107`), under the comment
+"Return minimal empty response so dotnet CLI functions without error". Meanwhile
+`service_index.rs:57-63` advertises `SearchQueryService` and
+`SearchQueryService/3.5.0` pointing at that route.
+
+So `dotnet package search` against a proxy-mode BatleHub holding thousands of
+cached packages reports zero results, and the service index promised it would
+work. The local-mode branch is also degraded: it emits `"version": ""` and
+`"versions": []`, which is not a well-formed NuGet search hit.
+
+`vsx` free-text search has the same behaviour (`vsx/source.rs:151`) but says so
+in a comment ending *"Stated here rather than silently returning empty"* — the
+right instinct, and why it reads as a known deferral rather than a surprise.
+
+**Why this survey missed it.** §1's method was the route table: every route was
+present, correctly pathed, correctly tagged. Presence was the only question
+asked, and this endpoint is present. A route table cannot distinguish an
+implementation from a stub, and neither can a conformance test that only asserts
+routing — which is why RFC 0009 §5.1 adds a `must_find` assertion class and why
+the survey's own §6 caveat ("only presence was checked") turned out to be
+load-bearing rather than boilerplate.
+
+**Fix:** RFC 0009 §7.7, phase 6.
 
 ---
 

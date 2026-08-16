@@ -13,7 +13,7 @@ is not that a project has never been wrong; it is what it does when it finds
 out.
 
 **Every page here opens with a status banner, and the status is not uniform.**
-Four of the eleven below are implemented and seven are not. The banner is
+Five of the eleven below are implemented and six are not. The banner is
 generated from each document's own `Status` field rather than written on the
 page, so it cannot drift from the table it is quoting — an RFC that describes a
 proposal, published under a label saying it shipped, would be a claim about the
@@ -32,6 +32,13 @@ product that is not true.
 | [0007 — The README, per version](/rfc/0007-package-readmes) | Storing each version's own README, rendering it safely on the server, and putting it on the package page |
 | [0008 — mise in an air-gapped estate](/rfc/0008-mise-in-an-air-gapped-estate) | Making `mise install` work with no route off the site: `mise.lock` as the bill of materials, a server that will not dial out, and verification moved to the connected side |
 | [0009 — Every endpoint the client actually calls](/rfc/0009-protocol-coverage) | Serving the paths each package manager really requests, and two mechanisms so the next invented endpoint fails the build |
+
+0007 and 0008 are deferred behind 0009, and the reason is worth stating plainly:
+0009 found six protocol defects that had all shipped green, and the common cause
+was tests written from our implementation rather than from what the client sends.
+Building further on that foundation before fixing it would put more surface on a
+floor we know does not hold. 0008's air-gapped case also depends directly on
+0009's checksum-database and upstream-caching work.
 
 They read in order: each one argues with the state the previous one left.
 

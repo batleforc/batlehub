@@ -643,6 +643,7 @@ deny_missing_timestamp = false   # set true to block packages with no timestamp
 | `storage` | string | no | Name of the storage backend. Must match a `[[storage.backends]]` name. Omit to use the default backend. |
 | `path_allow` | string[] | no | Glob allowlist of upstream paths this registry may serve. Only valid for the path-addressed types (`deb`, `rpm`, `pacman`, `jetbrains`, `generic`) — using it elsewhere is a config error. **Required and non-empty for `generic`.** Use `["**"]` to allow everything deliberately. |
 | `vuln_db_url` | string | no | **goproxy only.** Upstream URL for the Go Vulnerability Database. Default: `https://vuln.go.dev`. Set to `""` to disable the `/v1/` endpoints. See [Vulnerability Proxy](/use/vulnerability-proxy#_1-go-—-govulncheck-go-vulnerability-database). |
+| `sumdb_url` | string | no | **goproxy only.** Upstream URL for the Go checksum database. Default: `https://sum.golang.org`. Set to `""` to disable `/sumdb/{path}` — do that for a registry serving only private modules, where a lookup would leak private module paths to a public log. |
 | `upstream_auth` | table | no | Credentials sent on every upstream request. See [upstream auth](#upstream_auth). |
 | `tls` | table | no | TLS settings for upstream connections. See [upstream TLS](#upstream_tls). |
 | `proxy` | table | no | HTTP/SOCKS proxy for upstream connections. See [upstream proxy](#upstream_proxy). |
@@ -763,6 +764,8 @@ Module paths may contain slashes (e.g. `golang.org/x/text`). Uppercase-encoded p
 > **Caching note:** `@latest` and `@v/list` responses are cached permanently after the first request, just like other artifacts. They may become stale if new versions are published. Clear the proxy storage (or configure a shorter `metadata_ttl_secs`) to pick up new versions immediately.
 
 The optional `vuln_db_url` field controls which govulndb upstream is used (default: `https://vuln.go.dev`). Set it to `""` to disable the `/v1/` endpoints entirely.
+
+The optional `sumdb_url` field controls the **checksum database** proxy (default: `https://sum.golang.org`). This is the other half of the GOPROXY protocol: without it the go tool still opens a direct connection to `sum.golang.org` for every module it has not seen, so the proxy has moved the egress rather than removed it — and an air-gapped estate fails closed. Responses are cached, which is what makes the offline case work; caching is sound because the log is signed, so a cached record is exactly as trustworthy as a live one. Set it to `""` for a registry serving only private modules, where a lookup would publish private module paths to a public transparency log.
 
 Configure the go toolchain to use the proxy:
 

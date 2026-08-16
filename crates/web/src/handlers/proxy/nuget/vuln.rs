@@ -1,8 +1,17 @@
+use std::sync::Arc;
+
 use actix_web::{get, web, HttpResponse, Responder};
+
+use batlehub_core::services::ProxyService;
 
 use crate::handlers::schemas::UpstreamDocument;
 use crate::{
-    error::AppError, extractors::AuthIdentity, handlers::proxy::common::require_registry_type,
+    error::AppError,
+    extractors::AuthIdentity,
+    handlers::proxy::{
+        common::require_registry_type,
+        upstream::{cached_forward, Outbound},
+    },
     RegistryMap, UpstreamMap,
 };
 
@@ -32,6 +41,7 @@ pub async fn nuget_vuln_index(
     _identity: AuthIdentity,
     map: web::Data<RegistryMap>,
     upstream_map: web::Data<UpstreamMap>,
+    svc: web::Data<Arc<ProxyService>>,
     client: web::Data<reqwest::Client>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
@@ -39,7 +49,8 @@ pub async fn nuget_vuln_index(
 
     let base = vuln_base(&registry, &upstream_map);
     let url = format!("{base}/index.json");
-    forward_get(&client, &url).await
+    let key = format!("vulndb:{registry}:nuget:index");
+    forward_get(&svc, &client, &registry, &key, &url).await
 }
 
 /// Proxy a single page of NuGet vulnerability records.
@@ -69,6 +80,7 @@ pub async fn nuget_vuln_page(
     _identity: AuthIdentity,
     map: web::Data<RegistryMap>,
     upstream_map: web::Data<UpstreamMap>,
+    svc: web::Data<Arc<ProxyService>>,
     client: web::Data<reqwest::Client>,
 ) -> Result<impl Responder, AppError> {
     let (registry, page) = path.into_inner();
@@ -86,7 +98,8 @@ pub async fn nuget_vuln_page(
 
     let base = vuln_base(&registry, &upstream_map);
     let url = format!("{base}/page/{page}");
-    forward_get(&client, &url).await
+    let key = format!("vulndb:{registry}:nuget:page:{page}");
+    forward_get(&svc, &client, &registry, &key, &url).await
 }
 
 /// Derive the vulnerability base URL: use the configured NuGet upstream host
@@ -99,32 +112,19 @@ fn vuln_base(registry: &str, upstream_map: &UpstreamMap) -> String {
         .unwrap_or_else(|| DEFAULT_NUGET_VULN_BASE.to_owned())
 }
 
-async fn forward_get(client: &reqwest::Client, url: &str) -> Result<HttpResponse, AppError> {
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| AppError::bad_gateway(format!("nuget vuln DB upstream error: {e}")))?;
-
-    if resp.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(AppError::not_found("not found in nuget vulnerability DB"));
-    }
-
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(AppError::bad_gateway(format!(
-            "nuget vuln DB returned {status}"
-        )));
-    }
-
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| AppError::bad_gateway(format!("reading nuget vuln DB response: {e}")))?;
-
-    Ok(HttpResponse::Ok()
-        .content_type("application/json")
-        .body(bytes))
+/// Fetch a NuGet vulnerability document through the cache (RFC 0009 §4.2).
+///
+/// Was a bare `reqwest` GET, so `dotnet list package --vulnerable` failed
+/// outright whenever api.nuget.org was unreachable — the exact case the proxy
+/// exists to absorb, and the one most likely to be inside a build pipeline.
+async fn forward_get(
+    svc: &Arc<ProxyService>,
+    client: &reqwest::Client,
+    registry: &str,
+    cache_key: &str,
+    url: &str,
+) -> Result<HttpResponse, AppError> {
+    cached_forward(svc, client, registry, cache_key, Outbound::get(url)).await
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────

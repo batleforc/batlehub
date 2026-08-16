@@ -238,6 +238,11 @@ tasks:
     cmds:
       - bash tests/heavy/marketplace.sh
 
+  test:bundler-heavy:
+    desc: "Heavy Bundler integration: `bundle install` against a local rubygems registry, asserting the compact index's 206/304 answers are ones Bundler accepts (needs DATABASE_URL; installs bundler on first run)"
+    cmds:
+      - bash tests/heavy/bundler.sh
+
   coverage:
     desc: Generate an HTML coverage report and an lcov report for SonarQube — starts Postgres, MinIO and Redis to include all integration tests
     vars:
@@ -979,14 +984,20 @@ tasks:
 
   docs:roadmap:check:
     desc: Fail if the published roadmap page has drifted from ROADMAP.md
+    # Compares content rather than git state, for the reason above: the whole
+    # page is generated here, but `git diff` still conflates "the generator
+    # would produce something different" with "this file has any uncommitted
+    # change at all" (RFC 0009 §13.21).
     cmds:
-      - task: docs:roadmap
       - |
-        if ! git diff --quiet -- docs/guide/roadmap.md; then
+        set -euo pipefail
+        before=$(cat docs/guide/roadmap.md 2>/dev/null || true)
+        task docs:roadmap >/dev/null
+        if [ "$before" != "$(cat docs/guide/roadmap.md)" ]; then
           echo "published roadmap is stale — run 'task docs:roadmap' and commit the result" >&2
-          git --no-pager diff -- docs/guide/roadmap.md >&2
           exit 1
         fi
+        echo "the published roadmap matches ROADMAP.md"
 
   # ── Listing-filter coverage (RFC 0006 §4.3, §7) ──────────────────────────────
   # Which registries hide blocked versions from their listings used to be a
@@ -1015,14 +1026,46 @@ tasks:
 
   docs:listing-coverage:check:
     desc: Fail if the admin guide's coverage table has drifted from the code
+    # Diffs only the region between the markers, not the whole page. A
+    # whole-file `git diff` fails on any uncommitted change — including
+    # hand-written prose this generator never touches — and then prints
+    # "run the task and commit the result", which fixes nothing because the
+    # generated block was already correct (RFC 0009 §13.21).
     cmds:
-      - task: docs:listing-coverage
       - |
-        if ! git diff --quiet -- docs/guide/admin-policies.md; then
+        set -euo pipefail
+        page=docs/guide/admin-policies.md
+        block() {
+          awk '/^<!-- BEGIN listing-coverage/{f=1} f{print} /^<!-- END listing-coverage/{f=0}' "$1"
+        }
+        before=$(block "$page")
+        task docs:listing-coverage >/dev/null
+        if [ "$before" != "$(block "$page")" ]; then
           echo "the listing-coverage table is stale — run 'task docs:listing-coverage' and commit the result" >&2
-          git --no-pager diff -- docs/guide/admin-policies.md >&2
+          diff <(printf '%s\n' "$before") <(block "$page") >&2 || true
           exit 1
         fi
+        echo "the listing-coverage table matches the code"
+
+  # ── Per-registry endpoint reference (RFC 0009 §6) ────────────────────────────
+  # These tables were hand-maintained and drifted the way a hand-maintained
+  # inventory always does: rubygems listed six routes where ten exist, terraform
+  # documented a protocol the code does not implement, npm published an audit
+  # path npm never sends. Generated from the spec `task dump-spec` already
+  # produces, so the inventory cannot disagree with the routes. Only the block
+  # between the markers is replaced; the prose around it stays hand-written.
+
+  docs:endpoints:
+    desc: Regenerate the per-registry endpoint tables from ui/openapi.json
+    dir: docs
+    cmds:
+      - node build/gen-endpoints.mjs
+
+  docs:endpoints:check:
+    desc: Fail if a registry page's endpoint table has drifted from the API surface
+    dir: docs
+    cmds:
+      - node build/gen-endpoints.mjs --check
 
   # ── The docs site's design gates (RFC 0005 phase 4) ──────────────────────────
   # Until these existed the public site's entire design coverage was one static
@@ -1039,6 +1082,7 @@ tasks:
       - task: ui:tokens:check
       - task: docs:roadmap:check
       - task: docs:listing-coverage:check
+      - task: docs:endpoints:check
       - task: docs:links
       - task: docs:structure
       - task: docs:audience

@@ -106,6 +106,32 @@ impl RegistryClient for FixedRegistry {
     /// way across ecosystems and the difference under test is the *document
     /// shape*, not the fixture data. Download URLs point at the *upstream*, so a
     /// test can tell whether the proxy rewrote them.
+    /// Upstream search results, so a `must_find` assertion can tell an
+    /// implemented collection endpoint from one stubbed to an empty `200`
+    /// (RFC 0009 §5.1). The default impl returns an empty list, which is
+    /// exactly the signal that cannot distinguish the two.
+    async fn search_packages(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<batlehub_core::ports::UpstreamPackage>, CoreError> {
+        let all = [
+            ("fixed-alpha", "1.1.0"),
+            ("fixed-beta", "1.0.0"),
+            ("other-gamma", "2.0.0"),
+        ];
+        Ok(all
+            .iter()
+            .filter(|(name, _)| query.is_empty() || name.contains(query))
+            .take(limit)
+            .map(|(name, version)| batlehub_core::ports::UpstreamPackage {
+                name: (*name).to_owned(),
+                latest_version: (*version).to_owned(),
+                description: Some(format!("{name} from FixedRegistry")),
+            })
+            .collect())
+    }
+
     async fn fetch_version_document(
         &self,
         package: &str,
@@ -192,6 +218,28 @@ impl RegistryClient for FixedRegistry {
                 "homepage_uri": "https://example.invalid"
             }))),
 
+            // The compact index — plain text, and the documents Bundler
+            // actually resolves from (RFC 0009 §7.3). The same three versions
+            // as the JSON APIs above, so one block can be asserted against
+            // both and the two cannot silently disagree.
+            ("rubygems", DocumentKind::COMPACT_VERSIONS) => Ok(VersionDocument::text(
+                "text/plain; charset=utf-8",
+                "created_at: 2020-01-01T00:00:00Z\n---\n\
+                 rails 1.0.0,1.1.0,2.0.0-beta.1 aaabbbcccdddeeefff0011223344556677\n\
+                 rack 1.0.0 99887766554433221100ffeeddccbbaa\n",
+            )),
+            ("rubygems", DocumentKind::COMPACT_NAMES) => Ok(VersionDocument::text(
+                "text/plain; charset=utf-8",
+                "---\nrack\nrails\n",
+            )),
+            ("rubygems", DocumentKind::COMPACT_INFO) => Ok(VersionDocument::text(
+                "text/plain; charset=utf-8",
+                "---\n\
+                 1.0.0 |checksum:aaa\n\
+                 1.1.0 rack:>= 1.0|checksum:bbb,ruby:>= 2.5\n\
+                 2.0.0-beta.1 |checksum:ccc\n",
+            )),
+
             // Minified, as Packagist actually serves it: `1.1.0` inherits
             // `name`/`license` from `2.0.0-beta.1` and `1.0.0` inherits
             // `require` from `1.1.0`, so a naive middle-entry removal corrupts
@@ -213,6 +261,16 @@ impl RegistryClient for FixedRegistry {
 
             // Keyed by *platform*, not by package: a conda listing is scoped
             // to a subdir and describes the whole channel.
+            // The channel summary `conda search` reads: one entry per package,
+            // naming its newest release, with no version list (RFC 0009 §7.5).
+            ("conda", DocumentKind::CHANNELDATA) => Ok(VersionDocument::json(serde_json::json!({
+                "channeldata_version": 1,
+                "packages": {
+                    "numpy": { "version": "1.1.0", "subdirs": ["linux-64"] },
+                    "scipy": { "version": "1.0.0", "subdirs": ["linux-64"] }
+                }
+            }))),
+
             ("conda", DocumentKind::Versions | DocumentKind::CURRENT_REPODATA) => {
                 Ok(VersionDocument::json(serde_json::json!({
                     "info": { "subdir": package },
@@ -611,6 +669,10 @@ pub async fn finish_test_app(
         .app_data(actix_web::web::Data::new(mode_map))
         .app_data(actix_web::web::Data::new(RepoSignerMap::default()))
         .app_data(actix_web::web::Data::new(batlehub_web::VulnDbMap::default()))
+        // Empty by default: absence means the `/sumdb/{path}` route answers 404,
+        // which is the contract a registry with no checksum database wants
+        // (RFC 0009 §7.4). A test that needs one passes it as `extra`.
+        .app_data(actix_web::web::Data::new(batlehub_web::SumDbMap::default()))
         .app_data(actix_web::web::Data::new(
             InMemoryStatsHistory::new() as Arc<dyn StatsHistoryRepository>
         ));
@@ -656,6 +718,10 @@ pub async fn finish_test_app_with_extra<E: 'static>(
         .app_data(actix_web::web::Data::new(mode_map))
         .app_data(actix_web::web::Data::new(RepoSignerMap::default()))
         .app_data(actix_web::web::Data::new(batlehub_web::VulnDbMap::default()))
+        // Empty by default: absence means the `/sumdb/{path}` route answers 404,
+        // which is the contract a registry with no checksum database wants
+        // (RFC 0009 §7.4). A test that needs one passes it as `extra`.
+        .app_data(actix_web::web::Data::new(batlehub_web::SumDbMap::default()))
         .app_data(actix_web::web::Data::new(extra));
 
     init_service(app.wrap(AuthMiddlewareFactory::new(auth_providers))).await
@@ -767,6 +833,17 @@ pub async fn make_app_with_defaults(
             "jbm".to_owned(),
             FixedRegistry::new("jetbrains-marketplace") as Arc<dyn RegistryClient>,
         ),
+        // Added for RFC 0009 §5.1's `must_find` conformance case: NuGet's
+        // `/v3/query` is the stub that class exists to catch, and asserting it
+        // answers needs the registry to exist.
+        (
+            "nuget".to_owned(),
+            FixedRegistry::new("nuget") as Arc<dyn RegistryClient>,
+        ),
+        (
+            "composer".to_owned(),
+            FixedRegistry::new("composer") as Arc<dyn RegistryClient>,
+        ),
     ]
     .into();
 
@@ -784,6 +861,11 @@ pub async fn make_app_with_defaults(
         ("gl".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
         ("jb".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
         ("jbm".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
+        ("nuget".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
+        (
+            "composer".to_owned(),
+            Arc::new(rbac_policy(repo_dyn.clone())),
+        ),
     ]
     .into();
 
@@ -805,7 +887,8 @@ pub async fn make_app_with_defaults(
 
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
     let access_config = access_config_for(&[
-        "github", "npm", "cargo", "openvsx", "go", "vscode", "fj", "gl", "jb", "jbm",
+        "github", "npm", "cargo", "openvsx", "go", "vscode", "fj", "gl", "jb", "jbm", "nuget",
+        "composer",
     ]);
     let registry_map = registry_map_for(&[
         ("github", "github"),
@@ -818,6 +901,8 @@ pub async fn make_app_with_defaults(
         ("gl", "gitlab"),
         ("jb", "jetbrains"),
         ("jbm", "jetbrains-marketplace"),
+        ("nuget", "nuget"),
+        ("composer", "composer"),
     ]);
     let cargo_indexes = batlehub_web::CargoIndexMap::default();
     finish_test_app(

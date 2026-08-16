@@ -3,9 +3,9 @@ use futures::TryStreamExt;
 use serde::Deserialize;
 
 use super::super::http_client::{
-    cache_control, fetch_json_document, percent_encode, to_registry_error,
+    cache_control, fetch_json_document, fetch_text_document, percent_encode, to_registry_error,
 };
-use super::models::{GemInfo, GemVersion};
+use super::models::{GemDependency, GemInfo, GemVersion};
 use super::{models, CoreError, RubyGemsRegistryClient};
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
@@ -159,13 +159,139 @@ pub(super) fn parse_gem_yaml(yaml: &str) -> Result<GemMetadata, CoreError> {
         }
     }
 
-    Ok(GemMetadata {
+    Ok(models::GemMetadata {
         name,
         version,
         platform,
         summary,
         authors,
+        dependencies: parse_gem_dependencies(yaml),
     })
+}
+
+/// Extract runtime dependencies from a gemspec's YAML.
+///
+/// The block looks like:
+///
+/// ```yaml
+/// dependencies:
+/// - !ruby/object:Gem::Dependency
+///   name: rake
+///   requirement: !ruby/object:Gem::Requirement
+///     requirements:
+///     - - "~>"
+///       - !ruby/object:Gem::Version
+///         version: '13.0'
+///   type: :runtime
+/// ```
+///
+/// Scanned line-wise like the rest of this parser rather than deserialised: the
+/// document is full of Ruby object tags that a general YAML reader has to be
+/// taught to ignore, and only four fields are wanted.
+///
+/// Development dependencies are skipped — they are not part of what an
+/// installer resolves, and the compact index does not carry them.
+fn parse_gem_dependencies(yaml: &str) -> Vec<GemDependency> {
+    let mut deps: Vec<GemDependency> = Vec::new();
+    let mut in_block = false;
+    // The dependency being built, its constraints, and its declared type.
+    let mut name: Option<String> = None;
+    let mut ops: Vec<String> = Vec::new();
+    let mut constraints: Vec<String> = Vec::new();
+    let mut runtime = true;
+
+    let flush = |name: &mut Option<String>,
+                 constraints: &mut Vec<String>,
+                 ops: &mut Vec<String>,
+                 runtime: &mut bool,
+                 deps: &mut Vec<GemDependency>| {
+        if let Some(n) = name.take() {
+            if *runtime {
+                deps.push(GemDependency {
+                    name: n,
+                    requirement: constraints.join("&"),
+                });
+            }
+        }
+        constraints.clear();
+        ops.clear();
+        *runtime = true;
+    };
+
+    for line in yaml.lines() {
+        if !line.starts_with(' ') && !line.starts_with('-') {
+            // A new top-level key ends the block.
+            if in_block {
+                flush(
+                    &mut name,
+                    &mut constraints,
+                    &mut ops,
+                    &mut runtime,
+                    &mut deps,
+                );
+                in_block = false;
+            }
+            if line.starts_with("dependencies:") {
+                in_block = true;
+            }
+            continue;
+        }
+        if !in_block {
+            continue;
+        }
+
+        let trimmed = line.trim();
+        if trimmed.starts_with("- !ruby/object:Gem::Dependency") {
+            flush(
+                &mut name,
+                &mut constraints,
+                &mut ops,
+                &mut runtime,
+                &mut deps,
+            );
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("name: ") {
+            // Only the first `name:` after a Dependency header is the gem's;
+            // nested ones do not occur, but taking the first is what makes that
+            // independent of order.
+            if name.is_none() {
+                name = Some(strip_yaml_quotes(rest.trim()).to_owned());
+            }
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("type: ") {
+            runtime = rest.trim() != ":development";
+            continue;
+        }
+        // `- - "~>"` opens a constraint pair; `- '13.0'` and `version: '13.0'`
+        // close it.
+        if let Some(rest) = trimmed.strip_prefix("- - ") {
+            ops.push(strip_yaml_quotes(rest.trim()).to_owned());
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("version: ") {
+            let v = rest.trim();
+            if !v.starts_with('!') {
+                let v = strip_yaml_quotes(v);
+                // `>= 0` is how "no constraint" is written, and the compact
+                // index leaves it out.
+                let op = ops.pop().unwrap_or_else(|| ">=".to_owned());
+                if !(op == ">=" && v == "0") {
+                    constraints.push(format!("{op} {v}"));
+                }
+            }
+            continue;
+        }
+    }
+    flush(
+        &mut name,
+        &mut constraints,
+        &mut ops,
+        &mut runtime,
+        &mut deps,
+    );
+    deps
 }
 
 /// Split a gem filename stem (without `.gem`) into `(name, version)`.
@@ -213,6 +339,33 @@ impl RegistryClient for RubyGemsRegistryClient {
                 format!("{base}/api/v1/gems/{name}.json"),
                 format!("rubygems gem document for '{package}'"),
             ),
+            // The compact index — what Bundler actually resolves from. Plain
+            // text, so `DocumentBody::Text` carries it and no Marshal encoder
+            // is involved (RFC 0009 §7.3).
+            DocumentKind::COMPACT_VERSIONS => {
+                return fetch_text_document(
+                    self.get(&format!("{base}/versions")),
+                    "rubygems compact index /versions",
+                    "text/plain; charset=utf-8",
+                )
+                .await
+            }
+            DocumentKind::COMPACT_NAMES => {
+                return fetch_text_document(
+                    self.get(&format!("{base}/names")),
+                    "rubygems compact index /names",
+                    "text/plain; charset=utf-8",
+                )
+                .await
+            }
+            DocumentKind::COMPACT_INFO => {
+                return fetch_text_document(
+                    self.get(&format!("{base}/info/{name}")),
+                    &format!("rubygems compact info for '{package}'"),
+                    "text/plain; charset=utf-8",
+                )
+                .await
+            }
             other => {
                 return Err(CoreError::NotSupported(format!(
                     "rubygems has no '{other}' listing document"

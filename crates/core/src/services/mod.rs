@@ -10,6 +10,7 @@ pub mod metrics;
 pub mod proxy;
 pub mod quota;
 pub mod sbom;
+pub mod search;
 pub mod signature;
 pub mod stats_rollup;
 pub mod vulnerability;
@@ -38,6 +39,7 @@ pub use quota::{
     RegistryQuotaStatus,
 };
 pub use sbom::{SbomProxiedOptions, SbomPublishOptions, SbomService};
+pub use search::{SearchHit, SearchMode, SearchResults};
 pub use stats_rollup::{hour_start, StatsRollupService};
 pub use vulnerability::{ScanReport, VulnerabilityScanService};
 pub use warming::{WarmFailure, WarmingReport, WarmingService};

@@ -273,6 +273,32 @@ impl VulnDbMap {
     }
 }
 
+/// Per-registry Go checksum database base URLs (RFC 0009 §7.4).
+///
+/// Same absence-means-disabled contract as [`VulnDbMap`]: a registry missing
+/// from this map answers `404` on `/sumdb/{path}` rather than proxying a lookup
+/// that would leak private module paths to a public log.
+#[derive(Clone, Default)]
+pub struct SumDbMap {
+    urls: LockedMap<String>,
+}
+
+impl SumDbMap {
+    pub fn new(urls: HashMap<String, String>) -> Self {
+        Self {
+            urls: LockedMap::new(urls),
+        }
+    }
+
+    pub fn url_for(&self, registry: &str) -> Option<String> {
+        self.urls.get(registry)
+    }
+
+    pub fn replace_from(&self, other: &Self) {
+        self.urls.replace_from(&other.urls);
+    }
+}
+
 impl Default for VulnDbMap {
     fn default() -> Self {
         Self::new(HashMap::new())
@@ -547,8 +573,9 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
         inbound_webhook::{list_inbound_events, receive_inbound_webhook},
         proxy::{
             cargo::{
-                cargo_owners, cargo_publish, cargo_registry_config, cargo_registry_index,
-                cargo_unyank, cargo_yank, download_crate,
+                cargo_add_owners, cargo_owners, cargo_publish, cargo_registry_config,
+                cargo_registry_index, cargo_remove_owners, cargo_unyank, cargo_yank,
+                download_crate,
             },
             composer::{
                 composer_dist, composer_p2_metadata, composer_packages_json,
@@ -567,7 +594,10 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             //   plugins/list > plugin/download > pluginManager > updatePlugins.xml >
             //   literal files/*.json > files/{p}/{u}/meta.json > files/{p}/meta.json >
             //   files/{p}/{u}/{file} — all before the shared npm version/packument wildcards
-            conda::{conda_current_repodata, conda_file_download, conda_publish, conda_repodata},
+            conda::{
+                conda_channeldata, conda_current_repodata, conda_file_download, conda_publish,
+                conda_repodata, conda_repodata_bz2, conda_repodata_zst,
+            },
             forgejo::fj_packages,
             generic::generic_get,
             github::{
@@ -579,8 +609,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                 gl_list_releases, gl_packages,
             },
             goproxy::{
-                goproxy_file, goproxy_latest, goproxy_list, goproxy_publish, goproxy_vuln_entry,
-                goproxy_vuln_index, goproxy_vuln_query,
+                goproxy_file, goproxy_latest, goproxy_list, goproxy_publish, goproxy_sumdb,
+                goproxy_vuln_entry, goproxy_vuln_index, goproxy_vuln_query,
             },
             jetbrains::jetbrains_get,
             jetbrains_marketplace::{
@@ -593,34 +623,45 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             },
             maven::{maven_get, maven_put},
             npm::{
-                audit_bulk, audit_quick, download_tarball as npm_download_tarball, get_packument,
-                get_version, npm_publish,
+                audit_bulk, audit_bulk_legacy, audit_quick, audit_quick_legacy,
+                download_tarball as npm_download_tarball, get_packument, get_version,
+                npm_dist_tag_add, npm_dist_tag_remove, npm_dist_tags, npm_ping, npm_publish,
+                npm_whoami,
             },
             nuget::{
-                nuget_flat_download, nuget_flat_versions, nuget_publish, nuget_registration,
-                nuget_search, nuget_service_index, nuget_vuln_index, nuget_vuln_page, nuget_yank,
+                nuget_autocomplete, nuget_flat_download, nuget_flat_versions, nuget_publish,
+                nuget_registration, nuget_search, nuget_service_index, nuget_symbol_publish,
+                nuget_vuln_index, nuget_vuln_page, nuget_yank,
             },
             openvsx::{download_vsix, vsix_publish},
-            pypi::{pypi_file_download, pypi_publish, pypi_simple_package, pypi_simple_root},
+            pypi::{
+                pypi_file_download, pypi_json, pypi_publish, pypi_simple_package, pypi_simple_root,
+            },
             repo::{
                 deb_get, pacman_get,
                 publish::{deb_publish, pacman_publish, rpm_publish},
                 rpm_get,
             },
             rubygems::{
-                gem_download, gem_gemspec, gem_info, gem_publish, gem_specs_full, gem_specs_latest,
+                gem_compact_info, gem_compact_names, gem_compact_versions, gem_download,
+                gem_gemspec, gem_info, gem_publish, gem_specs_full, gem_specs_latest,
                 gem_specs_prerelease, gem_unyank, gem_versions, gem_yank,
             },
+            search::{cargo_search, composer_list, composer_search, npm_search},
             terraform::{
-                terraform_module_artifact, terraform_module_download, terraform_module_unyank,
-                terraform_module_upload, terraform_module_versions, terraform_module_yank,
-                terraform_provider_artifact, terraform_provider_binary_upload,
-                terraform_provider_download, terraform_provider_unyank, terraform_provider_upload,
-                terraform_provider_versions, terraform_provider_yank,
+                terraform_discovery, terraform_discovery_host_routed, terraform_mirror_index,
+                terraform_mirror_version, terraform_module_artifact, terraform_module_download,
+                terraform_module_metadata, terraform_module_unyank, terraform_module_upload,
+                terraform_module_versions, terraform_module_yank, terraform_provider_artifact,
+                terraform_provider_binary_upload, terraform_provider_download,
+                terraform_provider_shasums, terraform_provider_shasums_sig,
+                terraform_provider_unyank, terraform_provider_upload, terraform_provider_versions,
+                terraform_provider_yank,
             },
             vsx::{
-                openvsx_extension, openvsx_extension_version, openvsx_file, openvsx_search,
-                vsx_asset, vsx_extension_query, vsx_item, vsx_unpkg, vsx_vspackage,
+                openvsx_extension, openvsx_extension_version, openvsx_file, openvsx_namespace,
+                openvsx_publish, openvsx_search, openvsx_version, vsx_asset, vsx_extension_query,
+                vsx_item, vsx_unpkg, vsx_vspackage,
             },
         },
     };
@@ -633,10 +674,20 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(list_tokens);
     cfg.service(revoke_token);
     // Cargo publish API (literal "api/v1" sub-path — most specific, must precede download)
+    //
+    // `cargo_search` is here rather than with the other search routes because
+    // openvsx's `api/{namespace}/{extension}` is greedy enough to claim
+    // `api/v1/crates` — which is exactly what it did before this route existed
+    // (RFC 0009 §7.7). Registered above it, not after.
+    cfg.service(cargo_search); // GET …/api/v1/crates
     cfg.service(cargo_publish);
     cfg.service(cargo_yank);
     cfg.service(cargo_unyank);
     cfg.service(cargo_owners);
+    // `cargo owner --add` / `--remove` (RFC 0009 §7.6). Same path as the GET,
+    // different methods, so ordering between them does not matter.
+    cfg.service(cargo_add_owners);
+    cfg.service(cargo_remove_owners);
     // Cargo index (literal "registry" sub-path)
     cfg.service(cargo_registry_config);
     cfg.service(cargo_registry_index);
@@ -674,7 +725,11 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(goproxy_vuln_index); // GET …/v1/index.json
     cfg.service(goproxy_vuln_entry); // GET …/v1/ID/{id}.json
     cfg.service(goproxy_vuln_query); // POST …/v1/query
-                                     // PUT goproxy_publish must come before GET goproxy_file (same path pattern, different method)
+                                     // The checksum-database half of GOPROXY (RFC 0009 §7.4). Literal `sumdb/`
+                                     // prefix, registered before the module wildcards below — a module path
+                                     // regex of `[^@]+` would otherwise claim it.
+    cfg.service(goproxy_sumdb); // GET …/sumdb/{path}
+                                // PUT goproxy_publish must come before GET goproxy_file (same path pattern, different method)
     cfg.service(goproxy_publish);
     cfg.service(goproxy_latest);
     cfg.service(goproxy_list);
@@ -683,6 +738,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(maven_put);
     cfg.service(maven_get);
     // NuGet: publish (PUT) and yank (DELETE) before read routes; literal paths before wildcards
+    cfg.service(nuget_symbol_publish); // PUT .../api/v2/symbolpackage (before api/v2/package)
     cfg.service(nuget_publish); // PUT  .../api/v2/package
     cfg.service(nuget_yank); // DELETE .../v2/package/{id}/{version}
     cfg.service(nuget_service_index); // GET .../v3/index.json
@@ -691,6 +747,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(nuget_registration); // GET .../v3/registration5/{id}/index.json
     cfg.service(nuget_flat_versions); // GET .../v3/flat/{id}/index.json
     cfg.service(nuget_search); // GET .../v3/query
+    cfg.service(nuget_autocomplete); // GET .../v3/autocomplete
     cfg.service(nuget_flat_download); // GET .../v3/flat/{id}/{version}/{filename}
                                       // Terraform modules — longer paths first (unyank > yank > artifact > upload > download > versions)
     cfg.service(terraform_module_unyank); // POST …/versions/{ver}/unyank
@@ -699,19 +756,56 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(terraform_module_upload); // POST …/{ver}
     cfg.service(terraform_module_download); // GET …/{ver}/download
     cfg.service(terraform_module_versions); // GET …/versions
+                                            // Module metadata is the *shortest* module path, so it goes last of the
+                                            // module routes or it would claim `…/{ver}/download` with ver="{ver}"
+                                            // and name="download" (RFC 0009 §7.2).
+    cfg.service(terraform_module_metadata); // GET …/{ver}
                                             // Terraform providers — binary PUT/GET before download, unyank/yank before upload/versions
     cfg.service(terraform_provider_unyank); // POST …/versions/{ver}/unyank
     cfg.service(terraform_provider_yank); // DELETE …/versions/{ver}
     cfg.service(terraform_provider_binary_upload); // PUT …/{ver}/artifact/{os}/{arch}
     cfg.service(terraform_provider_artifact); // GET …/{ver}/artifact/{os}/{arch}
+                                              // `shasums.sig` before `shasums`: the shorter literal is a prefix of the
+                                              // longer one only in reading order, but registering the specific one first
+                                              // keeps that independent of actix's matching order.
+    cfg.service(terraform_provider_shasums_sig); // GET …/{ver}/shasums.sig
+    cfg.service(terraform_provider_shasums); // GET …/{ver}/shasums
     cfg.service(terraform_provider_download); // GET …/{ver}/download/{os}/{arch}
     cfg.service(terraform_provider_upload); // POST …/versions (write)
     cfg.service(terraform_provider_versions); // GET …/versions
-                                              // RubyGems — yank/unyank/publish before download (same /api/v1/gems prefix, different methods)
+                                              // Terraform service discovery, at the host root rather than under
+                                              // `/proxy/{registry}/` — that is where the protocol looks for it. Answers
+                                              // only on a host bound to one registry (RFC 0009 §7.2).
+    cfg.service(terraform_discovery); // GET /.well-known/terraform.json
+                                      // ...and the path the host-routing middleware rewrites that to, which is
+                                      // the only path it can arrive on: registered here, above the npm/cargo
+                                      // catch-all that used to claim it (RFC 0009 §12.11).
+    cfg.service(terraform_discovery_host_routed); // GET /proxy/{registry}/.well-known/terraform.json
+                                                  // The provider network mirror. Four- and five-segment patterns ending in a
+                                                  // literal `.json`, so they must precede the shared npm wildcards below —
+                                                  // and they are registered after every literal `/v1/…` route above, because
+                                                  // `{hostname}/{namespace}/{ptype}/index.json` would otherwise claim
+                                                  // `v1/providers/{ns}/index.json`-shaped paths.
+                                                  // `index.json` first: `index` is a perfectly good `{version}` capture, so
+                                                  // the version route claims the index path if it is registered first — which
+                                                  // it was, and `protocol_conformance.rs` is what said so.
+    cfg.service(terraform_mirror_index); // GET …/{host}/{ns}/{type}/index.json
+    cfg.service(terraform_mirror_version); // GET …/{host}/{ns}/{type}/{ver}.json
+                                           // RubyGems — yank/unyank/publish before download (same /api/v1/gems prefix, different methods)
     cfg.service(gem_yank);
     cfg.service(gem_unyank);
     cfg.service(gem_publish);
-    // gemspec (literal "quick/Marshal.4.8") before generic gem download
+    // RubyGems compact index — what Bundler actually resolves from (RFC 0009
+    // §7.3). All three are literal-prefix routes and must precede the shared
+    // npm `{package}` / `{package}/{version}` wildcards below, which otherwise
+    // answer `/versions` and `/names` as two-segment packument requests and
+    // `/info/{gem}` as a version lookup. That is not hypothetical: it is what
+    // they did before these routes existed, and
+    // `protocol_conformance.rs` pins each one against the catch-all that ate it.
+    cfg.service(gem_compact_versions); // GET …/versions
+    cfg.service(gem_compact_names); // GET …/names
+    cfg.service(gem_compact_info); // GET …/info/{gem}
+                                   // gemspec (literal "quick/Marshal.4.8") before generic gem download
     cfg.service(gem_gemspec);
     cfg.service(gem_download);
     cfg.service(gem_info);
@@ -723,16 +817,27 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(composer_upload); // POST …/api/upload
     cfg.service(composer_yank); // DELETE …/api/packages/{vendor}/{package}/versions/{version}
     cfg.service(composer_security_advisories); // GET …/api/security-advisories/
+    cfg.service(composer_search); // GET …/search.json  (literal, before packages.json)
+    cfg.service(composer_list); // GET …/list.json
     cfg.service(composer_p2_metadata); // GET …/p2/{path:.*}
     cfg.service(composer_dist); // GET …/dist/{vendor}/{package}/{version}
     cfg.service(composer_packages_json); // GET …/packages.json
                                          // PyPI: publish (POST /legacy/) before simple package (GET /simple/{pkg}/) before root (GET /simple/) before file download
     cfg.service(pypi_publish); // POST …/legacy/
+    cfg.service(pypi_json); // GET …/pypi/{package}/json (literal, before the npm wildcards)
     cfg.service(pypi_simple_package); // GET …/simple/{package}/
     cfg.service(pypi_simple_root); // GET …/simple/
     cfg.service(pypi_file_download); // GET …/packages/{filename}
                                      // Conda: literal repodata routes before wildcard file download; publish (POST) before GET
     cfg.service(conda_publish); // POST …/{platform}/
+                                // Compressed variants before the plain one: `repodata.json.zst` would
+                                // otherwise be matched by nothing at all and fall through to the npm
+                                // three-segment catch-all, which is what it did before these existed
+                                // (RFC 0009 §7.5). `channeldata.json` is channel-root, so it must precede
+                                // the two-segment npm catch-all as well.
+    cfg.service(conda_channeldata); // GET …/channeldata.json
+    cfg.service(conda_repodata_zst); // GET …/{platform}/repodata.json.zst
+    cfg.service(conda_repodata_bz2); // GET …/{platform}/repodata.json.bz2
     cfg.service(conda_repodata); // GET …/{platform}/repodata.json
     cfg.service(conda_current_repodata); // GET …/{platform}/current_repodata.json
     cfg.service(conda_file_download); // GET …/{platform}/{filename}
@@ -779,13 +884,42 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                                     // taken for a publisher name. `require_vsx` would 404 a misrouted request
                                     // rather than answer it wrongly, but a 404 on JetBrains' plugin API is a
                                     // broken registry all the same.
+                                    // `ovsx publish` (RFC 0009 §12.6). Literal `api/-/` prefix, so it must
+                                    // precede the greedy `api/{namespace}/{extension}` below — `-` would
+                                    // otherwise be taken for a publisher name.
+                                    // `api/version` is a literal two-segment path and must precede
+                                    // `api/{namespace}`, which would otherwise take `version` for a publisher.
+    cfg.service(openvsx_version); // GET …/api/version
+    cfg.service(openvsx_publish); // POST …/api/-/publish
     cfg.service(openvsx_search); // GET …/api/-/search
     cfg.service(openvsx_file); // GET …/api/{ns}/{ext}/{v}/file/{name}
     cfg.service(openvsx_extension_version); // GET …/api/{ns}/{ext}/{v}
     cfg.service(openvsx_extension); // GET …/api/{ns}/{ext}
-                                    // npm audit pass-through (literal "/-/npm/v1/audit/{quick,bulk}" paths — bulk before quick)
+                                    // Shortest of the `api/…` family, so last: it would otherwise claim every
+                                    // two-segment `api/{x}` path including `api/version`.
+    cfg.service(openvsx_namespace); // GET …/api/{namespace}
+                                    // Search (RFC 0009 §7.7). All three are literal-prefix routes that must
+                                    // precede the shared npm `{package}` wildcards below; `api/v1/crates` must
+                                    // also precede openvsx's `api/{namespace}/{extension}`, which ate it before
+                                    // this route existed.
+    cfg.service(npm_search); // GET …/-/v1/search
+                             // The rest of npm's CLI surface (RFC 0009 §7.1). All literal `-/` prefixes,
+                             // registered before the shared `{package}/{version}` catch-all — which
+                             // until now answered `-/whoami` and `-/ping` with **200 and a package
+                             // document**, taking `-` for a package name.
+    cfg.service(npm_whoami); // GET …/-/whoami
+    cfg.service(npm_ping); // GET …/-/ping
+    cfg.service(npm_dist_tag_add); // PUT …/-/package/{pkg}/dist-tags/{tag}
+    cfg.service(npm_dist_tag_remove); // DELETE …/-/package/{pkg}/dist-tags/{tag}
+    cfg.service(npm_dist_tags); // GET …/-/package/{pkg}/dist-tags
+                                // npm audit pass-through. The first two are the paths npm actually sends
+                                // (RFC 0009 §7.1); the `_legacy` pair are the invented ones we shipped,
+                                // kept as aliases until a release that can drop them. Bulk before quick in
+                                // each pair, as the longer literal.
     cfg.service(audit_bulk);
     cfg.service(audit_quick);
+    cfg.service(audit_bulk_legacy);
+    cfg.service(audit_quick_legacy);
     // npm tarball (literal "tarball" suffix)
     cfg.service(npm_download_tarball);
     // npm publish (PUT same path as packument — different method, registered before GET)

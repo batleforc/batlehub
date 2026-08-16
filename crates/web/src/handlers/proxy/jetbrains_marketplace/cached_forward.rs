@@ -125,9 +125,17 @@ async fn forward_ttl(svc: &ProxyService, registry: &str) -> std::time::Duration 
 
 async fn serve_stale_or(
     svc: &ProxyService,
+    registry: &str,
     cache_key: &str,
     err: AppError,
 ) -> Result<ForwardedBody, AppError> {
+    // Bounded by the registry's own `serve_stale_metadata`, like every other
+    // stale-on-error path (RFC 0009 §4.2). This used to serve stale
+    // unconditionally, so an operator who turned stale serving off — because for
+    // their estate a stale answer is worse than none — still got one here.
+    if !svc.serves_stale(registry).await {
+        return Err(err);
+    }
     match svc.cache.get_stale(cache_key).await {
         Ok(Some(stale)) => {
             if let Some(body) = body_from_entry(&stale) {
@@ -151,6 +159,7 @@ async fn handle_upstream_response(
         Err(e) => {
             return serve_stale_or(
                 svc,
+                registry,
                 cache_key,
                 AppError::bad_gateway(format!("upstream request failed: {e}")),
             )
@@ -168,7 +177,7 @@ async fn handle_upstream_response(
         // A 404 is an authoritative answer, not an outage — only server-side
         // failures fall back to stale.
         if status.is_server_error() {
-            return serve_stale_or(svc, cache_key, err).await;
+            return serve_stale_or(svc, registry, cache_key, err).await;
         }
         return Err(err);
     }

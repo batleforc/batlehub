@@ -24,7 +24,7 @@ use batlehub_web::{
     configure_app, healthz, livez, prometheus_metrics, security_headers, AccessConfigLock, ApiDoc,
     CargoIndexMap, CliBinaryPath, HostRoutingMiddlewareFactory, IpBlockMiddlewareFactory,
     ProxyTrust, RateLimitMiddlewareFactory, RateLimitService, RegistryHostMap, RegistryMap,
-    RegistryModeMap, UpstreamMap, UserBlockMiddlewareFactory, VulnDbMap,
+    RegistryModeMap, SumDbMap, UpstreamMap, UserBlockMiddlewareFactory, VulnDbMap,
 };
 
 // ── Tracing span builder ──────────────────────────────────────────────────────
@@ -107,6 +107,7 @@ pub(super) struct ServerParams {
     pub registry_host_map: RegistryHostMap,
     pub cargo_index_map: CargoIndexMap,
     pub vuln_db_map: VulnDbMap,
+    pub sumdb_map: SumDbMap,
     pub rate_limit_svc: Arc<RateLimitService>,
     pub auth_providers: Vec<Arc<dyn AuthProvider>>,
     pub reload_svc: Arc<ConfigReloadService>,
@@ -152,6 +153,7 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
         registry_host_map,
         cargo_index_map,
         vuln_db_map,
+        sumdb_map,
         rate_limit_svc,
         auth_providers,
         reload_svc,
@@ -193,6 +195,7 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
         let mut app = app
             .app_data(web::Data::new(cargo_index_map.clone()))
             .app_data(web::Data::new(vuln_db_map.clone()))
+            .app_data(web::Data::new(sumdb_map.clone()))
             .app_data(web::Data::new(local_svc.clone()))
             .app_data(web::Data::new(Arc::clone(&quota_svc)))
             .app_data(web::Data::new(Arc::clone(&stats_history)))

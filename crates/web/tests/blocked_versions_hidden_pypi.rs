@@ -201,3 +201,45 @@ async fn proxy_direct_request_for_a_blocked_version_is_still_denied() {
         .to_request();
     assert_eq!(call_service(&app, req).await.status(), 403);
 }
+
+// ── PEP 658 metadata siblings (RFC 0009 §12.7) ───────────────────────────────
+//
+// The simple page BatleHub serves carries upstream's `data-core-metadata`
+// attribute — the href rewrite only touches `href`. pip then requests
+// `{file}.metadata`, and on a `404` it **fails the install** rather than
+// falling back to downloading the wheel. Measured against pip 26.1.2.
+//
+// So the sibling has to resolve. It is not a distribution of its own: the
+// coordinate comes from the stripped filename, and the full name stays the
+// artifact sub-coordinate so the two are cached apart.
+
+#[actix_web::test]
+async fn a_metadata_sibling_resolves_to_its_distributions_coordinate() {
+    let app = app().await;
+
+    let wheel = "/proxy/local-pypi/packages/requests-1.0.0-py3-none-any.whl";
+    let sibling = format!("{wheel}.metadata");
+
+    let mut statuses = Vec::new();
+    for uri in [wheel, sibling.as_str()] {
+        let req = TestRequest::get()
+            .uri(uri)
+            .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+            .to_request();
+        statuses.push(call_service(&app, req).await.status());
+    }
+
+    // Whatever the distribution itself answers, the sibling must answer the
+    // same way — in particular it must never be a 422 "cannot parse PyPI
+    // filename", which is what rejected it before.
+    assert_ne!(
+        statuses[1].as_u16(),
+        422,
+        "the .metadata sibling was rejected as an unparseable filename; pip \
+         fails the install on that rather than falling back"
+    );
+    assert_eq!(
+        statuses[0], statuses[1],
+        "the sibling should follow its distribution's fate, not diverge from it"
+    );
+}

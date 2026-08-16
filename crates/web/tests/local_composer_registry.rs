@@ -28,7 +28,57 @@ async fn composer_packages_json_proxy_mode_returns_metadata_url() {
         metadata_url.contains("/proxy/local-composer/p2/%package%.json"),
         "metadata-url must point to our p2 endpoint"
     );
-    assert_eq!(body["available-packages"], serde_json::json!([]));
+    // `available-packages` must be **absent**, not empty. Composer reads it as
+    // the complete contents of the repository, so `[]` says "there is nothing
+    // here" and it stops: it never requests `metadata-url` for any package and
+    // reports each one as "could not be found in any version".
+    //
+    // This assertion used to require `[]`, which is how the bug survived — the
+    // wire shape was pinned without asking what the client does with it.
+    // Measured with Composer 2.10.2 against a real server (RFC 0009 §12.10).
+    assert!(
+        body.get("available-packages").is_none(),
+        "proxy mode cannot enumerate upstream, so claiming a complete list \
+         makes Composer resolve nothing; got {:?}",
+        body.get("available-packages")
+    );
+}
+
+/// Hybrid knows its own packages and not upstream's, so it cannot make the
+/// completeness claim either — advertising the local list would hide every
+/// proxied package from resolution.
+#[actix_web::test]
+async fn composer_packages_json_hybrid_mode_omits_available_packages() {
+    let app = make_local_composer_app(RegistryMode::Hybrid).await;
+
+    let zip = make_composer_zip("acme/my-pkg", "1.0.0");
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip)
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/packages.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert!(
+        body.get("available-packages").is_none(),
+        "a hybrid registry that lists only its local packages tells Composer \
+         upstream's do not exist; got {:?}",
+        body.get("available-packages")
+    );
+    // The package is still resolvable — through `metadata-url`, which is the
+    // endpoint a proxy can actually answer for anything.
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/p2/acme/my-pkg.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
 }
 
 #[actix_web::test]

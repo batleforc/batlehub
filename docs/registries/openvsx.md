@@ -128,10 +128,24 @@ curl -s -H "Authorization: Bearer <your-token>" \
 
 ### Endpoint reference
 
+<!-- BEGIN endpoints: proxy/openvsx -->
 | Method | Path | Description |
 |--------|------|-------------|
-| `PUT` | `/proxy/{registry}/{extension_id}/{version}/vsix` | Upload VSIX |
-| `GET` | `/proxy/{registry}/{extension_id}/{version}/vsix` | Download VSIX |
+| `GET` | `/proxy/{registry}/{extension_id}/{version}/vsix` | Download a VS Code extension VSIX package. |
+| `PUT` | `/proxy/{registry}/{extension_id}/{version}/vsix` | Upload a VS Code extension VSIX package. |
+| `POST` | `/proxy/{registry}/api/-/publish` | `ovsx publish` — `POST /api/-/publish`. |
+| `GET` | `/proxy/{registry}/api/-/search` | Search the registry — `GET …/api/-/search`. |
+| `GET` | `/proxy/{registry}/api/{namespace}` | `GET /api/{namespace}` — what a publisher has here. |
+| `GET` | `/proxy/{registry}/api/{namespace}/{extension}` | The newest version of one extension — `GET …/api/{namespace}/{extension}`. |
+| `GET` | `/proxy/{registry}/api/{namespace}/{extension}/{version}` | One specific version — `GET …/api/{namespace}/{extension}/{version}`. |
+| `GET` | `/proxy/{registry}/api/{namespace}/{extension}/{version}/file/{filename}` | One file out of an extension — `GET …/api/{ns}/{ext}/{version}/file/{name}`. |
+| `GET` | `/proxy/{registry}/api/version` | `GET /api/version` — the registry's own version document. |
+| `GET` | `/proxy/{registry}/vscode/asset/{publisher}/{name}/{version}/{asset_type}` | `GET …/vscode/asset/{publisher}/{name}/{version}/{asset_type}` |
+| `POST` | `/proxy/{registry}/vscode/gallery/extensionquery` | Query the extension gallery. |
+| `GET` | `/proxy/{registry}/vscode/gallery/publishers/{publisher}/vsextensions/{name}/{version}/vspackage` | `GET …/vscode/gallery/publishers/{publisher}/vsextensions/{name}/{version}/vspackage` |
+| `GET` | `/proxy/{registry}/vscode/item` | `GET …/vscode/item?itemName=publisher.name` |
+| `GET` | `/proxy/{registry}/vscode/unpkg/{publisher}/{name}/{version}/{path}` | `GET …/vscode/unpkg/{publisher}/{name}/{version}/{path}` |
+<!-- END endpoints -->
 
 ---
 

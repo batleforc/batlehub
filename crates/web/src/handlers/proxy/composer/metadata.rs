@@ -49,21 +49,51 @@ pub async fn composer_packages_json(
     let metadata_url = format!("{base_url}/p2/%package%.json");
 
     let mode = mode_map.get(&registry);
-    let available_packages: Vec<String> =
-        if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+    // `available-packages` is an assertion that this list is the **complete**
+    // contents of the repository, and Composer treats it as authoritative: a
+    // package absent from it is not requested at all, whatever `metadata-url`
+    // would have answered.
+    //
+    // So it may only be sent when the claim is true — `local` mode, where this
+    // registry is the whole world. It used to be sent in every mode
+    // (RFC 0009 §12.10):
+    //
+    // - **proxy** sent `[]`, which says "this repository is empty". Composer
+    //   read that, never requested `p2/…`, and reported every package as
+    //   "could not be found in any version". A proxy-mode Composer registry
+    //   could not resolve anything at all.
+    // - **hybrid** sent the locally published packages only, which says
+    //   "upstream's packages do not exist here" — so hybrid could resolve what
+    //   it hosted and nothing it proxied.
+    //
+    // Omitted, Composer falls back to asking `metadata-url` per package, which
+    // is exactly what a proxy can answer.
+    let available_packages: Option<Vec<String>> = if mode == RegistryMode::Local {
+        Some(
             local_svc
                 .get_composer_packages_list(&registry)
                 .await
-                .unwrap_or_default()
-        } else {
-            vec![]
-        };
+                .unwrap_or_default(),
+        )
+    } else {
+        None
+    };
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "packages": [],
         "metadata-url": metadata_url,
-        "available-packages": available_packages,
+        // Composer discovers every endpoint but `packages.json` itself from a
+        // URL template here. Without these two it never requests `search.json`
+        // or `list.json`, however correctly they are implemented — measured
+        // against Composer 2.10.2, which is how phase 6's search route and
+        // phase 7's list route were found to be unreachable (RFC 0009 §12.5).
+        "search": format!("{base_url}/search.json?q=%query%&type=%type%"),
+        "list": format!("{base_url}/list.json"),
     });
+
+    if let (Some(list), Some(obj)) = (available_packages, body.as_object_mut()) {
+        obj.insert("available-packages".to_owned(), serde_json::json!(list));
+    }
 
     Ok(HttpResponse::Ok()
         .content_type("application/json")
@@ -239,6 +269,7 @@ pub async fn composer_security_advisories(
     _identity: AuthIdentity,
     map: web::Data<RegistryMap>,
     upstream_map: web::Data<UpstreamMap>,
+    svc: web::Data<Arc<ProxyService>>,
     client: web::Data<reqwest::Client>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
@@ -256,20 +287,18 @@ pub async fn composer_security_advisories(
         format!("{upstream}/api/security-advisories/?{query}")
     };
 
-    let resp = client.get(&url).send().await.map_err(|e| {
-        AppError::bad_gateway(format!("upstream security advisory request failed: {e}"))
-    })?;
-
-    let status = actix_web::http::StatusCode::from_u16(resp.status().as_u16())
-        .unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR);
-    let body = resp
-        .bytes()
-        .await
-        .map_err(|e| AppError::bad_gateway(format!("reading security advisory response: {e}")))?;
-
-    Ok(HttpResponse::build(status)
-        .content_type("application/json")
-        .body(body))
+    // Through the §4.2 helper like every other advisory passthrough: a
+    // `composer audit` whose upstream is unreachable is answered from cache
+    // rather than failed, for the same reason `npm audit` is.
+    let key = format!("advisories:{registry}:{query}");
+    crate::handlers::proxy::upstream::cached_forward(
+        &svc,
+        &client,
+        &registry,
+        &key,
+        crate::handlers::proxy::upstream::Outbound::get(url),
+    )
+    .await
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

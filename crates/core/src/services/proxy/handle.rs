@@ -506,6 +506,34 @@ impl ProxyService {
     /// The snapshot lives in the metadata cache rather than in a process-local
     /// map, so a Redis-backed deployment shares one query across replicas
     /// instead of one per replica.
+    /// The fingerprint of this registry's current blocked-set snapshot.
+    ///
+    /// For a caller that caches something *derived* from a filtered
+    /// multi-package document — conda's compressed `repodata.json` — and needs
+    /// the derived entry to change when the blocks do. Reads the same snapshot
+    /// the filter uses, so the two cannot disagree about what is blocked.
+    /// The registry-wide blocked set, for callers outside the listing path.
+    ///
+    /// Search needs it: a result page names many packages, so a per-package
+    /// query would be one query per hit.
+    pub async fn blocked_in_registry_snapshot_public(
+        &self,
+        registry: &str,
+        kind: crate::entities::RegistryKind,
+    ) -> crate::services::blocking::MultiPackageBlocks {
+        self.blocked_in_registry_snapshot(registry, kind).await
+    }
+
+    pub async fn blocked_snapshot_fingerprint(
+        &self,
+        registry: &str,
+        kind: crate::entities::RegistryKind,
+    ) -> String {
+        self.blocked_in_registry_snapshot(registry, kind)
+            .await
+            .fingerprint()
+    }
+
     async fn blocked_in_registry_snapshot(
         &self,
         registry: &str,

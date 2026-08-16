@@ -16,5 +16,8 @@ pub mod openvsx;
 pub mod pypi;
 pub mod repo;
 pub mod rubygems;
+pub mod search;
 pub mod terraform;
+/// The only outbound HTTP under this tree — see RFC 0009 §4.2.
+pub mod upstream;
 pub mod vsx;

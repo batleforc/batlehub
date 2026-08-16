@@ -192,6 +192,39 @@ impl MultiPackageBlocks {
             .get(name)
             .is_some_and(|versions| versions.contains(normalize(self.kind, version).as_ref()))
     }
+
+    /// A stable digest of exactly which `(package, version)` pairs are blocked.
+    ///
+    /// For caching something *derived from a filtered document* — conda's
+    /// compressed `repodata.json`, where recompressing tens of megabytes per
+    /// request is not affordable but serving a copy filtered under an older
+    /// block list would re-open the hole RFC 0006 closed.
+    ///
+    /// Keying the derived artifact by this makes a block change produce a
+    /// different key, so the stale entry is never read rather than being
+    /// evicted — which is what lets the cache be correct without a TTL race.
+    ///
+    /// Sorted before hashing because `HashMap` iteration order is not stable
+    /// across processes, and two replicas must agree on the key or they cache
+    /// the same bytes twice.
+    pub fn fingerprint(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut pairs: Vec<(&str, &str)> = self
+            .blocked
+            .iter()
+            .flat_map(|(name, versions)| versions.iter().map(move |v| (name.as_str(), v.as_str())))
+            .collect();
+        pairs.sort_unstable();
+
+        let mut h = Sha256::new();
+        for (name, version) in pairs {
+            h.update(name.as_bytes());
+            h.update(b"\0");
+            h.update(version.as_bytes());
+            h.update(b"\0");
+        }
+        hex::encode(&h.finalize()[..16])
+    }
 }
 
 /// Remove every blocked package from a multi-package index.
@@ -207,7 +240,29 @@ pub fn dispatch_multi(
         return Vec::new();
     }
     let removed = match ctx.kind {
-        RegistryKind::Conda => with_json(doc, |json| conda::strip_repodata(json, blocked)),
+        RegistryKind::Conda => match ctx.document {
+            // `channeldata.json` summarises a channel by *package*, with a
+            // `version` field naming the newest release of each. Blocking that
+            // release has to move the summary onto one that is still allowed,
+            // exactly as RubyGems' gem document does — not drop the package,
+            // which would tell `conda search` it does not exist.
+            DocumentKind::CHANNELDATA => {
+                with_json(doc, |json| conda::strip_channeldata(json, blocked))
+            }
+            _ => with_json(doc, |json| conda::strip_repodata(json, blocked)),
+        },
+
+        // RubyGems' compact index `/versions` is a whole-registry document for
+        // the same reason `repodata.json` is — one line per gem — so it takes
+        // the same entry point. `/names` is *not* here: it lists gem names and
+        // no versions, so it names nothing to hide (RFC 0009 §7.3).
+        RegistryKind::Rubygems => match ctx.document {
+            DocumentKind::COMPACT_VERSIONS => {
+                with_text(doc, |text| rubygems::strip_compact_versions(text, blocked))
+            }
+            _ => Vec::new(),
+        },
+
         other => {
             tracing::warn!(
                 kind = %other,
@@ -351,6 +406,16 @@ fn strip(
             // as well. That composition belongs to the handler, which has both;
             // here the document passes through untouched.
             DocumentKind::GEM => Vec::new(),
+            // The compact index's per-gem document — what Bundler reads once
+            // `/versions` has told it which gems to look at (RFC 0009 §7.3).
+            DocumentKind::COMPACT_INFO => {
+                with_text(doc, |text| rubygems::strip_compact_info(text, blocked))
+            }
+            // `/versions` is whole-registry and goes through `dispatch_multi`;
+            // `/names` names no version. Neither reaches here, and both are
+            // `Vec::new()` rather than a fall-through to the versions-API
+            // filter, which would try to parse plain text as JSON.
+            DocumentKind::COMPACT_VERSIONS | DocumentKind::COMPACT_NAMES => Vec::new(),
             _ => with_json(doc, |json| rubygems::strip_versions(json, blocked)),
         }),
 
@@ -739,6 +804,22 @@ mod tests {
         RegistryKind::VscodeMarketplace,
     ];
 
+    /// Exemptions at *document* granularity, for a kind that is otherwise
+    /// filtered through `strip`.
+    ///
+    /// `FILTERED_ELSEWHERE` above exempts a whole kind, which is too blunt for
+    /// RubyGems: its JSON APIs go through `strip` and must keep being checked,
+    /// while two of its compact-index documents do not go through `strip` at
+    /// all. Each entry carries the reason, so the list cannot become a place to
+    /// park work.
+    const DOCUMENTS_FILTERED_ELSEWHERE: &[(RegistryKind, &str, &str)] = &[(
+        RegistryKind::Rubygems,
+        "compact-versions",
+        "whole-registry document: one line per gem, so it filters through \
+             `dispatch_multi` against the registry-wide blocked set, exactly as conda's \
+             `repodata.json` does",
+    )];
+
     #[test]
     fn best_latest_prefers_stable_over_prerelease() {
         let vs = ["1.0.0".to_owned(), "2.0.0-rc.1".to_owned()];
@@ -943,5 +1024,94 @@ mod tests {
                 "{kind}: listing_filter() advertises {advertised} but strip() reaches a filter: {reachable}"
             );
         }
+    }
+
+    /// The same contract, per *document* rather than per kind — RFC 0009 §4.1.
+    ///
+    /// The test above is exhaustive over `RegistryKind` and blind to
+    /// `DocumentKind`: it only ever asks about `Versions`. So a kind already
+    /// answering "filtered" for its primary listing could grow a second,
+    /// unfiltered document and nothing would complain. That is exactly how
+    /// RubyGems' gap survived — `specs.4.8.gz` was named and marked
+    /// `Unsupported`, and nothing recorded that the document Bundler actually
+    /// reads was neither served nor named.
+    ///
+    /// This walks every `DocumentKind` each advertised `ListingDocument` claims
+    /// to cover and requires `strip` to reach a filter for it.
+    #[test]
+    fn every_advertised_document_reaches_a_filter() {
+        use crate::entities::ListingSupport;
+
+        for kind in RegistryKind::ALL {
+            if FILTERED_ELSEWHERE.contains(kind) {
+                continue;
+            }
+            for entry in kind.listing_filter() {
+                if matches!(entry.support, ListingSupport::Unsupported(_)) {
+                    assert!(
+                        entry.documents.is_empty(),
+                        "{kind}: {:?} is Unsupported but names DocumentKinds {:?} — an \
+                         unsupported row describes something `strip` never sees",
+                        entry.label,
+                        entry.documents
+                    );
+                    continue;
+                }
+
+                for name in entry.documents {
+                    if DOCUMENTS_FILTERED_ELSEWHERE
+                        .iter()
+                        .any(|(k, d, _)| k == kind && d == name)
+                    {
+                        continue;
+                    }
+                    let document = document_kind_named(name).unwrap_or_else(|| {
+                        panic!(
+                            "{kind}: {:?} names document kind {name:?}, which no \
+                             `DocumentKind` answers to — a typo here would otherwise \
+                             skip the document silently",
+                            entry.label
+                        )
+                    });
+
+                    let mut doc = VersionDocument::json(serde_json::json!({}));
+                    let blocked = BlockedVersions::new(*kind, vec!["1.0.0".to_owned()]);
+                    let ctx = ListingContext {
+                        registry: "r1",
+                        kind: *kind,
+                        document,
+                        package: "p",
+                        public_base: "https://h/proxy/r1",
+                    };
+
+                    assert!(
+                        strip(&ctx, &mut doc, &blocked).is_some(),
+                        "{kind}: listing_filter() advertises {:?} as covering the {name:?} \
+                         document, but strip() reaches no filter for it",
+                        entry.label
+                    );
+                }
+            }
+        }
+    }
+
+    /// Resolve a `listing_filter()` discriminant back to its `DocumentKind`.
+    ///
+    /// The named constants plus `Versions`. Anything else is a typo, and the
+    /// caller panics rather than skipping.
+    fn document_kind_named(name: &str) -> Option<DocumentKind> {
+        const KNOWN: &[DocumentKind] = &[
+            DocumentKind::Versions,
+            DocumentKind::REGISTRATION,
+            DocumentKind::GEM,
+            DocumentKind::LATEST,
+            DocumentKind::CURRENT_REPODATA,
+            DocumentKind::P2_DEV,
+            DocumentKind::SIMPLE_JSON,
+            DocumentKind::COMPACT_VERSIONS,
+            DocumentKind::COMPACT_INFO,
+            DocumentKind::COMPACT_NAMES,
+        ];
+        KNOWN.iter().find(|k| k.as_str() == name).copied()
     }
 }

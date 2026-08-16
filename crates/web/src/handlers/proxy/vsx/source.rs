@@ -164,7 +164,7 @@ pub async fn search_entries(
     }
 
     entries.retain(|e| e.matches(query));
-    entries.sort_by_key(|e| e.qualified_name());
+    sort_entries(&mut entries, query);
     let total = entries.len();
     Ok((paginate(entries, query), total))
 }
@@ -186,6 +186,53 @@ async fn authorize_gallery_read(
     )
     .await
     .map_err(AppError::from)
+}
+
+/// Order results as the editor asked (RFC 0009 §7.6).
+///
+/// `sortBy` was parsed and then ignored, so every query came back in qualified-name
+/// order whatever the editor requested — which for "sort by recently updated"
+/// is not a slower answer but a wrong one.
+///
+/// Relevance keeps the qualified-name order: this proxy has no relevance signal
+/// of its own, and a stable, predictable order is a better answer than a
+/// fabricated ranking.
+fn sort_entries(entries: &mut [GalleryEntry], query: &GalleryQuery) {
+    use super::protocol::sort_by;
+
+    /// Newest `lastUpdated` across an entry's versions, or empty when it has
+    /// none — an entry with no versions sorts last rather than crashing.
+    fn newest(e: &GalleryEntry) -> &str {
+        e.versions
+            .iter()
+            .map(|v| v.last_updated.as_str())
+            .max()
+            .unwrap_or("")
+    }
+    /// What the editor shows, which is what "sort by title" means to a user.
+    fn title(e: &GalleryEntry) -> &str {
+        e.display_name.as_deref().unwrap_or(&e.extension_name)
+    }
+
+    match query.sort_by {
+        sort_by::TITLE => entries.sort_by_key(|e| title(e).to_lowercase()),
+        sort_by::PUBLISHER => entries.sort_by(|a, b| {
+            a.publisher
+                .to_lowercase()
+                .cmp(&b.publisher.to_lowercase())
+                .then_with(|| a.qualified_name().cmp(&b.qualified_name()))
+        }),
+        // RFC 3339 sorts correctly as text, which is why `last_updated` is
+        // stored that way rather than parsed here.
+        sort_by::LAST_UPDATED => entries.sort_by(|a, b| newest(b).cmp(newest(a))),
+        _ => entries.sort_by_key(|e| e.qualified_name()),
+    }
+
+    // `sortOrder` 2 is an explicit descending request; 1 and 0 leave the
+    // per-field default above, which is already descending for recency.
+    if query.sort_order == 2 && query.sort_by != sort_by::LAST_UPDATED {
+        entries.reverse();
+    }
 }
 
 fn paginate(entries: Vec<GalleryEntry>, query: &GalleryQuery) -> Vec<GalleryEntry> {

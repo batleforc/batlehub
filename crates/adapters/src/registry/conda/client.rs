@@ -121,6 +121,17 @@ impl RegistryClient for CondaRegistryClient {
         let filename = match kind {
             DocumentKind::Versions => "repodata.json",
             DocumentKind::CURRENT_REPODATA => "current_repodata.json",
+            // Channel-root rather than per-subdir: `channeldata.json` describes
+            // every platform at once, so it takes no `{package}` path segment
+            // (RFC 0009 §7.5).
+            DocumentKind::CHANNELDATA => {
+                let base = self.base_url.trim_end_matches('/');
+                return fetch_json_document(
+                    self.get(&format!("{base}/channeldata.json")),
+                    "conda channeldata.json",
+                )
+                .await;
+            }
             other => {
                 return Err(CoreError::NotSupported(format!(
                     "conda has no '{other}' listing document"

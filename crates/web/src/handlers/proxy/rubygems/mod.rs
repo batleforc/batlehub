@@ -19,10 +19,13 @@ use crate::{
 };
 use batlehub_core::entities::NotificationEventType;
 
+pub mod compact;
 pub mod download;
 pub mod publish;
+mod range;
 pub mod specs;
 
+pub use compact::{gem_compact_info, gem_compact_names, gem_compact_versions};
 pub use download::{gem_download, gem_gemspec, gem_info, gem_versions};
 pub use publish::{gem_publish, gem_unyank, gem_yank, GemYankQuery};
 pub use specs::{gem_specs_full, gem_specs_latest, gem_specs_prerelease};

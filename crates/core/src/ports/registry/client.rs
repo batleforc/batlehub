@@ -143,6 +143,40 @@ impl DocumentKind {
     /// metadata cache, whichever representation warmed the entry would be
     /// served to clients that asked for the other.
     pub const SIMPLE_JSON: Self = Self::Secondary("simple-json");
+    /// RubyGems' compact index `/versions` — every gem in the registry, one
+    /// line each, as against the per-gem JSON APIs.
+    ///
+    /// RFC 0009 §7.3. Bundler resolves from the compact index first and only
+    /// falls back to `specs.4.8.gz` — the one index `listing_filter()` marks
+    /// `Unsupported` — when it is absent. Which it was, so every
+    /// `bundle install` read the unfiltered index.
+    pub const COMPACT_VERSIONS: Self = Self::Secondary("compact-versions");
+    /// RubyGems' compact index `/info/{gem}` — one gem's versions and
+    /// dependencies, as plain text.
+    pub const COMPACT_INFO: Self = Self::Secondary("compact-info");
+    /// conda's `channeldata.json` — the cross-platform channel summary
+    /// `conda search` reads, as against the per-subdir `repodata.json`.
+    pub const CHANNELDATA: Self = Self::Secondary("channeldata");
+    /// RubyGems' compact index `/names` — gem names only.
+    ///
+    /// Names no version, so unlike its two siblings it carries no filtering
+    /// obligation: a gem with one blocked version still exists.
+    pub const COMPACT_NAMES: Self = Self::Secondary("compact-names");
+    /// Terraform's provider *download* document — one platform of one version,
+    /// as against the versions listing.
+    ///
+    /// RFC 0009 §12.12. These are different documents with different shapes,
+    /// and the proxy path used to answer a download request with the listing:
+    /// no `os`, no `arch`, no `filename`, no `shasum`, and `signing_keys`
+    /// defaulted to empty. Terraform 1.8.5 rejected it with *"registry response
+    /// to request for linux_amd64 archive has incorrect target _"* — the empty
+    /// `os` and `arch` joined by an underscore — so no provider could be
+    /// installed through a proxy-mode registry at all.
+    ///
+    /// The package name carries `{version}/download/{os}/{arch}` because that is
+    /// what addresses the document, and it keeps one cache entry per platform
+    /// rather than one per provider.
+    pub const PROVIDER_DOWNLOAD: Self = Self::Secondary("provider-download");
 
     /// The cache-key and log discriminant.
     pub fn as_str(&self) -> &'static str {

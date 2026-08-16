@@ -20,21 +20,27 @@ use super::common::{
 };
 use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
-    RegistryModeMap, UpstreamMap,
+    RegistryModeMap,
 };
 use batlehub_core::entities::NotificationEventType;
 
+pub mod discovery;
 pub mod modules;
 pub mod providers;
 mod shared;
 
+pub use discovery::{
+    terraform_discovery, terraform_discovery_host_routed, terraform_mirror_index,
+    terraform_mirror_version,
+};
 pub use modules::{
-    terraform_module_artifact, terraform_module_download, terraform_module_unyank,
-    terraform_module_upload, terraform_module_versions, terraform_module_yank,
+    terraform_module_artifact, terraform_module_download, terraform_module_metadata,
+    terraform_module_unyank, terraform_module_upload, terraform_module_versions,
+    terraform_module_yank,
 };
 pub use providers::{
     terraform_provider_artifact, terraform_provider_binary_upload, terraform_provider_download,
-    terraform_provider_unyank, terraform_provider_upload, terraform_provider_versions,
-    terraform_provider_yank,
+    terraform_provider_shasums, terraform_provider_shasums_sig, terraform_provider_unyank,
+    terraform_provider_upload, terraform_provider_versions, terraform_provider_yank,
 };
 pub(super) use shared::{terraform_set_yanked, terraform_versions_response, TerraformYankRequest};

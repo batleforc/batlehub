@@ -1,0 +1,360 @@
+//! The search routes that had none: npm, cargo and Composer.
+//!
+//! RFC 0009 §7.7. Three protocols, three response shapes, one path — every one
+//! of them renders from [`ProxyService::search`], so they cannot come to
+//! disagree about what this registry contains or about which versions a block
+//! has hidden.
+//!
+//! NuGet's `/v3/query` and the `vsx` gallery are the other two callers; they
+//! live with their own protocols because both had a route already (NuGet's
+//! returning a hardcoded empty result, which is what §5.1 is about).
+
+use std::sync::Arc;
+
+use actix_web::{get, web, HttpResponse, Responder};
+use serde::Deserialize;
+
+use batlehub_config::schema::RegistryMode;
+use batlehub_core::services::{LocalRegistryService, ProxyService, SearchHit, SearchMode};
+
+use crate::handlers::proxy::common::require_registry_type;
+use crate::handlers::schemas::ProtocolDocument;
+use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+
+/// The packages this registry has *published*, as search hits.
+///
+/// Supplied by the caller rather than read inside `ProxyService::search`
+/// because published packages live in `LocalRegistryBackend`, a different store
+/// from the `PackageRepository` the proxy's held set comes from — the first
+/// records what was published here, the second what was fetched through here.
+/// A local-mode registry has only the first, which is why a search that read
+/// only the second returned nothing for a package it had just accepted.
+pub(crate) async fn local_hits(
+    local_svc: &LocalRegistryService,
+    registry: &str,
+    query: &str,
+    limit: usize,
+) -> Vec<SearchHit> {
+    let names = local_svc
+        .backend
+        .list_package_names(registry)
+        .await
+        .unwrap_or_default();
+
+    let q = query.to_lowercase();
+    let mut out = Vec::new();
+    for name in names {
+        if !q.is_empty() && !name.to_lowercase().contains(&q) {
+            continue;
+        }
+        // The newest published version, so a hit names something installable
+        // rather than an empty string — which is what the NuGet local branch
+        // used to emit and what made its `versions[]` unusable.
+        let version = local_svc
+            .backend
+            .get_versions(registry, &name)
+            .await
+            .ok()
+            .and_then(|v| v.last().map(|p| p.version.clone()))
+            .unwrap_or_default();
+        out.push(SearchHit {
+            name,
+            version,
+            description: None,
+        });
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out
+}
+
+/// Map a registry mode onto the search sources it may use.
+pub(crate) fn search_mode(mode: RegistryMode) -> SearchMode {
+    match mode {
+        RegistryMode::Local => SearchMode::Local,
+        RegistryMode::Hybrid => SearchMode::Hybrid,
+        RegistryMode::Proxy => SearchMode::Proxy,
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NpmSearchQuery {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default = "default_size")]
+    pub size: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CargoSearchQuery {
+    #[serde(default)]
+    pub q: String,
+    #[serde(default = "default_size")]
+    pub per_page: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ComposerListQuery {
+    #[serde(default)]
+    pub filter: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ComposerSearchQuery {
+    #[serde(default)]
+    pub q: String,
+    #[serde(default = "default_size")]
+    pub per_page: usize,
+}
+
+fn default_size() -> usize {
+    20
+}
+
+/// `npm search` / `npm search --json`.
+#[utoipa::path(
+    get,
+    path = "/proxy/{registry}/-/v1/search",
+    tag = "proxy/npm",
+    params(
+        ("registry" = String, Path, description = "Registry name"),
+        ("text"     = Option<String>, Query, description = "Search text"),
+        ("size"     = Option<usize>, Query, description = "Maximum results"),
+    ),
+    responses(
+        (status = 200, description = "npm search results", body = ProtocolDocument),
+        (status = 404, description = "Unknown or non-npm registry"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[get("/proxy/{registry}/-/v1/search")]
+pub async fn npm_search(
+    path: web::Path<String>,
+    query: web::Query<NpmSearchQuery>,
+    identity: AuthIdentity,
+    svc: web::Data<Arc<ProxyService>>,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
+    map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
+) -> Result<impl Responder, AppError> {
+    let registry = path.into_inner();
+    require_registry_type(&registry, "npm", &map)?;
+    let _ = &identity;
+    let (query_text, limit) = (query.text.clone(), query.size);
+
+    let results = svc
+        .search(
+            &registry,
+            &query_text,
+            limit,
+            search_mode(mode_map.get(&registry)),
+            local_hits(&local_svc, &registry, &query_text, limit).await,
+        )
+        .await
+        .map_err(AppError::from)?;
+
+    let objects: Vec<serde_json::Value> = results
+        .hits
+        .iter()
+        .map(|h| {
+            serde_json::json!({
+                "package": {
+                    "name": h.name,
+                    "version": h.version,
+                    "description": h.description.clone().unwrap_or_default(),
+                }
+            })
+        })
+        .collect();
+
+    // `X-BatleHub-Cache` makes a degraded answer visible rather than silently
+    // short: `stale` means the upstream was unreachable and this came from the
+    // cache or from the packages we hold.
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .insert_header(("X-BatleHub-Cache", results.freshness.header_value()))
+        .json(serde_json::json!({
+            "objects": objects,
+            "total": results.total,
+            "time": chrono::Utc::now().to_rfc3339(),
+        })))
+}
+
+/// `cargo search`.
+#[utoipa::path(
+    get,
+    path = "/proxy/{registry}/api/v1/crates",
+    tag = "proxy/cargo",
+    params(
+        ("registry" = String, Path, description = "Registry name"),
+        ("q"        = Option<String>, Query, description = "Search text"),
+        ("per_page" = Option<usize>, Query, description = "Maximum results"),
+    ),
+    responses(
+        (status = 200, description = "cargo search results", body = ProtocolDocument),
+        (status = 404, description = "Unknown or non-cargo registry"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[get("/proxy/{registry}/api/v1/crates")]
+pub async fn cargo_search(
+    path: web::Path<String>,
+    query: web::Query<CargoSearchQuery>,
+    identity: AuthIdentity,
+    svc: web::Data<Arc<ProxyService>>,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
+    map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
+) -> Result<impl Responder, AppError> {
+    let registry = path.into_inner();
+    require_registry_type(&registry, "cargo", &map)?;
+    let _ = &identity;
+    let (query_text, limit) = (query.q.clone(), query.per_page);
+
+    let results = svc
+        .search(
+            &registry,
+            &query_text,
+            limit,
+            search_mode(mode_map.get(&registry)),
+            local_hits(&local_svc, &registry, &query_text, limit).await,
+        )
+        .await
+        .map_err(AppError::from)?;
+
+    let crates: Vec<serde_json::Value> = results
+        .hits
+        .iter()
+        .map(|h| {
+            serde_json::json!({
+                "name": h.name,
+                "max_version": h.version,
+                "description": h.description.clone().unwrap_or_default(),
+            })
+        })
+        .collect();
+
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .insert_header(("X-BatleHub-Cache", results.freshness.header_value()))
+        .json(serde_json::json!({
+            "crates": crates,
+            "meta": { "total": results.total },
+        })))
+}
+
+/// `composer` bulk package enumeration — `list.json`.
+///
+/// Names only, no versions: it is the Composer equivalent of RubyGems' `/names`
+/// and carries the same consequence — a block has nothing in it to hide, and
+/// removing a partly-blocked package would report it as nonexistent.
+#[utoipa::path(
+    get,
+    path = "/proxy/{registry}/list.json",
+    tag = "proxy/composer",
+    params(
+        ("registry" = String, Path, description = "Registry name"),
+        ("filter"   = Option<String>, Query, description = "Optional name filter"),
+    ),
+    responses(
+        (status = 200, description = "Package name list", body = ProtocolDocument),
+        (status = 404, description = "Unknown or non-composer registry"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[get("/proxy/{registry}/list.json")]
+pub async fn composer_list(
+    path: web::Path<String>,
+    query: web::Query<ComposerListQuery>,
+    identity: AuthIdentity,
+    svc: web::Data<Arc<ProxyService>>,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
+    map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
+) -> Result<impl Responder, AppError> {
+    let registry = path.into_inner();
+    require_registry_type(&registry, "composer", &map)?;
+    let _ = &identity;
+    let (query_text, limit) = (query.filter.clone(), 250usize);
+
+    let results = svc
+        .search(
+            &registry,
+            &query_text,
+            limit,
+            search_mode(mode_map.get(&registry)),
+            local_hits(&local_svc, &registry, &query_text, limit).await,
+        )
+        .await
+        .map_err(AppError::from)?;
+
+    let names: Vec<String> = results.hits.iter().map(|h| h.name.clone()).collect();
+
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .insert_header(("X-BatleHub-Cache", results.freshness.header_value()))
+        .json(serde_json::json!({ "packageNames": names })))
+}
+
+/// `composer search`.
+#[utoipa::path(
+    get,
+    path = "/proxy/{registry}/search.json",
+    tag = "proxy/composer",
+    params(
+        ("registry" = String, Path, description = "Registry name"),
+        ("q"        = Option<String>, Query, description = "Search text"),
+        ("per_page" = Option<usize>, Query, description = "Maximum results"),
+    ),
+    responses(
+        (status = 200, description = "Composer search results", body = ProtocolDocument),
+        (status = 404, description = "Unknown or non-composer registry"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[get("/proxy/{registry}/search.json")]
+pub async fn composer_search(
+    path: web::Path<String>,
+    query: web::Query<ComposerSearchQuery>,
+    identity: AuthIdentity,
+    svc: web::Data<Arc<ProxyService>>,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
+    map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
+) -> Result<impl Responder, AppError> {
+    let registry = path.into_inner();
+    require_registry_type(&registry, "composer", &map)?;
+    let _ = &identity;
+    let (query_text, limit) = (query.q.clone(), query.per_page);
+
+    let results = svc
+        .search(
+            &registry,
+            &query_text,
+            limit,
+            search_mode(mode_map.get(&registry)),
+            local_hits(&local_svc, &registry, &query_text, limit).await,
+        )
+        .await
+        .map_err(AppError::from)?;
+
+    let items: Vec<serde_json::Value> = results
+        .hits
+        .iter()
+        .map(|h| {
+            serde_json::json!({
+                "name": h.name,
+                "description": h.description.clone().unwrap_or_default(),
+            })
+        })
+        .collect();
+
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .insert_header(("X-BatleHub-Cache", results.freshness.header_value()))
+        .json(serde_json::json!({
+            "results": items,
+            "total": results.total,
+        })))
+}

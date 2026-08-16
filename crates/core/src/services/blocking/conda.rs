@@ -64,6 +64,58 @@ pub fn strip_repodata(doc: &mut Value, blocked: &MultiPackageBlocks) -> Vec<Stri
     removed
 }
 
+/// Filter `channeldata.json` — the channel summary `conda search` reads.
+///
+/// RFC 0009 §7.5. A different shape from `repodata.json`: where repodata lists
+/// every *file*, channeldata lists every *package* once, with a `version` field
+/// naming its newest release and a `subdirs` array saying where to find it.
+///
+/// RubyGems' single-gem document has the same shape of problem and is
+/// **repaired** onto the newest allowed version. That is not possible here:
+/// `channeldata.json` carries no version list to pick a replacement from —
+/// `repodata.json` is where the versions live, and it is a different document,
+/// per subdir, fetched separately.
+///
+/// So the entry is dropped. That is the narrower of two wrong answers: a
+/// dropped entry makes `conda search` report the package as absent, where a
+/// repaired entry would name a version this filter has not verified exists.
+/// Search degrades; install does not, because `repodata.json` is what the
+/// solver reads and it is filtered per-version.
+///
+/// If channeldata ever needs repairing rather than dropping, the fix is to
+/// compose it against the filtered `repodata.json` the way Go's `@latest` and
+/// RubyGems' gem document are composed against their lists (RFC 0006 §13.3) —
+/// a handler-level change, not a change here.
+pub fn strip_channeldata(doc: &mut Value, blocked: &MultiPackageBlocks) -> Vec<String> {
+    let Some(packages) = doc.get_mut("packages").and_then(Value::as_object_mut) else {
+        return Vec::new();
+    };
+
+    let mut removed = Vec::new();
+    let mut drop_names = Vec::new();
+
+    for (name, entry) in packages.iter_mut() {
+        let Some(version) = entry.get("version").and_then(Value::as_str) else {
+            continue;
+        };
+        if !blocked.contains(name, version) {
+            continue;
+        }
+        removed.push(format!("{name}-{version}"));
+
+        // `version` is the only release channeldata names, and it is blocked.
+        // There is no list here to pick a replacement from — repodata has that
+        // — so the honest answer is to stop advertising this package rather
+        // than to name a version we have not checked.
+        drop_names.push(name.clone());
+    }
+
+    for name in drop_names {
+        packages.remove(&name);
+    }
+    removed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

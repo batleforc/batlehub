@@ -164,13 +164,15 @@ protocol has one and editing it is safe:
 | openvsx | extension gallery (`extensionquery`) and the OpenVSX API | yes |
 | goproxy | `@v/list` and `@latest` | yes |
 | pypi | simple index (HTML and PEP 691 JSON) | yes |
-| conda | `repodata.json`, `current_repodata.json` | yes |
+| conda | `repodata.json`, `current_repodata.json` (and their `.zst`/`.bz2` encodings) | yes |
+| conda | `channeldata.json` | yes — a blocked newest release drops the package from the channel summary rather than moving it to an older one: channeldata names one version and carries no list to pick a replacement from, so `conda search` stops showing it while `conda install` still resolves it from `repodata.json` |
 | composer | p2 metadata | yes |
 | vscode-marketplace | extension gallery (`extensionquery`) and the OpenVSX API | yes |
 | maven | `maven-metadata.xml` | yes |
 | terraform | module and provider versions | yes |
+| rubygems | compact index (`/versions`, `/info/{gem}`) | yes — `/versions` describes the whole registry, so a new block reaches it within the blocked-set snapshot's 30-second TTL rather than instantly; `/info` is per-gem and immediate |
 | rubygems | versions and gem JSON APIs | yes |
-| rubygems | `specs.4.8.gz`, `quick/Marshal.4.8` | no — hiding a version from a Ruby Marshal index would need a Marshal encoder in Rust, to hide what the JSON APIs already hide for every client released this decade |
+| rubygems | `specs.4.8.gz`, `quick/Marshal.4.8` | no — hiding a version from a Ruby Marshal index would need a Marshal encoder in Rust, and nothing reads it: Bundler resolves from the compact index above, and the JSON APIs answer every other client released this decade |
 | nuget | flat index | yes |
 | nuget | registration pages | yes — inline pages only; paged registrations pass through, and are logged |
 | deb | signed repository indexes | no — editing one invalidates its signature and the client rejects the whole repository, which is a worse failure than the one filtering fixes |
@@ -187,13 +189,27 @@ that it did. The Prometheus counter
 each listing dropped, so "did the block take effect" is answerable from the
 metrics endpoint without turning on debug logging in production.
 
-::: tip Conda's block delay
-Conda is the one exception to "a block takes effect on the next request".
-`repodata.json` describes a whole channel and is fetched on every
-`conda install`, so its blocked set is read from a snapshot refreshed every
-**30 seconds** rather than queried per request. A conda block can therefore take
-up to half a minute to disappear from the channel index. Every other registry —
-and the `403` on the download itself, including for conda — is immediate.
+::: tip Whole-registry indexes lag by up to 30 seconds
+Most listings are filtered against a blocked set queried per request, so a block
+disappears from them on the very next call. Three documents describe a **whole
+registry** rather than one package, and are fetched on every install:
+
+| Registry | Document |
+|---|---|
+| conda | `repodata.json`, `current_repodata.json`, `channeldata.json` |
+| rubygems | the compact index's `/versions` |
+
+For those, the blocked set is read from a snapshot refreshed every **30
+seconds** rather than queried per request — re-reading the whole registry's
+block list on the hottest path in the ecosystem costs more than the seconds it
+saves. A block can therefore take up to half a minute to disappear from one of
+them.
+
+**The `403` on the download never lags**, for any registry. So the window is one
+where a client may still be *offered* a version it will then be refused — the
+mid-resolve failure this feature exists to avoid, narrowed to half a minute
+rather than eliminated. Per-package listings, including RubyGems' `/info/{gem}`
+and its JSON APIs, are immediate.
 :::
 
 ### Unblock

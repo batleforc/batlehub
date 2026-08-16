@@ -1091,6 +1091,7 @@ dependencies = [
  "ed25519-dalek",
  "futures",
  "hex",
+ "md-5",
  "metrics",
  "quick-xml",
  "regex",
@@ -1193,6 +1194,7 @@ dependencies = [
  "hmac 0.13.0",
  "ipnet",
  "lettre",
+ "md-5",
  "metrics",
  "metrics-exporter-prometheus",
  "mockito",
@@ -1215,6 +1217,7 @@ dependencies = [
  "utoipa-scalar",
  "uuid",
  "zip",
+ "zstd",
 ]
 
 [[package]]

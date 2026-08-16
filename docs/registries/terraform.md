@@ -14,10 +14,17 @@ Proxy and cache the Terraform provider and module registry protocol (v1 API), or
 
 ## Proxy setup
 
-Configure a provider network mirror and per-host credentials in `~/.terraformrc` (or `%APPDATA%/terraform.rc` on Windows). Replace `<registry>` with your configured registry name:
+BatleHub speaks **both** Terraform protocols. They are not alternatives — pick
+by what you need and how your instance is reached.
+
+### Provider network mirror — works anywhere
+
+A mirror serves **providers only**, needs no service discovery, and works under
+ordinary path routing. This is the simplest option and the right one for an
+air-gapped estate that only needs to cache public providers.
 
 ```hcl
-# ~/.terraformrc
+# ~/.terraformrc  (%APPDATA%/terraform.rc on Windows)
 provider_installation {
   network_mirror {
     url = "https://batlehub.example.com/proxy/<registry>/"
@@ -28,6 +35,94 @@ credentials "batlehub.example.com" {
   token = "<your-token>"
 }
 ```
+
+The `{hostname}` segment in a mirror URL names the *origin* registry, and
+BatleHub checks it against the registry's configured upstream: pointing a mirror
+for `registry.terraform.io` at a registry that mirrors something else returns
+`404` rather than silently attaching the wrong provenance.
+
+::: warning Two things Terraform requires of a mirror
+Both measured against Terraform 1.8.5.
+
+**The mirror must be an `https:` URL.** Terraform refuses a plain-HTTP mirror
+outright — *"the mirror must be at an https: URL"* — so a local instance on
+`http://localhost:8080` cannot be used as one at all.
+
+**Terraform does not authenticate the provider download.** It sends the token
+from your `credentials` block to the mirror's `index.json` and `{version}.json`,
+and then fetches the provider archive **without credentials**. So a mirror
+registry needs `anonymous = ["releases:read", "source:read"]` under
+`[registries.rbac]`, or an authenticating ingress in front of it — the same
+constraint the [VS Code gallery](/registries/vscode-marketplace) has, for the
+same reason.
+:::
+
+### Registry protocol — requires host routing
+
+The registry protocol serves **modules and providers**, and Terraform reaches it
+by name: `source = "<host>/<namespace>/<type>"`. That is exactly three segments,
+so `batlehub.example.com/proxy/<registry>/myorg/mycloud` is not a legal source
+address — it has five.
+
+Terraform also finds a registry's endpoints by fetching
+`https://<host>/.well-known/terraform.json`, which is host-rooted by the
+protocol. Both facts point the same way: **the registry protocol needs the
+registry bound to its own hostname**. Configure that with `[subdomain_routing]`
+or a vanity host (see [Host-based routing](/guide/host-routing)),
+then:
+
+```hcl
+# ~/.terraformrc
+credentials "tf.example.com" {
+  token = "<your-token>"
+}
+```
+
+```hcl
+# main.tf
+terraform {
+  required_providers {
+    mycloud = {
+      source  = "tf.example.com/myorg/mycloud"
+      version = "~> 1.0"
+    }
+  }
+}
+
+module "consul" {
+  source  = "tf.example.com/hashicorp/consul/aws"
+  version = "0.1.0"
+}
+```
+
+On a path-routed request `/.well-known/terraform.json` answers `404` with the
+reason, rather than guessing which of the registries under that host it should
+describe.
+
+::: warning The host must be HTTPS, and BatleHub must know it
+Terraform will not speak plaintext to a registry host and offers no opt-out —
+the same rule as the network mirror above. Behind a TLS terminator, BatleHub
+also has to be told that the client's scheme was `https`, because it writes
+absolute URLs into the download document from what it sees: without a trusted
+`X-Forwarded-Proto` it advertises `http://<host>` and Terraform then fails
+trying to reach it. Set the terminator's address in `trusted_proxies`:
+
+```toml
+[server]
+trusted_proxies = ["10.42.0.0/16"]   # your ingress's CIDR ranges
+```
+
+Host routing refuses to start without an explicit stance here — `[]` if
+BatleHub is exposed directly — so the failure is a startup error rather than a
+silently wrong URL.
+:::
+
+::: tip Downloads go through the proxy
+Whichever protocol you use, the archive URL BatleHub hands Terraform points back
+at BatleHub — never at the upstream CDN. That is what puts provider and module
+bytes through the policy gate, the cache and the audit trail. Earlier releases
+forwarded the upstream URL, so the download bypassed all three.
+:::
 
 ## Publishing (local / hybrid)
 
@@ -75,11 +170,13 @@ credentials "batlehub.example.com" {
 }
 ```
 
-Reference the module in Terraform:
+Reference the module in Terraform. A module source is `<host>/<namespace>/<name>/<provider>`,
+so this needs the registry bound to its own hostname (see
+[Registry protocol](#registry-protocol-—-requires-host-routing) above):
 
 ```hcl
 module "consul" {
-  source  = "batlehub.example.com/proxy/internal-tf/hashicorp/consul/aws"
+  source  = "tf.example.com/hashicorp/consul/aws"
   version = "0.1.0"
 }
 ```
@@ -122,7 +219,7 @@ Repeat the binary upload for each supported platform.
 
 ```hcl
 # ~/.terraformrc
-credentials "batlehub.example.com" {
+credentials "tf.example.com" {
   token = "<your-token>"
 }
 ```
@@ -132,7 +229,7 @@ credentials "batlehub.example.com" {
 terraform {
   required_providers {
     mycloud = {
-      source  = "batlehub.example.com/proxy/internal-tf/myorg/mycloud"
+      source  = "tf.example.com/myorg/mycloud"
       version = "~> 1.0"
     }
   }
@@ -153,17 +250,30 @@ curl -X POST \
 
 ### Endpoint reference
 
+<!-- BEGIN endpoints: proxy/terraform -->
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/proxy/{registry}/v1/modules/{ns}/{name}/{provider}/{version}` | Upload module tarball |
-| `GET` | `/proxy/{registry}/v1/modules/{ns}/{name}/{provider}/{version}/artifact` | Download module tarball |
-| `GET` | `/proxy/{registry}/v1/modules/{ns}/{name}/{provider}/versions` | List module versions |
-| `GET` | `/proxy/{registry}/v1/modules/{ns}/{name}/{provider}/{version}/download` | Download redirect (`X-Terraform-Get`) |
-| `POST` | `/proxy/{registry}/v1/providers/{ns}/{type}/versions` | Upload provider manifest |
-| `PUT` | `/proxy/{registry}/v1/providers/{ns}/{type}/{version}/artifact/{os}/{arch}` | Upload platform binary |
-| `GET` | `/proxy/{registry}/v1/providers/{ns}/{type}/{version}/artifact/{os}/{arch}` | Download platform binary |
-| `GET` | `/proxy/{registry}/v1/providers/{ns}/{type}/versions` | List provider versions |
-| `GET` | `/proxy/{registry}/v1/providers/{ns}/{type}/{version}/download/{os}/{arch}` | Provider download info JSON |
+| `GET` | `/.well-known/terraform.json` | `GET /.well-known/terraform.json` — the document Terraform reads first. |
+| `GET` | `/proxy/{registry}/.well-known/terraform.json` | The same document at the path the host-routing middleware actually produces. |
+| `GET` | `/proxy/{registry}/{hostname}/{namespace}/{ptype}/{version}.json` | `GET {mirror}/{hostname}/{namespace}/{type}/{version}.json` — where one |
+| `GET` | `/proxy/{registry}/{hostname}/{namespace}/{ptype}/index.json` | `GET {mirror}/{hostname}/{namespace}/{type}/index.json` — the versions a |
+| `GET` | `/proxy/{registry}/v1/modules/{namespace}/{name}/{provider}/{version}` | `GET /v1/modules/{ns}/{name}/{provider}/{version}` — one module version's |
+| `POST` | `/proxy/{registry}/v1/modules/{namespace}/{name}/{provider}/{version}` | Upload a Terraform module tarball to the local registry. |
+| `GET` | `/proxy/{registry}/v1/modules/{namespace}/{name}/{provider}/{version}/artifact` | Download the tarball for a locally-published Terraform module. |
+| `GET` | `/proxy/{registry}/v1/modules/{namespace}/{name}/{provider}/{version}/download` | Get the download URL for a specific Terraform module version. |
+| `GET` | `/proxy/{registry}/v1/modules/{namespace}/{name}/{provider}/versions` | List available versions for a Terraform module. |
+| `DELETE` | `/proxy/{registry}/v1/modules/{namespace}/{name}/{provider}/versions/{version}` | Yank a Terraform module version (local/hybrid registries only). |
+| `POST` | `/proxy/{registry}/v1/modules/{namespace}/{name}/{provider}/versions/{version}/unyank` | Unyank a Terraform module version (local/hybrid registries only). |
+| `GET` | `/proxy/{registry}/v1/providers/{namespace}/{ptype}/{version}/artifact/{os}/{arch}` | Download a Terraform provider platform binary from local storage. |
+| `PUT` | `/proxy/{registry}/v1/providers/{namespace}/{ptype}/{version}/artifact/{os}/{arch}` | Upload a platform binary for a locally-published Terraform provider. |
+| `GET` | `/proxy/{registry}/v1/providers/{namespace}/{ptype}/{version}/download/{os}/{arch}` | Get download information for a specific Terraform provider version and platform. |
+| `GET` | `/proxy/{registry}/v1/providers/{namespace}/{ptype}/{version}/shasums` | The provider's checksum manifest (`SHA256SUMS`) and its detached signature. |
+| `GET` | `/proxy/{registry}/v1/providers/{namespace}/{ptype}/{version}/shasums.sig` | The detached signature over the checksum manifest. See |
+| `GET` | `/proxy/{registry}/v1/providers/{namespace}/{ptype}/versions` | List available versions for a Terraform provider. |
+| `POST` | `/proxy/{registry}/v1/providers/{namespace}/{ptype}/versions` | Upload a Terraform provider version manifest (JSON describing version + platforms). |
+| `DELETE` | `/proxy/{registry}/v1/providers/{namespace}/{ptype}/versions/{version}` | Yank a Terraform provider version (local/hybrid registries only). |
+| `POST` | `/proxy/{registry}/v1/providers/{namespace}/{ptype}/versions/{version}/unyank` | Unyank a Terraform provider version (local/hybrid registries only). |
+<!-- END endpoints -->
 
 ---
 
@@ -189,6 +299,8 @@ Terraform reads per-host credentials from the `credentials "batlehub.example.com
 
 - Providers are cached after first download in proxy/hybrid mode, or served entirely from local storage in local mode.
 - The module upload response includes an `X-Terraform-Get` header pointing at the artifact download URL.
+- Provider download responses always carry a `signing_keys` object. Terraform refuses a provider whose download document omits it, so the field is present (empty when the registry publishes no keys) rather than left out.
+- `shasums_url` and `shasums_signature_url` still name the upstream in proxy mode. The provider *archive* is proxied and gated; its checksum manifest is not yet, so a fully offline provider install is not complete.
 
 ## See also
 

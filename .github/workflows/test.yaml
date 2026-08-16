@@ -1,8 +1,13 @@
 name: Test
-# Decorrelated test jobs — unit, integration (Postgres/S3/Redis), and heavy
-# marketplace integration (headless VS Code + IntelliJ installing an extension
-# that exists only on this instance) — each producing an LCOV file; the final
-# job merges them and publishes a coverage table in the run summary.
+# Decorrelated test jobs — unit, integration (Postgres/S3/Redis), and two heavy
+# client integrations: marketplaces (headless VS Code + IntelliJ installing an
+# extension that exists only on this instance) and Bundler (`bundle install`
+# resolving through the RubyGems compact index). Each produces an LCOV file; the
+# final job merges them and publishes a coverage table in the run summary.
+#
+# The heavy jobs exist because the layers above them cannot fail on the bugs
+# that matter here: a route can be present, tested and answering `200` with a
+# document no client can use (RFC 0009 §5.1). Only the client is the oracle.
 on:
   push:
     branches: ["main"]
@@ -30,6 +35,18 @@ on:
       - "**/Cargo.lock"
       - ".github/workflows/test.yaml"
       - ".github/scripts/merge_coverage.py"
+  # Nightly as well as per-PR, for the heavy client jobs: what they drive is not
+  # all in this repository. `heavy-bundler` installs Bundler from rubygems.org
+  # and asserts against that release's behaviour, and `heavy-marketplace`
+  # installs pinned IDE builds — so a new client version, or an upstream that
+  # stops serving one, breaks a green tree with no commit to blame. Same
+  # reasoning as the daily dependency audits, and the same slot.
+  #
+  # This runs the whole workflow, not just those two jobs: the cheap ones cost
+  # little beside them, and a nightly full-suite signal is worth more than a
+  # nightly run reporting one job.
+  schedule:
+    - cron: "50 23 * * *"
   workflow_dispatch:
 permissions:
   contents: read
@@ -248,10 +265,71 @@ jobs:
           path: coverage-heavy.lcov
           if-no-files-found: error
 
+  heavy-bundler:
+    name: Heavy integration (Bundler)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: testpass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:testpass@localhost:5432/postgres
+      # The Bundler generation under test. 4.x is the one whose compact-index
+      # updater sends `Range` with an opaque `If-None-Match` and refuses to
+      # append a partial response carrying no `Repr-Digest` (RFC 0009 §13.24) —
+      # the behaviour the assertions are written against.
+      BUNDLER_VERSION: "4.0.17"
+      # Install into the workspace so `gem install` needs no sudo, and put its
+      # binstubs first so `bundle _4.0.17_` resolves to what we just installed
+      # rather than the runner image's default bundler.
+      GEM_HOME: ${{ github.workspace }}/.gem
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
+        with:
+          toolchain: "stable"
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2.82.5
+        with:
+          tool: cargo-llvm-cov
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
+      - name: Put the workspace gem bindir on PATH
+        run: echo "$GEM_HOME/bin" >> "$GITHUB_PATH"
+      - name: Clean previous coverage data
+        run: cargo llvm-cov clean --workspace
+      # Publishes two gems (the second depending on the first) to a local-mode
+      # rubygems registry, then drives a real `bundle install` through a logging
+      # tap. Asserts the gems resolve at all (§12.15), that the incremental
+      # fetch gets a `206` Bundler *accepts* — no full re-fetch after it — and
+      # that an unchanged document answers `304` (§13.24). The server runs under
+      # cargo-llvm-cov, so its execution is part of coverage.
+      - name: Bundler heavy tests
+        run: bash tests/heavy/bundler.sh
+        env:
+          COVERAGE: "1"
+      - name: Generate heavy Bundler LCOV
+        run: >-
+          cargo llvm-cov report --lcov --output-path coverage-heavy-bundler.lcov
+          --ignore-filename-regex "${{ env.COVERAGE_EXCLUDE }}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-heavy-bundler
+          path: coverage-heavy-bundler.lcov
+          if-no-files-found: error
+
   coverage-report:
     name: Coverage report (merged)
     runs-on: ubuntu-latest
-    needs: [unit, integration, heavy-marketplace]
+    needs: [unit, integration, heavy-marketplace, heavy-bundler]
     # Run even when a coverage job fails: merge_coverage.py renders an "absent"
     # row for any missing LCOV, so a partially-green pipeline still reports
     # (download-artifact with a pattern warns, not fails, on zero matches).
@@ -268,6 +346,7 @@ jobs:
             unit=coverage-unit.lcov \
             integration=coverage-integration.lcov \
             heavy=coverage-heavy.lcov \
+            heavy-bundler=coverage-heavy-bundler.lcov \
             | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

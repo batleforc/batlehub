@@ -13,7 +13,7 @@ for how to add a test when you add a registry, see
 
 ## 1. Test taxonomy
 
-BatleHub's tests fall into five layers, in increasing order of infrastructure cost:
+BatleHub's tests fall into six layers, in increasing order of infrastructure cost:
 
 | Layer | Where | Infra | Runner |
 |-------|-------|-------|--------|
@@ -21,6 +21,7 @@ BatleHub's tests fall into five layers, in increasing order of infrastructure co
 | **In-process integration** | `crates/web/tests/*.rs`, `crates/examples/tests/*.rs` | none — full actix app on in-memory backends | `cargo test -p batlehub-web --test '*'` |
 | **CLI subprocess integration** | `cli/tests/integration.rs` | none — CLI binary vs. in-memory actix server | `cargo test -p batlehub-cli --test integration` |
 | **External integration** | `crates/adapters/tests/*.rs` | real Postgres / MinIO(S3) / Redis via Podman | `task test:pg-*`, `task test:s3` |
+| **Heavy client** | `tests/heavy/*.sh` | real Postgres **and a real client** — VS Code, IntelliJ, Bundler | `task test:marketplace-heavy`, `task test:bundler-heavy` |
 | **Fuzz** | `fuzz/fuzz_targets/*.rs` | nightly toolchain | `task fuzz` |
 
 The in-process layer is the workhorse: every test there spins up a real
@@ -55,6 +56,10 @@ task test:s3                  # MinIO    — S3StorageBackend (feature storage-s
 
 # Repo interop (real apt/dnf/pacman consume signed repos)
 task test:repo-interop
+
+# Heavy client integration (needs DATABASE_URL; each drives a real client)
+task test:marketplace-heavy   # headless VS Code + IntelliJ install an extension
+task test:bundler-heavy       # `bundle install` resolves through the compact index
 
 # Coverage (starts Postgres + MinIO + Redis; HTML report in coverage/html/)
 task coverage
@@ -293,6 +298,16 @@ detection with depth / monorepo / hidden-dir handling), `setup ide`, and
     (`--features storage-s3 --test s3_storage`), Redis (`--features cache-redis`).
   - `heavy-marketplace`: `bash tests/heavy/marketplace.sh` (headless VS Code +
     IntelliJ).
+  - `heavy-bundler`: `bash tests/heavy/bundler.sh` (a real `bundle install`
+    against a local rubygems registry). Both heavy jobs run the server under
+    `cargo llvm-cov`, so what the *client* exercised counts toward the merged
+    coverage table — the compact-index paths in particular are reached by no
+    other job.
+
+  `test.yaml` also runs nightly (`50 23 * * *`). The heavy jobs are why: they
+  drive clients fetched from outside this repository — Bundler from
+  rubygems.org, pinned VS Code and IntelliJ builds — so a new client release can
+  break a tree that no commit touched, and only a scheduled run finds it.
 - **`front-test.yaml`** — frontend (`ui/`): install, regenerate the OpenAPI spec
   + TS client, `pnpm run coverage`.
 - **`repo-interop.yaml`** — `bash tests/interop/verify.sh` (apt + dnf + pacman

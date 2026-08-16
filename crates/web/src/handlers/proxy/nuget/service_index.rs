@@ -59,16 +59,51 @@ pub async fn nuget_service_index(
                 "comment": "NuGet package search"
             },
             {
+                // The one `dotnet package search` actually selects. Measured
+                // against dotnet 10.0.400: advertising only the bare type and
+                // `/3.5.0` makes it report "The source does not have a Search
+                // service!" — the endpoint was implemented in phase 6 and still
+                // unreachable (RFC 0009 §12.4).
+                "@id": format!("{base}/nuget/v3/query"),
+                "@type": "SearchQueryService/3.0.0-beta",
+                "comment": "The resource type dotnet's search resolver selects"
+            },
+            {
                 "@id": format!("{base}/nuget/v3/query"),
                 "@type": "SearchQueryService/3.5.0",
                 "comment": "NuGet package search"
+            },
+            {
+                "@id": format!("{base}/nuget/v3/autocomplete"),
+                "@type": "SearchAutocompleteService",
+                "comment": "Package id completion for `dotnet package search`"
+            },
+            {
+                "@id": format!("{base}/nuget/v3/autocomplete"),
+                "@type": "SearchAutocompleteService/3.0.0-beta",
+                "comment": "Package id completion for `dotnet package search`"
+            },
+            {
+                "@id": format!("{base}/nuget/v3/autocomplete"),
+                "@type": "SearchAutocompleteService/3.5.0",
+                "comment": "Package id completion for `dotnet package search`"
+            },
+            {
+                "@id": format!("{base}/nuget/api/v2/symbolpackage"),
+                "@type": "SymbolPackagePublish/4.9.0",
+                "comment": "`.snupkg` symbol package publish"
             },
             {
                 "@id": format!("{base}/nuget/v3/vulnerabilities/"),
                 "@type": "VulnerabilitiesUrl/6.7.0",
                 "comment": "NuGet vulnerability database"
             }
-        ]
+        ],
+        // Without these a client falls back to nuget.org links, which for a
+        // private registry publishes an internal package name to a public site
+        // every time someone runs a command that prints one (RFC 0009 §7.6).
+        "ReportAbuseUriTemplate": format!("{base}/packages/{{id}}/{{version}}"),
+        "PackageDetailsUriTemplate": format!("{base}/packages/{{id}}/{{version}}"),
     });
 
     Ok(HttpResponse::Ok()

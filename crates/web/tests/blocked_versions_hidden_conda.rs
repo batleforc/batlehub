@@ -187,3 +187,162 @@ async fn proxy_direct_download_of_a_blocked_package_is_still_denied() {
         .to_request();
     assert_eq!(call_service(&app, req).await.status(), 403);
 }
+
+// ── Compressed encodings and the channel summary (RFC 0009 §7.5) ─────────────
+//
+// conda 23.x and mamba request `repodata.json.zst` first and fall back on 404.
+// Until this phase the `{filename}` route regex admitted only `.tar.bz2`/
+// `.conda`, so a `.zst` request reached no handler at all and every client paid
+// the full uncompressed transfer of a document fetched on every solve.
+//
+// The filter runs on the JSON and compression happens after it, so there is no
+// second filter to keep in step — only a second encoding of the first one's
+// output. These assert exactly that: what comes back out of the decompressor is
+// the *filtered* channel, not the upstream one.
+
+async fn get_bytes<S>(app: &S, uri: &str) -> Vec<u8>
+where
+    S: actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+{
+    let req = TestRequest::get()
+        .uri(uri)
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(app, req).await;
+    assert_eq!(resp.status(), 200, "{uri} should be served");
+    actix_web::test::read_body(resp).await.to_vec()
+}
+
+/// The filtered channel, only zstd-encoded. `scipy-1.1.0` survives: the block
+/// is on the *pair* `numpy 1.1.0`, not on the version string.
+#[actix_web::test]
+async fn zstd_repodata_decompresses_to_the_filtered_channel() {
+    let app = app().await;
+
+    // No read before the block, or the 30-second snapshot warms empty.
+    block_version(&app, "local-conda", "numpy", "1.1.0").await;
+
+    let compressed = get_bytes(&app, "/proxy/local-conda/linux-64/repodata.json.zst").await;
+    let raw = zstd::decode_all(compressed.as_slice()).expect("valid zstd");
+    let doc: Value = serde_json::from_slice(&raw).expect("valid JSON inside");
+
+    assert_eq!(
+        filenames(&doc, "packages"),
+        ["numpy-1.0.0-py311_0.tar.bz2", "scipy-1.1.0-py311_0.tar.bz2"]
+    );
+    assert!(
+        filenames(&doc, "packages.conda").is_empty(),
+        "the `.conda` generation of the blocked release must go too"
+    );
+}
+
+#[actix_web::test]
+async fn bzip2_repodata_decompresses_to_the_filtered_channel() {
+    use std::io::Read;
+
+    let app = app().await;
+
+    block_version(&app, "local-conda", "numpy", "1.1.0").await;
+
+    let compressed = get_bytes(&app, "/proxy/local-conda/linux-64/repodata.json.bz2").await;
+    let mut raw = Vec::new();
+    bzip2::read::BzDecoder::new(compressed.as_slice())
+        .read_to_end(&mut raw)
+        .expect("valid bzip2");
+    let doc: Value = serde_json::from_slice(&raw).expect("valid JSON inside");
+
+    assert_eq!(
+        filenames(&doc, "packages"),
+        ["numpy-1.0.0-py311_0.tar.bz2", "scipy-1.1.0-py311_0.tar.bz2"]
+    );
+}
+
+/// Compressed output is cached, because recompressing tens of megabytes per
+/// request is not affordable. Caching the *filtered* document is forbidden for
+/// the opposite reason — it would keep serving a version after a block. Both
+/// are avoided by keying on the blocked-set fingerprint.
+///
+/// Two apps rather than one: reading the baseline from the app under test would
+/// warm its snapshot with an empty set, and the block would not land at all —
+/// which measures the documented lag instead of the cache key.
+#[actix_web::test]
+async fn the_compressed_cache_key_depends_on_the_blocked_set() {
+    let unblocked = app().await;
+    let before = get_bytes(&unblocked, "/proxy/local-conda/linux-64/repodata.json.zst").await;
+
+    let blocked = app().await;
+    block_version(&blocked, "local-conda", "numpy", "1.1.0").await;
+    let after = get_bytes(&blocked, "/proxy/local-conda/linux-64/repodata.json.zst").await;
+
+    assert_ne!(
+        before, after,
+        "the compressed entry does not vary with the blocked set, so a block \
+         would be served from a pre-block compressed copy until its TTL expired"
+    );
+
+    let before_doc: Value =
+        serde_json::from_slice(&zstd::decode_all(before.as_slice()).unwrap()).expect("valid JSON");
+    assert!(
+        filenames(&before_doc, "packages").contains(&"numpy-1.1.0-py311_0.tar.bz2".to_owned()),
+        "the unblocked baseline really did contain it"
+    );
+}
+
+#[actix_web::test]
+async fn channeldata_drops_a_package_whose_named_release_is_blocked() {
+    let app = app().await;
+
+    block_version(&app, "local-conda", "numpy", "1.1.0").await;
+
+    let raw = get_bytes(&app, "/proxy/local-conda/channeldata.json").await;
+    let doc: Value = serde_json::from_slice(&raw).unwrap();
+    let packages = doc["packages"].as_object().expect("packages object");
+
+    assert!(
+        !packages.contains_key("numpy"),
+        "channeldata names one version and has no list to repair from, so a \
+         blocked newest release drops the entry"
+    );
+    assert!(
+        packages.contains_key("scipy"),
+        "an unrelated package is untouched"
+    );
+}
+
+/// conda probes an index with **`HEAD`** before fetching it, and actix does not
+/// route `HEAD` to a `GET` handler — so a `GET`-only route makes the probe see a
+/// bodyless `404` and conclude the document does not exist.
+///
+/// That is how phase 3's compressed repodata shipped unreachable: the `.zst`
+/// route existed, `curl -X GET` served it, and a real conda client never asked
+/// for it because its `HEAD` was rejected before the handler ran. Measured
+/// against micromamba 2.9.0 (RFC 0009 §12.4).
+#[actix_web::test]
+async fn conda_index_documents_answer_head_not_just_get() {
+    let app = app().await;
+
+    for path in [
+        "/proxy/local-conda/linux-64/repodata.json",
+        "/proxy/local-conda/linux-64/repodata.json.zst",
+        "/proxy/local-conda/linux-64/repodata.json.bz2",
+        "/proxy/local-conda/linux-64/current_repodata.json",
+        "/proxy/local-conda/channeldata.json",
+    ] {
+        let req = TestRequest::default()
+            .method(actix_web::http::Method::HEAD)
+            .uri(path)
+            .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+            .to_request();
+        let resp = call_service(&app, req).await;
+        assert!(
+            resp.status().is_success(),
+            "HEAD {path} must reach the handler — a rejected probe makes conda \
+             fall back as if the document did not exist, got {}",
+            resp.status()
+        );
+    }
+}

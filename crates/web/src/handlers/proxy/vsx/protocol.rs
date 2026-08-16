@@ -123,7 +123,24 @@ pub struct GalleryQuery {
     pub page_number: usize,
     pub page_size: usize,
     pub sort_by: u32,
+    /// `sortOrder`: 0 = default (ascending for a name sort, descending for a
+    /// recency one), 1 = ascending, 2 = descending.
+    pub sort_order: u32,
     pub flags: u32,
+}
+
+/// `sortBy` values an editor sends. The gallery protocol defines more; these
+/// are the ones an entry list built from this proxy's own data can honour
+/// without inventing a statistic it does not have.
+pub mod sort_by {
+    /// Whatever relevance the source produced. The default.
+    pub const RELEVANCE: u32 = 0;
+    /// Display name, A→Z.
+    pub const TITLE: u32 = 2;
+    /// Publisher name, A→Z.
+    pub const PUBLISHER: u32 = 3;
+    /// Most recently updated first.
+    pub const LAST_UPDATED: u32 = 10;
 }
 
 impl GalleryQuery {
@@ -142,7 +159,8 @@ impl GalleryQuery {
                 .and_then(|f| f.page_size)
                 .unwrap_or(DEFAULT_PAGE_SIZE)
                 .clamp(1, MAX_PAGE_SIZE),
-            sort_by: filter.map(|f| f.sort_by).unwrap_or(0),
+            sort_by: filter.map(|f| f.sort_by).unwrap_or(sort_by::RELEVANCE),
+            sort_order: filter.map(|f| f.sort_order).unwrap_or(0),
             flags: req.flags,
             ..Default::default()
         };

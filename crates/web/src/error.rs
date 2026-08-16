@@ -61,6 +61,17 @@ impl AppError {
         }
     }
 
+    /// The route exists and the request is well-formed, but this server does
+    /// not implement the operation — as against `404`, which says the route is
+    /// not here at all. The distinction matters to a client deciding whether to
+    /// retry elsewhere or to stop.
+    pub fn not_implemented(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_IMPLEMENTED,
+            message: msg.into(),
+        }
+    }
+
     pub fn unprocessable(msg: impl Into<String>) -> Self {
         Self {
             status: StatusCode::UNPROCESSABLE_ENTITY,

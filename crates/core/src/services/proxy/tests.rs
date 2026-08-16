@@ -1981,3 +1981,338 @@ async fn resolve_metadata_for_rejects_traversal() {
         Err(CoreError::InvalidInput(_))
     ));
 }
+
+// ── Cached passthrough: the three rungs (RFC 0009 §4.2) ───────────────────────
+//
+// The endpoints that bypass `handle` — `npm audit`, the Go vulnerability
+// database, the checksum log — used to make a bare outbound call with no cache
+// at all, so each failed outright the moment its upstream went away. These pin
+// the rungs that fixed it, and the two cases that must *not* fall back.
+
+mod passthrough_rungs {
+    use super::*;
+    use crate::services::proxy::{FetchOutcome, Freshness, UpstreamBytes};
+    use base64::Engine as _;
+
+    /// Returns the service *and* the concrete cache, because only the concrete
+    /// type can seed an already-expired entry — which is the whole point of the
+    /// rung-3 tests.
+    fn svc(serve_stale: bool) -> (ProxyService, Arc<TestCacheStore>) {
+        let policy = RegistryPolicy {
+            metadata_ttl: None,
+            firewall_only: false,
+            serve_stale_metadata: serve_stale,
+            artifact_ttl: None,
+            rules: vec![],
+        };
+        let cache = TestCacheStore::new();
+        let svc = ProxyService {
+            hot: make_hot("npm1", Arc::new(FixedRegistry), policy, None),
+            storage: MemStorage::new(),
+            cache: cache.clone(),
+            repo: SpyRepo::new(),
+            artifact_meta: NoopArtifactMeta::arc(),
+            metrics: Arc::new(ProxyMetrics::new(&[])),
+            sbom: None,
+        };
+        (svc, cache)
+    }
+
+    fn bytes(s: &str) -> UpstreamBytes {
+        UpstreamBytes::json(s.as_bytes().to_vec())
+    }
+
+    fn stale_entry(key: &str, body: &str) -> PackageMetadata {
+        PackageMetadata {
+            id: PackageId::new("npm1", key, ""),
+            published_at: None,
+            download_url: None,
+            checksum: None,
+            is_signed: None,
+            extra: serde_json::json!({
+                "passthrough": {
+                    "content_type": "application/json",
+                    "body_b64": base64::engine::general_purpose::STANDARD.encode(body.as_bytes()),
+                }
+            }),
+            cache_control: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn rung_2_fetches_upstream_then_rung_1_serves_it_without_asking_again() {
+        let (s, _cache) = svc(false);
+        let first = s
+            .cached_passthrough("npm1", "audit:npm1:abc", None, || async {
+                Ok(FetchOutcome::Cacheable(bytes(r#"{"advisories":[]}"#)))
+            })
+            .await
+            .unwrap();
+        assert_eq!(first.freshness, Freshness::Fresh);
+
+        // The closure now panics: if it runs, the cache did not answer.
+        let second = s
+            .cached_passthrough("npm1", "audit:npm1:abc", None, || async {
+                panic!("upstream must not be asked twice for one cached question")
+            })
+            .await
+            .unwrap();
+        assert_eq!(second.freshness, Freshness::Cached);
+        assert_eq!(second.bytes, bytes(r#"{"advisories":[]}"#));
+    }
+
+    /// The reason this exists: an unreachable advisory database must not stop
+    /// the pipeline that is asking about it.
+    #[tokio::test]
+    async fn rung_3_answers_from_stale_when_upstream_is_unreachable() {
+        let (s, cache) = svc(true);
+        cache.seed_expired(
+            "audit:npm1:abc",
+            stale_entry("audit:npm1:abc", r#"{"advisories":["stale"]}"#),
+        );
+
+        let got = s
+            .cached_passthrough("npm1", "audit:npm1:abc", None, || async {
+                Err(CoreError::Registry("connection refused".into()))
+            })
+            .await
+            .unwrap();
+        assert_eq!(got.freshness, Freshness::Stale);
+        assert_eq!(got.bytes, bytes(r#"{"advisories":["stale"]}"#));
+    }
+
+    /// `serve_stale = false` is a deliberate operator choice — for their estate
+    /// a stale answer is worse than none — and it governs this path too, so
+    /// nobody has to discover a second switch.
+    #[tokio::test]
+    async fn rung_3_is_declined_when_the_registry_disallows_stale() {
+        let (s, cache) = svc(false);
+        cache.seed_expired("audit:npm1:abc", stale_entry("audit:npm1:abc", "{}"));
+
+        let got = s
+            .cached_passthrough("npm1", "audit:npm1:abc", None, || async {
+                Err(CoreError::Registry("connection refused".into()))
+            })
+            .await;
+        assert!(
+            got.is_err(),
+            "stale must not be served when the registry's policy forbids it"
+        );
+    }
+
+    /// An upstream that is up and says `404` has answered. Serving a stale
+    /// `200` over it would be inventing data, not surviving an outage.
+    #[tokio::test]
+    async fn a_definite_non_success_is_forwarded_and_never_cached() {
+        let (s, _cache) = svc(true);
+        let got = s
+            .cached_passthrough("npm1", "audit:npm1:missing", None, || async {
+                Ok(FetchOutcome::Definite {
+                    status: 404,
+                    bytes: bytes(r#"{"error":"not found"}"#),
+                })
+            })
+            .await
+            .unwrap();
+        assert_eq!(got.status, 404);
+        assert_eq!(got.freshness, Freshness::Fresh);
+
+        // Not cached: the next call reaches the closure again.
+        let second = s
+            .cached_passthrough("npm1", "audit:npm1:missing", None, || async {
+                Ok(FetchOutcome::Cacheable(bytes(r#"{"advisories":[]}"#)))
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            second.freshness,
+            Freshness::Fresh,
+            "a 404 must not have been stored as if it were an answer worth keeping"
+        );
+    }
+}
+
+// ── Search: the rung that answers when the upstream is gone (RFC 0009 §7.7) ──
+//
+// Rungs 1 and 2 are the ordinary cache. Rung 3b is the one that makes search
+// defensible enough for NuGet's service index to keep advertising it: when the
+// upstream cannot be reached, the answer is the packages this registry already
+// holds — never an error, and never the empty list that shipped before.
+
+mod search_rungs {
+    use super::*;
+    use crate::entities::{PackageStatus, PackageSummary};
+    use crate::services::SearchMode;
+
+    /// A repository that holds two packages, so rung 3b has something to say.
+    struct HeldRepo;
+
+    #[async_trait]
+    impl PackageRepository for HeldRepo {
+        async fn record_access(&self, _e: crate::entities::AccessEvent) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn get_status(&self, _pkg: &PackageId) -> Result<PackageStatus, CoreError> {
+            Ok(PackageStatus::Available)
+        }
+        async fn set_status(
+            &self,
+            _pkg: &PackageId,
+            _status: PackageStatus,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn count_packages(&self, _filter: PackageFilter) -> Result<u64, CoreError> {
+            Ok(0)
+        }
+        async fn list_events(
+            &self,
+            _filter: EventFilter,
+        ) -> Result<Vec<crate::entities::AccessEvent>, CoreError> {
+            Ok(vec![])
+        }
+        async fn count_events(&self, _filter: EventFilter) -> Result<u64, CoreError> {
+            Ok(0)
+        }
+        async fn delete_package(&self, _pkg: &PackageId) -> Result<bool, CoreError> {
+            Ok(false)
+        }
+        async fn list_packages(
+            &self,
+            filter: PackageFilter,
+        ) -> Result<Vec<PackageSummary>, CoreError> {
+            // `blocked_only` matters: the default `blocked_in_registry` derives
+            // the registry's blocked set from this very query, so a stub that
+            // ignores the flag reports every held package as blocked — and the
+            // search filter then correctly removes all of them.
+            if filter.blocked_only {
+                return Ok(vec![]);
+            }
+            let held = [("held-alpha", "1.0.0"), ("other-beta", "2.0.0")];
+            Ok(held
+                .iter()
+                .filter(|(name, _)| {
+                    filter
+                        .name_contains
+                        .as_deref()
+                        .is_none_or(|q| name.contains(q))
+                })
+                .map(|(name, version)| PackageSummary {
+                    id: uuid::Uuid::nil(),
+                    package_id: PackageId::new("r1", *name, *version),
+                    status: PackageStatus::Available,
+                    last_accessed: None,
+                    last_accessed_by: None,
+                    access_count: 0,
+                })
+                .collect())
+        }
+    }
+
+    fn svc_with_unreachable_upstream() -> ProxyService {
+        let policy = RegistryPolicy {
+            metadata_ttl: None,
+            firewall_only: false,
+            // Stale is allowed, but there is nothing stale cached — so the only
+            // rung left is the held set.
+            serve_stale_metadata: true,
+            artifact_ttl: None,
+            rules: vec![],
+        };
+        ProxyService {
+            hot: make_hot("r1", Arc::new(UnavailableSearch), policy, None),
+            storage: MemStorage::new(),
+            cache: TestCacheStore::new(),
+            repo: Arc::new(HeldRepo),
+            artifact_meta: NoopArtifactMeta::arc(),
+            metrics: Arc::new(ProxyMetrics::new(&[])),
+            sbom: None,
+        }
+    }
+
+    /// Like `UnavailableRegistry`, but the failure that matters here is search.
+    struct UnavailableSearch;
+
+    #[async_trait]
+    impl RegistryClient for UnavailableSearch {
+        fn registry_type(&self) -> &str {
+            "npm"
+        }
+        async fn resolve_metadata(&self, _pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
+            Err(CoreError::Registry("upstream down".into()))
+        }
+        async fn fetch_artifact(&self, _pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
+            Err(CoreError::Registry("upstream down".into()))
+        }
+        async fn search_packages(
+            &self,
+            _query: &str,
+            _limit: usize,
+        ) -> Result<Vec<crate::ports::UpstreamPackage>, CoreError> {
+            Err(CoreError::Registry("search upstream unreachable".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_upstream_answers_from_held_packages() {
+        let svc = svc_with_unreachable_upstream();
+        let results = svc
+            .search("r1", "held", 20, SearchMode::Proxy, Vec::new())
+            .await
+            .expect("search must not fail when the upstream is unreachable");
+
+        let names: Vec<&str> = results.hits.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["held-alpha"],
+            "the answer must be what this registry holds, not an empty list"
+        );
+        assert_eq!(results.total, 1, "the total counts what survived");
+        assert_eq!(
+            results.freshness,
+            Freshness::Stale,
+            "a degraded answer must say so, or the UI shows a short list as complete"
+        );
+    }
+
+    /// What a local registry has published. In production this comes from
+    /// `LocalRegistryBackend` via the handler, not from `PackageRepository` —
+    /// the two are different stores (see `ProxyService::search`).
+    fn held_hits() -> Vec<crate::services::SearchHit> {
+        ["held-alpha", "other-beta"]
+            .iter()
+            .map(|n| crate::services::SearchHit {
+                name: (*n).to_owned(),
+                version: "1.0.0".to_owned(),
+                description: None,
+            })
+            .collect()
+    }
+
+    /// Local mode has no upstream and nothing proxied through, so published
+    /// packages are the whole answer.
+    #[tokio::test]
+    async fn local_mode_searches_only_what_is_held() {
+        let svc = svc_with_unreachable_upstream();
+        let results = svc
+            .search("r1", "", 20, SearchMode::Local, held_hits())
+            .await
+            .unwrap();
+        let mut names: Vec<&str> = results.hits.iter().map(|h| h.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["held-alpha", "other-beta"]);
+    }
+
+    /// An empty result set is a legitimate answer; what must never happen is an
+    /// error reaching the client because the upstream was down.
+    #[tokio::test]
+    async fn a_query_matching_nothing_is_an_empty_answer_not_a_failure() {
+        let svc = svc_with_unreachable_upstream();
+        let results = svc
+            .search("r1", "no-such-package", 20, SearchMode::Proxy, Vec::new())
+            .await
+            .expect("still not an error");
+        assert!(results.hits.is_empty());
+        assert_eq!(results.total, 0);
+    }
+}

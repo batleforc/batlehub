@@ -346,22 +346,39 @@ impl RegistryClient for PypiRegistryClient {
         let version_json: PypiVersionJson = serde_json::from_slice(&body)
             .map_err(|e| CoreError::Registry(format!("pypi: parse version JSON: {e}")))?;
 
+        // PEP 658: pip and uv resolve from `{file}.metadata` rather than
+        // downloading the wheel, and the simple page we serve advertises it
+        // (`data-core-metadata` survives the href rewrite). Not answering it is
+        // not a slow path — pip **fails the install** on the 404 rather than
+        // falling back (RFC 0009 §12.7). So the sibling is resolved from the
+        // same file entry, with the suffix carried onto the CDN URL.
+        let (match_name, metadata_sibling) = match artifact_filename.strip_suffix(".metadata") {
+            Some(base) => (base, true),
+            None => (artifact_filename, false),
+        };
+
         let file = version_json
             .urls
             .into_iter()
-            .find(|f| f.filename == artifact_filename)
+            .find(|f| f.filename == match_name)
             .ok_or_else(|| {
                 CoreError::NotFound(format!(
                     "pypi: file '{}' not found in version {}",
-                    artifact_filename, version
+                    match_name, version
                 ))
             })?;
 
-        tracing::debug!(url = %file.url, "fetching PyPI artifact");
+        let download_url = if metadata_sibling {
+            format!("{}.metadata", file.url)
+        } else {
+            file.url.clone()
+        };
+
+        tracing::debug!(url = %download_url, "fetching PyPI artifact");
 
         // SSRF-guarded: validates the URL (and every redirect hop) against
         // private/reserved addresses and scopes credentials to the index origin.
-        let dl_resp = self.download(&file.url).await?;
+        let dl_resp = self.download(&download_url).await?;
 
         if !dl_resp.status().is_success() {
             return Err(CoreError::Registry(format!(

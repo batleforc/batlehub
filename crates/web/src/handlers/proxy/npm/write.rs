@@ -20,11 +20,6 @@ use crate::{
 
 use super::require_npm;
 
-/// Publish a new npm package version (`npm publish`).
-///
-/// Accepts the standard npm publish wire format: a JSON body containing the
-/// package metadata under `versions` and the base64-encoded tarball under
-/// `_attachments`.
 /// npm's publish acknowledgement: an empty JSON object.
 ///
 /// `npm publish` reports success from the status code and the quota headers;
@@ -33,6 +28,11 @@ use super::require_npm;
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct NpmPublishResponse {}
 
+/// Publish a new npm package version (`npm publish`).
+///
+/// Accepts the standard npm publish wire format: a JSON body containing the
+/// package metadata under `versions` and the base64-encoded tarball under
+/// `_attachments`.
 #[utoipa::path(
     put,
     path = "/proxy/{registry}/{name}",

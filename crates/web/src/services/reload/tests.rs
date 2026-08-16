@@ -52,6 +52,7 @@ async fn make_svc_with_file_and_builder(
         cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         repo_signer_map: crate::RepoSignerMap::default(),
         vuln_db_map: crate::VulnDbMap::default(),
+        sumdb_map: crate::SumDbMap::default(),
         registry_host_map: crate::RegistryHostMap::default(),
         proxy_trust: crate::middleware::ProxyTrust::default(),
         config_path: path,
@@ -90,6 +91,7 @@ pub(super) fn make_svc(enabled: bool) -> Arc<ConfigReloadService> {
         cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         repo_signer_map: crate::RepoSignerMap::default(),
         vuln_db_map: crate::VulnDbMap::default(),
+        sumdb_map: crate::SumDbMap::default(),
         registry_host_map: crate::RegistryHostMap::default(),
         proxy_trust: crate::middleware::ProxyTrust::default(),
         config_path: "config.toml".to_owned(),
@@ -208,6 +210,7 @@ async fn apply_success_swaps_hot_config() {
         new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         new_repo_signer_map: crate::RepoSignerMap::from(new_signers),
         new_vuln_db_map: crate::VulnDbMap::default(),
+        new_sumdb_map: crate::SumDbMap::default(),
         new_registry_host_map: crate::RegistryHostMap::default(),
         new_proxy_trust: crate::middleware::ProxyTrust::from_config(Some(&[
             "10.42.0.0/16".to_owned()
@@ -282,6 +285,7 @@ async fn reload_immediate_applies_config() {
             cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
             repo_signer_map: crate::RepoSignerMap::default(),
             vuln_db_map: crate::VulnDbMap::default(),
+            sumdb_map: crate::SumDbMap::default(),
             registry_host_map: crate::RegistryHostMap::default(),
         })
     });
@@ -294,6 +298,7 @@ async fn reload_immediate_applies_config() {
         cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         repo_signer_map: crate::RepoSignerMap::default(),
         vuln_db_map: crate::VulnDbMap::default(),
+        sumdb_map: crate::SumDbMap::default(),
         registry_host_map: crate::RegistryHostMap::default(),
         proxy_trust: crate::middleware::ProxyTrust::default(),
         config_path: tmp_path.clone(),
@@ -370,6 +375,7 @@ fn make_pending(expires_offset_secs: i64, already_expired: bool) -> PendingReloa
         new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         new_repo_signer_map: crate::RepoSignerMap::default(),
         new_vuln_db_map: crate::VulnDbMap::default(),
+        new_sumdb_map: crate::SumDbMap::default(),
         new_registry_host_map: crate::RegistryHostMap::default(),
         new_proxy_trust: crate::middleware::ProxyTrust::default(),
         warnings: Vec::new(),
@@ -439,6 +445,7 @@ async fn load_pending_stores_pending_even_when_diff_is_structurally_noop() {
             cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
             repo_signer_map: crate::RepoSignerMap::default(),
             vuln_db_map: crate::VulnDbMap::default(),
+            sumdb_map: crate::SumDbMap::default(),
             registry_host_map: crate::RegistryHostMap::default(),
         })
     });
@@ -490,6 +497,7 @@ fn noop_builder() -> HotConfigBuilder {
             cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
             repo_signer_map: crate::RepoSignerMap::default(),
             vuln_db_map: crate::VulnDbMap::default(),
+            sumdb_map: crate::SumDbMap::default(),
             registry_host_map: crate::RegistryHostMap::default(),
         })
     })
@@ -587,6 +595,7 @@ async fn load_pending_skips_rebuild_when_raw_content_is_unchanged() {
             cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
             repo_signer_map: crate::RepoSignerMap::default(),
             vuln_db_map: crate::VulnDbMap::default(),
+            sumdb_map: crate::SumDbMap::default(),
             registry_host_map: crate::RegistryHostMap::default(),
         })
     });
@@ -660,6 +669,7 @@ async fn load_pending_from_content_stores_raw_content_in_pending() {
         new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         new_repo_signer_map: crate::RepoSignerMap::default(),
         new_vuln_db_map: crate::VulnDbMap::default(),
+        new_sumdb_map: crate::SumDbMap::default(),
         new_registry_host_map: crate::RegistryHostMap::default(),
         new_proxy_trust: crate::middleware::ProxyTrust::default(),
         warnings: Vec::new(),
@@ -700,6 +710,7 @@ async fn apply_writes_editor_content_to_disk() {
         new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         new_repo_signer_map: crate::RepoSignerMap::default(),
         new_vuln_db_map: crate::VulnDbMap::default(),
+        new_sumdb_map: crate::SumDbMap::default(),
         new_registry_host_map: crate::RegistryHostMap::default(),
         new_proxy_trust: crate::middleware::ProxyTrust::default(),
         warnings: Vec::new(),
@@ -744,6 +755,7 @@ async fn apply_with_no_content_leaves_file_unchanged() {
         new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
         new_repo_signer_map: crate::RepoSignerMap::default(),
         new_vuln_db_map: crate::VulnDbMap::default(),
+        new_sumdb_map: crate::SumDbMap::default(),
         new_registry_host_map: crate::RegistryHostMap::default(),
         new_proxy_trust: crate::middleware::ProxyTrust::default(),
         warnings: Vec::new(),
