@@ -195,6 +195,72 @@ pub fn to_registry_error(e: reqwest::Error) -> CoreError {
     CoreError::Registry(e.to_string())
 }
 
+/// GET an upstream *version-listing document* and return it as JSON.
+///
+/// Shared by every adapter's `fetch_version_document`, because they all need
+/// the same three things and get them wrong in different ways otherwise: a
+/// `404` must become [`CoreError::NotFound`] (the handler turns that into a
+/// hybrid-mode fall-through, where a generic `Registry` error becomes a `502`),
+/// any other non-success must carry the upstream status, and a body that does
+/// not parse must fail rather than reach a filter as `null`.
+///
+/// `what` names the document in errors — "NuGet flat index for 'newtonsoft'".
+pub async fn fetch_json_document(
+    req: reqwest::RequestBuilder,
+    what: &str,
+) -> Result<batlehub_core::ports::VersionDocument, CoreError> {
+    let body = fetch_document_body(req, what).await?;
+    let value: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|e| CoreError::Registry(format!("parsing {what}: {e}")))?;
+    Ok(batlehub_core::ports::VersionDocument::json(value))
+}
+
+/// [`fetch_json_document`] for the protocols whose listing is not JSON —
+/// `maven-metadata.xml`, a PyPI simple page, Go's `@v/list`, cargo's NDJSON
+/// sparse index.
+///
+/// `content_type` is what this proxy will send back, and is stated by the
+/// caller rather than echoed from upstream: an upstream that mislabels its own
+/// `maven-metadata.xml` as `text/plain` must not make this proxy mislabel it
+/// too, and the client that asked knows what it wants.
+pub async fn fetch_text_document(
+    req: reqwest::RequestBuilder,
+    what: &str,
+    content_type: &str,
+) -> Result<batlehub_core::ports::VersionDocument, CoreError> {
+    let body = fetch_document_body(req, what).await?;
+    let text = String::from_utf8(body.to_vec())
+        .map_err(|e| CoreError::Registry(format!("{what} is not valid UTF-8: {e}")))?;
+    Ok(batlehub_core::ports::VersionDocument::text(
+        content_type,
+        text,
+    ))
+}
+
+async fn fetch_document_body(
+    req: reqwest::RequestBuilder,
+    what: &str,
+) -> Result<bytes::Bytes, CoreError> {
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| CoreError::Registry(format!("{what} request failed: {e}")))?;
+
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(CoreError::NotFound(format!("{what} not found upstream")));
+    }
+    if !resp.status().is_success() {
+        return Err(CoreError::Registry(format!(
+            "{what} returned {} from upstream",
+            resp.status()
+        )));
+    }
+
+    resp.bytes()
+        .await
+        .map_err(|e| CoreError::Registry(format!("reading {what}: {e}")))
+}
+
 /// True when `a` and `b` share scheme, host, and (explicit-or-default) port.
 pub fn same_origin(a: &reqwest::Url, b: &reqwest::Url) -> bool {
     a.scheme() == b.scheme()

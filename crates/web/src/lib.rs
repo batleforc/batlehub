@@ -444,7 +444,7 @@ pub use middleware::UserBlockMiddlewareFactory;
         (name = "proxy/pacman",   description = "Arch Linux pacman repository — proxy + local hosting (.pkg.tar.zst, repo DB generation, Ed25519 OpenPGP signing)"),
         (name = "proxy/npm",      description = "npm proxy — packuments, version metadata, tarballs"),
         (name = "proxy/cargo",    description = "Cargo proxy — sparse index, crate metadata, .crate downloads"),
-        (name = "proxy/openvsx",  description = "OpenVSX proxy — VS Code extension metadata and VSIX packages"),
+        (name = "proxy/openvsx",  description = "OpenVSX & VS Code Marketplace — extension gallery (extensionquery, assets, item), the OpenVSX REST API, VSIX packages, and private extension publishing"),
         (name = "proxy/goproxy",    description = "Go module proxy — version info, go.mod, and zip downloads"),
         (name = "proxy/terraform",  description = "Terraform registry — provider and module proxy, private module/provider publishing"),
         (name = "proxy/rubygems",   description = "RubyGems registry — gem downloads, version listing, and private gem publishing"),
@@ -558,7 +558,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             // cargo api/v1 (literal "api" segment) > cargo index (literal "registry" segment) >
             // github (owner/repo/verb) > cargo download (literal "download") >
             // maven (literal "maven2" segment) >
-            // openvsx vsix (literal "vsix") > npm audit bulk/quick > npm tarball >
+            // vscode gallery (literal "vscode"/"api" prefixes) > openvsx vsix (literal
+            // "vsix") > npm audit bulk/quick > npm tarball >
             // shared version metadata > shared packument
             // nuget: vuln page/index > registration > flat > search
             // composer: upload/yank > advisories (literal "api") > p2 > dist > packages.json
@@ -616,6 +617,10 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                 terraform_provider_artifact, terraform_provider_binary_upload,
                 terraform_provider_download, terraform_provider_unyank, terraform_provider_upload,
                 terraform_provider_versions, terraform_provider_yank,
+            },
+            vsx::{
+                openvsx_extension, openvsx_extension_version, openvsx_file, openvsx_search,
+                vsx_asset, vsx_extension_query, vsx_item, vsx_unpkg, vsx_vspackage,
             },
         },
     };
@@ -731,7 +736,17 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(conda_repodata); // GET …/{platform}/repodata.json
     cfg.service(conda_current_repodata); // GET …/{platform}/current_repodata.json
     cfg.service(conda_file_download); // GET …/{platform}/{filename}
-                                      // OpenVSX/VSCode VSIX publish (PUT) and download (GET) — same path, different method
+                                      // VS Code gallery and OpenVSX API — literal-prefix routes, most specific
+                                      // first. All of them must precede the shared npm version/packument
+                                      // wildcards below, which would otherwise swallow `vscode/item` as
+                                      // {name}/{version}. `api/-/search` must precede `api/{namespace}/…` or `-`
+                                      // is taken for a publisher.
+    cfg.service(vsx_extension_query); // POST …/vscode/gallery/extensionquery
+    cfg.service(vsx_vspackage); // GET  …/vscode/gallery/publishers/{p}/vsextensions/{n}/{v}/vspackage
+    cfg.service(vsx_asset); // GET  …/vscode/asset/{p}/{n}/{v}/{assetType}
+    cfg.service(vsx_unpkg); // GET  …/vscode/unpkg/{p}/{n}/{v}/{path}
+    cfg.service(vsx_item); // GET  …/vscode/item
+                           // OpenVSX/VSCode VSIX publish (PUT) and download (GET) — same path, different method
     cfg.service(vsix_publish);
     cfg.service(download_vsix);
     // JetBrains Marketplace — literal-prefix routes, most-specific first; must all
@@ -757,6 +772,17 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(jbm_update_meta); // GET …/files/{p}/{u}/meta.json
     cfg.service(jbm_plugin_meta); // GET …/files/{p}/meta.json
     cfg.service(jbm_file_download); // GET …/files/{p}/{u}/{file}
+                                    // OpenVSX REST API. `api/{namespace}/{extension}` is greedy — it matches
+                                    // `api/plugins/{id}`, `api/search/updates/compatible`, `api/v4/{path}` and
+                                    // every other two-segment `api/…` route — so it must be registered after
+                                    // all of them. `api/-/search` comes before its own siblings, or `-` is
+                                    // taken for a publisher name. `require_vsx` would 404 a misrouted request
+                                    // rather than answer it wrongly, but a 404 on JetBrains' plugin API is a
+                                    // broken registry all the same.
+    cfg.service(openvsx_search); // GET …/api/-/search
+    cfg.service(openvsx_file); // GET …/api/{ns}/{ext}/{v}/file/{name}
+    cfg.service(openvsx_extension_version); // GET …/api/{ns}/{ext}/{v}
+    cfg.service(openvsx_extension); // GET …/api/{ns}/{ext}
                                     // npm audit pass-through (literal "/-/npm/v1/audit/{quick,bulk}" paths — bulk before quick)
     cfg.service(audit_bulk);
     cfg.service(audit_quick);

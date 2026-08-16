@@ -250,9 +250,13 @@ async fn proxy_access_is_recorded_in_audit_log() {
     let repo = InMemoryRepo::new();
     let app = make_app(repo.clone()).await;
 
-    // Trigger a proxy request
+    // A tarball *download*, not the packument. RFC 0006 §4.5 deliberately
+    // stopped filing an `AccessEvent` for an allowed listing — a dependency
+    // resolution is hundreds of listings and no bytes, so they move a
+    // per-registry counter instead. Downloads still get a row each, which is
+    // what this test is about.
     let req = TestRequest::get()
-        .uri("/proxy/npm/express")
+        .uri("/proxy/npm/express/1.0.0/tarball")
         .insert_header(("Authorization", bearer(USER_TOKEN)))
         .to_request();
     let resp = call_service(&app, req).await;

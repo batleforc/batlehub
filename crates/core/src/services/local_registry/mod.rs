@@ -4,6 +4,7 @@ mod eco_go;
 mod eco_jetbrains;
 mod eco_maven;
 mod eco_nuget;
+mod eco_openvsx;
 mod eco_pypi;
 mod eco_rubygems;
 mod eco_terraform;
@@ -12,6 +13,7 @@ mod publish;
 mod read;
 
 pub use eco_jetbrains::{build_in_range, JetbrainsPluginVersion};
+pub use eco_openvsx::OpenVsxExtensionVersion;
 pub use publish::PublishPolicyRequest;
 
 use std::sync::Arc;

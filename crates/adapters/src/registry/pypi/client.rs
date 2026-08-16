@@ -1,19 +1,27 @@
 use async_trait::async_trait;
 use futures::TryStreamExt;
 
-use super::super::http_client::{cache_control, to_registry_error};
+use super::super::http_client::{
+    cache_control, fetch_json_document, fetch_text_document, to_registry_error,
+};
 use super::models::{PypiPackageJson, PypiSearchInfo, PypiVersionJson};
 use super::PypiRegistryClient;
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
+    ports::{DocumentKind, FetchedArtifact, RegistryClient, UpstreamPackage, VersionDocument},
 };
 
 // ── PEP 503 name normalisation ────────────────────────────────────────────────
 
 /// Normalise a PyPI package name per PEP 503: lower-case, collapse runs of
 /// `[-_.]` into a single `-`.
+/// The PEP 691 media type, sent as `Accept` and echoed as the response's
+/// `Content-Type`. Pinned to `v1` rather than the unversioned
+/// `application/vnd.pypi.simple+json`, which servers may answer with a newer
+/// schema this proxy has not been taught to filter.
+pub const SIMPLE_JSON_ACCEPT: &str = "application/vnd.pypi.simple.v1+json";
+
 pub fn normalize_name(name: &str) -> String {
     let lower = name.to_lowercase();
     let mut result = String::with_capacity(lower.len());
@@ -201,6 +209,43 @@ fn rewrite_file_url(url: &str, proxy_packages: &str) -> String {
 impl RegistryClient for PypiRegistryClient {
     fn registry_type(&self) -> &str {
         "pypi"
+    }
+
+    /// A simple-index page, in whichever of its two representations the caller
+    /// asked for.
+    ///
+    /// PEP 503 HTML and PEP 691 JSON are different bytes for the same URL, so
+    /// they are different `DocumentKind`s — keyed together in the metadata
+    /// cache, whichever one warmed the entry would be served to clients that
+    /// asked for the other. The `Accept` this sends upstream is derived from the
+    /// kind for the same reason.
+    async fn fetch_version_document(
+        &self,
+        package: &str,
+        kind: DocumentKind,
+    ) -> Result<VersionDocument, CoreError> {
+        let base = self.base_url.trim_end_matches('/');
+        let name = normalize_name(package);
+        let url = format!("{base}/simple/{name}/");
+        let what = format!("pypi simple page for '{package}'");
+
+        match kind {
+            DocumentKind::SIMPLE_JSON => {
+                let req = self
+                    .get(&url)
+                    .header(reqwest::header::ACCEPT, SIMPLE_JSON_ACCEPT);
+                let mut doc = fetch_json_document(req, &what).await?;
+                doc.content_type = SIMPLE_JSON_ACCEPT.to_owned();
+                Ok(doc)
+            }
+            DocumentKind::Versions => {
+                let req = self.get(&url).header(reqwest::header::ACCEPT, "text/html");
+                fetch_text_document(req, &what, "text/html; charset=utf-8").await
+            }
+            other => Err(CoreError::NotSupported(format!(
+                "pypi has no '{other}' listing document"
+            ))),
+        }
     }
 
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {

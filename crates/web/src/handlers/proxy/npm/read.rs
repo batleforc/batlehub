@@ -59,6 +59,8 @@ pub async fn get_packument(
             not_found_msg,
             pkg,
             batlehub_core::rules::resource_type::RELEASES_READ,
+            batlehub_core::ports::DocumentKind::Versions,
+            "application/json",
             proxy_url,
         )
         .await;

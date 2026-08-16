@@ -2,12 +2,14 @@ use async_trait::async_trait;
 use futures::TryStreamExt;
 use serde::Deserialize;
 
-use super::super::http_client::{cache_control, percent_encode, to_registry_error};
+use super::super::http_client::{
+    cache_control, fetch_json_document, percent_encode, to_registry_error,
+};
 use super::models::{GemInfo, GemVersion};
 use super::{models, CoreError, RubyGemsRegistryClient};
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
-    ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
+    ports::{DocumentKind, FetchedArtifact, RegistryClient, UpstreamPackage, VersionDocument},
 };
 use models::GemMetadata;
 
@@ -187,6 +189,37 @@ pub fn split_gem_stem(stem: &str) -> Option<(&str, &str)> {
 impl RegistryClient for RubyGemsRegistryClient {
     fn registry_type(&self) -> &str {
         "rubygems"
+    }
+
+    /// Two documents, both read by `bundler`/`gem` on different paths: the
+    /// versions API resolves a constraint, the gem document answers "what is
+    /// the current release". Both have to hide a blocked version.
+    ///
+    /// The Marshal indexes are deliberately absent — see
+    /// `RegistryKind::listing_filter`.
+    async fn fetch_version_document(
+        &self,
+        package: &str,
+        kind: DocumentKind,
+    ) -> Result<VersionDocument, CoreError> {
+        let base = self.base_url.trim_end_matches('/');
+        let name = percent_encode(package);
+        let (url, what) = match kind {
+            DocumentKind::Versions => (
+                format!("{base}/api/v1/versions/{name}.json"),
+                format!("rubygems versions for '{package}'"),
+            ),
+            DocumentKind::GEM => (
+                format!("{base}/api/v1/gems/{name}.json"),
+                format!("rubygems gem document for '{package}'"),
+            ),
+            other => {
+                return Err(CoreError::NotSupported(format!(
+                    "rubygems has no '{other}' listing document"
+                )))
+            }
+        };
+        fetch_json_document(self.get(&url), &what).await
     }
 
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {

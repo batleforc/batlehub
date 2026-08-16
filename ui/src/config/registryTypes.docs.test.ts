@@ -105,7 +105,7 @@ describe("registry setup snippets agree with the documentation", () => {
     // invisible, and the drift that comes next will not be.
     expect(
       missing.length,
-      `${missing.length} snippet(s) drifted; the pinned baseline is 37 and may only fall`,
-    ).toBeLessThanOrEqual(37);
+      `${missing.length} snippet(s) drifted; the pinned baseline is 35 and may only fall`,
+    ).toBeLessThanOrEqual(35);
   });
 });

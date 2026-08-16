@@ -28,8 +28,8 @@ pub use ops::{
 };
 pub use registry::{
     ArtifactCacheMeta, ArtifactInventory, ArtifactMeta, ArtifactMetaRecord, ArtifactMetaRepository,
-    ArtifactStream, BulkResult, FetchedArtifact, LocalRegistryBackend, PackageRepository,
-    RecentErrorRecord, RegistryClient, UpstreamPackage,
+    ArtifactStream, BulkResult, DocumentBody, DocumentKind, FetchedArtifact, LocalRegistryBackend,
+    PackageRepository, RecentErrorRecord, RegistryClient, UpstreamPackage, VersionDocument,
 };
 pub use sbom::{
     ExtractedManifest, SbomDependency, SbomExtractor, SbomRepository, UpstreamSbomFetcher,

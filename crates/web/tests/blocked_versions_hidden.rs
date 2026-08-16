@@ -24,33 +24,6 @@ fn npm_app_parts(mode: RegistryMode) -> LocalRegistryAppParts {
     local_registry_app_parts("local-npm", "npm", mode, None)
 }
 
-/// Block `name@version` through the admin API, as an operator would.
-async fn block_version<S>(app: &S, registry: &str, name: &str, version: &str)
-where
-    S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
-{
-    let req = TestRequest::post()
-        .uri("/api/v1/admin/packages/block")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .set_json(serde_json::json!({
-            "registry": registry,
-            "name": name,
-            "version": version,
-            "reason": "CVE-2024-0001",
-        }))
-        .to_request();
-    let resp = call_service(app, req).await;
-    assert!(
-        resp.status().is_success(),
-        "blocking {name}@{version} failed: {}",
-        resp.status()
-    );
-}
-
 fn npm_publish_payload(name: &str, version: &str) -> serde_json::Value {
     let tarball_b64 = base64::engine::general_purpose::STANDARD.encode(b"fake-tarball-content");
     serde_json::json!({

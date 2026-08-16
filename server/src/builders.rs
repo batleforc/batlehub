@@ -66,24 +66,33 @@ pub(super) fn upstream_options(
     }
 }
 
+/// The sparse-index base for a cargo registry: `index_url` when configured,
+/// otherwise derived from the API upstream.
+///
+/// Shared by [`build_cargo_index`] and [`build_registry_client`] so the index
+/// the handler's presence check sees and the index the client actually fetches
+/// cannot drift apart.
+pub(super) fn cargo_index_url(reg: &RegistryConfig) -> String {
+    if let Some(ref url) = reg.index_url {
+        return url.clone();
+    }
+    let upstream = reg
+        .upstreams
+        .first()
+        .map(|s| s.as_str())
+        .unwrap_or("https://crates.io");
+    if upstream.contains("crates.io") {
+        "https://index.crates.io".to_owned()
+    } else {
+        upstream.to_owned()
+    }
+}
+
 pub(super) fn build_cargo_index(
     reg: &RegistryConfig,
     global_proxy: Option<&batlehub_config::schema::UpstreamProxyConfig>,
 ) -> anyhow::Result<CargoIndexProxy> {
-    let index_url = if let Some(ref url) = reg.index_url {
-        url.clone()
-    } else {
-        let upstream = reg
-            .upstreams
-            .first()
-            .map(|s| s.as_str())
-            .unwrap_or("https://crates.io");
-        if upstream.contains("crates.io") {
-            "https://index.crates.io".to_owned()
-        } else {
-            upstream.to_owned()
-        }
-    };
+    let index_url = cargo_index_url(reg);
     let opts = upstream_options(reg, global_proxy);
     let http = batlehub_adapters::registry::apply_upstream_options(
         reqwest::Client::builder().user_agent("batlehub/0.1"),
@@ -131,6 +140,7 @@ pub(super) fn build_registry_client(
         url: &str,
         opts: &UpstreamHttpOptions,
         path_allow: &[String],
+        cargo_index: &str,
     ) -> anyhow::Result<Arc<dyn batlehub_core::ports::RegistryClient>> {
         // The path-addressed kinds all share one client, so the `path_allow`
         // allowlist is applied uniformly to them. Config validation has already
@@ -149,7 +159,9 @@ pub(super) fn build_registry_client(
             RegistryKind::Forgejo => Arc::new(ForgejoRegistryClient::new(url, opts)?),
             RegistryKind::Gitlab => Arc::new(GitlabRegistryClient::new(url, opts)?),
             RegistryKind::Npm => Arc::new(NpmRegistryClient::new(url, opts)?),
-            RegistryKind::Cargo => Arc::new(CargoRegistryClient::new(url, opts)?),
+            RegistryKind::Cargo => {
+                Arc::new(CargoRegistryClient::new(url, opts)?.with_index_url(cargo_index))
+            }
             RegistryKind::Nuget => Arc::new(NugetRegistryClient::new(url, opts)?),
             RegistryKind::Openvsx => Arc::new(OpenVsxRegistryClient::new(url, opts)?),
             RegistryKind::Goproxy => Arc::new(GoProxyRegistryClient::new(url, opts)?),
@@ -213,12 +225,13 @@ pub(super) fn build_registry_client(
         // explicit `upstreams` entry, so the placeholder is unreachable in practice.
         RegistryKind::Generic => resolve_urls(&reg.upstreams, "https://example.invalid/generic"),
     };
+    let cargo_index = cargo_index_url(reg);
     if urls.len() == 1 {
-        make_one(kind, &urls[0], &opts, &reg.path_allow)
+        make_one(kind, &urls[0], &opts, &reg.path_allow, &cargo_index)
     } else {
         let clients = urls
             .iter()
-            .map(|u| make_one(kind, u, &opts, &reg.path_allow))
+            .map(|u| make_one(kind, u, &opts, &reg.path_allow, &cargo_index))
             .collect::<anyhow::Result<Vec<_>>>()?;
         Ok(Arc::new(FanoutRegistryClient::new(
             &reg.registry_type,

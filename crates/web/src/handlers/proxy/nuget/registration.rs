@@ -5,10 +5,11 @@ use actix_web::{get, web, HttpRequest, HttpResponse, Responder};
 use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
     entities::PackageId,
+    ports::DocumentKind,
     services::{LocalRegistryService, ProxyService},
 };
 
-use super::super::common::{proxy_stream, registry_public_base, require_registry_type};
+use super::super::common::{proxy_document, registry_public_base, require_registry_type};
 use crate::handlers::schemas::UpstreamDocument;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
@@ -126,12 +127,20 @@ pub async fn nuget_registration(
     }
 
     // Proxy or hybrid mode: forward to upstream registration.
-    proxy_stream(
+    // A listing, not an artifact. Registration leaves are filtered and each
+    // page's `count`/`lower`/`upper` recomputed, so a UI or `dotnet list
+    // package` never advertises a version the download gate will refuse.
+    //
+    // Registrations whose pages are served by URL rather than inline pass
+    // through unfiltered and are logged; the flat index — what `dotnet restore`
+    // actually resolves a version against — is filtered either way.
+    proxy_document(
         svc,
         PackageId::new(&registry, &id, "__registration__"),
         identity,
         batlehub_core::rules::resource_type::RELEASES_READ,
-        Some("application/json"),
+        DocumentKind::REGISTRATION,
+        String::new(),
     )
     .await
 }

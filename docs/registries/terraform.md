@@ -167,6 +167,20 @@ curl -X POST \
 
 ---
 
+## Blocked versions
+
+Both facets of `/v1/{namespace}/versions` are filtered — module versions
+(nested under `modules[].versions`) and provider versions (a flat `versions`
+array) — so `terraform init` never selects a version it will then be refused
+mid-plan. Neither document names a preferred version, so there is nothing to
+repair beyond removing the entry.
+
+The upstream document is cached for the registry's `metadata_ttl`; blocks are
+applied on top of the cached copy on every request, so blocking a version takes
+effect immediately rather than when the cache expires.
+
+See [blocking a package version](/guide/admin-policies#block-a-package-version) for the two halves of a block, and [which listings are filtered](/guide/admin-policies#which-listings-are-filtered) for the full table.
+
 ## Authentication
 
 Terraform reads per-host credentials from the `credentials "batlehub.example.com"` block in `~/.terraformrc` (shown above) and sends the token as a Bearer header.

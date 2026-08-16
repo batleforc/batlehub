@@ -7,11 +7,13 @@ use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
     entities::PackageId,
     error::CoreError,
+    ports::DocumentKind,
     services::{artifact_storage_key, validate_coordinate, LocalRegistryService, ProxyService},
 };
 
 use super::super::common::{
-    append_signature_headers, collect_storage_stream, proxy_stream, require_registry_type,
+    append_signature_headers, collect_storage_stream, proxy_document, proxy_stream,
+    require_registry_type,
 };
 use super::nuspec::{content_type_for, extract_nuspec_from_nupkg};
 use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
@@ -85,13 +87,17 @@ pub async fn nuget_flat_versions(
         }
     }
 
-    // Proxy mode or hybrid miss
-    proxy_stream(
+    // Proxy mode or hybrid miss. `proxy_document` rather than `proxy_stream`:
+    // this is the document `dotnet restore` resolves a version range against,
+    // so it has to have administratively blocked versions removed before a
+    // resolver picks one and is then refused the download.
+    proxy_document(
         svc,
         PackageId::new(&registry, &id, "__index__"),
         identity,
         batlehub_core::rules::resource_type::RELEASES_READ,
-        Some("application/json"),
+        DocumentKind::Versions,
+        String::new(),
     )
     .await
 }

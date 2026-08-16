@@ -7,11 +7,13 @@ use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
     entities::PackageId,
     error::CoreError,
+    ports::DocumentKind,
+    services::blocking::goproxy as go_blocking,
     services::{LocalRegistryService, ProxyService},
 };
 
 use crate::handlers::proxy::common::{
-    proxy_stream, require_registry_type, serve_local_or_proxy_json,
+    document_response, fetch_proxy_document, proxy_document, proxy_stream, require_registry_type,
 };
 use crate::handlers::schemas::{ArtifactBytes, ProtocolDocument, UpstreamDocument};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
@@ -122,23 +124,93 @@ pub async fn goproxy_latest(
 
     let pkg = PackageId::new(&registry, module, "latest");
     let not_found_msg = format!("module '{module}' not found");
-    let (fetch_registry, fetch_module) = (registry.clone(), module.to_owned());
-    serve_local_or_proxy_json(
-        svc,
-        &mode_map,
-        &registry,
-        identity,
-        move |identity: batlehub_core::entities::Identity| async move {
-            local_svc
-                .get_go_latest(&fetch_registry, &fetch_module, &identity)
-                .await
-        },
-        not_found_msg,
-        pkg,
+    let mode = mode_map.get(&registry);
+
+    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        svc.authorize_read(
+            &pkg,
+            &identity.0,
+            batlehub_core::rules::resource_type::RELEASES_READ,
+        )
+        .await
+        .map_err(AppError::from)?;
+        match local_svc.get_go_latest(&registry, module, &identity).await {
+            Ok(json) => {
+                return Ok(HttpResponse::Ok()
+                    .content_type("application/json")
+                    .json(json))
+            }
+            Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}
+            Err(CoreError::NotFound(_)) => return Err(AppError::not_found(not_found_msg)),
+            Err(e) => return Err(AppError::from(e)),
+        }
+    }
+
+    proxy_go_latest(svc, registry, module.to_owned(), identity).await
+}
+
+/// `@latest`, re-resolved against the module's *filtered* `@v/list`.
+///
+/// `@latest` names one version and carries no list, so hiding a blocked release
+/// from it is re-resolution rather than removal — and the list it has to
+/// re-resolve against is a second document. Both go through
+/// `ProxyService::version_document`, so both are authorised, cached and
+/// filtered on the way; `@latest` is a low-frequency endpoint next to `@v/list`,
+/// which is what makes the second fetch affordable here and not there.
+///
+/// **Fails open on the list fetch**, like every other step on this path: an
+/// unreachable `@v/list` serves `@latest` as upstream sent it rather than
+/// turning a metadata blip into a broken module.
+async fn proxy_go_latest(
+    svc: web::Data<Arc<ProxyService>>,
+    registry: String,
+    module: String,
+    identity: AuthIdentity,
+) -> Result<HttpResponse, AppError> {
+    let latest = fetch_proxy_document(
+        svc.clone(),
+        PackageId::new(&registry, &module, "latest"),
+        AuthIdentity(identity.0.clone()),
         batlehub_core::rules::resource_type::RELEASES_READ,
-        Some("application/json"),
+        DocumentKind::LATEST,
+        String::new(),
     )
-    .await
+    .await?;
+
+    let list = fetch_proxy_document(
+        svc,
+        PackageId::new(&registry, &module, "latest"),
+        identity,
+        batlehub_core::rules::resource_type::RELEASES_READ,
+        DocumentKind::Versions,
+        String::new(),
+    )
+    .await;
+
+    let Ok(list) = list else {
+        tracing::warn!(
+            registry = %registry,
+            module = %module,
+            "could not load the filtered @v/list; serving @latest unrepaired"
+        );
+        return Ok(document_response(latest));
+    };
+
+    let allowed = go_blocking::versions_in_list(list.body.as_text().unwrap_or_default());
+    let Some(json) = latest.body.as_json() else {
+        return Ok(document_response(latest));
+    };
+    match go_blocking::repaired_latest(json, &allowed) {
+        Some(repaired) => Ok(HttpResponse::Ok()
+            .content_type(latest.content_type.clone())
+            .json(repaired)),
+        // Every version is blocked. A 404 is what the Go client already handles
+        // for a module with no releases, and is honest: there is no latest
+        // version this client may have.
+        None => Err(AppError::not_found(format!(
+            "module '{module}' has no available versions"
+        ))),
+    }
 }
 
 /// List known versions for a Go module.
@@ -187,13 +259,17 @@ pub async fn goproxy_list(
         }
     }
 
-    let pkg = PackageId::new(&registry, module, "latest").with_artifact("list");
-    proxy_stream(
+    // `@v/list` is the document `go get` resolves a version query against, so
+    // it goes through `proxy_document` (fetch, filter, answer in `text/plain`)
+    // rather than `proxy_stream`, which would forward the upstream's own list
+    // with blocked versions still in it.
+    proxy_document(
         svc,
-        pkg,
+        PackageId::new(&registry, module, "latest"),
         identity,
         batlehub_core::rules::resource_type::RELEASES_READ,
-        Some("text/plain"),
+        DocumentKind::Versions,
+        String::new(),
     )
     .await
 }

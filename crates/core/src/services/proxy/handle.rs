@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use crate::entities::AccessEvent;
 use crate::error::CoreError;
+use crate::ports::{DocumentKind, VersionDocument};
 use crate::rules::{evaluate_rules, RuleContext, RuleDecision};
 
 use super::{ProxyRequest, ProxyResponse, ProxyService, RequestTiming};
@@ -380,20 +381,22 @@ impl ProxyService {
     pub async fn version_document(
         &self,
         req: &ProxyRequest,
+        doc_kind: DocumentKind,
         public_base: &str,
-    ) -> Result<serde_json::Value, CoreError> {
+    ) -> Result<VersionDocument, CoreError> {
         let prelude = self.request_prelude(req).await?;
         if let Err(e) = self
             .authorize_listing(&req.package_id, &req.identity, &req.resource_type)
             .await
         {
-            // Audited on both outcomes, as the artifact path is: a listing is an
-            // access to the registry by an identity, and this route is how a
-            // client discovers what a registry holds.
+            // A denial is filed individually, with the identity, the coordinate
+            // and the reason. It is a security event that has to be inspectable
+            // one at a time, there are few of them, and an operator asking "who
+            // was refused, and why" needs the answer rather than a count.
             if let CoreError::AccessDenied(reason) = &e {
                 super::warn_if_audit_failed(
                     self.repo
-                        .record_access(AccessEvent::denied_download(
+                        .record_access(AccessEvent::denied_metadata(
                             req.package_id.clone(),
                             req.identity.user_id.clone(),
                             req.identity.role.clone(),
@@ -407,51 +410,208 @@ impl ProxyService {
         }
 
         let name = req.package_id.name.as_str();
-        let mut doc = self.cached_version_document(&prelude, req, name).await?;
+        let mut doc = self
+            .cached_version_document(&prelude, req, name, doc_kind)
+            .await?;
+
+        let kind = prelude.client.registry_type().parse().unwrap_or_else(|_| {
+            // Unreachable in practice: `registry_type()` returns the same
+            // kebab-case string `RegistryKind` round-trips. Treating an unknown
+            // one as `Generic` keeps the listing served and unfiltered, which is
+            // the fail-open direction this whole path takes.
+            tracing::warn!(
+                registry_type = prelude.client.registry_type(),
+                "registry client reports a type RegistryKind does not know; not filtering"
+            );
+            crate::entities::RegistryKind::Generic
+        });
+        let ctx = crate::services::blocking::ListingContext {
+            registry: &req.package_id.registry,
+            kind,
+            document: doc_kind,
+            package: name,
+            public_base,
+        };
 
         let blocked = self
+            .blocked_versions_for(&req.package_id.registry, name, kind)
+            .await;
+
+        crate::services::blocking::dispatch(&ctx, &mut doc, &blocked);
+        crate::services::blocking::rewrite_urls(&ctx, &mut doc);
+
+        // An allowed listing is counted, not filed. `StatsRollupService` turns
+        // this into one durable row per registry per hour, so a `cargo build`
+        // over a 400-crate graph moves a counter 400 times and writes nothing.
+        // What that gives up is per-package and per-identity attribution for
+        // *allowed* listing reads; "who downloaded this artifact" and "who was
+        // refused" both keep their own rows.
+        self.metrics.record_listing_read(&req.package_id.registry);
+
+        Ok(doc)
+    }
+
+    /// One package's blocked versions, normalised for its protocol, **failing
+    /// open**.
+    ///
+    /// A repository error logs a warning and returns an empty set, matching
+    /// `BlockListRule` and the local path's `filter_blocked`: a database blip
+    /// should degrade to showing more versions than intended, never to
+    /// reporting every package as empty. The download gate re-checks the
+    /// concrete coordinate on every request and denies as soon as the store
+    /// recovers, so no failure mode here makes blocked *bytes* retrievable.
+    ///
+    /// Public because JetBrains Marketplace renders three listing documents
+    /// from one intermediate version list rather than from a fetched document,
+    /// so its handler filters at that chokepoint instead of going through
+    /// [`Self::version_document`].
+    pub async fn blocked_versions_for(
+        &self,
+        registry: &str,
+        package: &str,
+        kind: crate::entities::RegistryKind,
+    ) -> crate::services::blocking::BlockedVersions {
+        let versions = self
             .repo
-            .blocked_versions(&req.package_id.registry, name)
+            .blocked_versions(registry, package)
             .await
             .unwrap_or_else(|e| {
-                // Fail open, as `BlockListRule` does: a database blip should not
-                // make every package look empty. The download gate re-checks the
-                // concrete version and denies once the store is back.
                 tracing::warn!(
-                    registry = %req.package_id.registry,
-                    package = %name,
+                    registry = %registry,
+                    package = %package,
                     error = %e,
                     "failed to load blocked versions for listing, failing open"
                 );
                 Vec::new()
             });
+        crate::services::blocking::BlockedVersions::new(kind, versions)
+    }
 
-        let removed = crate::services::blocking::strip_blocked_from_packument(
-            &mut doc,
-            &blocked.into_iter().collect(),
-        );
-        if !removed.is_empty() {
-            tracing::debug!(
-                registry = %req.package_id.registry,
-                package = %name,
-                removed = removed.len(),
-                "hid blocked versions from version listing"
-            );
+    /// The blocked `(package, version)` set for a whole registry, behind a
+    /// short-lived snapshot.
+    ///
+    /// **The one place in this design where a block is not effective on the very
+    /// next request.** Every other path reads the blocked set through on each
+    /// request; this one cannot, because a multi-package index —
+    /// `repodata.json` for a busy conda channel is tens of megabytes — is
+    /// fetched on every `conda install`, and re-querying per request would put
+    /// the whole channel's block list on that path.
+    ///
+    /// Thirty seconds is short enough that nobody waits on it during an
+    /// incident and long enough to collapse a burst of installs into one query.
+    /// The delay is documented in the admin guide rather than left to be
+    /// discovered, because an undocumented delay is indistinguishable from a
+    /// block that did not work.
+    ///
+    /// The snapshot lives in the metadata cache rather than in a process-local
+    /// map, so a Redis-backed deployment shares one query across replicas
+    /// instead of one per replica.
+    async fn blocked_in_registry_snapshot(
+        &self,
+        registry: &str,
+        kind: crate::entities::RegistryKind,
+    ) -> crate::services::blocking::MultiPackageBlocks {
+        const SNAPSHOT_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+        let key = format!("blocks:{registry}");
+
+        if let Ok(Some(entry)) = self.cache.get(&key).await {
+            if let Ok(pairs) = serde_json::from_value::<Vec<(String, String)>>(entry.metadata.extra)
+            {
+                return crate::services::blocking::MultiPackageBlocks::new(kind, pairs);
+            }
         }
 
-        rewrite_tarball_urls(&mut doc, public_base, name);
+        let pairs = match self.repo.blocked_in_registry(registry).await {
+            Ok(p) => p,
+            Err(e) => {
+                // Fail open, as everywhere else on this path.
+                tracing::warn!(
+                    registry = %registry,
+                    error = %e,
+                    "failed to load the registry's blocked set, serving the index unfiltered"
+                );
+                return crate::services::blocking::MultiPackageBlocks::new(kind, Vec::new());
+            }
+        };
 
-        super::warn_if_audit_failed(
-            self.repo
-                .record_access(AccessEvent::allowed_download(
-                    req.package_id.clone(),
-                    req.identity.user_id.clone(),
-                    req.identity.role.clone(),
-                ))
-                .await,
-            "allowed version document",
-        );
+        let entry = crate::ports::CacheEntry {
+            metadata: crate::entities::PackageMetadata {
+                id: crate::entities::PackageId::new(registry, "__blocks__", "__snapshot__"),
+                published_at: None,
+                download_url: None,
+                checksum: None,
+                is_signed: None,
+                extra: serde_json::to_value(&pairs).unwrap_or(serde_json::Value::Null),
+                cache_control: None,
+            },
+            cached_at: chrono::Utc::now(),
+            expires_at: None,
+        };
+        if let Err(e) = self.cache.set(&key, entry, Some(SNAPSHOT_TTL)).await {
+            tracing::warn!(key = %key, error = %e, "caching the blocked-set snapshot failed");
+        }
 
+        crate::services::blocking::MultiPackageBlocks::new(kind, pairs)
+    }
+
+    /// Serve a **multi-package** index — conda's `repodata.json` — with blocked
+    /// packages removed.
+    ///
+    /// The sibling of [`Self::version_document`] for the listings that describe
+    /// a whole channel rather than one package. Same authorisation, same audit
+    /// treatment, same fail-open; what differs is the shape of the blocked set
+    /// (see [`Self::blocked_in_registry_snapshot`]) and therefore its freshness.
+    pub async fn multi_package_document(
+        &self,
+        req: &ProxyRequest,
+        doc_kind: DocumentKind,
+        public_base: &str,
+    ) -> Result<VersionDocument, CoreError> {
+        let prelude = self.request_prelude(req).await?;
+        if let Err(e) = self
+            .authorize_listing(&req.package_id, &req.identity, &req.resource_type)
+            .await
+        {
+            if let CoreError::AccessDenied(reason) = &e {
+                super::warn_if_audit_failed(
+                    self.repo
+                        .record_access(AccessEvent::denied_metadata(
+                            req.package_id.clone(),
+                            req.identity.user_id.clone(),
+                            req.identity.role.clone(),
+                            reason.clone(),
+                        ))
+                        .await,
+                    "denied multi-package index",
+                );
+            }
+            return Err(e);
+        }
+
+        let name = req.package_id.name.as_str();
+        let mut doc = self
+            .cached_version_document(&prelude, req, name, doc_kind)
+            .await?;
+
+        let kind = prelude
+            .client
+            .registry_type()
+            .parse()
+            .unwrap_or(crate::entities::RegistryKind::Generic);
+        let ctx = crate::services::blocking::ListingContext {
+            registry: &req.package_id.registry,
+            kind,
+            document: doc_kind,
+            package: name,
+            public_base,
+        };
+
+        let blocked = self
+            .blocked_in_registry_snapshot(&req.package_id.registry, kind)
+            .await;
+        crate::services::blocking::dispatch_multi(&ctx, &mut doc, &blocked);
+
+        self.metrics.record_listing_read(&req.package_id.registry);
         Ok(doc)
     }
 
@@ -478,21 +638,35 @@ impl ProxyService {
         prelude: &RequestPrelude,
         req: &ProxyRequest,
         name: &str,
-    ) -> Result<serde_json::Value, CoreError> {
+        doc_kind: DocumentKind,
+    ) -> Result<VersionDocument, CoreError> {
         // Distinct from the `meta:` namespace: that key holds a `PackageMetadata`
         // for one version, this holds a whole package's upstream document.
-        let key = format!("doc:{}/{}", req.package_id.registry, name);
+        //
+        // `doc_kind` is part of the key because a registry can have more than
+        // one listing for the same name — NuGet's flat index and its
+        // registration page, RubyGems' versions list and its gem document. Keyed
+        // by name alone they collide, and one is served under the other's URL.
+        let key = format!(
+            "doc:{}:{}:{}",
+            req.package_id.registry,
+            doc_kind.as_str(),
+            name
+        );
 
         // `get` returns only entries the store still considers fresh, so freshness
         // is the store's job here exactly as it is in `resolve_metadata_cached` —
         // hence `expires_at: None` below rather than a second, independently
         // clocked expiry that could disagree with the backing store's own.
         if let Ok(Some(entry)) = self.cache.get(&key).await {
-            return Ok(entry.metadata.extra);
+            if let Some(doc) = decode_cached_document(&key, entry.metadata.extra) {
+                return Ok(doc);
+            }
         }
 
-        match prelude.client.fetch_version_document(name).await {
+        match prelude.client.fetch_version_document(name, doc_kind).await {
             Ok(doc) => {
+                let encoded = serde_json::to_value(&doc).unwrap_or(serde_json::Value::Null);
                 let entry = crate::ports::CacheEntry {
                     metadata: crate::entities::PackageMetadata {
                         id: req.package_id.clone(),
@@ -500,7 +674,7 @@ impl ProxyService {
                         download_url: None,
                         checksum: None,
                         is_signed: None,
-                        extra: doc.clone(),
+                        extra: encoded,
                         cache_control: None,
                     },
                     cached_at: chrono::Utc::now(),
@@ -519,12 +693,14 @@ impl ProxyService {
                     .unwrap_or(false);
                 if serve_stale {
                     if let Ok(Some(stale)) = self.cache.get_stale(&key).await {
-                        tracing::warn!(
-                            key = %key,
-                            error = %e,
-                            "upstream version document unavailable, serving stale"
-                        );
-                        return Ok(stale.metadata.extra);
+                        if let Some(doc) = decode_cached_document(&key, stale.metadata.extra) {
+                            tracing::warn!(
+                                key = %key,
+                                error = %e,
+                                "upstream version document unavailable, serving stale"
+                            );
+                            return Ok(doc);
+                        }
                     }
                 }
                 Err(e)
@@ -533,49 +709,19 @@ impl ProxyService {
     }
 }
 
-/// Percent-encode a package name so it survives as **one** path segment.
+/// Read a cached [`VersionDocument`] back out of the metadata cache's untyped
+/// `extra` field.
 ///
-/// The download route is `/proxy/{registry}/{package}/{version}/tarball`, and an
-/// actix path segment never spans `/`. A scoped npm name interpolated raw turns
-/// `@vue/cli` into two segments, so the URL has one more segment than the
-/// pattern and 404s — every scoped dependency in the document becomes
-/// undownloadable. `host_routing` already relies on `%2f` keeping scoped names
-/// whole on the way in; this is the same requirement on the way out.
-fn encode_package_segment(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    for b in name.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'@' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
-
-/// Point every `versions.*.dist.tarball` at this proxy's download route,
-/// matching the URL shape the local registry already serves
-/// (`{base}/{name}/{version}/tarball`).
-fn rewrite_tarball_urls(doc: &mut serde_json::Value, public_base: &str, name: &str) {
-    let base = public_base.trim_end_matches('/');
-    let name = encode_package_segment(name);
-    let Some(versions) = doc
-        .get_mut("versions")
-        .and_then(serde_json::Value::as_object_mut)
-    else {
-        return;
-    };
-    for (version, meta) in versions.iter_mut() {
-        let Some(obj) = meta.as_object_mut() else {
-            continue;
-        };
-        let dist = obj.entry("dist").or_insert_with(|| serde_json::json!({}));
-        if let Some(d) = dist.as_object_mut() {
-            d.insert(
-                "tarball".to_owned(),
-                serde_json::Value::String(format!("{base}/{name}/{version}/tarball")),
-            );
+/// `None` on anything that does not deserialize, which is treated as a miss.
+/// The realistic cause is an entry written by an older build under a key shape
+/// this one reuses; refetching is cheap and correct, where trusting a partially
+/// understood document is neither.
+fn decode_cached_document(key: &str, extra: serde_json::Value) -> Option<VersionDocument> {
+    match serde_json::from_value(extra) {
+        Ok(doc) => Some(doc),
+        Err(e) => {
+            tracing::debug!(key = %key, error = %e, "cached version document unreadable, refetching");
+            None
         }
     }
 }

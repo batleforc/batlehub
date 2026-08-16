@@ -515,6 +515,10 @@ export default defineConfig({
               text: "0008 — mise in an air-gapped estate",
               link: "/rfc/0008-mise-in-an-air-gapped-estate",
             },
+            {
+              text: "0009 — Every endpoint the client actually calls",
+              link: "/rfc/0009-protocol-coverage",
+            },
           ],
         },
       ],

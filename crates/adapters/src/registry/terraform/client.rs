@@ -5,10 +5,10 @@ use super::{modules, providers, TerraformRegistryClient};
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
+    ports::{DocumentKind, FetchedArtifact, RegistryClient, UpstreamPackage, VersionDocument},
 };
 
-use super::super::http_client::{cache_control, to_registry_error};
+use super::super::http_client::{cache_control, fetch_json_document, to_registry_error};
 
 // ── RegistryClient impl ───────────────────────────────────────────────────────
 
@@ -90,6 +90,35 @@ impl RegistryClient for TerraformRegistryClient {
             stream: Box::pin(stream),
             cache_control,
         })
+    }
+
+    /// One document kind covers both facets: `package` already carries the
+    /// `modules/` or `providers/` prefix that decides the URL *and* the response
+    /// shape, exactly as [`super::TerraformRegistryClient::artifact_url`] reads
+    /// it. A `Secondary` kind here would be a second name for the same request.
+    async fn fetch_version_document(
+        &self,
+        package: &str,
+        kind: DocumentKind,
+    ) -> Result<VersionDocument, CoreError> {
+        if kind != DocumentKind::Versions {
+            return Err(CoreError::NotSupported(format!(
+                "terraform has no '{kind}' listing document"
+            )));
+        }
+        if !package.starts_with("providers/") && !package.starts_with("modules/") {
+            return Err(CoreError::Registry(format!(
+                "terraform: invalid package name '{package}': must start with \
+                 'providers/' or 'modules/'"
+            )));
+        }
+        let base = self.base_url.trim_end_matches('/');
+        let url = format!("{base}/v1/{package}/versions");
+        fetch_json_document(
+            self.get(&url),
+            &format!("terraform versions for '{package}'"),
+        )
+        .await
     }
 
     async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {

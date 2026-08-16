@@ -12,6 +12,7 @@ on:
       - "cli/**"
       - "fuzz/**"
       - "tests/heavy/**"
+      - "docs/guide/admin-policies.md"
       - "**/Cargo.toml"
       - "**/Cargo.lock"
       - ".github/workflows/test.yaml"
@@ -24,6 +25,7 @@ on:
       - "cli/**"
       - "fuzz/**"
       - "tests/heavy/**"
+      - "docs/guide/admin-policies.md"
       - "**/Cargo.toml"
       - "**/Cargo.lock"
       - ".github/workflows/test.yaml"
@@ -56,6 +58,30 @@ jobs:
         run: cargo clippy --workspace -- -D warnings
       - name: rustfmt
         run: cargo fmt --all --check
+      # Which registries hide blocked versions from their listings is generated
+      # from `RegistryKind::listing_filter()` — an exhaustive match a new
+      # registry kind cannot be added without answering. Before RFC 0006 the
+      # same fact was a hand-written warning box in the admin guide naming npm
+      # as the only filtered ecosystem, which nothing kept true.
+      #
+      # It lives in this job rather than with the other docs drift checks in
+      # front-design.yaml because the source of truth is Rust: that workflow has
+      # no cargo and does not run on `crates/**`.
+      - name: Listing-filter coverage table in sync
+        run: |
+          table=$(cargo run -q -p batlehub-server --bin listing_coverage)
+          page=docs/guide/admin-policies.md
+          awk -v table="$table" '
+            /^<!-- BEGIN listing-coverage/ { print; print table; skip = 1; next }
+            /^<!-- END listing-coverage/   { skip = 0 }
+            !skip                          { print }
+          ' "$page" > "$page.tmp"
+          mv "$page.tmp" "$page"
+          if ! git diff --quiet -- "$page"; then
+            echo "::error::the listing-coverage table is stale — run 'task docs:listing-coverage' and commit"
+            git --no-pager diff -- "$page"
+            exit 1
+          fi
 
   unit:
     name: Unit tests (+ coverage)

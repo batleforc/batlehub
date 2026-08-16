@@ -3,14 +3,14 @@ use chrono::DateTime;
 use futures::TryStreamExt;
 
 use super::super::http_client::{
-    apply_upstream_tls, basic_auth_get, to_registry_error, upstream_auth_headers,
-    UpstreamHttpOptions,
+    apply_upstream_tls, basic_auth_get, fetch_json_document, to_registry_error,
+    upstream_auth_headers, UpstreamHttpOptions,
 };
 use super::models::{GhAsset, GhRelease};
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient},
+    ports::{DocumentKind, FetchedArtifact, RegistryClient, VersionDocument},
 };
 
 /// GitHub REST API v3 registry client.
@@ -169,6 +169,26 @@ pub(super) fn next_link(headers: &reqwest::header::HeaderMap) -> Option<String> 
 impl RegistryClient for GithubRegistryClient {
     fn registry_type(&self) -> &str {
         "github"
+    }
+
+    /// The repository's release listing — the document a client reads to decide
+    /// which release to download.
+    ///
+    /// Fetched fresh rather than paged through `fetch_all_releases`: the filter
+    /// rewrites the document the client asked for, so it has to be *that*
+    /// document rather than a re-serialisation of a typed subset.
+    async fn fetch_version_document(
+        &self,
+        package: &str,
+        kind: DocumentKind,
+    ) -> Result<VersionDocument, CoreError> {
+        if kind != DocumentKind::Versions {
+            return Err(CoreError::NotSupported(format!(
+                "github has no '{kind}' listing document"
+            )));
+        }
+        let url = format!("{}/repos/{}/releases", self.base_url, package);
+        fetch_json_document(self.get(&url), &format!("GitHub releases for '{package}'")).await
     }
 
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {

@@ -67,62 +67,67 @@ pub async fn conda_repodata(
             .body(serde_json::to_string(&repodata).unwrap_or_default()));
     }
 
+    // Proxy mode, and the upstream half of Hybrid. `multi_package_document`
+    // rather than `proxy_stream`: `repodata.json` describes a whole channel, and
+    // a blocked package left in it gets selected by the solver and then refused
+    // at download — mid `conda install`, after the environment plan is fixed.
+    //
+    // Its blocked set comes from a 30-second snapshot rather than a per-request
+    // query; see `ProxyService::blocked_in_registry_snapshot` for why, and the
+    // admin guide for the operator-facing statement of the delay.
+    let upstream = fetch_conda_index(
+        svc,
+        &registry,
+        &platform,
+        identity,
+        batlehub_core::ports::DocumentKind::Versions,
+    )
+    .await?;
+
     if mode == RegistryMode::Hybrid {
-        // Fetch upstream repodata via ProxyService (cached), then merge local packages.
-        let pkg = PackageId::new(&registry, "repodata", &platform).with_artifact("repodata.json");
-
-        match svc
-            .handle(batlehub_core::services::ProxyRequest {
-                package_id: pkg,
-                identity: identity.0.clone(),
-                resource_type: batlehub_core::rules::resource_type::RELEASES_READ.to_owned(),
-                ip_address: None,
-                user_agent: None,
-            })
+        let local_repodata = local_svc
+            .get_conda_repodata(&registry, &platform)
             .await
-            .map_err(AppError::from)?
-        {
-            batlehub_core::services::ProxyResponse::Denied { reason } => {
-                return Err(AppError::forbidden(reason));
-            }
-            batlehub_core::services::ProxyResponse::Stream(mut stream) => {
-                use futures::StreamExt;
-                let mut buf = bytes::BytesMut::new();
-                while let Some(chunk) = stream.next().await {
-                    match chunk {
-                        Ok(c) => buf.extend_from_slice(&c),
-                        Err(e) => {
-                            tracing::warn!(error = %e, "upstream repodata stream error");
-                            break;
-                        }
-                    }
-                }
-                let upstream_bytes = buf.freeze();
-
-                // Merge with local packages
-                let local_repodata = local_svc
-                    .get_conda_repodata(&registry, &platform)
-                    .await
-                    .map_err(AppError::from)?;
-
-                let merged = merge_repodata(&upstream_bytes, &local_repodata);
-                return Ok(HttpResponse::Ok()
-                    .content_type("application/json")
-                    .body(merged));
-            }
-        }
+            .map_err(AppError::from)?;
+        let merged = merge_repodata(&upstream, &local_repodata);
+        return Ok(HttpResponse::Ok()
+            .content_type("application/json")
+            .body(merged));
     }
 
-    // Proxy mode: stream through cache.
-    let pkg = PackageId::new(&registry, "repodata", &platform).with_artifact("repodata.json");
-    proxy_stream(
-        svc,
-        pkg,
-        identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
-        Some("application/json"),
-    )
-    .await
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .body(upstream))
+}
+
+/// Fetch and filter one of a conda channel's index documents, as bytes.
+///
+/// Bytes rather than a `VersionDocument` because the Hybrid path has to merge
+/// locally published packages into it before answering.
+async fn fetch_conda_index(
+    svc: web::Data<Arc<ProxyService>>,
+    registry: &str,
+    platform: &str,
+    identity: AuthIdentity,
+    kind: batlehub_core::ports::DocumentKind,
+) -> Result<Vec<u8>, AppError> {
+    // The *platform* is the coordinate: a conda listing is scoped to a subdir,
+    // not to a package.
+    let req = batlehub_core::services::ProxyRequest {
+        package_id: PackageId::new(registry, platform, "__repodata__"),
+        identity: identity.0,
+        resource_type: batlehub_core::rules::resource_type::RELEASES_READ.to_owned(),
+        ip_address: None,
+        user_agent: None,
+    };
+    let doc = svc
+        .multi_package_document(&req, kind, "")
+        .await
+        .map_err(AppError::from)?;
+    Ok(match doc.body {
+        batlehub_core::ports::DocumentBody::Json(v) => serde_json::to_vec(&v).unwrap_or_default(),
+        batlehub_core::ports::DocumentBody::Text(t) => t.into_bytes(),
+    })
 }
 
 /// Merge a locally-built repodata JSON overlay into upstream `repodata.json` bytes.
@@ -181,16 +186,17 @@ pub async fn conda_current_repodata(
         ));
     }
 
-    let pkg =
-        PackageId::new(&registry, "repodata", &platform).with_artifact("current_repodata.json");
-    proxy_stream(
+    let body = fetch_conda_index(
         svc,
-        pkg,
+        &registry,
+        &platform,
         identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
-        Some("application/json"),
+        batlehub_core::ports::DocumentKind::CURRENT_REPODATA,
     )
-    .await
+    .await?;
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .body(body))
 }
 
 /// Download a conda package file (`.conda` or `.tar.bz2`) through the proxy cache.
@@ -220,7 +226,10 @@ pub async fn conda_file_download(
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
-    let (registry, platform, filename) = path.into_inner();
+    // `platform` is part of the route but not of the coordinate: a conda
+    // package's identity is its name and version, and the same release is
+    // served under several subdirs.
+    let (registry, _platform, filename) = path.into_inner();
     require_registry_type(&registry, "conda", &map)?;
 
     let mode = mode_map.get(&registry);
@@ -262,13 +271,19 @@ pub async fn conda_file_download(
         }
     }
 
-    // Proxy through cache. Use the filename stem as the package name and the
-    // platform as version to form a stable cache key.
-    let stem = filename
-        .strip_suffix(".conda")
-        .or_else(|| filename.strip_suffix(".tar.bz2"))
-        .unwrap_or(&filename);
-    let pkg = PackageId::new(&registry, stem, &platform).with_artifact(&filename);
+    // Proxy through cache, addressed by the *package* coordinate the filename
+    // encodes rather than by the filename stem and the platform.
+    //
+    // The coordinate is what the rule chain judges. Named
+    // `("numpy-1.1.0-py311_0", "linux-64")` — as this route used to be — a block
+    // recorded against `numpy@1.1.0` matches nothing and the download is
+    // allowed, which would make conda the one ecosystem where hiding a version
+    // from the channel index is the *only* half of a block that works. The
+    // filename stays as the artifact sub-coordinate, so two builds of one
+    // version keep distinct cache entries.
+    let (name, version) = parse_conda_filename(&filename)
+        .ok_or_else(|| AppError::bad_request(format!("unparseable conda filename: {filename}")))?;
+    let pkg = PackageId::new(&registry, name, version).with_artifact(&filename);
     proxy_stream(
         svc,
         pkg,
@@ -277,6 +292,28 @@ pub async fn conda_file_download(
         Some("application/octet-stream"),
     )
     .await
+}
+
+/// Split a conda filename into its `(name, version)`.
+///
+/// Conda filenames are `{name}-{version}-{build}.{tar.bz2,conda}` and **the name
+/// may contain hyphens** (`ruamel-yaml-0.17.21-py311_0.conda`), so the split is
+/// from the right: the last two fields are the build and the version, and
+/// whatever precedes them is the name.
+///
+/// `None` for anything that does not have all three fields, which the caller
+/// turns into a `400` rather than guessing at a coordinate the rule chain would
+/// then judge.
+fn parse_conda_filename(filename: &str) -> Option<(&str, &str)> {
+    let stem = filename
+        .strip_suffix(".conda")
+        .or_else(|| filename.strip_suffix(".tar.bz2"))?;
+    let (rest, _build) = stem.rsplit_once('-')?;
+    let (name, version) = rest.rsplit_once('-')?;
+    if name.is_empty() || version.is_empty() {
+        return None;
+    }
+    Some((name, version))
 }
 
 /// Extract package name from a conda filename.

@@ -131,6 +131,39 @@ impl AccessEvent {
         }
     }
 
+    /// A refused *listing* — a version document a client was not allowed to
+    /// read.
+    ///
+    /// [`AccessAction::ViewMetadata`] rather than `Download`, because nothing
+    /// was downloaded. Recording a listing as a download puts rows in the audit
+    /// trail that transferred no bytes, which reads as traffic that never
+    /// happened when an incident asks what an identity actually pulled.
+    ///
+    /// There is deliberately no `allowed_metadata` counterpart: an allowed
+    /// listing is counted in `ProxyMetrics` and rolled up hourly, not filed per
+    /// request. A `cargo build` over a 400-crate graph is 400 listings, and one
+    /// row each would drown the trail in the least interesting of the three
+    /// questions it answers. Denials are few and each one matters, so they
+    /// stay rows.
+    pub fn denied_metadata(
+        package_id: PackageId,
+        user_id: Option<String>,
+        user_role: Role,
+        reason: String,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            user_id,
+            user_role,
+            package_id: Some(package_id),
+            action: AccessAction::ViewMetadata,
+            result: AccessResult::Denied { reason },
+            timestamp: Utc::now(),
+            ip_address: None,
+            user_agent: None,
+        }
+    }
+
     pub fn proxy_error(
         package_id: PackageId,
         user_id: Option<String>,
@@ -215,6 +248,16 @@ mod tests {
     fn denied_download_sets_reason() {
         let ev = AccessEvent::denied_download(pkg(), None, Role::Anonymous, "blocklisted".into());
         assert!(matches!(&ev.result, AccessResult::Denied { reason } if reason == "blocklisted"));
+    }
+
+    /// A listing that transferred no bytes must not look like a download in the
+    /// trail.
+    #[test]
+    fn denied_metadata_records_a_view_not_a_download() {
+        let ev = AccessEvent::denied_metadata(pkg(), Some("bob".into()), Role::User, "rbac".into());
+        assert!(matches!(ev.action, AccessAction::ViewMetadata));
+        assert!(matches!(&ev.result, AccessResult::Denied { reason } if reason == "rbac"));
+        assert_eq!(ev.user_id.as_deref(), Some("bob"));
     }
 
     #[test]

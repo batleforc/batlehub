@@ -988,6 +988,42 @@ tasks:
           exit 1
         fi
 
+  # ── Listing-filter coverage (RFC 0006 §4.3, §7) ──────────────────────────────
+  # Which registries hide blocked versions from their listings used to be a
+  # warning box in the admin guide naming npm as the only one — a fact about the
+  # code that nothing kept true, and exactly the "documented but not closed"
+  # gap the RFC exists to remove. The table is now generated from
+  # `RegistryKind::listing_filter()`, an exhaustive match a new registry kind
+  # cannot be added without answering.
+  #
+  # Only the block between the two markers is replaced, so the surrounding prose
+  # stays hand-written.
+
+  docs:listing-coverage:
+    desc: Regenerate the listing-filter coverage table in the admin guide
+    cmds:
+      - |
+        set -euo pipefail
+        page=docs/guide/admin-policies.md
+        table=$(cargo run -q -p batlehub-server --bin listing_coverage)
+        awk -v table="$table" '
+          /^<!-- BEGIN listing-coverage/ { print; print table; skip = 1; next }
+          /^<!-- END listing-coverage/   { skip = 0 }
+          !skip                          { print }
+        ' "$page" > "$page.tmp"
+        mv "$page.tmp" "$page"
+
+  docs:listing-coverage:check:
+    desc: Fail if the admin guide's coverage table has drifted from the code
+    cmds:
+      - task: docs:listing-coverage
+      - |
+        if ! git diff --quiet -- docs/guide/admin-policies.md; then
+          echo "the listing-coverage table is stale — run 'task docs:listing-coverage' and commit the result" >&2
+          git --no-pager diff -- docs/guide/admin-policies.md >&2
+          exit 1
+        fi
+
   # ── The docs site's design gates (RFC 0005 phase 4) ──────────────────────────
   # Until these existed the public site's entire design coverage was one static
   # source scan, while the internal console had axe plus a type-ramp check over
@@ -1002,6 +1038,7 @@ tasks:
       # check guarded the freshness of a file no stylesheet read.
       - task: ui:tokens:check
       - task: docs:roadmap:check
+      - task: docs:listing-coverage:check
       - task: docs:links
       - task: docs:structure
       - task: docs:audience

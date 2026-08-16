@@ -1,8 +1,12 @@
 use super::{
-    get, proxy_stream, require_registry_type, serve_local_or_proxy_artifact,
-    serve_local_or_proxy_json, web, AppError, Arc, AuthIdentity, LocalOrProxyArtifactOpts,
-    LocalRegistryService, PackageId, ProxyService, RegistryMap, RegistryModeMap, Responder,
+    document_response, fetch_proxy_document, get, proxy_stream, require_registry_type,
+    serve_local_or_proxy_artifact, serve_local_or_proxy_document, web, AppError, Arc, AuthIdentity,
+    HttpResponse, LocalOrProxyArtifactOpts, LocalRegistryService, PackageId, ProxyService,
+    RegistryMap, RegistryModeMap, Responder,
 };
+use batlehub_config::schema::RegistryMode;
+use batlehub_core::{error::CoreError, ports::DocumentKind};
+
 use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 
 /// Download a gem file.
@@ -90,23 +94,112 @@ pub async fn gem_info(
 
     let pkg = PackageId::new(&registry, &name, "info");
     let not_found_msg = format!("gem '{name}' not found");
-    let (fetch_registry, fetch_name) = (registry.clone(), name.clone());
-    serve_local_or_proxy_json(
-        svc,
-        &mode_map,
-        &registry,
-        identity,
-        move |identity: batlehub_core::entities::Identity| async move {
-            local_svc
-                .get_rubygems_gem_info(&fetch_registry, &fetch_name, &identity)
-                .await
-        },
-        not_found_msg,
-        pkg,
+    let mode = mode_map.get(&registry);
+
+    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        svc.authorize_read(
+            &pkg,
+            &identity.0,
+            batlehub_core::rules::resource_type::RELEASES_READ,
+        )
+        .await
+        .map_err(AppError::from)?;
+        match local_svc
+            .get_rubygems_gem_info(&registry, &name, &identity)
+            .await
+        {
+            Ok(json) => {
+                return Ok(HttpResponse::Ok()
+                    .content_type("application/json")
+                    .json(json))
+            }
+            Err(CoreError::NotFound(_)) if mode == RegistryMode::Hybrid => {}
+            Err(CoreError::NotFound(_)) => return Err(AppError::not_found(not_found_msg)),
+            Err(e) => return Err(AppError::from(e)),
+        }
+    }
+
+    proxy_gem_info(svc, registry, name, identity).await
+}
+
+/// The gem document, repaired against the gem's *filtered* version list.
+///
+/// This document names exactly one version — the gem's current release — and
+/// carries no list to pick a replacement from, so hiding a blocked release
+/// means composing two documents rather than editing one. Both go through
+/// `ProxyService::version_document`, so both are authorised, cached and
+/// filtered on the way.
+///
+/// **Fails open on the versions fetch.** If the versions API is unreachable the
+/// gem document is served as upstream sent it, matching the rest of this path:
+/// degrading to showing more than intended is the direction that keeps a
+/// registry working, and the download gate still refuses the bytes.
+async fn proxy_gem_info(
+    svc: web::Data<Arc<ProxyService>>,
+    registry: String,
+    name: String,
+    identity: AuthIdentity,
+) -> Result<HttpResponse, AppError> {
+    let mut gem = fetch_proxy_document(
+        svc.clone(),
+        PackageId::new(&registry, &name, "info"),
+        AuthIdentity(identity.0.clone()),
         batlehub_core::rules::resource_type::RELEASES_READ,
-        Some("application/json"),
+        DocumentKind::GEM,
+        String::new(),
     )
-    .await
+    .await?;
+
+    let versions = fetch_proxy_document(
+        svc,
+        PackageId::new(&registry, &name, "versions"),
+        identity,
+        batlehub_core::rules::resource_type::RELEASES_READ,
+        DocumentKind::Versions,
+        String::new(),
+    )
+    .await;
+
+    match versions {
+        Ok(v) => {
+            let available = rubygems_version_numbers(&v);
+            if let Some(json) = gem.body.as_json_mut() {
+                if let Some(hidden) =
+                    batlehub_core::services::blocking::rubygems::repair_gem(json, &available)
+                {
+                    tracing::debug!(
+                        registry = %registry,
+                        package = %name,
+                        hidden = %hidden,
+                        "rebuilt the gem document around an allowed version"
+                    );
+                }
+            }
+        }
+        Err(e) => tracing::warn!(
+            registry = %registry,
+            package = %name,
+            error = %e,
+            "could not load the filtered version list; serving the gem document unrepaired"
+        ),
+    }
+
+    Ok(document_response(gem))
+}
+
+/// The `number` of every entry in a (filtered) RubyGems versions document.
+fn rubygems_version_numbers(doc: &batlehub_core::ports::VersionDocument) -> Vec<String> {
+    doc.body
+        .as_json()
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|i| i.get("number").and_then(|n| n.as_str()))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// List all versions of a gem.
@@ -140,7 +233,10 @@ pub async fn gem_versions(
     let pkg = PackageId::new(&registry, &name, "versions");
     let not_found_msg = format!("gem '{name}' not found");
     let (fetch_registry, fetch_name) = (registry.clone(), name.clone());
-    serve_local_or_proxy_json(
+    // A version listing, not an artifact: the proxy fall-through fetches and
+    // filters the document so `bundle install` never resolves a constraint onto
+    // a blocked version and then be refused the `.gem`.
+    serve_local_or_proxy_document(
         svc,
         &mode_map,
         &registry,
@@ -153,7 +249,9 @@ pub async fn gem_versions(
         not_found_msg,
         pkg,
         batlehub_core::rules::resource_type::RELEASES_READ,
-        Some("application/json"),
+        DocumentKind::Versions,
+        "application/json",
+        String::new(),
     )
     .await
 }

@@ -114,4 +114,13 @@ describe("AdminBulk", () => {
     expect(header.find(".text-primary").exists()).toBe(false);
     expect(wrapper.text()).toContain("left-pad");
   });
+
+  /* RFC 0006 §6.8: the bulk path states what a block does once, above the
+     list, rather than per row — including the artifact-scoped consequence,
+     which is the one an operator is likely to be surprised by. */
+  it("states what a block does when the block action is selected", async () => {
+    const wrapper = await mountPage();
+    expect(wrapper.text()).toContain("stop seeing it in version listings");
+    expect(wrapper.text()).toContain("hides the whole version from listings");
+  });
 });

@@ -20,6 +20,12 @@ metrics.workspace = true
 utoipa.workspace = true
 regex.workspace = true
 semver.workspace = true
+# `maven-metadata.xml` is the one listing document this proxy has to *rewrite*
+# rather than read, so the blocking filters need a real parser rather than the
+# tag-slicing the Maven adapter uses for reads. quick-xml never resolves
+# external entities — it hands unknown ones back to the caller untouched — so a
+# hostile upstream document gets no XXE primitive against the proxy.
+quick-xml.workspace = true
 sha1 = "0.11"
 sha2.workspace = true
 hex.workspace = true

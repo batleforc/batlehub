@@ -9,8 +9,13 @@
 #      (jetbrains-marketplace) — see config.heavy.toml.
 #   2. Publishes the weebo-bridge-notify release artifacts
 #      (https://github.com/batleforc/weebo-che-notify) to both registries.
-#   3. VS Code: downloads the VSIX back through the proxy and installs it with a
-#      headless `code --install-extension`, then asserts `--list-extensions`.
+#   3. VS Code: two scenarios.
+#      a. downloads the VSIX back through the proxy and installs it from the
+#         file with a headless `code --install-extension`;
+#      b. points the editor's `product.json` at this instance's VS Code
+#         gallery and installs the same extension **by id**, with no file —
+#         the only test that proves BatleHub can be an editor's marketplace
+#         rather than just a byte cache.
 #   4. JetBrains: runs IntelliJ's headless `installPlugins` command pointed at
 #      this instance's `updatePlugins.xml`, then asserts the plugin landed in
 #      the isolated plugins directory.
@@ -171,11 +176,58 @@ if [[ "${SKIP_VSCODE:-0}" != "1" ]]; then
     CODE=(xvfb-run -a "${CODE[@]}")
   fi
 
-  log "Installing into headless VS Code"
+  log "Installing into headless VS Code (from the proxied file)"
   "${CODE[@]}" --install-extension "$WORK/from-proxy.vsix" --force
   "${CODE[@]}" --list-extensions | grep -qix "$VSCODE_EXT_ID" \
     || { echo "ERROR: $VSCODE_EXT_ID not listed after install" >&2; exit 1; }
   log "VSCODE-MARKETPLACE-HEAVY-OK ($VSCODE_EXT_ID installed from this instance)"
+
+  # ── 3b. Install by id through the VS Code gallery ──────────────────────────
+  #
+  # The scenario above proves the bytes flow; this one proves the *protocol*.
+  # `--install-extension <id>` makes the editor resolve the extension through
+  # `extensionsGallery.serviceUrl` — an `extensionquery` POST, then an asset
+  # fetch — which is exactly what a developer configuring BatleHub as their
+  # marketplace does. It also validates the `product.json` snippet the console
+  # publishes, rather than a hand-written variant of it.
+  #
+  # `product.json` lives inside the extracted build, so this needs the
+  # downloaded VS Code; when CODE_BIN came from the system we cannot safely
+  # rewrite it and the scenario is skipped rather than faked.
+  PRODUCT_JSON=""
+  if [[ -n "${VSCODE_DIR:-}" && -f "$VSCODE_DIR/resources/app/product.json" ]]; then
+    PRODUCT_JSON="$VSCODE_DIR/resources/app/product.json"
+  fi
+
+  if [[ -z "$PRODUCT_JSON" ]]; then
+    log "SKIP gallery scenario — product.json not found (system 'code' in use)"
+  elif ! command -v python3 >/dev/null 2>&1; then
+    log "SKIP gallery scenario — python3 needed to patch product.json"
+  else
+    log "Pointing product.json at this instance's VS Code gallery"
+    cp "$PRODUCT_JSON" "$WORK/product.json.orig"
+    BASE="$BASE" python3 tests/heavy/patch_product_json.py "$PRODUCT_JSON"
+
+    # A fresh profile, so the file install above cannot be what makes this pass.
+    GALLERY_CODE=("$CODE_BIN" --user-data-dir "$WORK/vscode-gallery-data" --extensions-dir "$WORK/vscode-gallery-ext")
+    if [[ -z "${DISPLAY:-}" ]] && command -v xvfb-run >/dev/null 2>&1; then
+      GALLERY_CODE=(xvfb-run -a "${GALLERY_CODE[@]}")
+    fi
+
+    log "Installing $VSCODE_EXT_ID by id through the gallery"
+    if "${GALLERY_CODE[@]}" --install-extension "$VSCODE_EXT_ID" --force; then
+      "${GALLERY_CODE[@]}" --list-extensions | grep -qix "$VSCODE_EXT_ID" \
+        || { echo "ERROR: $VSCODE_EXT_ID not listed after gallery install" >&2; exit 1; }
+      log "VSCODE-GALLERY-HEAVY-OK ($VSCODE_EXT_ID installed by id from this instance)"
+    else
+      echo "ERROR: gallery install failed; server log tail follows" >&2
+      tail -50 "$WORK/server.log" >&2
+      cp "$WORK/product.json.orig" "$PRODUCT_JSON"
+      exit 1
+    fi
+
+    cp "$WORK/product.json.orig" "$PRODUCT_JSON"
+  fi
 else
   log "SKIP_VSCODE=1 — VS Code scenario skipped"
 fi

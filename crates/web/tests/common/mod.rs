@@ -35,7 +35,8 @@ use batlehub_core::entities::{NamespacePackage, TeamNamespace, Visibility};
 use batlehub_core::ports::BannerPort;
 use batlehub_core::ports::NotificationPort;
 use batlehub_core::ports::{
-    IpBlockStore, StatsHistoryRepository, TeamNamespacePort, UserBlockRepository,
+    DocumentKind, IpBlockStore, StatsHistoryRepository, TeamNamespacePort, UserBlockRepository,
+    VersionDocument,
 };
 use batlehub_core::{
     entities::{PackageId, PackageMetadata, Role},
@@ -97,40 +98,279 @@ impl RegistryClient for FixedRegistry {
         })
     }
 
-    /// A minimal but realistically-shaped npm packument: two stable versions and
-    /// a newer pre-release, `latest` on the newest stable, and `dist.tarball`
-    /// URLs pointing at the *upstream* — so a test can tell whether the proxy
-    /// rewrote them.
-    async fn fetch_version_document(&self, package: &str) -> Result<serde_json::Value, CoreError> {
-        if self.registry_type != "npm" {
-            return Err(CoreError::NotSupported(format!(
-                "{} has no version document",
+    /// A minimal but realistically-shaped listing document in whichever
+    /// protocol this fixture is standing in for.
+    ///
+    /// Every one advertises the same three versions — `1.0.0`, `1.1.0` and the
+    /// pre-release `2.0.0-beta.1` — so a blocked-versions test reads the same
+    /// way across ecosystems and the difference under test is the *document
+    /// shape*, not the fixture data. Download URLs point at the *upstream*, so a
+    /// test can tell whether the proxy rewrote them.
+    async fn fetch_version_document(
+        &self,
+        package: &str,
+        kind: DocumentKind,
+    ) -> Result<VersionDocument, CoreError> {
+        let unsupported = || {
+            Err(CoreError::NotSupported(format!(
+                "{} has no '{kind}' version document",
                 self.registry_type
-            )));
-        }
-        let tarball = |v: &str| {
-            serde_json::json!({
-                "version": v,
-                "dist": { "tarball": format!("https://upstream.invalid/{package}/-/{package}-{v}.tgz") }
-            })
+            )))
         };
-        Ok(serde_json::json!({
-            "name": package,
-            "dist-tags": { "latest": "1.1.0", "next": "2.0.0-beta.1" },
-            "versions": {
-                "1.0.0": tarball("1.0.0"),
-                "1.1.0": tarball("1.1.0"),
-                "2.0.0-beta.1": tarball("2.0.0-beta.1"),
-            },
-            "time": {
-                "created": "2020-01-01T00:00:00.000Z",
-                "1.0.0": "2020-01-02T00:00:00.000Z",
-                "1.1.0": "2020-02-01T00:00:00.000Z",
-                "2.0.0-beta.1": "2020-03-01T00:00:00.000Z",
+        match (self.registry_type.as_str(), kind) {
+            ("npm", DocumentKind::Versions) => {
+                let tarball = |v: &str| {
+                    serde_json::json!({
+                        "version": v,
+                        "dist": { "tarball": format!("https://upstream.invalid/{package}/-/{package}-{v}.tgz") }
+                    })
+                };
+                Ok(VersionDocument::json(serde_json::json!({
+                    "name": package,
+                    "dist-tags": { "latest": "1.1.0", "next": "2.0.0-beta.1" },
+                    "versions": {
+                        "1.0.0": tarball("1.0.0"),
+                        "1.1.0": tarball("1.1.0"),
+                        "2.0.0-beta.1": tarball("2.0.0-beta.1"),
+                    },
+                    "time": {
+                        "created": "2020-01-01T00:00:00.000Z",
+                        "1.0.0": "2020-01-02T00:00:00.000Z",
+                        "1.1.0": "2020-02-01T00:00:00.000Z",
+                        "2.0.0-beta.1": "2020-03-01T00:00:00.000Z",
+                    }
+                })))
             }
-        }))
+
+            ("nuget", DocumentKind::Versions) => Ok(VersionDocument::json(serde_json::json!({
+                "versions": ["1.0.0", "1.1.0", "2.0.0-beta.1"]
+            }))),
+            ("nuget", DocumentKind::REGISTRATION) => {
+                let leaf = |v: &str| {
+                    serde_json::json!({
+                        "catalogEntry": { "id": package, "version": v }
+                    })
+                };
+                Ok(VersionDocument::json(serde_json::json!({
+                    "count": 1,
+                    "items": [{
+                        "count": 3,
+                        "lower": "1.0.0",
+                        "upper": "2.0.0-beta.1",
+                        "items": [leaf("1.0.0"), leaf("1.1.0"), leaf("2.0.0-beta.1")]
+                    }]
+                })))
+            }
+
+            // Shape follows the package prefix, exactly as the real client's
+            // `artifact_url` reads it.
+            ("terraform", DocumentKind::Versions) => {
+                let entries = serde_json::json!([
+                    { "version": "1.0.0" }, { "version": "1.1.0" }, { "version": "2.0.0-beta.1" }
+                ]);
+                if package.starts_with("providers/") {
+                    Ok(VersionDocument::json(serde_json::json!({
+                        "id": package, "versions": entries
+                    })))
+                } else {
+                    Ok(VersionDocument::json(serde_json::json!({
+                        "modules": [{ "source": package, "versions": entries }]
+                    })))
+                }
+            }
+
+            ("rubygems", DocumentKind::Versions) => Ok(VersionDocument::json(serde_json::json!([
+                { "number": "2.0.0-beta.1", "sha": "ccc" },
+                { "number": "1.1.0", "sha": "bbb" },
+                { "number": "1.0.0", "sha": "aaa" }
+            ]))),
+            ("rubygems", DocumentKind::GEM) => Ok(VersionDocument::json(serde_json::json!({
+                "name": package,
+                "version": "1.1.0",
+                "sha": "bbb",
+                "gem_uri": format!("https://upstream.invalid/gems/{package}-1.1.0.gem"),
+                "homepage_uri": "https://example.invalid"
+            }))),
+
+            // Minified, as Packagist actually serves it: `1.1.0` inherits
+            // `name`/`license` from `2.0.0-beta.1` and `1.0.0` inherits
+            // `require` from `1.1.0`, so a naive middle-entry removal corrupts
+            // what the entries after it mean.
+            ("composer", DocumentKind::Versions) => Ok(VersionDocument::json(serde_json::json!({
+                "minified": "composer/2.0",
+                "packages": {
+                    package: [
+                        { "name": package, "version": "2.0.0-beta.1", "license": ["MIT"],
+                          "require": { "php": ">=8.1" },
+                          "dist": { "type": "zip", "url": "https://cdn.invalid/2.0.0-beta.1.zip" } },
+                        { "version": "1.1.0", "require": { "php": ">=7.4" },
+                          "dist": { "type": "zip", "url": "https://cdn.invalid/1.1.0.zip" } },
+                        { "version": "1.0.0",
+                          "dist": { "type": "zip", "url": "https://cdn.invalid/1.0.0.zip" } }
+                    ]
+                }
+            }))),
+
+            // Keyed by *platform*, not by package: a conda listing is scoped
+            // to a subdir and describes the whole channel.
+            ("conda", DocumentKind::Versions | DocumentKind::CURRENT_REPODATA) => {
+                Ok(VersionDocument::json(serde_json::json!({
+                    "info": { "subdir": package },
+                    "packages": {
+                        "numpy-1.0.0-py311_0.tar.bz2": { "name": "numpy", "version": "1.0.0" },
+                        "numpy-1.1.0-py311_0.tar.bz2": { "name": "numpy", "version": "1.1.0" },
+                        "scipy-1.1.0-py311_0.tar.bz2": { "name": "scipy", "version": "1.1.0" }
+                    },
+                    "packages.conda": {
+                        "numpy-1.1.0-py311_0.conda": { "name": "numpy", "version": "1.1.0" }
+                    },
+                    "repodata_version": 1
+                })))
+            }
+
+            ("github" | "forgejo" | "gitlab", DocumentKind::Versions) => {
+                Ok(VersionDocument::json(serde_json::json!([
+                    { "id": 3, "tag_name": "v2.0.0-beta.1" },
+                    { "id": 2, "tag_name": "v1.1.0" },
+                    { "id": 1, "tag_name": "v1.0.0" }
+                ])))
+            }
+
+            // The `~dev` variant is a *different document* for the same
+            // package — branch aliases rather than tagged releases — so it gets
+            // its own arm rather than sharing the tagged one.
+            ("composer", DocumentKind::P2_DEV) => Ok(VersionDocument::json(serde_json::json!({
+                "packages": {
+                    package: [
+                        { "name": package, "version": "dev-main",
+                          "dist": { "type": "zip", "url": "https://cdn.invalid/dev-main.zip" } }
+                    ]
+                }
+            }))),
+
+            ("maven", DocumentKind::Versions) => Ok(VersionDocument::text(
+                "text/xml; charset=utf-8",
+                concat!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+                    "<metadata>\n",
+                    "  <groupId>com.example</groupId>\n",
+                    "  <versioning>\n",
+                    "    <latest>2.0.0-beta.1</latest>\n",
+                    "    <release>1.1.0</release>\n",
+                    "    <versions>\n",
+                    "      <version>1.0.0</version>\n",
+                    "      <version>1.1.0</version>\n",
+                    "      <version>2.0.0-beta.1</version>\n",
+                    "    </versions>\n",
+                    "  </versioning>\n",
+                    "</metadata>",
+                ),
+            )),
+
+            ("pypi", DocumentKind::Versions) => Ok(VersionDocument::text(
+                "text/html; charset=utf-8",
+                format!(
+                    concat!(
+                        "<!DOCTYPE html>\n<html><body>\n",
+                        "<a href=\"https://files.invalid/{p}-1.0.0.tar.gz\">{p}-1.0.0.tar.gz</a><br/>\n",
+                        "<a href=\"https://files.invalid/{p}-1.1.0.tar.gz\">{p}-1.1.0.tar.gz</a><br/>\n",
+                        "<a href=\"https://files.invalid/{p}-2.0.0b1-py3-none-any.whl\">{p}-2.0.0b1-py3-none-any.whl</a><br/>\n",
+                        "</body></html>\n",
+                    ),
+                    p = package
+                ),
+            )),
+            ("pypi", DocumentKind::SIMPLE_JSON) => Ok(VersionDocument {
+                content_type: "application/vnd.pypi.simple.v1+json".to_owned(),
+                body: batlehub_core::ports::DocumentBody::Json(serde_json::json!({
+                    "name": package,
+                    "versions": ["1.0.0", "1.1.0", "2.0.0b1"],
+                    "files": [
+                        { "filename": format!("{package}-1.0.0.tar.gz"),
+                          "url": format!("https://files.invalid/{package}-1.0.0.tar.gz") },
+                        { "filename": format!("{package}-1.1.0.tar.gz"),
+                          "url": format!("https://files.invalid/{package}-1.1.0.tar.gz") },
+                        { "filename": format!("{package}-2.0.0b1-py3-none-any.whl"),
+                          "url": format!("https://files.invalid/{package}-2.0.0b1-py3-none-any.whl") }
+                    ]
+                })),
+            }),
+
+            ("cargo", DocumentKind::Versions) => Ok(VersionDocument::text(
+                "text/plain; charset=utf-8",
+                format!(
+                    concat!(
+                        r#"{{"name":"{p}","vers":"1.0.0","deps":[],"cksum":"aaa","yanked":false}}"#,
+                        "\n",
+                        r#"{{"name":"{p}","vers":"1.1.0","deps":[],"cksum":"bbb","yanked":false}}"#,
+                        "\n",
+                    ),
+                    p = package
+                ),
+            )),
+
+            ("goproxy", DocumentKind::Versions) => Ok(VersionDocument::text(
+                "text/plain; charset=utf-8",
+                "v1.0.0\nv1.1.0\nv2.0.0-beta.1\n",
+            )),
+            ("goproxy", DocumentKind::LATEST) => Ok(VersionDocument::json(serde_json::json!({
+                "Version": "v1.1.0",
+                "Time": "2020-02-01T00:00:00Z"
+            }))),
+
+            _ => unsupported(),
+        }
     }
 }
+/// Block `name@version` through the admin API, as an operator would.
+///
+/// Deliberately goes through the HTTP endpoint rather than seeding the
+/// repository: the blocked-versions tests are about what a block *does* on the
+/// read paths, and a block that only exists because a test wrote it directly
+/// would not prove the admin path and the listing path agree on the coordinate.
+pub async fn block_version<S>(app: &S, registry: &str, name: &str, version: &str)
+where
+    S: actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+{
+    let req = actix_web::test::TestRequest::post()
+        .uri("/api/v1/admin/packages/block")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({
+            "registry": registry,
+            "name": name,
+            "version": version,
+            "reason": "CVE-2024-0001",
+        }))
+        .to_request();
+    let resp = actix_web::test::call_service(app, req).await;
+    assert!(
+        resp.status().is_success(),
+        "blocking {name}@{version} failed: {}",
+        resp.status()
+    );
+}
+
+/// A `CargoIndexMap` naming `registry` as having a sparse index.
+///
+/// The cargo index route treats an absent entry as "no cargo registry
+/// configured" and 404s before it authorises anything, so a test that wants to
+/// exercise the index needs one. The URL is never dialled: the fetch goes
+/// through `FixedRegistry::fetch_version_document`, which is the point of the
+/// route having moved behind `ProxyService`.
+pub fn cargo_index_map(registry: &str) -> batlehub_web::CargoIndexMap {
+    batlehub_web::CargoIndexMap::new(HashMap::from([(
+        registry.to_owned(),
+        batlehub_web::CargoIndexProxy {
+            http: reqwest::Client::new(),
+            index_url: "https://index.invalid".to_owned(),
+        },
+    )]))
+}
+
 pub const ADMIN_TOKEN: &str = "admin-token";
 pub const USER_TOKEN: &str = "user-token";
 pub const TEAM_A_TOKEN: &str = "team-a-token";
@@ -633,7 +873,11 @@ pub fn local_registry_app_parts(
         cache,
         repo: repo_dyn.clone(),
         artifact_meta: NoopArtifactMeta::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
+        // Registered by name, not empty: `ProxyMetrics` silently ignores
+        // counters for a registry it has never heard of, so an empty map turns
+        // every `record_*` in a test into a no-op and makes assertions on them
+        // pass vacuously.
+        metrics: Arc::new(ProxyMetrics::new(&[name.to_owned()])),
         sbom: sbom_svc,
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));

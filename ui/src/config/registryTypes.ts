@@ -289,7 +289,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           [
             `// ~/.config/VSCodium/User/product.json  (or merge into existing product.json)`,
             `{`,
-            `  "extensionGallery": {`,
+            `  "extensionsGallery": {`,
             `    "serviceUrl": "${ctx.registryUrl}/vscode/gallery",`,
             `    "itemUrl": "${ctx.registryUrl}/vscode/item",`,
             `    "resourceUrlTemplate": "${ctx.registryUrl}/vscode/unpkg/{publisher}/{name}/{version}/{path}"`,
@@ -297,9 +297,11 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `}`,
           ].join("\n"),
         note: (ctx) =>
-          `Requires the proxy to implement the VS Code gallery protocol ` +
-          `(<code>/vscode/gallery</code> endpoints). ` +
-          `Only VSIX proxying is supported today.` +
+          `The editor sends no credentials to its gallery, and ` +
+          `<code>product.json</code> has nowhere to put a token — so this ` +
+          `registry needs <code>anonymous = ["releases:read", "source:read"]</code> ` +
+          `under <code>[registries.rbac]</code>, or an ingress that authenticates ` +
+          `in front of BatleHub. Without it the editor finds no extensions.` +
           (ctx.isAuthenticated
             ? ` VSCodium does not support HTTP Basic Auth in ` +
               `<code>product.json</code>. ` +
@@ -365,7 +367,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           [
             `// ~/.config/VSCodium/User/product.json  (or merge into existing product.json)`,
             `{`,
-            `  "extensionGallery": {`,
+            `  "extensionsGallery": {`,
             `    "serviceUrl": "${ctx.registryUrl}/vscode/gallery",`,
             `    "itemUrl": "${ctx.registryUrl}/vscode/item",`,
             `    "resourceUrlTemplate": "${ctx.registryUrl}/vscode/unpkg/{publisher}/{name}/{version}/{path}"`,
@@ -373,9 +375,11 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             `}`,
           ].join("\n"),
         note: (ctx) =>
-          `Requires the proxy to implement the VS Code gallery protocol ` +
-          `(<code>/vscode/gallery</code> endpoints). ` +
-          `Only VSIX proxying is supported today — download extensions with the Direct VSIX URL above.` +
+          `The editor sends no credentials to its gallery, and ` +
+          `<code>product.json</code> has nowhere to put a token — so this ` +
+          `registry needs <code>anonymous = ["releases:read", "source:read"]</code> ` +
+          `under <code>[registries.rbac]</code>, or an ingress that authenticates ` +
+          `in front of BatleHub. Without it the editor finds no extensions.` +
           (ctx.isAuthenticated
             ? ` VSCodium does not support HTTP Basic Auth in ` +
               `<code>product.json</code>. ` +

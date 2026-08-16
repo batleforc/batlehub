@@ -16,7 +16,7 @@ pub mod vulnerability;
 pub mod warming;
 
 pub use admin::{AdminService, BulkActionResult, BulkBlockItem};
-pub use blocking::strip_blocked_from_packument;
+pub use blocking::{BlockedVersions, ListingContext};
 pub use cache_control::{parse_cache_control, CacheControlDirectives};
 pub use eviction::{CoherenceReport, EvictionConfig, EvictionReport, EvictionService};
 pub use explore_cache::ExploreCache;
@@ -28,8 +28,8 @@ pub use integrity::{verify as verify_checksum, ChecksumAlgo, IntegrityOutcome};
 pub use local_registry::{
     artifact_storage_key, build_in_range, maven_artifact_storage_key,
     terraform_provider_binary_storage_key, validate_coordinate, validate_package_name,
-    validate_path_safe, JetbrainsPluginVersion, LocalRegistryService, PublishPolicyRequest,
-    PublishRequest, TerraformPlatform,
+    validate_path_safe, JetbrainsPluginVersion, LocalRegistryService, OpenVsxExtensionVersion,
+    PublishPolicyRequest, PublishRequest, TerraformPlatform,
 };
 pub use metrics::ProxyMetrics;
 pub use proxy::{ProxyRequest, ProxyResponse, ProxyService};

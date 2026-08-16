@@ -10,7 +10,7 @@ use batlehub_core::{
 
 use crate::handlers::proxy::common::{
     registry_public_base, require_registry_type, serve_local_or_proxy_artifact,
-    serve_local_or_proxy_json, LocalOrProxyArtifactOpts,
+    serve_local_or_proxy_document, LocalOrProxyArtifactOpts,
 };
 use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
@@ -114,13 +114,24 @@ pub async fn composer_p2_metadata(
     let p2_artifact = if is_dev { "p2~dev" } else { "p2" };
 
     let base_url = registry_public_base(&req, &registry);
+    let local_base_url = base_url.clone();
 
     // Use version="_index" so the artifact key is stable; p2_artifact encodes the ~dev variant.
     let pkg = PackageId::new(&registry, &package_name, "_index").with_artifact(p2_artifact);
     let not_found_msg =
         format!("composer package '{package_name}' not found in local registry '{registry}'");
     let (fetch_registry, fetch_package_name) = (registry.clone(), package_name.clone());
-    serve_local_or_proxy_json(
+    // A version listing, not an artifact. The proxy fall-through fetches and
+    // filters the p2 document — expanding the `composer/2.0` minified encoding
+    // first, because removing a middle entry from a minified list silently
+    // changes what the entries after it inherit — and repoints `dist.url` at
+    // this proxy.
+    let doc_kind = if is_dev {
+        batlehub_core::ports::DocumentKind::P2_DEV
+    } else {
+        batlehub_core::ports::DocumentKind::Versions
+    };
+    serve_local_or_proxy_document(
         svc,
         &mode_map,
         &registry,
@@ -130,7 +141,7 @@ pub async fn composer_p2_metadata(
                 .get_composer_p2_response(
                     &fetch_registry,
                     &fetch_package_name,
-                    &base_url,
+                    &local_base_url,
                     &identity,
                 )
                 .await
@@ -138,7 +149,9 @@ pub async fn composer_p2_metadata(
         not_found_msg,
         pkg,
         batlehub_core::rules::resource_type::RELEASES_READ,
-        Some("application/json"),
+        doc_kind,
+        "application/json",
+        base_url,
     )
     .await
 }

@@ -10,7 +10,7 @@ use super::ssrf;
 mod client;
 mod models;
 
-pub use client::{fetch_simple_page, normalize_name, rewrite_simple_page};
+pub use client::{fetch_simple_page, normalize_name, rewrite_simple_page, SIMPLE_JSON_ACCEPT};
 
 /// PyPI registry proxy client.
 ///

@@ -107,6 +107,27 @@ cargo add my-lib --registry internal
 
 ---
 
+## Blocked versions
+
+Cargo is the one ecosystem where a blocked version is **marked rather than
+removed**. The sparse-index line stays, with `"yanked": true` set on it.
+
+That is cargo's own mechanism for "this exists, do not select it": resolution
+skips a yanked version, while an existing `Cargo.lock` that already pins it
+still resolves — and then meets the download gate, which answers with the
+operator's reason. Deleting the line instead would make cargo report the crate
+as never having had that version, and the developer would get "no matching
+package found" instead of an explanation.
+
+The sparse-index route is authorised like every other proxied read: a client
+without read access to the registry gets a `403` rather than the crate list.
+
+The upstream document is cached for the registry's `metadata_ttl`; blocks are
+applied on top of the cached copy on every request, so blocking a version takes
+effect immediately rather than when the cache expires.
+
+See [blocking a package version](/guide/admin-policies#block-a-package-version) for the two halves of a block, and [which listings are filtered](/guide/admin-policies#which-listings-are-filtered) for the full table.
+
 ## Authentication
 
 Cargo sends the `token` from the `[registries.<name>]` block. In CI, set it via the environment instead: `export CARGO_REGISTRIES_INTERNAL_TOKEN=$BATLEHUB_TOKEN` (uppercase the registry name).

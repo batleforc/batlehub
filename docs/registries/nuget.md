@@ -134,6 +134,25 @@ curl -s https://batlehub.example.com/proxy/internal-nuget/nuget/v3/flat/mylib/in
 
 ---
 
+## Blocked versions
+
+Both of NuGet's listing documents hide an administratively blocked version.
+
+- The **flat index** (`/v3/flat/{id}/index.json`) — what `dotnet restore`
+  resolves a version range against — drops the version outright.
+- The **registration pages** drop the leaf and recompute each page's `count`,
+  `lower` and `upper`; a page left empty is removed. Registrations whose pages
+  are served by URL rather than inline pass through unfiltered and are logged.
+
+Version spellings are folded before comparison, so a block recorded as
+`1.0.0.0` hides a listing that spells the same release `1.0.0`.
+
+The upstream document is cached for the registry's `metadata_ttl`; blocks are
+applied on top of the cached copy on every request, so blocking a version takes
+effect immediately rather than when the cache expires.
+
+See [blocking a package version](/guide/admin-policies#block-a-package-version) for the two halves of a block, and [which listings are filtered](/guide/admin-policies#which-listings-are-filtered) for the full table.
+
 ## Authentication
 
 Pass the BatleHub token as the source password (username `__token__`), or as `--api-key` on push. The `X-NuGet-ApiKey` header is normalised to `Authorization: Bearer` internally, so `--api-key $BATLEHUB_TOKEN` is accepted as a Bearer token.

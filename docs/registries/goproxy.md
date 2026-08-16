@@ -121,6 +121,24 @@ go get example.com/mymod@v1.0.0
 
 ---
 
+## Blocked versions
+
+`@v/list` drops the blocked version's line, and `@latest` is **re-resolved**
+against what survives rather than filtered — it names one version and carries no
+list. The rebuilt `@latest` carries `Version` and omits `Time`, because the
+timestamp belonged to the release being hidden. With no version left to name,
+`@latest` answers `404`, which is what the Go client already handles for a
+module with no releases.
+
+A leading `v` and a `+incompatible` suffix name the same release either way, so
+a block recorded in any of those spellings hides the listed one.
+
+The upstream document is cached for the registry's `metadata_ttl`; blocks are
+applied on top of the cached copy on every request, so blocking a version takes
+effect immediately rather than when the cache expires.
+
+See [blocking a package version](/guide/admin-policies#block-a-package-version) for the two halves of a block, and [which listings are filtered](/guide/admin-policies#which-listings-are-filtered) for the full table.
+
 ## Authentication
 
 Uploads pass a BatleHub token as a Bearer header. For read access, put the token in `~/.netrc` so the go tool and `govulncheck` pick it up automatically:

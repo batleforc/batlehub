@@ -126,6 +126,26 @@ curl -X PUT \
 
 ---
 
+## Blocked versions
+
+`/api/v1/versions/{name}.json` drops the blocked entry.
+
+`/api/v1/gems/{name}.json` describes the gem at exactly one version, so it is
+**rebuilt** around the newest version that is still allowed. The gem-level
+fields survive; the fields that describe the hidden *release* — its checksum,
+its download URL, its own dates — are removed, because carrying a checksum onto
+a different version would hand a client a hash that can never match.
+
+The Marshal indexes (`specs.4.8.gz`, `quick/Marshal.4.8/*`) are **not** filtered.
+Hiding a version from them would need a Ruby Marshal encoder, to hide what the
+JSON APIs above already hide for every client released this decade.
+
+The upstream document is cached for the registry's `metadata_ttl`; blocks are
+applied on top of the cached copy on every request, so blocking a version takes
+effect immediately rather than when the cache expires.
+
+See [blocking a package version](/guide/admin-policies#block-a-package-version) for the two halves of a block, and [which listings are filtered](/guide/admin-policies#which-listings-are-filtered) for the full table.
+
 ## Authentication
 
 `gem` sends `GEM_HOST_API_KEY` verbatim as the `Authorization` header, so the `Bearer ` prefix is required:

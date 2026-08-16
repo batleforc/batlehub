@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
+    ports::{DocumentKind, FetchedArtifact, RegistryClient, UpstreamPackage, VersionDocument},
 };
 
 use super::http_client::{
@@ -151,8 +151,19 @@ impl RegistryClient for NpmRegistryClient {
     /// `dependencies`, `engines`, `deprecated`, whatever npm adds next. Round-
     /// tripping through `Value` preserves fields this proxy has never heard of,
     /// which is the difference between a usable packument and a lossy one.
-    async fn fetch_version_document(&self, package: &str) -> Result<serde_json::Value, CoreError> {
-        self.fetch_packument_json(package).await
+    async fn fetch_version_document(
+        &self,
+        package: &str,
+        kind: DocumentKind,
+    ) -> Result<VersionDocument, CoreError> {
+        if kind != DocumentKind::Versions {
+            return Err(CoreError::NotSupported(format!(
+                "npm has no '{kind}' listing document"
+            )));
+        }
+        Ok(VersionDocument::json(
+            self.fetch_packument_json(package).await?,
+        ))
     }
 
     async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {

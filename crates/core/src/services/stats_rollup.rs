@@ -45,8 +45,9 @@ pub fn hour_start(at: DateTime<Utc>) -> DateTime<Utc> {
 pub struct StatsRollupService {
     metrics: Arc<ProxyMetrics>,
     repo: Arc<dyn StatsHistoryRepository>,
-    /// Counter values at the previous tick, per registry.
-    baseline: Mutex<HashMap<String, (u64, u64)>>,
+    /// Counter values at the previous tick, per registry:
+    /// `(hits, misses, listing_reads)`.
+    baseline: Mutex<HashMap<String, (u64, u64, u64)>>,
     /// How many days of history to keep. `0` disables pruning entirely.
     retention_days: u32,
 }
@@ -93,21 +94,23 @@ impl StatsRollupService {
 
         let mut rows = Vec::new();
         for (registry, counters) in self.metrics.all() {
-            let (hits_now, misses_now) = (counters.hits(), counters.misses());
-            let (hits_prev, misses_prev) = baseline.get(registry).copied().unwrap_or((0, 0));
+            let now = (counters.hits(), counters.misses(), counters.listing_reads());
+            let prev = baseline.get(registry).copied().unwrap_or((0, 0, 0));
 
             // `saturating_sub` rather than `-`: a counter that went backwards
             // means the process restarted between ticks, and 0 is the honest
             // answer for a window we cannot account for.
-            let hits = hits_now.saturating_sub(hits_prev);
-            let misses = misses_now.saturating_sub(misses_prev);
-            baseline.insert(registry.clone(), (hits_now, misses_now));
+            let hits = now.0.saturating_sub(prev.0);
+            let misses = now.1.saturating_sub(prev.1);
+            let listing_reads = now.2.saturating_sub(prev.2);
+            baseline.insert(registry.clone(), now);
 
             rows.push(StatsRollupRow {
                 registry: registry.clone(),
                 window_start,
                 hits,
                 misses,
+                listing_reads,
                 cached_bytes: cached_bytes_by_registry.get(registry).copied().unwrap_or(0),
             });
         }
@@ -153,6 +156,8 @@ mod tests {
                     Some(existing) => {
                         existing.hits = existing.hits.saturating_add(row.hits);
                         existing.misses = existing.misses.saturating_add(row.misses);
+                        existing.listing_reads =
+                            existing.listing_reads.saturating_add(row.listing_reads);
                         existing.cached_bytes = row.cached_bytes;
                     }
                     None => guard.push(row.clone()),
@@ -276,13 +281,54 @@ mod tests {
         let restarted = StatsRollupService {
             metrics: fresh,
             repo: Arc::clone(&repo) as Arc<dyn StatsHistoryRepository>,
-            baseline: Mutex::new(HashMap::from([("npm".to_owned(), (5, 0))])),
+            baseline: Mutex::new(HashMap::from([("npm".to_owned(), (5, 0, 0))])),
             retention_days: 0,
         };
         restarted.tick(at(11, 0), &HashMap::new()).await.unwrap();
 
         let rows = repo.rows.lock().unwrap().clone();
         assert_eq!(rows[1].hits, 0, "1 - 5 is not 18446744073709551612");
+    }
+
+    /// Listing reads are a delta like `hits`, not a level like `cached_bytes`.
+    /// They are the *only* durable record of allowed listing traffic — RFC 0006
+    /// deliberately stopped writing an `AccessEvent` per listing — so a rollup
+    /// that reported the running counter instead of the window's delta would
+    /// make the one surviving question ("how much listing traffic") unanswerable
+    /// across a restart.
+    #[tokio::test]
+    async fn listing_reads_roll_up_as_a_window_delta() {
+        let (metrics, repo, svc) = svc(0);
+        for _ in 0..6 {
+            metrics.record_listing_read("npm");
+        }
+        svc.tick(at(10, 0), &HashMap::new()).await.unwrap();
+
+        for _ in 0..2 {
+            metrics.record_listing_read("npm");
+        }
+        svc.tick(at(11, 0), &HashMap::new()).await.unwrap();
+
+        let rows = repo.rows.lock().unwrap().clone();
+        assert_eq!(rows[0].listing_reads, 6);
+        assert_eq!(rows[1].listing_reads, 2, "the window's delta, not 8");
+    }
+
+    #[tokio::test]
+    async fn a_restart_produces_no_negative_listing_delta() {
+        let (_, repo, _) = svc(0);
+        let fresh = Arc::new(ProxyMetrics::new(&["npm".to_owned()]));
+        fresh.record_listing_read("npm");
+        let restarted = StatsRollupService {
+            metrics: fresh,
+            repo: Arc::clone(&repo) as Arc<dyn StatsHistoryRepository>,
+            // The counters stood at 400 listings before the process went away.
+            baseline: Mutex::new(HashMap::from([("npm".to_owned(), (0, 0, 400))])),
+            retention_days: 0,
+        };
+        restarted.tick(at(11, 0), &HashMap::new()).await.unwrap();
+
+        assert_eq!(repo.rows.lock().unwrap()[0].listing_reads, 0);
     }
 
     #[tokio::test]

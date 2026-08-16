@@ -3,15 +3,15 @@ use chrono::DateTime;
 use futures::TryStreamExt;
 
 use super::super::http_client::{
-    apply_upstream_tls, basic_auth_get, ensure_same_origin, percent_encode, to_registry_error,
-    upstream_auth_headers, UpstreamHttpOptions,
+    apply_upstream_tls, basic_auth_get, ensure_same_origin, fetch_json_document, percent_encode,
+    to_registry_error, upstream_auth_headers, UpstreamHttpOptions,
 };
 use super::super::ssrf;
 use super::models::{GlLink, GlRelease};
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient},
+    ports::{DocumentKind, FetchedArtifact, RegistryClient, VersionDocument},
 };
 
 /// GitLab REST API v4 registry client (releases).
@@ -214,6 +214,30 @@ pub(super) fn source_format(artifact: &str) -> Option<&str> {
 impl RegistryClient for GitlabRegistryClient {
     fn registry_type(&self) -> &str {
         "gitlab"
+    }
+
+    /// The repository's release listing — the document a client reads to decide
+    /// which release to download.
+    ///
+    /// Fetched fresh rather than paged through `fetch_all_releases`: the filter
+    /// rewrites the document the client asked for, so it has to be *that*
+    /// document rather than a re-serialisation of a typed subset.
+    async fn fetch_version_document(
+        &self,
+        package: &str,
+        kind: DocumentKind,
+    ) -> Result<VersionDocument, CoreError> {
+        if kind != DocumentKind::Versions {
+            return Err(CoreError::NotSupported(format!(
+                "gitlab has no '{kind}' listing document"
+            )));
+        }
+        let url = format!(
+            "{}/projects/{}/releases?per_page=100",
+            self.api_base_url,
+            percent_encode(package)
+        );
+        fetch_json_document(self.get(&url), &format!("GitLab releases for '{package}'")).await
     }
 
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {

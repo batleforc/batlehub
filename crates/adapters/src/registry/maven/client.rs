@@ -4,7 +4,7 @@ use futures::TryStreamExt;
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
+    ports::{DocumentKind, FetchedArtifact, RegistryClient, UpstreamPackage, VersionDocument},
 };
 
 use super::super::http_client::{
@@ -158,6 +158,27 @@ impl MavenRegistryClient {
 
 #[async_trait]
 impl RegistryClient for MavenRegistryClient {
+    /// `maven-metadata.xml` — the document a Maven client resolves a version
+    /// range (and `LATEST`/`RELEASE`) against.
+    ///
+    /// Returned as text with `text/xml`: the proxy has to send back XML, and an
+    /// upstream that mislabels its own metadata as `text/plain` must not make
+    /// this proxy mislabel it too.
+    async fn fetch_version_document(
+        &self,
+        package: &str,
+        kind: DocumentKind,
+    ) -> Result<VersionDocument, CoreError> {
+        if kind != DocumentKind::Versions {
+            return Err(CoreError::NotSupported(format!(
+                "maven has no '{kind}' listing document"
+            )));
+        }
+        let pkg = PackageId::new("", package, "maven-metadata.xml");
+        let (xml, _) = self.fetch_metadata_xml(&pkg).await?;
+        Ok(VersionDocument::text("text/xml; charset=utf-8", xml))
+    }
+
     fn registry_type(&self) -> &str {
         "maven"
     }

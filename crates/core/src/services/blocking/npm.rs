@@ -1,21 +1,12 @@
-//! Hiding administratively blocked versions from version *listings*.
+//! npm: the packument.
 //!
-//! Blocking a package version has always denied its download
-//! ([`crate::rules::BlockListRule`]), but the listings a client resolves
-//! against — an npm packument, a local registry's version index — kept
-//! advertising it. A resolver reading those listings still picks the blocked
-//! version for `latest` or for a range like `^4.17.0`, and only then discovers
-//! it cannot have it. The install fails instead of quietly resolving to the
-//! newest version the operator does allow.
-//!
-//! So a block has two halves: the download gate, and this — leaving the version
-//! out of what a client is told exists. A direct request for a blocked version
-//! still gets its `403` and the operator's stated reason; hiding governs
-//! *resolution*, not diagnosis.
-
-use std::collections::HashSet;
+//! The first protocol to get listing filtering, and the shape the rest follow —
+//! see the module docs on [`super`] for what a listing filter is and why the
+//! download gate alone is not enough.
 
 use serde_json::{Map, Value};
+
+use super::{best_latest, BlockedVersions};
 
 /// Strip every blocked version from an npm packument, in place, and repair the
 /// `dist-tags` that pointed at them.
@@ -41,7 +32,7 @@ use serde_json::{Map, Value};
 /// `time` entries are removed alongside their versions so the document stays
 /// internally consistent; `time.created`/`time.modified` are left alone, being
 /// package-level rather than per-version.
-pub fn strip_blocked_from_packument(doc: &mut Value, blocked: &HashSet<String>) -> Vec<String> {
+pub fn strip_packument(doc: &mut Value, blocked: &BlockedVersions) -> Vec<String> {
     if blocked.is_empty() {
         return Vec::new();
     }
@@ -51,10 +42,18 @@ pub fn strip_blocked_from_packument(doc: &mut Value, blocked: &HashSet<String>) 
 
     let mut removed = Vec::new();
     if let Some(versions) = obj.get_mut("versions").and_then(Value::as_object_mut) {
-        for v in blocked {
-            if versions.remove(v).is_some() {
-                removed.push(v.clone());
-            }
+        // Iterating the *document's* keys rather than the blocked set is what
+        // lets a block recorded in one spelling hide a version listed in
+        // another: `contains` compares normalised forms, and the key removed is
+        // the one the document actually uses.
+        let hit: Vec<String> = versions
+            .keys()
+            .filter(|v| blocked.contains(v))
+            .cloned()
+            .collect();
+        for v in hit {
+            versions.remove(&v);
+            removed.push(v);
         }
     }
     if removed.is_empty() {
@@ -81,11 +80,11 @@ pub fn strip_blocked_from_packument(doc: &mut Value, blocked: &HashSet<String>) 
 }
 
 /// Drop tags naming a blocked version, then re-point `latest` at the best
-/// surviving version. See [`strip_blocked_from_packument`] for why `latest` is
-/// treated differently from every other tag.
+/// surviving version. See [`strip_packument`] for why `latest` is treated
+/// differently from every other tag.
 fn repair_dist_tags(
     tags: &mut Map<String, Value>,
-    blocked: &HashSet<String>,
+    blocked: &BlockedVersions,
     surviving: &[String],
 ) {
     tags.retain(|tag, target| {
@@ -113,51 +112,49 @@ fn repair_dist_tags(
     }
 }
 
-/// The version `latest` should name: highest stable, or highest overall when
-/// every survivor is a pre-release.
+/// Point every `versions.*.dist.tarball` at this proxy's download route,
+/// matching the URL shape the local registry already serves
+/// (`{base}/{name}/{version}/tarball`).
 ///
-/// Ordering is semver-aware, with a lexicographic fallback for the versions npm
-/// accepts but semver does not parse — those sort after nothing in particular,
-/// so they only win when they are all there is.
-fn best_latest(versions: &[String]) -> Option<String> {
-    let parsed: Vec<(Option<semver::Version>, &String)> = versions
-        .iter()
-        .map(|v| {
-            (
-                semver::Version::parse(v.strip_prefix('v').unwrap_or(v)).ok(),
-                v,
-            )
-        })
-        .collect();
-
-    let stable_max = parsed
-        .iter()
-        .filter(|(sv, _)| sv.as_ref().is_some_and(|s| s.pre.is_empty()))
-        .max_by(|a, b| a.0.as_ref().unwrap().cmp(b.0.as_ref().unwrap()))
-        .map(|(_, raw)| (*raw).clone());
-    if stable_max.is_some() {
-        return stable_max;
+/// Lives beside the strip it pairs with rather than in the proxy service: every
+/// protocol rewrites its download URLs differently — Composer's `dist.url`,
+/// PyPI's `<a href>`, cargo's `dl` — and each rewrite is as much npm (or
+/// Composer, or PyPI) vocabulary as the strip is.
+///
+/// Served unrewritten, the upstream document points every download at the
+/// upstream CDN: past this proxy's cache, its audit trail, and the download-time
+/// gate that is the block's other half.
+pub fn rewrite_tarball_urls(doc: &mut Value, public_base: &str, name: &str) {
+    let base = public_base.trim_end_matches('/');
+    let name = super::encode_package_segment(name);
+    let Some(versions) = doc.get_mut("versions").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for (version, meta) in versions.iter_mut() {
+        let Some(obj) = meta.as_object_mut() else {
+            continue;
+        };
+        let dist = obj.entry("dist").or_insert_with(|| serde_json::json!({}));
+        if let Some(d) = dist.as_object_mut() {
+            d.insert(
+                "tarball".to_owned(),
+                Value::String(format!("{base}/{name}/{version}/tarball")),
+            );
+        }
     }
-
-    let semver_max = parsed
-        .iter()
-        .filter(|(sv, _)| sv.is_some())
-        .max_by(|a, b| a.0.as_ref().unwrap().cmp(b.0.as_ref().unwrap()))
-        .map(|(_, raw)| (*raw).clone());
-    if semver_max.is_some() {
-        return semver_max;
-    }
-
-    versions.iter().max().cloned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entities::RegistryKind;
     use serde_json::json;
 
-    fn blocked(vs: &[&str]) -> HashSet<String> {
-        vs.iter().map(|s| (*s).to_owned()).collect()
+    fn blocked(vs: &[&str]) -> BlockedVersions {
+        BlockedVersions::new(
+            RegistryKind::Npm,
+            vs.iter().map(|s| (*s).to_owned()).collect(),
+        )
     }
 
     fn lodash() -> Value {
@@ -185,7 +182,7 @@ mod tests {
     #[test]
     fn blocking_latest_repoints_to_previous_stable() {
         let mut doc = lodash();
-        let removed = strip_blocked_from_packument(&mut doc, &blocked(&["4.17.21"]));
+        let removed = strip_packument(&mut doc, &blocked(&["4.17.21"]));
 
         assert_eq!(removed, vec!["4.17.21".to_owned()]);
         assert_eq!(doc["dist-tags"]["latest"], json!("4.17.20"));
@@ -199,7 +196,7 @@ mod tests {
     #[test]
     fn tags_other_than_latest_pointing_at_a_blocked_version_are_dropped() {
         let mut doc = lodash();
-        strip_blocked_from_packument(&mut doc, &blocked(&["5.0.0-beta.1"]));
+        strip_packument(&mut doc, &blocked(&["5.0.0-beta.1"]));
 
         assert!(doc["dist-tags"].get("next").is_none());
         // `latest` was not pointing at the blocked version, so it stays put.
@@ -209,7 +206,7 @@ mod tests {
     #[test]
     fn latest_falls_back_to_a_prerelease_when_no_stable_survives() {
         let mut doc = lodash();
-        strip_blocked_from_packument(&mut doc, &blocked(&["4.17.19", "4.17.20", "4.17.21"]));
+        strip_packument(&mut doc, &blocked(&["4.17.19", "4.17.20", "4.17.21"]));
 
         assert_eq!(doc["dist-tags"]["latest"], json!("5.0.0-beta.1"));
     }
@@ -217,7 +214,7 @@ mod tests {
     #[test]
     fn blocking_every_version_leaves_no_latest_tag() {
         let mut doc = lodash();
-        strip_blocked_from_packument(
+        strip_packument(
             &mut doc,
             &blocked(&["4.17.19", "4.17.20", "4.17.21", "5.0.0-beta.1"]),
         );
@@ -230,7 +227,10 @@ mod tests {
     fn no_blocks_leaves_the_document_untouched() {
         let mut doc = lodash();
         let before = doc.clone();
-        let removed = strip_blocked_from_packument(&mut doc, &HashSet::new());
+        let removed = strip_packument(
+            &mut doc,
+            &BlockedVersions::new(RegistryKind::Npm, Vec::new()),
+        );
 
         assert!(removed.is_empty());
         assert_eq!(doc, before);
@@ -242,7 +242,7 @@ mod tests {
     fn blocking_an_absent_version_changes_nothing() {
         let mut doc = lodash();
         let before = doc.clone();
-        let removed = strip_blocked_from_packument(&mut doc, &blocked(&["9.9.9"]));
+        let removed = strip_packument(&mut doc, &blocked(&["9.9.9"]));
 
         assert!(removed.is_empty());
         assert_eq!(doc, before);
@@ -257,7 +257,7 @@ mod tests {
                 "4.17.9": {}, "4.17.10": {}, "4.17.21": {}
             }
         });
-        strip_blocked_from_packument(&mut doc, &blocked(&["4.17.21"]));
+        strip_packument(&mut doc, &blocked(&["4.17.21"]));
 
         assert_eq!(doc["dist-tags"]["latest"], json!("4.17.10"));
     }
@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn handles_a_document_with_no_dist_tags_or_time() {
         let mut doc = json!({ "versions": { "1.0.0": {}, "2.0.0": {} } });
-        let removed = strip_blocked_from_packument(&mut doc, &blocked(&["2.0.0"]));
+        let removed = strip_packument(&mut doc, &blocked(&["2.0.0"]));
 
         assert_eq!(removed, vec!["2.0.0".to_owned()]);
         assert!(doc["versions"].get("2.0.0").is_none());
@@ -274,23 +274,31 @@ mod tests {
     #[test]
     fn non_object_document_is_left_alone() {
         let mut doc = json!("not a packument");
-        assert!(strip_blocked_from_packument(&mut doc, &blocked(&["1.0.0"])).is_empty());
+        assert!(strip_packument(&mut doc, &blocked(&["1.0.0"])).is_empty());
     }
 
     #[test]
-    fn best_latest_prefers_stable_over_prerelease() {
-        let vs = ["1.0.0".to_owned(), "2.0.0-rc.1".to_owned()];
-        assert_eq!(best_latest(&vs), Some("1.0.0".to_owned()));
+    fn tarball_urls_point_back_at_this_proxy() {
+        let mut doc = lodash();
+        rewrite_tarball_urls(&mut doc, "https://hub.example.com/proxy/npm1/", "lodash");
+
+        assert_eq!(
+            doc["versions"]["4.17.20"]["dist"]["tarball"],
+            json!("https://hub.example.com/proxy/npm1/lodash/4.17.20/tarball"),
+            "the trailing slash on the base must not double up"
+        );
     }
 
+    /// A scoped name interpolated raw would split into two path segments and
+    /// 404 every scoped dependency in the document.
     #[test]
-    fn best_latest_tolerates_unparseable_versions() {
-        let vs = ["not-semver".to_owned(), "also-not".to_owned()];
-        assert_eq!(best_latest(&vs), Some("not-semver".to_owned()));
-    }
+    fn scoped_names_stay_one_path_segment() {
+        let mut doc = json!({ "versions": { "3.0.0": {} } });
+        rewrite_tarball_urls(&mut doc, "https://h/proxy/npm1", "@vue/cli");
 
-    #[test]
-    fn best_latest_of_nothing_is_none() {
-        assert_eq!(best_latest(&[]), None);
+        assert_eq!(
+            doc["versions"]["3.0.0"]["dist"]["tarball"],
+            json!("https://h/proxy/npm1/@vue%2Fcli/3.0.0/tarball")
+        );
     }
 }

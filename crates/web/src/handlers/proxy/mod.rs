@@ -17,3 +17,4 @@ pub mod pypi;
 pub mod repo;
 pub mod rubygems;
 pub mod terraform;
+pub mod vsx;

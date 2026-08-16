@@ -9,9 +9,9 @@ use batlehub_core::{
 };
 
 use super::common::{
-    collect_payload, extract_signature_headers, proxy_gem_specs, proxy_stream, require_local_mode,
-    require_registry_type, serve_local_or_proxy_artifact, serve_local_or_proxy_json,
-    LocalOrProxyArtifactOpts,
+    collect_payload, document_response, extract_signature_headers, fetch_proxy_document,
+    proxy_gem_specs, proxy_stream, require_local_mode, require_registry_type,
+    serve_local_or_proxy_artifact, serve_local_or_proxy_document, LocalOrProxyArtifactOpts,
 };
 use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,

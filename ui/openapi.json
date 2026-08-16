@@ -4355,6 +4355,76 @@
         ]
       }
     },
+    "/proxy/{registry}/api/-/search": {
+      "get": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "Search the registry — `GET …/api/-/search`.",
+        "description": "Registered **before** the `{namespace}` routes below, or `-` is taken for a\npublisher name.",
+        "operationId": "openvsx_search",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "description": "Free-text query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "description": "Page size",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Result offset",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Search results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown registry or wrong type"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
     "/proxy/{registry}/api/packages/{path}": {
       "get": {
         "tags": [
@@ -5528,6 +5598,211 @@
           },
           "404": {
             "description": "Not found or unknown registry"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/api/{namespace}/{extension}": {
+      "get": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "The newest version of one extension — `GET …/api/{namespace}/{extension}`.",
+        "operationId": "openvsx_extension",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "path",
+            "description": "Extension publisher",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "extension",
+            "in": "path",
+            "description": "Extension name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Extension metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown registry or extension"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/api/{namespace}/{extension}/{version}": {
+      "get": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "One specific version — `GET …/api/{namespace}/{extension}/{version}`.",
+        "operationId": "openvsx_extension_version",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "path",
+            "description": "Extension publisher",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "extension",
+            "in": "path",
+            "description": "Extension name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Extension version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Extension version metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown registry, extension or version"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/api/{namespace}/{extension}/{version}/file/{filename}": {
+      "get": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "One file out of an extension — `GET …/api/{ns}/{ext}/{version}/file/{name}`.",
+        "description": "OpenVSX's own download URL shape. `ovsx get` resolves the extension through\nthe metadata route above and then fetches `files.download`, which this\nserver points here.",
+        "operationId": "openvsx_file",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "path",
+            "description": "Extension publisher",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "extension",
+            "in": "path",
+            "description": "Extension name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Extension version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "filename",
+            "in": "path",
+            "description": "File name, or a path inside the extension",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "No such file"
           }
         },
         "security": [
@@ -8984,6 +9259,337 @@
         ]
       }
     },
+    "/proxy/{registry}/vscode/asset/{publisher}/{name}/{version}/{asset_type}": {
+      "get": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "`GET …/vscode/asset/{publisher}/{name}/{version}/{asset_type}`",
+        "description": "What the editor builds by appending an asset type to `assetUri`.",
+        "operationId": "vsx_asset",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "publisher",
+            "in": "path",
+            "description": "Extension publisher",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Extension name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Extension version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "asset_type",
+            "in": "path",
+            "description": "Microsoft.VisualStudio.* asset type",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Asset bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Unknown asset type, or the extension does not ship it"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/vscode/gallery/extensionquery": {
+      "post": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "Query the extension gallery.",
+        "description": "The body is the VS Code Marketplace `extensionquery` shape; see\n[`ExtensionQueryRequest`]. Every field is optional, so a hand-written client\ngets results rather than a `400`.",
+        "operationId": "vsx_extension_query",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExtensionQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Gallery query results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Unknown registry or wrong type"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/vscode/gallery/publishers/{publisher}/vsextensions/{name}/{version}/vspackage": {
+      "get": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "`GET …/vscode/gallery/publishers/{publisher}/vsextensions/{name}/{version}/vspackage`",
+        "description": "The download URL the editor takes from `fallbackAssetUri`, and the one\n`code --install-extension` resolves to upstream. Serves the same bytes as\nthe `Microsoft.VisualStudio.Services.VSIXPackage` asset below; both exist\nbecause different editor versions reach for different ones.",
+        "operationId": "vsx_vspackage",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "publisher",
+            "in": "path",
+            "description": "Extension publisher",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Extension name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Extension version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "VSIX package",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Unknown registry or extension"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/vscode/item": {
+      "get": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "`GET …/vscode/item?itemName=publisher.name`",
+        "description": "`itemUrl` — where the editor's \"View in Marketplace\" link goes. A redirect\nrather than rendered HTML: the only thing this needs to do is point at a\npage that already exists, and hand-writing markup here would be the one\nplace in this feature where escaping mattered.",
+        "operationId": "vsx_item",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "itemName",
+            "in": "query",
+            "description": "Extension ID in publisher.name format",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to the extension's page"
+          },
+          "400": {
+            "description": "Missing or malformed itemName"
+          },
+          "404": {
+            "description": "Unknown registry"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/vscode/unpkg/{publisher}/{name}/{version}/{path}": {
+      "get": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "`GET …/vscode/unpkg/{publisher}/{name}/{version}/{path}`",
+        "description": "`resourceUrlTemplate`: an arbitrary file inside the extension, which the\neditor uses for web extensions and for rendering the detail pane without\ndownloading the whole package.",
+        "operationId": "vsx_unpkg",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "publisher",
+            "in": "path",
+            "description": "Extension publisher",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Extension name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Extension version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "description": "Path inside the extension",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path"
+          },
+          "404": {
+            "description": "No such file in the extension"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
     "/proxy/{registry}/{extension_id}/{version}/vsix": {
       "get": {
         "tags": [
@@ -12283,6 +12889,32 @@
           }
         }
       },
+      "ExtensionQueryRequest": {
+        "type": "object",
+        "description": "`POST …/vscode/gallery/extensionquery`.\n\nEvery field is `#[serde(default)]`: a hand-written `product.json` or a\nnon-VS-Code client that omits half of this should get results, not a `400`.",
+        "properties": {
+          "assetTypes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          },
+          "filters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QueryFilter"
+            },
+            "default": []
+          },
+          "flags": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0,
+            "minimum": 0
+          }
+        }
+      },
       "FirewallDto": {
         "oneOf": [
           {
@@ -13443,6 +14075,61 @@
           }
         }
       },
+      "QueryCriterion": {
+        "type": "object",
+        "properties": {
+          "filterType": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0,
+            "minimum": 0
+          },
+          "value": {
+            "type": "string",
+            "default": ""
+          }
+        }
+      },
+      "QueryFilter": {
+        "type": "object",
+        "properties": {
+          "criteria": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QueryCriterion"
+            },
+            "default": []
+          },
+          "pageNumber": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null,
+            "minimum": 0
+          },
+          "pageSize": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null,
+            "minimum": 0
+          },
+          "sortBy": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0,
+            "minimum": 0
+          },
+          "sortOrder": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0,
+            "minimum": 0
+          }
+        }
+      },
       "QuotaStateDto": {
         "type": "string",
         "description": "How close the caller is to a registry's quota.",
@@ -14530,7 +15217,7 @@
     },
     {
       "name": "proxy/openvsx",
-      "description": "OpenVSX proxy — VS Code extension metadata and VSIX packages"
+      "description": "OpenVSX & VS Code Marketplace — extension gallery (extensionquery, assets, item), the OpenVSX REST API, VSIX packages, and private extension publishing"
     },
     {
       "name": "proxy/goproxy",

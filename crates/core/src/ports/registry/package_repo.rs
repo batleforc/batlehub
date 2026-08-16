@@ -28,6 +28,13 @@ pub struct RecentErrorRecord {
 /// display-friendly page size.
 pub const MAX_BLOCKED_VERSIONS_PER_PACKAGE: u64 = 10_000;
 
+/// Page size the default [`PackageRepository::blocked_in_registry`] asks for.
+/// Same reasoning as [`MAX_BLOCKED_VERSIONS_PER_PACKAGE`], one order of
+/// magnitude up because the scope is a whole registry rather than one package:
+/// blocks past this bound would be treated as unblocked in multi-package
+/// listings, so the ceiling sits far above any plausible real count.
+pub const MAX_BLOCKED_VERSIONS_PER_REGISTRY: u64 = 100_000;
+
 /// Persistent store for package statuses and access audit logs.
 ///
 /// Backed by a relational database (PostgreSQL, MySQL, …).
@@ -67,6 +74,40 @@ pub trait PackageRepository: Send + Sync {
             .await?
             .into_iter()
             .map(|p| p.package_id.version)
+            .collect())
+    }
+
+    /// Every blocked `(name, version)` in one registry, in no particular order.
+    ///
+    /// For the *multi-package* listing documents — conda's `repodata.json`, a
+    /// JetBrains `updatePlugins.xml`, a forge's release listing — which describe
+    /// many packages at once. [`Self::blocked_versions`] is the wrong query
+    /// shape there: filtering a channel's repodata one package at a time would
+    /// be a query per package in the document.
+    ///
+    /// Callers are expected to hold the result briefly rather than per request
+    /// (`repodata.json` for a busy channel is requested on every `conda
+    /// install`), which is the one place a block is not effective on the very
+    /// next request; see `BlockedRegistrySnapshot`.
+    ///
+    /// The default derives the answer from [`Self::list_packages`], mirroring
+    /// [`Self::blocked_versions`]; backends with a cheaper query should
+    /// override it.
+    async fn blocked_in_registry(
+        &self,
+        registry: &str,
+    ) -> Result<Vec<(String, String)>, CoreError> {
+        let filter = PackageFilter {
+            registry: Some(registry.to_owned()),
+            blocked_only: true,
+            limit: MAX_BLOCKED_VERSIONS_PER_REGISTRY,
+            ..Default::default()
+        };
+        Ok(self
+            .list_packages(filter)
+            .await?
+            .into_iter()
+            .map(|p| (p.package_id.name, p.package_id.version))
             .collect())
     }
 

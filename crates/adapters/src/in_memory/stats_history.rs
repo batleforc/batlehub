@@ -42,6 +42,8 @@ impl StatsHistoryRepository for InMemoryStatsHistory {
                 Some(existing) => {
                     existing.hits = existing.hits.saturating_add(row.hits);
                     existing.misses = existing.misses.saturating_add(row.misses);
+                    existing.listing_reads =
+                        existing.listing_reads.saturating_add(row.listing_reads);
                     existing.cached_bytes = row.cached_bytes;
                 }
                 None => guard.push(row.clone()),
@@ -89,6 +91,7 @@ mod tests {
             window_start: Utc.with_ymd_and_hms(2026, 8, 12, hour, 0, 0).unwrap(),
             hits,
             misses: 1,
+            listing_reads: 5,
             cached_bytes: 100,
         }
     }
@@ -122,6 +125,7 @@ mod tests {
         assert_eq!(rows.len(), 1, "same key, merged not duplicated");
         assert_eq!(rows[0].hits, 10, "1 + 9 — deltas of the same hour");
         assert_eq!(rows[0].misses, 2);
+        assert_eq!(rows[0].listing_reads, 10, "a delta like hits, not a level");
     }
 
     /// `cached_bytes` is a level read from storage, not a delta: 100 bytes held

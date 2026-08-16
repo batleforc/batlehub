@@ -68,7 +68,16 @@ function viewArtifact(v: PackageVersionDetail) {
 // ── Single-item actions ──────────────────────────────────────────────────────
 
 async function doBlock(v: PackageVersionDetail) {
-  const reason = globalThis.prompt(t("packageVersionsTable.blockReasonPrompt"));
+  // State what a block does before it is made. A block has two halves — the
+  // version stops being listed, and downloading it returns 403 with this reason
+  // — and the artifact-scoped case is the surprising one: blocking a single
+  // file hides the whole version from listings, because a resolver that picks a
+  // version whose bytes are partly refused has no way to know which of its
+  // files it may have.
+  const effect = v.artifact
+    ? t("packageVersionsTable.blockEffectArtifact", { version: v.version, artifact: v.artifact })
+    : t("packageVersionsTable.blockEffect");
+  const reason = globalThis.prompt(`${effect}\n\n${t("packageVersionsTable.blockReasonPrompt")}`);
   if (!reason) return;
   await blockPackage({
     body: {
@@ -141,12 +150,13 @@ function toggle(v: PackageVersionDetail) {
 const selected = computed(() => props.versions.filter((v) => selectedIds.value.has(v.id)));
 
 async function bulkBlock() {
+  // Stated once, above the list, rather than per row.
   const reason = globalThis.prompt(
-    t(
+    `${t("packageVersionsTable.blockEffect")}\n\n${t(
       "packageVersionsTable.bulkBlockReasonPrompt",
       { count: selectedIds.value.size },
       selectedIds.value.size,
-    ),
+    )}`,
   );
   if (!reason) return;
   bulkLoading.value = true;

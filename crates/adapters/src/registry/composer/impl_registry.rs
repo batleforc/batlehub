@@ -6,11 +6,11 @@ use serde::Deserialize;
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
+    ports::{DocumentKind, FetchedArtifact, RegistryClient, UpstreamPackage, VersionDocument},
 };
 
 use super::client::ComposerRegistryClient;
-use super::http_client::{percent_encode, to_registry_error};
+use super::http_client::{fetch_json_document, percent_encode, to_registry_error};
 
 // ── RegistryClient impl ───────────────────────────────────────────────────────
 
@@ -18,6 +18,34 @@ use super::http_client::{percent_encode, to_registry_error};
 impl RegistryClient for ComposerRegistryClient {
     fn registry_type(&self) -> &str {
         "composer"
+    }
+
+    /// A package's p2 metadata — the document Composer resolves a constraint
+    /// against.
+    ///
+    /// The `~dev` variant is a *different document* for the same package (it
+    /// lists branch aliases rather than tagged releases) and gets its own
+    /// `DocumentKind`, so the two do not collide in the metadata cache.
+    async fn fetch_version_document(
+        &self,
+        package: &str,
+        kind: DocumentKind,
+    ) -> Result<VersionDocument, CoreError> {
+        let suffix = match kind {
+            DocumentKind::Versions => "",
+            DocumentKind::P2_DEV => "~dev",
+            other => {
+                return Err(CoreError::NotSupported(format!(
+                    "composer has no '{other}' listing document"
+                )))
+            }
+        };
+        let url = format!("{}/p2/{package}{suffix}.json", self.base_url);
+        fetch_json_document(
+            self.get(&url),
+            &format!("composer p2{suffix} metadata for '{package}'"),
+        )
+        .await
     }
 
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {

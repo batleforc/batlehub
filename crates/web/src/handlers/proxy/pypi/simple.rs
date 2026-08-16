@@ -5,14 +5,15 @@ use actix_web::{get, web, HttpRequest, HttpResponse, Responder};
 use batlehub_config::schema::RegistryMode as Mode;
 use batlehub_core::{
     entities::PackageId,
+    ports::DocumentKind,
     services::{LocalRegistryService, ProxyService},
 };
 
 use crate::handlers::proxy::common::{
-    proxy_stream, registry_public_base, require_registry_type, serve_local_or_proxy_artifact,
-    LocalOrProxyArtifactOpts,
+    fetch_proxy_document, proxy_stream, registry_public_base, require_registry_type,
+    serve_local_or_proxy_artifact, LocalOrProxyArtifactOpts,
 };
-use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
+use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 use super::parse_pypi_filename;
 use crate::handlers::schemas::{ArtifactBytes, ProtocolDocument};
@@ -77,11 +78,10 @@ pub async fn pypi_simple_package(
     path: web::Path<(String, String)>,
     req: HttpRequest,
     identity: AuthIdentity,
+    svc: web::Data<Arc<ProxyService>>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
-    upstream_map: web::Data<UpstreamMap>,
-    http_client: web::Data<reqwest::Client>,
 ) -> Result<impl Responder, AppError> {
     let (registry, package) = path.into_inner();
     require_registry_type(&registry, "pypi", &map)?;
@@ -117,34 +117,57 @@ pub async fn pypi_simple_package(
         }
     }
 
-    let upstream = upstream_map
-        .upstream_for(&registry)
-        .ok_or_else(|| AppError::not_found(format!("no upstream for registry '{registry}'")))?;
-
-    let accept = req
+    // Which of the two representations the client wants. PEP 691 JSON and
+    // PEP 503 HTML are different documents for one URL, so they are different
+    // `DocumentKind`s and land in different metadata-cache slots — keyed
+    // together, whichever one warmed the cache would be served to clients that
+    // asked for the other.
+    let wants_json = req
         .headers()
         .get(actix_web::http::header::ACCEPT)
         .and_then(|v| v.to_str().ok())
-        .map(str::to_owned);
+        .is_some_and(|a| a.contains("application/vnd.pypi.simple"));
+    let doc_kind = if wants_json {
+        DocumentKind::SIMPLE_JSON
+    } else {
+        DocumentKind::Versions
+    };
 
-    let (body, content_type) = batlehub_adapters::registry::pypi::fetch_simple_page(
-        &http_client,
-        &upstream,
-        &package,
-        None,
-        accept.as_deref(),
+    // Through `ProxyService` rather than a direct `fetch_simple_page`: that is
+    // what authorises the read, audits a refusal, caches the document and — the
+    // reason this route moved — removes administratively blocked versions
+    // before pip resolves against them.
+    let doc = fetch_proxy_document(
+        svc,
+        PackageId::new(&registry, &normalized, "__simple__"),
+        identity,
+        batlehub_core::rules::resource_type::RELEASES_READ,
+        doc_kind,
+        proxy_base.clone(),
     )
-    .await
-    .map_err(AppError::from)?;
+    .await?;
 
+    // The URL rewrite stays here rather than in `blocking::rewrite_urls`: it
+    // needs the *serialised* body in either encoding, and `rewrite_simple_page`
+    // already handles both.
+    let (body, content_type) = match &doc.body {
+        batlehub_core::ports::DocumentBody::Text(html) => {
+            (html.clone().into_bytes(), doc.content_type.clone())
+        }
+        batlehub_core::ports::DocumentBody::Json(v) => (
+            serde_json::to_vec(v).unwrap_or_default(),
+            doc.content_type.clone(),
+        ),
+    };
     let rewritten = batlehub_adapters::registry::pypi::rewrite_simple_page(
         &body,
-        content_type.as_deref(),
+        Some(&content_type),
         &proxy_base,
     );
 
-    let ct = content_type.unwrap_or_else(|| "text/html; charset=utf-8".to_owned());
-    Ok(HttpResponse::Ok().content_type(ct).body(rewritten))
+    Ok(HttpResponse::Ok()
+        .content_type(content_type)
+        .body(rewritten))
 }
 
 /// Download a PyPI distribution file through the proxy cache.

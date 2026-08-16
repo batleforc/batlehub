@@ -401,8 +401,14 @@ async fn group_proxy_access_is_recorded_in_audit_log() {
     let repo = InMemoryRepo::new();
     let app = make_group_app(repo.clone()).await;
 
+    // A *download*, not the release listing. Both are group-authorised reads of
+    // `github2`, which is what this test is about — but RFC 0006 §4.5
+    // deliberately stopped filing an `AccessEvent` for an allowed *listing*
+    // (they move a per-registry counter instead, because a dependency-graph
+    // resolution is hundreds of listings and no bytes). Downloads still get a
+    // row each, so that is where group attribution is observable.
     let req = TestRequest::get()
-        .uri("/proxy/github2/rust-lang/rust/releases")
+        .uri("/proxy/github2/rust-lang/rust/tarball/v1.80.0")
         .insert_header(("Authorization", bearer(TEAM_A_TOKEN)))
         .to_request();
     let resp = call_service(&app, req).await;
@@ -418,4 +424,5 @@ async fn group_proxy_access_is_recorded_in_audit_log() {
     assert!(!events.is_empty(), "group access event should be recorded");
     assert_eq!(events[0]["result"]["outcome"], "allowed");
     assert_eq!(events[0]["package_id"]["registry"], "github2");
+    assert_eq!(events[0]["action"], "download");
 }

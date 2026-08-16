@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
-    entities::{Identity, PackageId},
+    entities::{Identity, PackageId, RegistryKind},
     error::CoreError,
     rules::resource_type::RELEASES_READ,
     services::{
@@ -385,11 +385,37 @@ async fn plugin_entries(
         .await
         .map_err(AppError::from)?;
     let extra = ExtraMeta::from_extra(&meta.extra);
-    Ok(extra
+    let mut entries: Vec<RenderEntry> = extra
         .versions
         .iter()
         .map(|v| RenderEntry::from_extra(xml_id, &extra, v))
-        .collect())
+        .collect();
+
+    // The one chokepoint every JetBrains Marketplace listing resolves through —
+    // `updatePlugins.xml`, `/plugins/list` and `/api/plugins/{id}/updates` all
+    // render from this list. Filtering here rather than per document is the
+    // same shape as the local path's `load_visible_versions`, which already
+    // runs `filter_blocked` for the branch above.
+    //
+    // Without it an IDE reads the custom-repository XML, offers the operator's
+    // blocked plugin build as an available update, and the install fails at
+    // download.
+    let blocked = svc
+        .blocked_versions_for(registry, xml_id, RegistryKind::JetbrainsMarketplace)
+        .await;
+    if !blocked.is_empty() {
+        let before = entries.len();
+        entries.retain(|e| !blocked.contains(&e.version));
+        if entries.len() < before {
+            tracing::debug!(
+                registry = %registry,
+                plugin = %xml_id,
+                removed = before - entries.len(),
+                "hid blocked plugin builds from the marketplace listings"
+            );
+        }
+    }
+    Ok(entries)
 }
 
 /// `/api/plugins/{id}` — plugin object (id = xmlId).

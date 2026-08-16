@@ -126,6 +126,11 @@ pub fn embedded_migrator() -> Migrator {
             "artifact sbom license",
             "../migrations/032_artifact_sbom_license.sql"
         ),
+        mig!(
+            33,
+            "stats history listing reads",
+            "../migrations/033_stats_history_listing_reads.sql"
+        ),
     ])
 }
 

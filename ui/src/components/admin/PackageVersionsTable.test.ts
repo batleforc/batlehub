@@ -151,6 +151,36 @@ describe("PackageVersionsTable", () => {
     expect(wrapper.emitted("reload")).toHaveLength(1);
   });
 
+  /* RFC 0006 §6.8: a block has two halves, and the operator should read that
+     where the block is made rather than discover it from a listing. */
+  it("states both halves of a block in the reason prompt", async () => {
+    const promptSpy = vi.spyOn(globalThis, "prompt").mockReturnValue("bad license");
+    const { wrapper } = await mountComp([version({ artifact: null })]);
+    await wrapper
+      .findAll("button")
+      .find((b) => b.text() === "Block")!
+      .trigger("click");
+
+    const shown = promptSpy.mock.calls[0]?.[0] ?? "";
+    expect(shown).toContain("stop seeing it in version listings");
+    expect(shown).toContain("403");
+  });
+
+  /* The asymmetry a reviewer will want to argue about, so the console says it:
+     blocking one file hides the whole version from listings. */
+  it("states the whole-version listing consequence for an artifact-scoped block", async () => {
+    const promptSpy = vi.spyOn(globalThis, "prompt").mockReturnValue("bad license");
+    const { wrapper } = await mountComp([version({ artifact: "pkg-1.0.0.tgz" })]);
+    await wrapper
+      .findAll("button")
+      .find((b) => b.text() === "Block")!
+      .trigger("click");
+
+    const shown = promptSpy.mock.calls[0]?.[0] ?? "";
+    expect(shown).toContain("hides the whole 1.0.0 version from version listings");
+    expect(shown).toContain("stay downloadable by exact coordinate");
+  });
+
   it("does not block when the prompt is cancelled", async () => {
     vi.spyOn(globalThis, "prompt").mockReturnValue(null);
     const { wrapper } = await mountComp([version()]);

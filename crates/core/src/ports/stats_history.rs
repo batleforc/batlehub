@@ -21,6 +21,15 @@ pub struct StatsRollupRow {
     pub window_start: DateTime<Utc>,
     pub hits: u64,
     pub misses: u64,
+    /// Allowed *version-listing* reads in the window — also a delta.
+    ///
+    /// A listing is not a download and is about to happen a great deal more
+    /// often than one, so it is counted here rather than filed as an
+    /// `AccessEvent` per request (RFC 0006 §4.5). What this gives up is
+    /// per-package and per-identity attribution for allowed listing reads;
+    /// "who downloaded this artifact" and "who was refused" both keep their own
+    /// rows.
+    pub listing_reads: u64,
     pub cached_bytes: u64,
 }
 
@@ -41,7 +50,7 @@ pub trait StatsHistoryRepository: Send + Sync {
     /// Merges per `(registry, window_start)` rather than inserting: a writer
     /// that runs twice for the same hour leaves one row, not two.
     ///
-    /// It merges by **summing** `hits`/`misses`. Every row is a delta since the
+    /// It merges by **summing** the deltas — `hits`, `misses`, `listing_reads`. Every row is a delta since the
     /// caller's previous tick ([`StatsRollupService`](crate::services::StatsRollupService)),
     /// and several ticks land in each hourly bucket carrying disjoint deltas, so
     /// an implementation that replaced on conflict would keep only the last —

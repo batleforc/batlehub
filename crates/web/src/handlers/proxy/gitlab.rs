@@ -4,7 +4,7 @@ use actix_web::{get, web, Responder};
 
 use batlehub_core::{entities::PackageId, services::ProxyService};
 
-use super::common::proxy_stream;
+use super::common::{proxy_document, proxy_stream};
 use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
@@ -84,15 +84,15 @@ pub async fn gl_list_releases(
     map: web::Data<RegistryMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, project) = path.into_inner();
-    gitlab_proxy(
-        &registry,
-        project,
-        "releases",
-        None,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+    require_gitlab(&registry, &map)?;
+    // A listing, not an artifact — see the GitHub handler for the reasoning.
+    proxy_document(
         svc,
+        PackageId::new(&registry, project, "releases"),
         identity,
-        &map,
+        batlehub_core::rules::resource_type::RELEASES_READ,
+        batlehub_core::ports::DocumentKind::Versions,
+        String::new(),
     )
     .await
 }

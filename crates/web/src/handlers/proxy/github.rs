@@ -4,7 +4,7 @@ use actix_web::{get, web, HttpRequest, Responder};
 
 use batlehub_core::{entities::PackageId, services::ProxyService};
 
-use super::common::proxy_stream;
+use super::common::{proxy_document, proxy_stream};
 use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
@@ -73,15 +73,16 @@ pub async fn list_releases(
     map: web::Data<RegistryMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, owner, repo) = path.into_inner();
-    github_proxy(
-        &registry,
-        format!("{owner}/{repo}"),
-        "releases",
-        None,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+    require_github(&registry, &map)?;
+    // A listing, not an artifact: `proxy_document` removes administratively
+    // blocked releases before a client picks one and is then refused its assets.
+    proxy_document(
         svc,
+        PackageId::new(&registry, format!("{owner}/{repo}"), "releases"),
         identity,
-        &map,
+        batlehub_core::rules::resource_type::RELEASES_READ,
+        batlehub_core::ports::DocumentKind::Versions,
+        String::new(),
     )
     .await
 }

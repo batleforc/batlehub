@@ -180,6 +180,23 @@ curl -X DELETE \
 
 ---
 
+## Blocked versions
+
+p2 metadata drops the blocked version, and `dist.url` is repointed at BatleHub
+so downloads go through the proxy rather than straight to the upstream CDN.
+
+Packagist serves `"minified": "composer/2.0"`, in which each entry omits every
+key identical to the previous one. Deleting a middle entry from such a list
+silently changes what the entries *after* it inherit — a well-formed document
+describing the wrong packages. BatleHub expands the list, removes the version,
+and re-minifies, so an entry after the removed one still means what it meant.
+
+The upstream document is cached for the registry's `metadata_ttl`; blocks are
+applied on top of the cached copy on every request, so blocking a version takes
+effect immediately rather than when the cache expires.
+
+See [blocking a package version](/guide/admin-policies#block-a-package-version) for the two halves of a block, and [which listings are filtered](/guide/admin-policies#which-listings-are-filtered) for the full table.
+
 ## Authentication
 
 Store HTTP Basic credentials in `auth.json` (project root or `~/.config/composer/` — never commit it):
