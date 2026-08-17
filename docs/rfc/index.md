@@ -33,12 +33,18 @@ product that is not true.
 | [0008 — mise in an air-gapped estate](/rfc/0008-mise-in-an-air-gapped-estate) | Making `mise install` work with no route off the site: `mise.lock` as the bill of materials, a server that will not dial out, and verification moved to the connected side |
 | [0009 — Every endpoint the client actually calls](/rfc/0009-protocol-coverage) | Serving the paths each package manager really requests, and two mechanisms so the next invented endpoint fails the build |
 
-0007 and 0008 are deferred behind 0009, and the reason is worth stating plainly:
+0007 and 0008 were deferred behind 0009, and the reason is worth stating plainly:
 0009 found six protocol defects that had all shipped green, and the common cause
 was tests written from our implementation rather than from what the client sends.
 Building further on that foundation before fixing it would put more surface on a
-floor we know does not hold. 0008's air-gapped case also depends directly on
+floor we know does not hold. 0008's air-gapped case also depended directly on
 0009's checksum-database and upstream-caching work.
+
+0009 has since landed, and with it that dependency: the Go checksum database is
+proxied *and cached*, so a second build resolves with no route off the site, and
+Terraform's checksum files no longer send an otherwise air-gapped provider
+install to the internet at its last step. 0008 is therefore waiting on
+scheduling rather than on 0009 — see its own §2.7 for what that leaves.
 
 They read in order: each one argues with the state the previous one left.
 

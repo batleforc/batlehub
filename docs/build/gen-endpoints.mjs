@@ -49,6 +49,9 @@ function rowsFor(spec, tags) {
       const summary = (op.summary || op.description || "")
         .split("\n")[0]
         .trim()
+        // Backslash first: escaping `|` introduces backslashes of its own, so
+        // doing it the other way round would double-escape them.
+        .replace(/\\/g, "\\\\")
         .replace(/\|/g, "\\|");
       rows.push({ method: method.toUpperCase(), path, summary });
     }
