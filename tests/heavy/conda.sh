@@ -63,13 +63,16 @@ build_pkg() {  # name -> echoes the file path
   python3 tests/heavy/make_conda_package.py "$out" "$name" 1.0.0 0 "$SUBDIR" >&2 \
     || heavy_fail "building the conda package failed"
   echo "$out"
+  return 0
 }
 
 publish_pkg() {  # file
+  local file="$1"
   curl -fsS -o /dev/null -X POST \
     -H "Authorization: Bearer $ADMIN_TOKEN" \
-    --data-binary @"$1" \
-    "$CHANNEL/$SUBDIR/" || heavy_fail "publishing $(basename "$1") failed"
+    --data-binary @"$file" \
+    "$CHANNEL/$SUBDIR/" || heavy_fail "publishing $(basename "$file") failed"
+  return 0
 }
 
 PKG_A_FILE="$(build_pkg "$PKG_A")"
@@ -87,10 +90,13 @@ publish_pkg "$PKG_A_FILE"
 # fresh root is the second developer, on the second machine, resolving against
 # a channel BatleHub has already been asked about.
 create_env() {  # root-suffix, env-name, package
-  local root="$HEAVY_WORK/mamba-root-$1"
+  local suffix="$1" env_name="$2" package="$3"
+  local root="$HEAVY_WORK/mamba-root-$suffix"
   mkdir -p "$root"
+  # The caller branches on this status, so it is returned rather than swallowed.
   MAMBA_ROOT_PREFIX="$root" "$MM" create -y --no-rc --override-channels \
-    -c "$CHANNEL" --platform "$SUBDIR" -n "$2" "$3"
+    -c "$CHANNEL" --platform "$SUBDIR" -n "$env_name" "$package"
+  return $?
 }
 
 heavy_mark "first-create"

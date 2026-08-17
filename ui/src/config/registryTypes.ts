@@ -939,17 +939,18 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         lang: "ini",
         template: (ctx) => {
           const { registryUrl, isAuthenticated, token, netrcLogin } = ctx;
+          const simpleUrl = `${registryUrl}/simple/`;
           const lines = [
             `# ~/.pip/pip.conf  (Linux/macOS)`,
             String.raw`# %APPDATA%\pip\pip.ini  (Windows)`,
             `[global]`,
-            `index-url = ${registryUrl}/simple/`,
+            `index-url = ${simpleUrl}`,
           ];
           if (isAuthenticated) {
             lines.push(
               ``,
               `# Credentials: use ~/.netrc (recommended) or embed in the URL:`,
-              `# index-url = ${embedCredentials(`${registryUrl}/simple/`, netrcLogin, token)}`,
+              `# index-url = ${embedCredentials(simpleUrl, netrcLogin, token)}`,
             );
           }
           return lines.join("\n");
@@ -1373,6 +1374,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           const { registryUrl, netrcHost, netrcLogin, token, registryName: reg } = ctx;
           const login = ctx.isAuthenticated ? netrcLogin : "<your-username>";
           const password = ctx.isAuthenticated ? token : "<your-token>";
+          const debUrl = `${registryUrl}/deb`;
           return [
             `# APT reads credentials from /etc/apt/auth.conf.d/ (Debian 9+ / Ubuntu 19.04+).`,
             `# The sources.list entry is unchanged — credentials are kept in a separate file.`,
@@ -1388,7 +1390,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             ``,
             `# Alternative: embed credentials directly in the source URL`,
             `# (less secure — credentials visible in sources.list)`,
-            `# echo "deb [signed-by=...] ${embedCredentials(`${registryUrl}/deb`, login, password)} stable main" \\`,
+            `# echo "deb [signed-by=...] ${embedCredentials(debUrl, login, password)} stable main" \\`,
             `#   | sudo tee /etc/apt/sources.list.d/${reg}.list`,
           ].join("\n");
         },

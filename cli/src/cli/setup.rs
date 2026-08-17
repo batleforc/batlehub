@@ -127,120 +127,145 @@ pub async fn run(
             offline,
             json,
         } => {
-            let dir = match dir {
-                Some(d) => d,
-                None => std::env::current_dir()?,
-            };
-
-            let effective_server = global_server.unwrap_or(&server);
-            let registries = load_registries(effective_server, token, offline).await;
-            let targets = RegistryTargets::new(effective_server, &registries);
-            let detections = scan_project_types(&dir, &targets, depth);
-
-            if json {
-                let out: Vec<serde_json::Value> = detections
-                    .iter()
-                    .map(|d| {
-                        serde_json::json!({
-                            "registry_type": d.registry_type,
-                            "package_name": d.package_name,
-                            "relative_path": d.relative_path,
-                            "registry_name": d.registry_name,
-                            "base_url": d.base_url,
-                        })
-                    })
-                    .collect();
-                println!("{}", serde_json::to_string_pretty(&out)?);
-            } else if detections.is_empty() {
-                println!("No known project manifests found in: {}", dir.display());
-                println!(
-                    "Supported: Cargo.toml, go.mod, package.json, pyproject.toml, \
-                     pom.xml, composer.json, *.gemspec, *.nuspec, *.csproj, *.tf, environment.yml"
-                );
-            } else {
-                for det in &detections {
-                    let name = det.package_name.as_deref().unwrap_or("<unknown>");
-                    if det.relative_path.is_empty() {
-                        println!("Detected: {} ({})", det.registry_type, name);
-                    } else {
-                        println!(
-                            "Detected: {} ({}) [{}]",
-                            det.registry_type, name, det.relative_path
-                        );
-                    }
-                    println!();
-                    println!("{}", det.instructions);
-                    println!();
-                    println!("{}", "─".repeat(60));
-                    println!();
-                }
-
-                // Only the types actually detected: a `.netrc` that names hosts
-                // this project never talks to is noise the reader has to audit.
-                let types: Vec<&str> = detections
-                    .iter()
-                    .map(|d| api_registry_type(d.registry_type))
-                    .collect();
-                if let Some(block) = netrc_block(&targets.netrc_hosts(&types)) {
-                    println!("{block}");
-                }
-            }
+            let server = global_server.unwrap_or(&server);
+            run_detect(dir, depth, server, token, offline, json).await
         }
         SetupCommand::Ide {
             server,
             offline,
             json,
         } => {
-            let effective_server = global_server.unwrap_or(&server);
-            let registries = load_registries(effective_server, token, offline).await;
-            let setups = detect_ides(effective_server, &registries);
-
-            if json {
-                let out: Vec<serde_json::Value> = setups
-                    .iter()
-                    .map(|s| {
-                        serde_json::json!({
-                            "ide": s.kind.label(),
-                            "registry_type": s.registry_type,
-                            "registry_name": s.registry_name,
-                            "registry_configured": s.registry_configured,
-                            "detected_via": s.detected_via,
-                            "base_url": s.base_url,
-                        })
-                    })
-                    .collect();
-                println!("{}", serde_json::to_string_pretty(&out)?);
-            } else if setups.is_empty() {
-                println!("No IDE detected in this environment.");
-                println!(
-                    "Detection uses $TERM_PROGRAM / VSCODE_* / JetBrains terminal variables, \
-                     the ~/.config/{{Code,VSCodium,JetBrains}} directories, and a ./.idea folder. \
-                     Run this from your editor's integrated terminal."
-                );
-            } else {
-                for s in &setups {
-                    println!("Detected: {} (via {})", s.kind.label(), s.detected_via);
-                    println!();
-                    println!("{}", s.instructions);
-                    println!();
-                    println!("{}", "─".repeat(60));
-                    println!();
-                }
-
-                let mut hosts: Vec<String> = Vec::new();
-                for setup in &setups {
-                    let host = host_of(&setup.base_url);
-                    if !hosts.contains(&host) {
-                        hosts.push(host);
-                    }
-                }
-                if let Some(block) = netrc_block(&hosts) {
-                    println!("{block}");
-                }
-            }
+            let server = global_server.unwrap_or(&server);
+            run_ide(server, token, offline, json).await
         }
     }
+}
+
+async fn run_detect(
+    dir: Option<PathBuf>,
+    depth: usize,
+    server: &str,
+    token: Option<&str>,
+    offline: bool,
+    json: bool,
+) -> Result<()> {
+    let dir = match dir {
+        Some(d) => d,
+        None => std::env::current_dir()?,
+    };
+
+    let registries = load_registries(server, token, offline).await;
+    let targets = RegistryTargets::new(server, &registries);
+    let detections = scan_project_types(&dir, &targets, depth);
+
+    if json {
+        let out: Vec<serde_json::Value> = detections
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "registry_type": d.registry_type,
+                    "package_name": d.package_name,
+                    "relative_path": d.relative_path,
+                    "registry_name": d.registry_name,
+                    "base_url": d.base_url,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
+    if detections.is_empty() {
+        println!("No known project manifests found in: {}", dir.display());
+        println!(
+            "Supported: Cargo.toml, go.mod, package.json, pyproject.toml, \
+             pom.xml, composer.json, *.gemspec, *.nuspec, *.csproj, *.tf, environment.yml"
+        );
+        return Ok(());
+    }
+
+    for det in &detections {
+        let name = det.package_name.as_deref().unwrap_or("<unknown>");
+        if det.relative_path.is_empty() {
+            println!("Detected: {} ({})", det.registry_type, name);
+        } else {
+            println!(
+                "Detected: {} ({}) [{}]",
+                det.registry_type, name, det.relative_path
+            );
+        }
+        print_instructions(&det.instructions);
+    }
+
+    // Only the types actually detected: a `.netrc` that names hosts this
+    // project never talks to is noise the reader has to audit.
+    let types: Vec<&str> = detections
+        .iter()
+        .map(|d| api_registry_type(d.registry_type))
+        .collect();
+    if let Some(block) = netrc_block(&targets.netrc_hosts(&types)) {
+        println!("{block}");
+    }
     Ok(())
+}
+
+async fn run_ide(server: &str, token: Option<&str>, offline: bool, json: bool) -> Result<()> {
+    let registries = load_registries(server, token, offline).await;
+    let setups = detect_ides(server, &registries);
+
+    if json {
+        let out: Vec<serde_json::Value> = setups
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "ide": s.kind.label(),
+                    "registry_type": s.registry_type,
+                    "registry_name": s.registry_name,
+                    "registry_configured": s.registry_configured,
+                    "detected_via": s.detected_via,
+                    "base_url": s.base_url,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
+    if setups.is_empty() {
+        println!("No IDE detected in this environment.");
+        println!(
+            "Detection uses $TERM_PROGRAM / VSCODE_* / JetBrains terminal variables, \
+             the ~/.config/{{Code,VSCodium,JetBrains}} directories, and a ./.idea folder. \
+             Run this from your editor's integrated terminal."
+        );
+        return Ok(());
+    }
+
+    for s in &setups {
+        println!("Detected: {} (via {})", s.kind.label(), s.detected_via);
+        print_instructions(&s.instructions);
+    }
+
+    let mut hosts: Vec<String> = Vec::new();
+    for setup in &setups {
+        let host = host_of(&setup.base_url);
+        if !hosts.contains(&host) {
+            hosts.push(host);
+        }
+    }
+    if let Some(block) = netrc_block(&hosts) {
+        println!("{block}");
+    }
+    Ok(())
+}
+
+/// One detection's snippet, with the rule that separates it from the next.
+fn print_instructions(instructions: &str) {
+    println!();
+    println!("{instructions}");
+    println!();
+    println!("{}", "─".repeat(60));
+    println!();
 }
 
 #[cfg(test)]

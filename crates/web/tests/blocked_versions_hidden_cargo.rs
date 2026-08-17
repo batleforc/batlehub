@@ -21,7 +21,7 @@ use common::*;
 
 use std::sync::Arc;
 
-use actix_web::test::{call_service, read_body, TestRequest};
+use actix_web::test::{call_service, TestRequest};
 use batlehub_config::schema::RegistryMode;
 use batlehub_core::{entities::Role, rules::RbacRule, services::RegistryPolicy};
 use serde_json::Value;
@@ -30,35 +30,12 @@ use serde_json::Value;
 /// the two-prefix form rather than the short-name special cases.
 const INDEX_PATH: &str = "se/rd/serde";
 
-async fn app() -> impl actix_web::dev::Service<
-    actix_http::Request,
-    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-    Error = actix_web::Error,
-> {
-    build_local_registry_app(
-        local_registry_app_parts("local-crates", "cargo", RegistryMode::Proxy, None),
-        // The route 404s before authorising anything unless a sparse index is
-        // configured for the registry.
-        cargo_index_map("local-crates"),
-        None,
-    )
-    .await
+async fn app() -> impl TestService {
+    proxy_registry_app("local-crates", "cargo").await
 }
 
-async fn index_entry<S>(app: &S, path: &str) -> String
-where
-    S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
-{
-    let req = TestRequest::get()
-        .uri(&format!("/proxy/local-crates/registry/{path}"))
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let body = read_body(call_service(app, req).await).await;
-    String::from_utf8(body.to_vec()).expect("the sparse index is UTF-8")
+async fn index_entry<S: TestService>(app: &S, path: &str) -> String {
+    get_text(app, &format!("/proxy/local-crates/registry/{path}")).await
 }
 
 fn line(body: &str, n: usize) -> Value {
@@ -104,21 +81,12 @@ async fn proxy_index_preserves_every_other_field() {
 async fn proxy_index_content_type_is_plain_text() {
     let app = app().await;
 
-    let req = TestRequest::get()
-        .uri(&format!("/proxy/local-crates/registry/{INDEX_PATH}"))
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-
-    assert_eq!(resp.status(), 200);
-    let ct = resp
-        .headers()
-        .get("content-type")
-        .expect("content-type set")
-        .to_str()
-        .unwrap()
-        .to_owned();
-    assert!(ct.starts_with("text/plain"), "content-type was {ct}");
+    assert_content_type(
+        &app,
+        &format!("/proxy/local-crates/registry/{INDEX_PATH}"),
+        "text/plain",
+    )
+    .await;
 }
 
 /// The finding from RFC 0006 §6.7, in its own right: this route used to answer
@@ -151,10 +119,7 @@ async fn proxy_direct_download_of_a_blocked_version_is_still_denied() {
 
     block_version(&app, "local-crates", "serde", "1.1.0").await;
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-crates/serde/1.1.0/download")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
+    let req = admin_get("/proxy/local-crates/serde/1.1.0/download");
     assert_eq!(call_service(&app, req).await.status(), 403);
 }
 

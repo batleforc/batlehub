@@ -15,7 +15,7 @@
 //! mis-slices emits a document Maven cannot parse at all. quick-xml also never
 //! resolves external entities, so a hostile upstream gets no XXE primitive.
 
-use quick_xml::events::{BytesText, Event};
+use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::{Reader, Writer};
 
 use super::BlockedVersions;
@@ -105,37 +105,74 @@ fn rewrite(
     release: Option<&str>,
 ) -> Option<String> {
     let mut reader = Reader::from_str(xml);
-    let mut writer = Writer::new(Vec::new());
-
-    // `<version>` is buffered because whether to emit it is only known once its
-    // text has been read; `substituting` holds the replacement text for the
-    // single-valued element currently open.
-    let mut pending_version: Option<Vec<Event<'_>>> = None;
-    let mut substituting: Option<Option<String>> = None;
+    let mut rewriter = Rewriter::new();
 
     loop {
-        let event = match reader.read_event() {
-            Ok(e) => e,
-            Err(_) => return None,
+        let Ok(event) = reader.read_event() else {
+            return None;
         };
-
         match &event {
             Event::Eof => break,
+            Event::Start(e) => rewriter.start(e, latest, release)?,
+            Event::End(e) => rewriter.end(e, blocked)?,
+            Event::Text(t) => rewriter.text(t)?,
+            other => rewriter.passthrough(other)?,
+        }
+    }
 
-            Event::Start(e) if e.name().as_ref() == b"version" => {
-                pending_version = Some(vec![Event::Start(e.to_owned())]);
-            }
-            Event::Start(e) if e.name().as_ref() == b"latest" => {
-                substituting = Some(latest.map(str::to_owned));
-                writer.write_event(Event::Start(e.to_owned())).ok()?;
-            }
-            Event::Start(e) if e.name().as_ref() == b"release" => {
-                substituting = Some(release.map(str::to_owned));
-                writer.write_event(Event::Start(e.to_owned())).ok()?;
-            }
+    rewriter.finish()
+}
 
-            Event::End(e) if e.name().as_ref() == b"version" => {
-                let mut buffered = pending_version.take().unwrap_or_default();
+/// The output document being assembled by [`rewrite`], and the two pieces of
+/// state that make the stream more than a copy.
+///
+/// Every method returns `None` on a write error, which [`rewrite`] turns into
+/// "serve the document unchanged".
+struct Rewriter<'a> {
+    writer: Writer<Vec<u8>>,
+    /// A `<version>` element is buffered because whether to emit it is only
+    /// known once its text has been read.
+    pending_version: Option<Vec<Event<'a>>>,
+    /// The replacement text for the single-valued element currently open —
+    /// `Some(None)` when nothing survives to name it with.
+    substituting: Option<Option<String>>,
+}
+
+impl<'a> Rewriter<'a> {
+    fn new() -> Self {
+        Self {
+            writer: Writer::new(Vec::new()),
+            pending_version: None,
+            substituting: None,
+        }
+    }
+
+    fn start(
+        &mut self,
+        e: &BytesStart<'a>,
+        latest: Option<&str>,
+        release: Option<&str>,
+    ) -> Option<()> {
+        match e.name().as_ref() {
+            b"version" => self.pending_version = Some(vec![Event::Start(e.to_owned())]),
+            b"latest" | b"release" => {
+                let replacement = if e.name().as_ref() == b"latest" {
+                    latest
+                } else {
+                    release
+                };
+                self.substituting = Some(replacement.map(str::to_owned));
+                self.writer.write_event(Event::Start(e.to_owned())).ok()?;
+            }
+            _ => self.passthrough(&Event::Start(e.to_owned()))?,
+        }
+        Some(())
+    }
+
+    fn end(&mut self, e: &BytesEnd<'a>, blocked: &BlockedVersions) -> Option<()> {
+        match e.name().as_ref() {
+            b"version" => {
+                let mut buffered = self.pending_version.take().unwrap_or_default();
                 buffered.push(Event::End(e.to_owned()));
                 let text = buffered
                     .iter()
@@ -146,48 +183,53 @@ fn rewrite(
                     .unwrap_or_default();
                 if !blocked.contains(&text) {
                     for ev in buffered {
-                        writer.write_event(ev).ok()?;
+                        self.writer.write_event(ev).ok()?;
                     }
                 }
-                // A dropped `<version>` takes its surrounding whitespace with it,
-                // because the indentation text node belonging to the *next*
+                // A dropped `<version>` takes its surrounding whitespace with
+                // it, because the indentation text node belonging to the *next*
                 // element is written normally. Emitting it would leave a blank
                 // line where the entry used to be.
             }
-            Event::End(e) if matches!(e.name().as_ref(), b"latest" | b"release") => {
-                substituting = None;
-                writer.write_event(Event::End(e.to_owned())).ok()?;
+            b"latest" | b"release" => {
+                self.substituting = None;
+                self.writer.write_event(Event::End(e.to_owned())).ok()?;
             }
-
-            Event::Text(t) => {
-                if let Some(buffered) = pending_version.as_mut() {
-                    buffered.push(Event::Text(t.to_owned()));
-                } else if let Some(replacement) = substituting.as_ref() {
-                    // `None` means nothing survives to name. The element is left
-                    // empty rather than removed: Maven reads an absent
-                    // `<release>` and an empty one the same way, and removing an
-                    // element mid-stream would need its end tag suppressed too.
-                    writer
-                        .write_event(Event::Text(BytesText::new(
-                            replacement.as_deref().unwrap_or(""),
-                        )))
-                        .ok()?;
-                } else {
-                    writer.write_event(Event::Text(t.to_owned())).ok()?;
-                }
-            }
-
-            other => {
-                if let Some(buffered) = pending_version.as_mut() {
-                    buffered.push(other.to_owned());
-                } else {
-                    writer.write_event(other.to_owned()).ok()?;
-                }
-            }
+            _ => self.passthrough(&Event::End(e.to_owned()))?,
         }
+        Some(())
     }
 
-    String::from_utf8(writer.into_inner()).ok()
+    fn text(&mut self, t: &BytesText<'a>) -> Option<()> {
+        if let Some(buffered) = self.pending_version.as_mut() {
+            buffered.push(Event::Text(t.to_owned()));
+        } else if let Some(replacement) = self.substituting.as_ref() {
+            // `None` means nothing survives to name. The element is left empty
+            // rather than removed: Maven reads an absent `<release>` and an
+            // empty one the same way, and removing an element mid-stream would
+            // need its end tag suppressed too.
+            let text = BytesText::new(replacement.as_deref().unwrap_or(""));
+            self.writer.write_event(Event::Text(text)).ok()?;
+        } else {
+            self.writer.write_event(Event::Text(t.to_owned())).ok()?;
+        }
+        Some(())
+    }
+
+    /// Anything with no rewrite of its own: buffered inside a `<version>`,
+    /// written straight through outside one.
+    fn passthrough(&mut self, event: &Event<'a>) -> Option<()> {
+        if let Some(buffered) = self.pending_version.as_mut() {
+            buffered.push(event.to_owned());
+        } else {
+            self.writer.write_event(event.to_owned()).ok()?;
+        }
+        Some(())
+    }
+
+    fn finish(self) -> Option<String> {
+        String::from_utf8(self.writer.into_inner()).ok()
+    }
 }
 
 /// The highest of `versions`, with no preference for stable over qualified.

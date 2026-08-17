@@ -22,29 +22,6 @@ use actix_web::test::{call_service, read_body, TestRequest};
 
 use batlehub_config::schema::RegistryMode;
 
-/// Minimal RubyGems `.gem`: a tar carrying one gzip'd YAML `metadata.gz`.
-fn make_gem(name: &str, version: &str, dependencies: &str) -> Vec<u8> {
-    use flate2::{write::GzEncoder, Compression};
-    use std::io::Write as _;
-
-    let yaml = format!(
-        "name: {name}\nversion:\n  version: '{version}'\nplatform: ruby\n{dependencies}summary: s\n"
-    );
-    let mut gz = GzEncoder::new(Vec::new(), Compression::default());
-    gz.write_all(yaml.as_bytes()).unwrap();
-    let metadata_gz = gz.finish().unwrap();
-
-    let mut builder = tar::Builder::new(Vec::new());
-    let mut header = tar::Header::new_gnu();
-    header.set_size(metadata_gz.len() as u64);
-    header.set_mode(0o644);
-    header.set_cksum();
-    builder
-        .append_data(&mut header, "metadata.gz", metadata_gz.as_slice())
-        .unwrap();
-    builder.into_inner().unwrap()
-}
-
 /// A `dependencies:` block as a gemspec writes it.
 fn runtime_dependency(name: &str, op: &str, version: &str) -> String {
     format!(
@@ -123,8 +100,8 @@ where
 #[actix_web::test]
 async fn compact_versions_lists_locally_published_gems() {
     let app = local_gems_app().await;
-    publish(&app, make_gem("mygem", "1.0.0", "")).await;
-    publish(&app, make_gem("mygem", "1.1.0", "")).await;
+    publish(&app, make_gem_with_deps("mygem", "1.0.0", "")).await;
+    publish(&app, make_gem_with_deps("mygem", "1.1.0", "")).await;
 
     let versions = text(&app, "/proxy/local-gems/versions").await;
     assert!(
@@ -150,7 +127,7 @@ async fn compact_versions_lists_locally_published_gems() {
 #[actix_web::test]
 async fn the_versions_checksum_is_the_md5_of_the_info_document() {
     let app = local_gems_app().await;
-    publish(&app, make_gem("mygem", "1.0.0", "")).await;
+    publish(&app, make_gem_with_deps("mygem", "1.0.0", "")).await;
 
     let versions = text(&app, "/proxy/local-gems/versions").await;
     let advertised = versions
@@ -175,7 +152,7 @@ async fn compact_info_carries_runtime_dependencies() {
     let app = local_gems_app().await;
     publish(
         &app,
-        make_gem("mygem", "1.0.0", &runtime_dependency("rake", "~>", "13.0")),
+        make_gem_with_deps("mygem", "1.0.0", &runtime_dependency("rake", "~>", "13.0")),
     )
     .await;
 
@@ -195,7 +172,7 @@ async fn compact_info_carries_runtime_dependencies() {
 #[actix_web::test]
 async fn compact_names_lists_locally_published_gems() {
     let app = local_gems_app().await;
-    publish(&app, make_gem("mygem", "1.0.0", "")).await;
+    publish(&app, make_gem_with_deps("mygem", "1.0.0", "")).await;
 
     let names = text(&app, "/proxy/local-gems/names").await;
     assert_eq!(names, "---\nmygem\n");
@@ -236,7 +213,7 @@ async fn a_local_registry_does_not_serve_the_upstream_index() {
 #[actix_web::test]
 async fn hybrid_versions_carries_upstream_and_local_gems() {
     let app = hybrid_gems_app().await;
-    publish(&app, make_gem("mygem", "1.0.0", "")).await;
+    publish(&app, make_gem_with_deps("mygem", "1.0.0", "")).await;
 
     let versions = text(&app, "/proxy/local-gems/versions").await;
     for expected in [
@@ -265,7 +242,7 @@ async fn hybrid_versions_carries_upstream_and_local_gems() {
 #[actix_web::test]
 async fn hybrid_names_carries_upstream_and_local_gems() {
     let app = hybrid_gems_app().await;
-    publish(&app, make_gem("mygem", "1.0.0", "")).await;
+    publish(&app, make_gem_with_deps("mygem", "1.0.0", "")).await;
 
     let names = text(&app, "/proxy/local-gems/names").await;
     let listed: Vec<&str> = names.lines().filter(|l| *l != "---").collect();
@@ -284,7 +261,7 @@ async fn hybrid_info_prefers_local_and_falls_through_for_the_rest() {
     let app = hybrid_gems_app().await;
     publish(
         &app,
-        make_gem("mygem", "1.0.0", &runtime_dependency("rake", "~>", "13.0")),
+        make_gem_with_deps("mygem", "1.0.0", &runtime_dependency("rake", "~>", "13.0")),
     )
     .await;
 
@@ -343,7 +320,7 @@ fn md5_hex(bytes: &[u8]) -> String {
 #[actix_web::test]
 async fn a_current_copy_of_the_versions_document_is_not_modified() {
     let app = local_gems_app().await;
-    publish(&app, make_gem("mygem", "1.0.0", "")).await;
+    publish(&app, make_gem_with_deps("mygem", "1.0.0", "")).await;
 
     let resp = conditional(&app, "/proxy/local-gems/versions", &[]).await;
     assert_eq!(resp.status(), 200);
@@ -373,7 +350,7 @@ async fn a_current_copy_of_the_versions_document_is_not_modified() {
 #[actix_web::test]
 async fn a_client_holding_our_prefix_is_sent_only_the_tail() {
     let app = local_gems_app().await;
-    publish(&app, make_gem("mygem", "1.0.0", "")).await;
+    publish(&app, make_gem_with_deps("mygem", "1.0.0", "")).await;
 
     let document = text(&app, "/proxy/local-gems/versions").await;
     let held = document.len() / 2;
@@ -421,7 +398,7 @@ async fn a_client_holding_our_prefix_is_sent_only_the_tail() {
 #[actix_web::test]
 async fn a_client_holding_a_different_document_gets_the_whole_one() {
     let app = local_gems_app().await;
-    publish(&app, make_gem("mygem", "1.0.0", "")).await;
+    publish(&app, make_gem_with_deps("mygem", "1.0.0", "")).await;
     let document = text(&app, "/proxy/local-gems/versions").await;
 
     let resp = conditional(

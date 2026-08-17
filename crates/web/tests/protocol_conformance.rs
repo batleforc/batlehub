@@ -550,9 +550,7 @@ const SUITES: &[(&str, &[Conformance])] = &[
 async fn every_path_a_client_sends_reaches_its_own_handler() {
     let app = make_app(InMemoryRepo::new()).await;
 
-    let mut broken = Vec::new();
-    let mut landed = Vec::new();
-    let mut moved = Vec::new();
+    let mut report = Report::default();
 
     for (suite, entries) in SUITES {
         for c in *entries {
@@ -567,59 +565,16 @@ async fn every_path_a_client_sends_reaches_its_own_handler() {
             let status = resp.status();
             let body = actix_web::test::read_body(resp).await;
 
-            // Two signals, and both are needed.
-            //
-            // The pattern alone is not enough: a pattern can be registered for
-            // a *different method* — Terraform's module-metadata GET collides
-            // with the upload POST on the same path — and actix still reports
-            // the matched pattern while answering a **bodyless 404**, not a
-            // 405. So a pattern match can mean "this path is spoken for by a
-            // route the client cannot use".
-            //
-            // Whether a handler ran is not enough either, since the catch-alls
-            // above mean nearly everything reaches one.
-            //
-            // Together they are exact: `AppError` always renders a JSON body
-            // (`crates/web/src/error.rs:91-97`), so a non-empty body — or any
-            // 2xx, which may legitimately be empty — means our handler for this
-            // pattern actually executed.
-            let handler_ran = !body.is_empty() || status.is_success();
-            let mut satisfied = matched.as_deref() == Some(c.expect) && handler_ran;
-            if satisfied {
-                if let Some(token) = c.must_find {
-                    satisfied = String::from_utf8_lossy(&body).contains(token);
-                }
-            }
-
-            // Pin the catch-all that currently eats this path, when one does.
-            if let (Some(swallow), Some(actual)) = (c.swallowed_by, matched.as_deref()) {
-                if !satisfied && actual != swallow {
-                    moved.push(format!(
-                        "  [{suite}] {} {}\n      was swallowed by {swallow:?}, now matches {actual:?}",
-                        c.method, c.path
-                    ));
-                }
-            }
-
-            match (c.not_yet, satisfied) {
-                (Some(_), false) => {}
-                (Some(phase), true) => landed.push(format!(
-                    "  [{suite}] {} {}\n      now satisfied — delete `.not_yet({phase:?})`",
-                    c.method, c.path
-                )),
-                (None, true) => {}
-                (None, false) => broken.push(format!(
-                    "  [{suite}] {} {}\n      source: {}\n      must {} — matched {:?}, status {}",
-                    c.method,
-                    c.path,
-                    c.source,
-                    c.requirement(),
-                    matched,
-                    status
-                )),
-            }
+            let satisfied = is_satisfied(c, matched.as_deref(), status, &body);
+            report.record(suite, c, satisfied, matched.as_deref(), status);
         }
     }
+
+    let Report {
+        broken,
+        landed,
+        moved,
+    } = report;
 
     assert!(
         broken.is_empty(),
@@ -640,6 +595,88 @@ async fn every_path_a_client_sends_reaches_its_own_handler() {
          it was never written for — confirm and update `swallowed_by`:\n{}",
         moved.join("\n")
     );
+}
+
+/// Does this entry's requirement hold, given what the request came back with?
+///
+/// Two signals, and both are needed.
+///
+/// The pattern alone is not enough: a pattern can be registered for a
+/// *different method* — Terraform's module-metadata GET collides with the
+/// upload POST on the same path — and actix still reports the matched pattern
+/// while answering a **bodyless 404**, not a 405. So a pattern match can mean
+/// "this path is spoken for by a route the client cannot use".
+///
+/// Whether a handler ran is not enough either, since the catch-alls above mean
+/// nearly everything reaches one.
+///
+/// Together they are exact: `AppError` always renders a JSON body
+/// (`crates/web/src/error.rs:91-97`), so a non-empty body — or any 2xx, which
+/// may legitimately be empty — means our handler for this pattern actually
+/// executed.
+fn is_satisfied(
+    c: &Conformance,
+    matched: Option<&str>,
+    status: actix_web::http::StatusCode,
+    body: &[u8],
+) -> bool {
+    let handler_ran = !body.is_empty() || status.is_success();
+    if matched != Some(c.expect) || !handler_ran {
+        return false;
+    }
+    match c.must_find {
+        Some(token) => String::from_utf8_lossy(body).contains(token),
+        None => true,
+    }
+}
+
+/// The three ways an entry can be worth reporting, accumulated across suites.
+#[derive(Default)]
+struct Report {
+    /// A requirement that should hold and does not.
+    broken: Vec<String>,
+    /// A `not_yet` entry that now passes — the ratchet only shrinks.
+    landed: Vec<String>,
+    /// A path whose pinned catch-all is no longer the one that eats it.
+    moved: Vec<String>,
+}
+
+impl Report {
+    fn record(
+        &mut self,
+        suite: &str,
+        c: &Conformance,
+        satisfied: bool,
+        matched: Option<&str>,
+        status: actix_web::http::StatusCode,
+    ) {
+        // Pin the catch-all that currently eats this path, when one does.
+        if let (Some(swallow), Some(actual)) = (c.swallowed_by, matched) {
+            if !satisfied && actual != swallow {
+                self.moved.push(format!(
+                    "  [{suite}] {} {}\n      was swallowed by {swallow:?}, now matches {actual:?}",
+                    c.method, c.path
+                ));
+            }
+        }
+
+        match (c.not_yet, satisfied) {
+            (Some(phase), true) => self.landed.push(format!(
+                "  [{suite}] {} {}\n      now satisfied — delete `.not_yet({phase:?})`",
+                c.method, c.path
+            )),
+            (None, false) => self.broken.push(format!(
+                "  [{suite}] {} {}\n      source: {}\n      must {} — matched {:?}, status {}",
+                c.method,
+                c.path,
+                c.source,
+                c.requirement(),
+                matched,
+                status
+            )),
+            (Some(_), false) | (None, true) => {}
+        }
+    }
 }
 
 /// The catch-alls, and the defect that is now closed.

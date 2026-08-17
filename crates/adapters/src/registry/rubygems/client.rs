@@ -192,106 +192,110 @@ pub(super) fn parse_gem_yaml(yaml: &str) -> Result<GemMetadata, CoreError> {
 /// Development dependencies are skipped — they are not part of what an
 /// installer resolves, and the compact index does not carry them.
 fn parse_gem_dependencies(yaml: &str) -> Vec<GemDependency> {
-    let mut deps: Vec<GemDependency> = Vec::new();
+    let mut acc = DependencyAccumulator::new();
     let mut in_block = false;
-    // The dependency being built, its constraints, and its declared type.
-    let mut name: Option<String> = None;
-    let mut ops: Vec<String> = Vec::new();
-    let mut constraints: Vec<String> = Vec::new();
-    let mut runtime = true;
-
-    let flush = |name: &mut Option<String>,
-                 constraints: &mut Vec<String>,
-                 ops: &mut Vec<String>,
-                 runtime: &mut bool,
-                 deps: &mut Vec<GemDependency>| {
-        if let Some(n) = name.take() {
-            if *runtime {
-                deps.push(GemDependency {
-                    name: n,
-                    requirement: constraints.join("&"),
-                });
-            }
-        }
-        constraints.clear();
-        ops.clear();
-        *runtime = true;
-    };
 
     for line in yaml.lines() {
         if !line.starts_with(' ') && !line.starts_with('-') {
-            // A new top-level key ends the block.
+            // A new top-level key ends the block — and starts it again when the
+            // key is `dependencies:` itself.
             if in_block {
-                flush(
-                    &mut name,
-                    &mut constraints,
-                    &mut ops,
-                    &mut runtime,
-                    &mut deps,
-                );
-                in_block = false;
+                acc.flush();
             }
-            if line.starts_with("dependencies:") {
-                in_block = true;
-            }
+            in_block = line.starts_with("dependencies:");
             continue;
         }
-        if !in_block {
-            continue;
+        if in_block {
+            acc.absorb(line.trim());
         }
+    }
+    acc.finish()
+}
 
-        let trimmed = line.trim();
-        if trimmed.starts_with("- !ruby/object:Gem::Dependency") {
-            flush(
-                &mut name,
-                &mut constraints,
-                &mut ops,
-                &mut runtime,
-                &mut deps,
-            );
-            continue;
+/// The dependency [`parse_gem_dependencies`] is currently assembling.
+///
+/// One `!ruby/object:Gem::Dependency` entry arrives as several lines, and none
+/// of them is complete on its own: the name, the operators and the versions
+/// each land separately, and only the *next* entry (or the end of the block)
+/// says the previous one is finished. This holds that partial state so the scan
+/// itself stays a flat dispatch on the line's prefix.
+struct DependencyAccumulator {
+    name: Option<String>,
+    /// Operators from `- - "~>"` lines, awaiting the version that closes them.
+    ops: Vec<String>,
+    constraints: Vec<String>,
+    runtime: bool,
+    deps: Vec<GemDependency>,
+}
+
+impl DependencyAccumulator {
+    fn new() -> Self {
+        Self {
+            name: None,
+            ops: Vec::new(),
+            constraints: Vec::new(),
+            // Absent `type:`, a Gem::Dependency is a runtime one.
+            runtime: true,
+            deps: Vec::new(),
         }
-        if let Some(rest) = trimmed.strip_prefix("name: ") {
+    }
+
+    /// One line of the `dependencies:` block, already trimmed.
+    fn absorb(&mut self, trimmed: &str) {
+        if trimmed.starts_with("- !ruby/object:Gem::Dependency") {
+            self.flush();
+        } else if let Some(rest) = trimmed.strip_prefix("name: ") {
             // Only the first `name:` after a Dependency header is the gem's;
             // nested ones do not occur, but taking the first is what makes that
             // independent of order.
-            if name.is_none() {
-                name = Some(strip_yaml_quotes(rest.trim()).to_owned());
+            if self.name.is_none() {
+                self.name = Some(strip_yaml_quotes(rest.trim()).to_owned());
             }
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("type: ") {
-            runtime = rest.trim() != ":development";
-            continue;
-        }
-        // `- - "~>"` opens a constraint pair; `- '13.0'` and `version: '13.0'`
-        // close it.
-        if let Some(rest) = trimmed.strip_prefix("- - ") {
-            ops.push(strip_yaml_quotes(rest.trim()).to_owned());
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("version: ") {
-            let v = rest.trim();
-            if !v.starts_with('!') {
-                let v = strip_yaml_quotes(v);
-                // `>= 0` is how "no constraint" is written, and the compact
-                // index leaves it out.
-                let op = ops.pop().unwrap_or_else(|| ">=".to_owned());
-                if !(op == ">=" && v == "0") {
-                    constraints.push(format!("{op} {v}"));
-                }
-            }
-            continue;
+        } else if let Some(rest) = trimmed.strip_prefix("type: ") {
+            self.runtime = rest.trim() != ":development";
+        } else if let Some(rest) = trimmed.strip_prefix("- - ") {
+            // `- - "~>"` opens a constraint pair; `- '13.0'` and
+            // `version: '13.0'` close it.
+            self.ops.push(strip_yaml_quotes(rest.trim()).to_owned());
+        } else if let Some(rest) = trimmed.strip_prefix("version: ") {
+            self.close_constraint(rest.trim());
         }
     }
-    flush(
-        &mut name,
-        &mut constraints,
-        &mut ops,
-        &mut runtime,
-        &mut deps,
-    );
-    deps
+
+    /// Close the open operator with `value`, if `value` is a version at all.
+    fn close_constraint(&mut self, value: &str) {
+        // `!ruby/object:Gem::Version` — the tag, not the version under it.
+        if value.starts_with('!') {
+            return;
+        }
+        let v = strip_yaml_quotes(value);
+        let op = self.ops.pop().unwrap_or_else(|| ">=".to_owned());
+        // `>= 0` is how "no constraint" is written, and the compact index
+        // leaves it out.
+        if !(op == ">=" && v == "0") {
+            self.constraints.push(format!("{op} {v}"));
+        }
+    }
+
+    /// Emit the entry being assembled, if there is one, and reset.
+    fn flush(&mut self) {
+        if let Some(name) = self.name.take() {
+            if self.runtime {
+                self.deps.push(GemDependency {
+                    name,
+                    requirement: self.constraints.join("&"),
+                });
+            }
+        }
+        self.constraints.clear();
+        self.ops.clear();
+        self.runtime = true;
+    }
+
+    fn finish(mut self) -> Vec<GemDependency> {
+        self.flush();
+        self.deps
+    }
 }
 
 /// Split a gem filename stem (without `.gem`) into `(name, version)`.

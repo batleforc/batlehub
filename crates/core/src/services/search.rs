@@ -128,10 +128,8 @@ impl ProxyService {
         let key = format!("search:{registry}:{limit}:{query}");
 
         // Rung 1.
-        if let Ok(Some(entry)) = self.cache.get(&key).await {
-            if let Some(hits) = decode_hits(&entry.metadata.extra) {
-                return Ok(self.finish(registry, hits, Freshness::Cached).await);
-            }
+        if let Some(hits) = self.cached_hits(&key).await {
+            return Ok(self.finish(registry, hits, Freshness::Cached).await);
         }
 
         // Rung 2.
@@ -146,53 +144,77 @@ impl ProxyService {
                 let mut hits: Vec<SearchHit> = found.into_iter().map(SearchHit::from).collect();
 
                 if mode == SearchMode::Hybrid {
-                    merge_local(&mut hits, local.clone());
+                    merge_local(&mut hits, local);
                 }
 
-                let ttl = self.search_ttl(registry).await;
-                let entry = crate::ports::CacheEntry {
-                    metadata: crate::entities::PackageMetadata::minimal(
-                        crate::entities::PackageId::new(registry, "_search", ""),
-                        encode_hits(&hits),
-                    ),
-                    cached_at: chrono::Utc::now(),
-                    expires_at: None,
-                };
-                if let Err(e) = self.cache.set(&key, entry, Some(ttl)).await {
-                    tracing::warn!(key = %key, error = %e, "caching search results failed");
-                }
-
+                self.cache_hits(registry, &key, &hits).await;
                 Ok(self.finish(registry, hits, Freshness::Fresh).await)
             }
-            Err(e) => {
-                // Rung 3a.
-                if self.serves_stale(registry).await {
-                    if let Ok(Some(stale)) = self.cache.get_stale(&key).await {
-                        if let Some(hits) = decode_hits(&stale.metadata.extra) {
-                            tracing::warn!(
-                                registry, error = %e,
-                                "search upstream unavailable, serving stale results"
-                            );
-                            return Ok(self.finish(registry, hits, Freshness::Stale).await);
-                        }
-                    }
-                }
+            // Rung 3.
+            Err(e) => Ok(self.degraded(registry, query, limit, &key, local, &e).await),
+        }
+    }
 
-                // Rung 3b — the packages we actually hold. Never an error and
-                // never an empty-because-we-gave-up list: an unreachable
-                // upstream degrades search to what this proxy can honestly
-                // answer for.
-                tracing::warn!(
-                    registry, error = %e,
-                    "search upstream unavailable, answering from held packages"
-                );
-                // Rung 3b draws on both stores: what has been proxied through
-                // (and so is cached here) and what has been published here.
-                let mut hits = self.held_packages(registry, query, limit).await;
-                merge_local(&mut hits, local);
-                Ok(self.finish(registry, hits, Freshness::Stale).await)
+    /// Rung 1: a usable cached result set, if the cache holds one.
+    async fn cached_hits(&self, key: &str) -> Option<Vec<SearchHit>> {
+        let entry = self.cache.get(key).await.ok().flatten()?;
+        decode_hits(&entry.metadata.extra)
+    }
+
+    /// Store a fresh result set. A cache that will not take it is worth a line
+    /// in the log and nothing more — the answer has already been computed.
+    async fn cache_hits(&self, registry: &str, key: &str, hits: &[SearchHit]) {
+        let ttl = self.search_ttl(registry).await;
+        let entry = crate::ports::CacheEntry {
+            metadata: crate::entities::PackageMetadata::minimal(
+                crate::entities::PackageId::new(registry, "_search", ""),
+                encode_hits(hits),
+            ),
+            cached_at: chrono::Utc::now(),
+            expires_at: None,
+        };
+        if let Err(e) = self.cache.set(key, entry, Some(ttl)).await {
+            tracing::warn!(key = %key, error = %e, "caching search results failed");
+        }
+    }
+
+    /// Rung 3: the upstream did not answer.
+    ///
+    /// Stale cached results first (3a) when the registry allows them, then the
+    /// packages this proxy actually holds (3b). Never an error and never an
+    /// empty-because-we-gave-up list: an unreachable upstream degrades search
+    /// to what this proxy can honestly answer for.
+    async fn degraded(
+        &self,
+        registry: &str,
+        query: &str,
+        limit: usize,
+        key: &str,
+        local: Vec<SearchHit>,
+        error: &dyn std::fmt::Display,
+    ) -> SearchResults {
+        // Rung 3a.
+        if self.serves_stale(registry).await {
+            if let Ok(Some(stale)) = self.cache.get_stale(key).await {
+                if let Some(hits) = decode_hits(&stale.metadata.extra) {
+                    tracing::warn!(
+                        registry, error = %error,
+                        "search upstream unavailable, serving stale results"
+                    );
+                    return self.finish(registry, hits, Freshness::Stale).await;
+                }
             }
         }
+
+        // Rung 3b draws on both stores: what has been proxied through (and so
+        // is cached here) and what has been published here.
+        tracing::warn!(
+            registry, error = %error,
+            "search upstream unavailable, answering from held packages"
+        );
+        let mut hits = self.held_packages(registry, query, limit).await;
+        merge_local(&mut hits, local);
+        self.finish(registry, hits, Freshness::Stale).await
     }
 
     /// Filter blocked versions out of a result set and count what is left.

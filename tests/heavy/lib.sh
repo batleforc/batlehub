@@ -98,9 +98,10 @@ heavy_cleanup() {
 
 # heavy_init <suite> <default-server-port> <default-tap-port>
 heavy_init() {
-  HEAVY_SUITE="$1"
-  HEAVY_PORT="${HEAVY_PORT:-$2}"
-  HEAVY_TAP_PORT="${HEAVY_TAP_PORT:-$3}"
+  local suite="$1" default_port="$2" default_tap_port="$3"
+  HEAVY_SUITE="$suite"
+  HEAVY_PORT="${HEAVY_PORT:-$default_port}"
+  HEAVY_TAP_PORT="${HEAVY_TAP_PORT:-$default_tap_port}"
   ADMIN_TOKEN="${ADMIN_TOKEN:-heavy-admin-token}"
   COVERAGE="${COVERAGE:-0}"
   HEAVY_CACHE="${HEAVY_CACHE:-$HOME/.cache/batlehub-heavy}"
@@ -226,12 +227,16 @@ heavy_mark() { echo "### $*" >> "$HEAVY_LOG"; }
 
 # heavy_wire <fixed-string> [explanation] — the line must be in the transcript.
 heavy_wire() {
-  grep -qF -- "$1" "$HEAVY_LOG" || heavy_fail "${2:-no request matching \"$1\" was observed}"
+  local needle="$1" explanation="${2:-}"
+  grep -qF -- "$needle" "$HEAVY_LOG" \
+    || heavy_fail "${explanation:-no request matching \"$needle\" was observed}"
 }
 
 # heavy_wire_not <fixed-string> [explanation]
 heavy_wire_not() {
-  grep -qF -- "$1" "$HEAVY_LOG" && heavy_fail "${2:-unexpected request \"$1\" was observed}"
+  local needle="$1" explanation="${2:-}"
+  grep -qF -- "$needle" "$HEAVY_LOG" \
+    && heavy_fail "${explanation:-unexpected request \"$needle\" was observed}"
   return 0
 }
 
@@ -240,23 +245,25 @@ heavy_wire_not() {
 # unscoped assertion can be satisfied by an earlier phase's request; that is the
 # "green for the wrong reason" failure this suite exists to avoid.
 heavy_wire_after() {
-  local mark="### $1" needle="$2"
+  local label="$1" needle="$2" explanation="${3:-}"
+  local mark="### $label"
   awk -v mark="$mark" -v needle="$needle" '
     index($0, mark) == 1 { seen = 1; next }
     seen && index($0, needle) { found = 1 }
     END { exit found ? 0 : 1 }' "$HEAVY_LOG" \
-    || heavy_fail "${3:-no request matching \"$needle\" after mark \"$1\"}"
+    || heavy_fail "${explanation:-no request matching \"$needle\" after mark \"$label\"}"
 }
 
 # heavy_done <banner> — stop the server first, so the coverage profiles are
 # flushed before the caller runs `cargo llvm-cov report`, then print the
 # transcript and the banner CI greps for.
 heavy_done() {
+  local banner="$1"
   heavy_log "Stopping the server"
   heavy_stop_server
   heavy_log "Wire transcript"
   cat "$HEAVY_LOG"
-  heavy_log "$1"
+  heavy_log "$banner"
 }
 
 # heavy_need <binary> <what-provides-it> — a missing client is a failed run, not
@@ -264,8 +271,9 @@ heavy_done() {
 # reports success for having done nothing, which is the one outcome worse than
 # red (see `REAL_PROXY_REQUIRE` in Taskfile.yml).
 heavy_need() {
-  command -v "$1" >/dev/null 2>&1 \
-    || heavy_fail "$1 not found on PATH — install it ($2) before running this suite"
+  local bin="$1" provided_by="$2"
+  command -v "$bin" >/dev/null 2>&1 \
+    || heavy_fail "$bin not found on PATH — install it ($provided_by) before running this suite"
 }
 
 # heavy_runner_for <binary> <mise-spec> — set HEAVY_RUNNER to the prefix that

@@ -12,31 +12,19 @@ mod common;
 #[allow(unused_imports)]
 use common::*;
 
-use actix_web::test::{call_service, read_body_json, TestRequest};
-use batlehub_config::schema::RegistryMode;
+use actix_web::test::call_service;
 use serde_json::Value;
 
-fn nuget_app_parts(mode: RegistryMode) -> LocalRegistryAppParts {
-    local_registry_app_parts("local-nuget", "nuget", mode, None)
+async fn app() -> impl TestService {
+    proxy_registry_app("local-nuget", "nuget").await
 }
 
 fn flat_index_uri(package: &str) -> String {
     format!("/proxy/local-nuget/nuget/v3/flat/{package}/index.json")
 }
 
-async fn versions_in<S>(app: &S, package: &str) -> Vec<String>
-where
-    S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
-{
-    let req = TestRequest::get()
-        .uri(&flat_index_uri(package))
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let doc: Value = read_body_json(call_service(app, req).await).await;
+async fn versions_in<S: TestService>(app: &S, package: &str) -> Vec<String> {
+    let doc: Value = get_json(app, &flat_index_uri(package)).await;
     doc["versions"]
         .as_array()
         .expect("flat index has a versions array")
@@ -47,12 +35,7 @@ where
 
 #[actix_web::test]
 async fn proxy_flat_index_hides_a_blocked_version() {
-    let app = build_local_registry_app(
-        nuget_app_parts(RegistryMode::Proxy),
-        batlehub_web::CargoIndexMap::default(),
-        None,
-    )
-    .await;
+    let app = app().await;
 
     // This first read also warms the document cache: the block below has to take
     // effect on the very next request, which only holds because what is cached
@@ -76,12 +59,7 @@ async fn proxy_flat_index_hides_a_blocked_version() {
 /// failure mode with no other symptom.
 #[actix_web::test]
 async fn proxy_flat_index_matches_across_nuget_version_spellings() {
-    let app = build_local_registry_app(
-        nuget_app_parts(RegistryMode::Proxy),
-        batlehub_web::CargoIndexMap::default(),
-        None,
-    )
-    .await;
+    let app = app().await;
 
     block_version(&app, "local-nuget", "newtonsoft.json", "1.1.0.0").await;
 
@@ -98,38 +76,14 @@ async fn proxy_flat_index_matches_across_nuget_version_spellings() {
 /// `application/octet-stream`.
 #[actix_web::test]
 async fn proxy_flat_index_is_json() {
-    let app = build_local_registry_app(
-        nuget_app_parts(RegistryMode::Proxy),
-        batlehub_web::CargoIndexMap::default(),
-        None,
-    )
-    .await;
+    let app = app().await;
 
-    let req = TestRequest::get()
-        .uri(&flat_index_uri("newtonsoft.json"))
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-
-    assert_eq!(resp.status(), 200);
-    let ct = resp
-        .headers()
-        .get("content-type")
-        .expect("content-type set")
-        .to_str()
-        .unwrap()
-        .to_owned();
-    assert!(ct.starts_with("application/json"), "content-type was {ct}");
+    assert_content_type(&app, &flat_index_uri("newtonsoft.json"), "application/json").await;
 }
 
 #[actix_web::test]
 async fn proxy_flat_index_of_another_package_is_untouched() {
-    let app = build_local_registry_app(
-        nuget_app_parts(RegistryMode::Proxy),
-        batlehub_web::CargoIndexMap::default(),
-        None,
-    )
-    .await;
+    let app = app().await;
 
     block_version(&app, "local-nuget", "newtonsoft.json", "1.1.0").await;
 
@@ -144,20 +98,15 @@ async fn proxy_flat_index_of_another_package_is_untouched() {
 /// when it is not.
 #[actix_web::test]
 async fn proxy_registration_hides_a_blocked_version_and_repairs_the_page_bounds() {
-    let app = build_local_registry_app(
-        nuget_app_parts(RegistryMode::Proxy),
-        batlehub_web::CargoIndexMap::default(),
-        None,
-    )
-    .await;
+    let app = app().await;
 
     block_version(&app, "local-nuget", "newtonsoft.json", "2.0.0-beta.1").await;
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-nuget/nuget/v3/registration5/newtonsoft.json/index.json")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let doc: Value = read_body_json(call_service(&app, req).await).await;
+    let doc: Value = get_json(
+        &app,
+        "/proxy/local-nuget/nuget/v3/registration5/newtonsoft.json/index.json",
+    )
+    .await;
 
     let page = &doc["items"][0];
     let versions: Vec<&str> = page["items"]
@@ -179,19 +128,14 @@ async fn proxy_registration_hides_a_blocked_version_and_repairs_the_page_bounds(
 /// URL.
 #[actix_web::test]
 async fn the_flat_index_and_registration_do_not_collide_in_the_cache() {
-    let app = build_local_registry_app(
-        nuget_app_parts(RegistryMode::Proxy),
-        batlehub_web::CargoIndexMap::default(),
-        None,
-    )
-    .await;
+    let app = app().await;
 
     // Warm the registration slot first, then ask for the flat index.
-    let req = TestRequest::get()
-        .uri("/proxy/local-nuget/nuget/v3/registration5/newtonsoft.json/index.json")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let _: Value = read_body_json(call_service(&app, req).await).await;
+    get_json(
+        &app,
+        "/proxy/local-nuget/nuget/v3/registration5/newtonsoft.json/index.json",
+    )
+    .await;
 
     assert_eq!(
         versions_in(&app, "newtonsoft.json").await,
@@ -205,18 +149,12 @@ async fn the_flat_index_and_registration_do_not_collide_in_the_cache() {
 /// looks like the version never existed.
 #[actix_web::test]
 async fn proxy_direct_request_for_a_blocked_version_is_still_denied() {
-    let app = build_local_registry_app(
-        nuget_app_parts(RegistryMode::Proxy),
-        batlehub_web::CargoIndexMap::default(),
-        None,
-    )
-    .await;
+    let app = app().await;
 
     block_version(&app, "local-nuget", "newtonsoft.json", "1.1.0").await;
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-nuget/nuget/v3/flat/newtonsoft.json/1.1.0/newtonsoft.json.1.1.0.nupkg")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
+    let req = admin_get(
+        "/proxy/local-nuget/nuget/v3/flat/newtonsoft.json/1.1.0/newtonsoft.json.1.1.0.nupkg",
+    );
     assert_eq!(call_service(&app, req).await.status(), 403);
 }

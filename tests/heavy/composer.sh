@@ -73,7 +73,8 @@ else
   if [[ ! -f "$PHAR" ]]; then
     heavy_log "Downloading composer $COMPOSER_VERSION"
     mkdir -p "$HEAVY_CACHE"
-    curl -fsSL -o "$PHAR" "https://getcomposer.org/download/$COMPOSER_VERSION/composer.phar" \
+    curl -fsSL --proto '=https' --proto-redir '=https' \
+      -o "$PHAR" "https://getcomposer.org/download/$COMPOSER_VERSION/composer.phar" \
       || heavy_fail "could not download composer.phar $COMPOSER_VERSION"
   fi
   COMPOSER=("$PHP" "$PHAR")

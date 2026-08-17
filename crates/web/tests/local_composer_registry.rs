@@ -13,16 +13,42 @@ use batlehub_config::schema::RegistryMode;
 
 // ── packages.json ─────────────────────────────────────────────────────────────
 
+/// Upload a package as an ordinary user, and answer with the status.
+async fn upload<S: TestService>(app: &S, name: &str, version: &str) -> actix_web::http::StatusCode {
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(make_composer_zip(name, version))
+        .to_request();
+    call_service(app, req).await.status()
+}
+
+/// A read as an ordinary user, asserting `200`, returning the JSON body.
+async fn user_json<S: TestService>(app: &S, uri: &str) -> Value {
+    let req = TestRequest::get()
+        .uri(uri)
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(app, req).await;
+    assert_eq!(resp.status(), 200, "{uri} should be served");
+    read_body_json(resp).await
+}
+
+/// A read as an ordinary user, asserting `200`, returning the body as text.
+async fn user_text<S: TestService>(app: &S, uri: &str) -> String {
+    let req = TestRequest::get()
+        .uri(uri)
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(app, req).await;
+    assert_eq!(resp.status(), 200, "{uri} should be served");
+    String::from_utf8(read_body(resp).await.to_vec()).expect("body is valid UTF-8")
+}
+
 #[actix_web::test]
 async fn composer_packages_json_proxy_mode_returns_metadata_url() {
     let app = make_local_composer_app(RegistryMode::Proxy).await;
-    let req = TestRequest::get()
-        .uri("/proxy/local-composer/packages.json")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 200);
-    let body: Value = read_body_json(resp).await;
+    let body: Value = user_json(&app, "/proxy/local-composer/packages.json").await;
     let metadata_url = body["metadata-url"].as_str().unwrap();
     assert!(
         metadata_url.contains("/proxy/local-composer/p2/%package%.json"),
@@ -51,21 +77,9 @@ async fn composer_packages_json_proxy_mode_returns_metadata_url() {
 async fn composer_packages_json_hybrid_mode_omits_available_packages() {
     let app = make_local_composer_app(RegistryMode::Hybrid).await;
 
-    let zip = make_composer_zip("acme/my-pkg", "1.0.0");
-    let req = TestRequest::post()
-        .uri("/proxy/local-composer/api/upload")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .set_payload(zip)
-        .to_request();
-    assert_eq!(call_service(&app, req).await.status(), 200);
+    assert_eq!(upload(&app, "acme/my-pkg", "1.0.0").await, 200);
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-composer/packages.json")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 200);
-    let body: Value = read_body_json(resp).await;
+    let body: Value = user_json(&app, "/proxy/local-composer/packages.json").await;
     assert!(
         body.get("available-packages").is_none(),
         "a hybrid registry that lists only its local packages tells Composer \
@@ -95,13 +109,7 @@ async fn composer_packages_json_local_mode_lists_published_packages() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-composer/packages.json")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 200);
-    let body: Value = read_body_json(resp).await;
+    let body: Value = user_json(&app, "/proxy/local-composer/packages.json").await;
     let available = body["available-packages"].as_array().unwrap();
     assert!(
         available.iter().any(|v| v.as_str() == Some("acme/my-pkg")),
@@ -125,15 +133,8 @@ async fn composer_packages_json_unknown_registry_returns_404() {
 #[actix_web::test]
 async fn composer_p2_proxy_mode_returns_artifact_body() {
     let app = make_local_composer_app(RegistryMode::Proxy).await;
-    let req = TestRequest::get()
-        .uri("/proxy/local-composer/p2/vendor/pkg.json")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 200);
-    let body = read_body(resp).await;
     // FixedRegistry returns "artifact:composer:…" — assert content originates from the registry call
-    let body_str = std::str::from_utf8(&body).expect("body is valid UTF-8");
+    let body_str = user_text(&app, "/proxy/local-composer/p2/vendor/pkg.json").await;
     assert!(
         body_str.contains("vendor/pkg"),
         "response body must reference the requested package name; got: {body_str:?}"
@@ -143,15 +144,8 @@ async fn composer_p2_proxy_mode_returns_artifact_body() {
 #[actix_web::test]
 async fn composer_p2_dev_variant_returns_200_and_body() {
     let app = make_local_composer_app(RegistryMode::Proxy).await;
-    let req = TestRequest::get()
-        .uri("/proxy/local-composer/p2/vendor/pkg~dev.json")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
     // ~dev.json is a valid variant — the parse helper strips the suffix.
-    assert_eq!(resp.status(), 200);
-    let body = read_body(resp).await;
-    let body_str = std::str::from_utf8(&body).expect("body is valid UTF-8");
+    let body_str = user_text(&app, "/proxy/local-composer/p2/vendor/pkg~dev.json").await;
     assert!(
         body_str.contains("vendor/pkg"),
         "response body must reference the requested package name; got: {body_str:?}"
@@ -162,21 +156,9 @@ async fn composer_p2_dev_variant_returns_200_and_body() {
 async fn composer_p2_local_mode_published_package_found() {
     let app = make_local_composer_app(RegistryMode::Local).await;
 
-    let zip = make_composer_zip("acme/my-lib", "2.0.0");
-    let req = TestRequest::post()
-        .uri("/proxy/local-composer/api/upload")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .set_payload(zip)
-        .to_request();
-    assert_eq!(call_service(&app, req).await.status(), 200);
+    assert_eq!(upload(&app, "acme/my-lib", "2.0.0").await, 200);
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-composer/p2/acme/my-lib.json")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 200);
-    let body: Value = read_body_json(resp).await;
+    let body: Value = user_json(&app, "/proxy/local-composer/p2/acme/my-lib.json").await;
     assert!(body["packages"]["acme/my-lib"].is_array());
 }
 
@@ -358,21 +340,9 @@ async fn composer_upload_invalid_zip_returns_422() {
 async fn composer_upload_then_p2_shows_package() {
     let app = make_local_composer_app(RegistryMode::Local).await;
 
-    let zip = make_composer_zip("acme/seq-pkg", "1.2.3");
-    let req = TestRequest::post()
-        .uri("/proxy/local-composer/api/upload")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .set_payload(zip)
-        .to_request();
-    assert_eq!(call_service(&app, req).await.status(), 200);
+    assert_eq!(upload(&app, "acme/seq-pkg", "1.2.3").await, 200);
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-composer/p2/acme/seq-pkg.json")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 200);
-    let body: Value = read_body_json(resp).await;
+    let body: Value = user_json(&app, "/proxy/local-composer/p2/acme/seq-pkg.json").await;
     let versions = body["packages"]["acme/seq-pkg"].as_array().unwrap();
     assert!(!versions.is_empty());
     assert_eq!(versions[0]["version"], "1.2.3");
@@ -390,22 +360,10 @@ async fn composer_yank_excludes_version_from_p2() {
     // clients have no standard `yanked` field — they would otherwise install yanked releases.
     let app = make_local_composer_app(RegistryMode::Local).await;
 
-    let zip = make_composer_zip("acme/yankable", "4.0.0");
-    let req = TestRequest::post()
-        .uri("/proxy/local-composer/api/upload")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .set_payload(zip)
-        .to_request();
-    assert_eq!(call_service(&app, req).await.status(), 200);
+    assert_eq!(upload(&app, "acme/yankable", "4.0.0").await, 200);
 
     // Verify the version appears before yanking.
-    let req = TestRequest::get()
-        .uri("/proxy/local-composer/p2/acme/yankable.json")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 200);
-    let body: Value = read_body_json(resp).await;
+    let body: Value = user_json(&app, "/proxy/local-composer/p2/acme/yankable.json").await;
     assert!(!body["packages"]["acme/yankable"]
         .as_array()
         .unwrap()

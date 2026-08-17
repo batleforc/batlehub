@@ -20,8 +20,8 @@ use serde_json::Value;
 use base64::Engine as _;
 use batlehub_config::schema::RegistryMode;
 
-fn npm_app_parts(mode: RegistryMode) -> LocalRegistryAppParts {
-    local_registry_app_parts("local-npm", "npm", mode, None)
+async fn app(mode: RegistryMode) -> impl TestService {
+    registry_app("local-npm", "npm", mode).await
 }
 
 fn npm_publish_payload(name: &str, version: &str) -> serde_json::Value {
@@ -53,29 +53,20 @@ fn version_keys(doc: &Value) -> Vec<String> {
 /// rather than continuing to name the blocked one.
 #[actix_web::test]
 async fn proxy_packument_hides_blocked_version_and_repoints_latest() {
-    let parts = npm_app_parts(RegistryMode::Proxy);
-    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    let app = app(RegistryMode::Proxy).await;
 
     // Before: upstream's own view, unfiltered. This first read also warms the
     // document cache, which is the point — the block below must take effect on
     // the very next request, not when the cached copy expires. That only holds
     // because what gets cached is the raw upstream document, with filtering
     // applied on the way out.
-    let req = TestRequest::get()
-        .uri("/proxy/local-npm/lodash")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let before: Value = read_body_json(call_service(&app, req).await).await;
+    let before: Value = get_json(&app, "/proxy/local-npm/lodash").await;
     assert_eq!(before["dist-tags"]["latest"], "1.1.0");
     assert!(version_keys(&before).contains(&"1.1.0".to_owned()));
 
     block_version(&app, "local-npm", "lodash", "1.1.0").await;
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-npm/lodash")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let after: Value = read_body_json(call_service(&app, req).await).await;
+    let after: Value = get_json(&app, "/proxy/local-npm/lodash").await;
 
     let versions = version_keys(&after);
     assert!(
@@ -97,26 +88,11 @@ async fn proxy_packument_hides_blocked_version_and_repoints_latest() {
 /// `latest` tarball as `application/octet-stream`.
 #[actix_web::test]
 async fn proxy_packument_is_json_not_a_tarball() {
-    let parts = npm_app_parts(RegistryMode::Proxy);
-    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    let app = app(RegistryMode::Proxy).await;
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-npm/lodash")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
+    assert_content_type(&app, "/proxy/local-npm/lodash", "application/json").await;
 
-    assert_eq!(resp.status(), 200);
-    let ct = resp
-        .headers()
-        .get("content-type")
-        .expect("content-type set")
-        .to_str()
-        .unwrap()
-        .to_owned();
-    assert!(ct.starts_with("application/json"), "content-type was {ct}");
-
-    let doc: Value = read_body_json(resp).await;
+    let doc: Value = get_json(&app, "/proxy/local-npm/lodash").await;
     assert_eq!(doc["name"], "lodash");
     assert!(doc["versions"].is_object());
 }
@@ -126,14 +102,9 @@ async fn proxy_packument_is_json_not_a_tarball() {
 /// audit trail, and the download-time block gate.
 #[actix_web::test]
 async fn proxy_packument_rewrites_tarball_urls_to_this_host() {
-    let parts = npm_app_parts(RegistryMode::Proxy);
-    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    let app = app(RegistryMode::Proxy).await;
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-npm/lodash")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let doc: Value = read_body_json(call_service(&app, req).await).await;
+    let doc: Value = get_json(&app, "/proxy/local-npm/lodash").await;
 
     for v in ["1.0.0", "1.1.0"] {
         let url = doc["versions"][v]["dist"]["tarball"]
@@ -155,16 +126,11 @@ async fn proxy_packument_rewrites_tarball_urls_to_this_host() {
 /// misrepresent what the publisher tagged.
 #[actix_web::test]
 async fn proxy_packument_drops_other_tags_pointing_at_a_blocked_version() {
-    let parts = npm_app_parts(RegistryMode::Proxy);
-    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    let app = app(RegistryMode::Proxy).await;
 
     block_version(&app, "local-npm", "lodash", "2.0.0-beta.1").await;
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-npm/lodash")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let doc: Value = read_body_json(call_service(&app, req).await).await;
+    let doc: Value = get_json(&app, "/proxy/local-npm/lodash").await;
 
     assert!(doc["dist-tags"].get("next").is_none(), "stale tag survived");
     assert_eq!(
@@ -176,16 +142,11 @@ async fn proxy_packument_drops_other_tags_pointing_at_a_blocked_version() {
 /// Blocking one package must not disturb another's listing.
 #[actix_web::test]
 async fn proxy_packument_of_another_package_is_untouched() {
-    let parts = npm_app_parts(RegistryMode::Proxy);
-    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    let app = app(RegistryMode::Proxy).await;
 
     block_version(&app, "local-npm", "lodash", "1.1.0").await;
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-npm/express")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let doc: Value = read_body_json(call_service(&app, req).await).await;
+    let doc: Value = get_json(&app, "/proxy/local-npm/express").await;
 
     assert_eq!(doc["dist-tags"]["latest"], "1.1.0");
     assert!(version_keys(&doc).contains(&"1.1.0".to_owned()));
@@ -195,15 +156,11 @@ async fn proxy_packument_of_another_package_is_untouched() {
 /// version still gets 403 and the reason the operator recorded.
 #[actix_web::test]
 async fn proxy_direct_request_for_a_blocked_version_is_still_denied() {
-    let parts = npm_app_parts(RegistryMode::Proxy);
-    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    let app = app(RegistryMode::Proxy).await;
 
     block_version(&app, "local-npm", "lodash", "1.1.0").await;
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-npm/lodash/1.1.0/tarball")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
+    let req = admin_get("/proxy/local-npm/lodash/1.1.0/tarball");
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 403);
 }
@@ -214,8 +171,7 @@ async fn proxy_direct_request_for_a_blocked_version_is_still_denied() {
 /// so a locally published version disappears from its own packument too.
 #[actix_web::test]
 async fn local_packument_hides_blocked_version_and_repoints_latest() {
-    let parts = npm_app_parts(RegistryMode::Local);
-    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    let app = app(RegistryMode::Local).await;
 
     for v in ["1.0.0", "1.1.0"] {
         let req = TestRequest::put()
@@ -227,20 +183,12 @@ async fn local_packument_hides_blocked_version_and_repoints_latest() {
         assert!(resp.status().is_success(), "publish {v}: {}", resp.status());
     }
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-npm/inhouse")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let before: Value = read_body_json(call_service(&app, req).await).await;
+    let before: Value = get_json(&app, "/proxy/local-npm/inhouse").await;
     assert_eq!(before["dist-tags"]["latest"], "1.1.0");
 
     block_version(&app, "local-npm", "inhouse", "1.1.0").await;
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-npm/inhouse")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let after: Value = read_body_json(call_service(&app, req).await).await;
+    let after: Value = get_json(&app, "/proxy/local-npm/inhouse").await;
 
     let versions = version_keys(&after);
     assert!(
@@ -260,8 +208,7 @@ async fn local_packument_hides_blocked_version_and_repoints_latest() {
 /// answers, so the two halves of a block agree.
 #[actix_web::test]
 async fn local_packument_is_denied_when_every_version_is_blocked() {
-    let parts = npm_app_parts(RegistryMode::Local);
-    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    let app = app(RegistryMode::Local).await;
 
     let req = TestRequest::put()
         .uri("/proxy/local-npm/inhouse")
@@ -272,10 +219,7 @@ async fn local_packument_is_denied_when_every_version_is_blocked() {
 
     block_version(&app, "local-npm", "inhouse", "1.0.0").await;
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-npm/inhouse")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
+    let req = admin_get("/proxy/local-npm/inhouse");
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 403);
 }
@@ -284,13 +228,9 @@ async fn local_packument_is_denied_when_every_version_is_blocked() {
 /// fall-through to upstream is untouched by the rule above.
 #[actix_web::test]
 async fn local_packument_is_not_found_when_never_published() {
-    let parts = npm_app_parts(RegistryMode::Local);
-    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    let app = app(RegistryMode::Local).await;
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-npm/never-published")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
+    let req = admin_get("/proxy/local-npm/never-published");
     assert_eq!(call_service(&app, req).await.status(), 404);
 }
 
@@ -303,8 +243,7 @@ async fn local_packument_is_not_found_when_never_published() {
 /// It must refuse instead, and must not serve the upstream document.
 #[actix_web::test]
 async fn hybrid_packument_does_not_fall_through_to_upstream_when_every_version_is_blocked() {
-    let parts = npm_app_parts(RegistryMode::Hybrid);
-    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    let app = app(RegistryMode::Hybrid).await;
 
     // `lodash` is a name the upstream fixture also serves — that overlap is the
     // whole point of the test.
@@ -317,10 +256,7 @@ async fn hybrid_packument_does_not_fall_through_to_upstream_when_every_version_i
 
     block_version(&app, "local-npm", "lodash", "9.9.9").await;
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-npm/lodash")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
+    let req = admin_get("/proxy/local-npm/lodash");
     let resp = call_service(&app, req).await;
     assert_eq!(
         resp.status(),
@@ -341,16 +277,12 @@ async fn hybrid_packument_does_not_fall_through_to_upstream_when_every_version_i
 /// any version of it would fail.
 #[actix_web::test]
 async fn hybrid_packument_falls_through_when_only_a_proxied_version_is_blocked() {
-    let parts = npm_app_parts(RegistryMode::Hybrid);
-    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    let app = app(RegistryMode::Hybrid).await;
 
     // Nothing is published locally: `lodash` exists only upstream.
     block_version(&app, "local-npm", "lodash", "1.1.0").await;
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-npm/lodash")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
+    let req = admin_get("/proxy/local-npm/lodash");
     let resp = call_service(&app, req).await;
     assert_eq!(
         resp.status(),

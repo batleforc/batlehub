@@ -14,38 +14,17 @@ mod common;
 #[allow(unused_imports)]
 use common::*;
 
-use actix_web::test::{call_service, read_body_json, TestRequest};
-use batlehub_config::schema::RegistryMode;
+use actix_web::test::call_service;
 use serde_json::{Map, Value};
 
 const PKG: &str = "monolog/monolog";
 
-async fn app() -> impl actix_web::dev::Service<
-    actix_http::Request,
-    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-    Error = actix_web::Error,
-> {
-    build_local_registry_app(
-        local_registry_app_parts("local-php", "composer", RegistryMode::Proxy, None),
-        batlehub_web::CargoIndexMap::default(),
-        None,
-    )
-    .await
+async fn app() -> impl TestService {
+    proxy_registry_app("local-php", "composer").await
 }
 
-async fn p2<S>(app: &S, package: &str) -> Value
-where
-    S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
-{
-    let req = TestRequest::get()
-        .uri(&format!("/proxy/local-php/p2/{package}.json"))
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    read_body_json(call_service(app, req).await).await
+async fn p2<S: TestService>(app: &S, package: &str) -> Value {
+    get_json(app, &format!("/proxy/local-php/p2/{package}.json")).await
 }
 
 /// Expand a `composer/2.0` minified list the way a Composer client does, so a
@@ -192,9 +171,6 @@ async fn proxy_direct_request_for_a_blocked_version_is_still_denied() {
 
     block_version(&app, "local-php", PKG, "1.1.0").await;
 
-    let req = TestRequest::get()
-        .uri(&format!("/proxy/local-php/dist/{PKG}/1.1.0"))
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
+    let req = admin_get(&format!("/proxy/local-php/dist/{PKG}/1.1.0"));
     assert_eq!(call_service(&app, req).await.status(), 403);
 }

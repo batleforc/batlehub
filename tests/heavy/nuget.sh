@@ -112,9 +112,10 @@ NUPKG_A="$(pack "$PKG_A")"
 NUPKG_B="$(pack "$PKG_B")"
 
 push() {
-  (cd "$HEAVY_WORK" && "${DOTNET[@]}" nuget push "$1" --source "$INDEX" --api-key "$ADMIN_TOKEN") \
+  local nupkg="$1"
+  (cd "$HEAVY_WORK" && "${DOTNET[@]}" nuget push "$nupkg" --source "$INDEX" --api-key "$ADMIN_TOKEN") \
     >>"$HEAVY_WORK/push.log" 2>&1 \
-    || { tail -30 "$HEAVY_WORK/push.log" >&2; heavy_fail "dotnet nuget push failed for $1"; }
+    || { tail -30 "$HEAVY_WORK/push.log" >&2; heavy_fail "dotnet nuget push failed for $nupkg"; }
 }
 
 heavy_mark "push"
@@ -169,8 +170,9 @@ heavy_log "NUGET-SEARCH-OK (the client queried, and found what this registry hol
 # these two calls return the same id, which is the §12.4 defect exactly.
 
 page() {  # skip -> echoes the single id on that page
+  local skip="$1"
   (cd "$HEAVY_WORK" && "${DOTNET[@]}" package search "HeavyProbe" --source "$INDEX" \
-    --format json --take 1 --skip "$1" 2>/dev/null) \
+    --format json --take 1 --skip "$skip" 2>/dev/null) \
     | python3 -c '
 import json, sys
 doc = json.load(sys.stdin)

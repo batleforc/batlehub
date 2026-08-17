@@ -15,39 +15,15 @@ mod common;
 #[allow(unused_imports)]
 use common::*;
 
-use actix_web::test::{call_service, read_body_json, TestRequest};
+use actix_web::test::call_service;
 use batlehub_config::schema::RegistryMode;
 use serde_json::Value;
 
 const MODULE: &str = "terraform-aws-modules/vpc/aws";
 const PROVIDER: &str = "hashicorp/aws";
 
-async fn app() -> impl actix_web::dev::Service<
-    actix_http::Request,
-    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-    Error = actix_web::Error,
-> {
-    build_local_registry_app(
-        local_registry_app_parts("local-tf", "terraform", RegistryMode::Proxy, None),
-        batlehub_web::CargoIndexMap::default(),
-        None,
-    )
-    .await
-}
-
-async fn get_json<S>(app: &S, uri: &str) -> Value
-where
-    S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
-{
-    let req = TestRequest::get()
-        .uri(uri)
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    read_body_json(call_service(app, req).await).await
+async fn app() -> impl TestService {
+    proxy_registry_app("local-tf", "terraform").await
 }
 
 fn listed(entries: &Value) -> Vec<String> {
@@ -101,21 +77,12 @@ async fn proxy_provider_versions_hide_a_blocked_version() {
 async fn proxy_versions_response_is_json() {
     let app = app().await;
 
-    let req = TestRequest::get()
-        .uri(&format!("/proxy/local-tf/v1/modules/{MODULE}/versions"))
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-
-    assert_eq!(resp.status(), 200);
-    let ct = resp
-        .headers()
-        .get("content-type")
-        .expect("content-type set")
-        .to_str()
-        .unwrap()
-        .to_owned();
-    assert!(ct.starts_with("application/json"), "content-type was {ct}");
+    assert_content_type(
+        &app,
+        &format!("/proxy/local-tf/v1/modules/{MODULE}/versions"),
+        "application/json",
+    )
+    .await;
 }
 
 /// Blocking a module version must not touch the provider of the same name, and
@@ -144,20 +111,12 @@ async fn blocking_a_module_version_leaves_the_provider_listing_alone() {
 /// which predates this work and is unchanged by it.
 #[actix_web::test]
 async fn direct_request_for_a_blocked_version_is_still_denied() {
-    let app = build_local_registry_app(
-        local_registry_app_parts("local-tf", "terraform", RegistryMode::Local, None),
-        batlehub_web::CargoIndexMap::default(),
-        None,
-    )
-    .await;
+    let app = registry_app("local-tf", "terraform", RegistryMode::Local).await;
 
     block_version(&app, "local-tf", &format!("modules/{MODULE}"), "1.1.0").await;
 
-    let req = TestRequest::get()
-        .uri(&format!(
-            "/proxy/local-tf/v1/modules/{MODULE}/1.1.0/artifact"
-        ))
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
+    let req = admin_get(&format!(
+        "/proxy/local-tf/v1/modules/{MODULE}/1.1.0/artifact"
+    ));
     assert_eq!(call_service(&app, req).await.status(), 403);
 }

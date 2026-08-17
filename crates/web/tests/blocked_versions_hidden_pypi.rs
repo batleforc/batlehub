@@ -17,49 +17,22 @@ mod common;
 #[allow(unused_imports)]
 use common::*;
 
-use actix_web::test::{call_service, read_body, read_body_json, TestRequest};
-use batlehub_config::schema::RegistryMode;
+use actix_web::test::{call_service, read_body_json, TestRequest};
 use serde_json::Value;
 
 const JSON_ACCEPT: &str = "application/vnd.pypi.simple.v1+json";
 
-async fn app() -> impl actix_web::dev::Service<
-    actix_http::Request,
-    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-    Error = actix_web::Error,
-> {
-    build_local_registry_app(
-        local_registry_app_parts("local-pypi", "pypi", RegistryMode::Proxy, None),
-        batlehub_web::CargoIndexMap::default(),
-        None,
-    )
-    .await
+async fn app() -> impl TestService {
+    proxy_registry_app("local-pypi", "pypi").await
 }
 
-async fn simple_html<S>(app: &S, package: &str) -> String
-where
-    S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
-{
-    let req = TestRequest::get()
-        .uri(&format!("/proxy/local-pypi/simple/{package}/"))
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let body = read_body(call_service(app, req).await).await;
-    String::from_utf8(body.to_vec()).expect("a simple page is UTF-8")
+async fn simple_html<S: TestService>(app: &S, package: &str) -> String {
+    get_text(app, &format!("/proxy/local-pypi/simple/{package}/")).await
 }
 
-async fn simple_json<S>(app: &S, package: &str) -> Value
-where
-    S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
-{
+/// The same page under content negotiation — PEP 691's JSON rendering, which
+/// pip prefers and which is a different code path through the filter.
+async fn simple_json<S: TestService>(app: &S, package: &str) -> Value {
     let req = TestRequest::get()
         .uri(&format!("/proxy/local-pypi/simple/{package}/"))
         .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
@@ -148,21 +121,7 @@ async fn proxy_simple_matches_across_pep440_spellings() {
 async fn proxy_simple_html_content_type_is_html() {
     let app = app().await;
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-pypi/simple/requests/")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-
-    assert_eq!(resp.status(), 200);
-    let ct = resp
-        .headers()
-        .get("content-type")
-        .expect("content-type set")
-        .to_str()
-        .unwrap()
-        .to_owned();
-    assert!(ct.starts_with("text/html"), "content-type was {ct}");
+    assert_content_type(&app, "/proxy/local-pypi/simple/requests/", "text/html").await;
 }
 
 /// File URLs must point back at this proxy, or every download routes around its
@@ -195,10 +154,7 @@ async fn proxy_direct_request_for_a_blocked_version_is_still_denied() {
 
     block_version(&app, "local-pypi", "requests", "1.1.0").await;
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-pypi/packages/requests-1.1.0.tar.gz")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
+    let req = admin_get("/proxy/local-pypi/packages/requests-1.1.0.tar.gz");
     assert_eq!(call_service(&app, req).await.status(), 403);
 }
 
@@ -222,11 +178,7 @@ async fn a_metadata_sibling_resolves_to_its_distributions_coordinate() {
 
     let mut statuses = Vec::new();
     for uri in [wheel, sibling.as_str()] {
-        let req = TestRequest::get()
-            .uri(uri)
-            .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-            .to_request();
-        statuses.push(call_service(&app, req).await.status());
+        statuses.push(call_service(&app, admin_get(uri)).await.status());
     }
 
     // Whatever the distribution itself answers, the sibling must answer the

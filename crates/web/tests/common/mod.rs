@@ -380,20 +380,184 @@ impl RegistryClient for FixedRegistry {
         }
     }
 }
+/// The bound every in-process test app satisfies.
+///
+/// Spelling the `actix_web::dev::Service<…>` triple out is six lines of `where`
+/// clause, it is identical every time, and a helper that takes an app needs it
+/// — so it lives here once and the helpers name it instead.
+pub trait TestService:
+    actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+>
+{
+}
+
+impl<S> TestService for S where
+    S: actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >
+{
+}
+
+/// `GET uri` carrying the admin token — the request nearly every read-path
+/// test starts with.
+pub fn admin_get(uri: &str) -> actix_http::Request {
+    actix_web::test::TestRequest::get()
+        .uri(uri)
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request()
+}
+
+/// The JSON body of `GET uri`, read as the admin.
+pub async fn get_json<S: TestService>(app: &S, uri: &str) -> serde_json::Value {
+    let resp = actix_web::test::call_service(app, admin_get(uri)).await;
+    actix_web::test::read_body_json(resp).await
+}
+
+/// The text body of `GET uri`, read as the admin.
+///
+/// For the protocols whose listings are not JSON: cargo's NDJSON sparse index,
+/// goproxy's `@v/list`, a PyPI simple page.
+pub async fn get_text<S: TestService>(app: &S, uri: &str) -> String {
+    String::from_utf8(get_bytes(app, uri).await).expect("the response body is UTF-8")
+}
+
+/// The raw body of `GET uri`, read as the admin — for the compressed listings
+/// (conda's zstd `repodata.json.zst`) and for artifacts.
+pub async fn get_bytes<S: TestService>(app: &S, uri: &str) -> Vec<u8> {
+    let resp = actix_web::test::call_service(app, admin_get(uri)).await;
+    assert_eq!(resp.status(), 200, "{uri} should be served");
+    actix_web::test::read_body(resp).await.to_vec()
+}
+
+/// `GET uri` answers `200` with a `Content-Type` beginning `prefix`.
+///
+/// The header is the half of the contract a body assertion cannot see: a
+/// client that is handed `application/json` for a plain-text sparse index
+/// parses nothing, however correct the bytes are.
+pub async fn assert_content_type<S: TestService>(app: &S, uri: &str, prefix: &str) {
+    let resp = actix_web::test::call_service(app, admin_get(uri)).await;
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .expect("content-type set")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(ct.starts_with(prefix), "content-type was {ct}");
+}
+
+/// A `ProxyService` over in-memory stores serving exactly one registry:
+/// `name`, speaking `kind`.
+///
+/// `policy` is handed the repository so it can build a rule chain against it —
+/// [`rbac_policy`] is the usual argument, and the stale-metadata suites pass a
+/// closure that tweaks it. The repository and the `LocalRegistryService` come
+/// back too, because whatever finishes wiring the app needs both, and the
+/// `AdminService` beside it has to share the same store.
+pub fn one_registry_proxy(
+    name: &str,
+    kind: &str,
+    policy: impl FnOnce(Arc<dyn PackageRepository>) -> RegistryPolicy,
+) -> (
+    Arc<ProxyService>,
+    Arc<dyn PackageRepository>,
+    Arc<LocalRegistryService>,
+) {
+    let repo: Arc<dyn PackageRepository> = InMemoryRepo::new();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
+        name.to_owned(),
+        FixedRegistry::new(kind) as Arc<dyn RegistryClient>,
+    )]
+    .into();
+    let policies: HashMap<String, Arc<RegistryPolicy>> =
+        [(name.to_owned(), Arc::new(policy(repo.clone())))].into();
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        hot: new_hot_lock(HotConfig {
+            registries,
+            policies,
+            ..Default::default()
+        }),
+        storage,
+        cache,
+        repo: repo.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        metrics: Arc::new(ProxyMetrics::new(&[name.to_owned()])),
+        sbom: None,
+    });
+    (proxy_svc, repo, local_svc)
+}
+
+/// A single-registry app whose upstream for `name` is `upstream_url`.
+///
+/// For the endpoints that *forward* rather than answer — npm's audit bulk, the
+/// NuGet vulnerability index — where the assertion is about what reaches the
+/// upstream and what comes back.
+pub async fn upstream_forwarding_app(
+    name: &str,
+    kind: &str,
+    upstream_url: String,
+    policy: impl FnOnce(Arc<dyn PackageRepository>) -> RegistryPolicy,
+) -> impl TestService {
+    let (proxy_svc, repo, local_svc) = one_registry_proxy(name, kind, policy);
+    let upstream_map =
+        batlehub_web::UpstreamMap::from(HashMap::from([(name.to_owned(), upstream_url)]));
+    finish_test_app(
+        proxy_svc,
+        Arc::new(AdminService::new(repo)),
+        Arc::new(NullTokenRepository),
+        access_config_for(&[name]),
+        registry_map_for(&[(name, kind)]),
+        local_svc,
+        RegistryModeMap::default(),
+        batlehub_web::CargoIndexMap::default(),
+        ConfigureAppDefaults {
+            upstream_map,
+            ..Default::default()
+        },
+        test_auth_providers(),
+    )
+    .await
+}
+
+/// An app serving exactly one registry: `registry`, of `kind`, in `mode`.
+pub async fn registry_app(registry: &str, kind: &str, mode: RegistryMode) -> impl TestService {
+    // The cargo index route treats an absent entry as "no cargo registry
+    // configured" and 404s before it authorises anything, so that one kind
+    // needs a map for its routes to be reachable at all.
+    let cargo_indexes = if kind == "cargo" {
+        cargo_index_map(registry)
+    } else {
+        batlehub_web::CargoIndexMap::default()
+    };
+    build_local_registry_app(
+        local_registry_app_parts(registry, kind, mode, None),
+        cargo_indexes,
+        None,
+    )
+    .await
+}
+
+/// [`registry_app`] in proxy mode — what most of the read-path suites want.
+pub async fn proxy_registry_app(registry: &str, kind: &str) -> impl TestService {
+    registry_app(registry, kind, RegistryMode::Proxy).await
+}
+
 /// Block `name@version` through the admin API, as an operator would.
 ///
 /// Deliberately goes through the HTTP endpoint rather than seeding the
 /// repository: the blocked-versions tests are about what a block *does* on the
 /// read paths, and a block that only exists because a test wrote it directly
 /// would not prove the admin path and the listing path agree on the coordinate.
-pub async fn block_version<S>(app: &S, registry: &str, name: &str, version: &str)
-where
-    S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
-{
+pub async fn block_version<S: TestService>(app: &S, registry: &str, name: &str, version: &str) {
     let req = actix_web::test::TestRequest::post()
         .uri("/api/v1/admin/packages/block")
         .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
@@ -981,6 +1145,61 @@ pub fn local_registry_app_parts(
     }
 }
 
+/// [`LocalRegistryAppParts`] for a registry that has **no upstream client
+/// unless it asks for one**.
+///
+/// [`local_registry_app_parts`] always installs a `FixedRegistry`, which is
+/// what the proxy-mode read suites want. A local-only registry has no upstream
+/// at all — and a hybrid one must have it, or the fall-through has nothing to
+/// fall through to — so `upstream` decides rather than the mode.
+pub fn local_only_app_parts(
+    name: &str,
+    kind: &str,
+    mode: RegistryMode,
+    upstream: bool,
+) -> LocalRegistryAppParts {
+    let repo: Arc<dyn PackageRepository> = InMemoryRepo::new();
+    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+
+    let mut registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
+    if upstream {
+        registries.insert(
+            name.to_owned(),
+            FixedRegistry::new(kind) as Arc<dyn RegistryClient>,
+        );
+    }
+    let policies: HashMap<String, Arc<RegistryPolicy>> =
+        [(name.to_owned(), Arc::new(rbac_policy(repo.clone())))].into();
+
+    let local_svc = make_local_svc(storage.clone());
+    let proxy_svc = Arc::new(ProxyService {
+        hot: new_hot_lock(HotConfig {
+            registries,
+            policies,
+            ..Default::default()
+        }),
+        storage,
+        cache,
+        repo: repo.clone(),
+        artifact_meta: NoopArtifactMeta::arc(),
+        metrics: Arc::new(ProxyMetrics::new(&[name.to_owned()])),
+        sbom: None,
+    });
+    let mode_map = RegistryModeMap::default();
+    mode_map.insert(name.to_owned(), mode);
+
+    LocalRegistryAppParts {
+        proxy_svc,
+        admin_svc: Arc::new(AdminService::new(repo)),
+        token_repo: Arc::new(NullTokenRepository),
+        access_config: access_config(&[], &[name]),
+        registry_map: registry_map_for(&[(name, kind)]),
+        local_svc,
+        mode_map,
+    }
+}
+
 /// Finish wiring a `make_local_<type>_app` factory: configure the routes from `parts`
 /// (with the given `cargo_indexes` and optional `sbom_svc`), attach `local_svc`/`mode_map`,
 /// and wrap with the standard test auth providers.
@@ -1271,6 +1490,37 @@ pub async fn make_app_with_notifications(
     )
     .await
 }
+/// A minimal RubyGems `.gem`: a tar holding one gzip'd YAML `metadata.gz`.
+///
+/// `dependencies` is spliced into the YAML verbatim, so a caller that wants a
+/// dependency block writes it the way a gemspec does; pass `""` for none.
+pub fn make_gem_with_deps(name: &str, version: &str, dependencies: &str) -> Vec<u8> {
+    use flate2::{write::GzEncoder, Compression};
+    use std::io::Write as _;
+
+    let yaml = format!(
+        "name: {name}\nversion:\n  version: '{version}'\nplatform: ruby\n{dependencies}summary: s\n"
+    );
+    let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+    gz.write_all(yaml.as_bytes()).unwrap();
+    let metadata_gz = gz.finish().unwrap();
+
+    let mut builder = tar::Builder::new(Vec::new());
+    let mut header = tar::Header::new_gnu();
+    header.set_size(metadata_gz.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    builder
+        .append_data(&mut header, "metadata.gz", metadata_gz.as_slice())
+        .unwrap();
+    builder.into_inner().unwrap()
+}
+
+/// [`make_gem_with_deps`] with no dependency block.
+pub fn make_gem(name: &str, version: &str) -> Vec<u8> {
+    make_gem_with_deps(name, version, "")
+}
+
 pub fn make_publish_payload(name: &str, version: &str) -> Vec<u8> {
     let meta = serde_json::json!({
         "name": name, "vers": version,

@@ -403,7 +403,8 @@ jobs:
         run: |
           # Microsoft's own install script rather than a third-party action:
           # one URL, one channel, and no action SHA to keep pinned.
-          curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
+          curl -fsSL --proto '=https' --proto-redir '=https' \
+            https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
           bash /tmp/dotnet-install.sh --channel "$DOTNET_CHANNEL" --install-dir "$HOME/.dotnet"
           echo "$HOME/.dotnet" >> "$GITHUB_PATH"
           echo "DOTNET_ROOT=$HOME/.dotnet" >> "$GITHUB_ENV"
@@ -412,7 +413,7 @@ jobs:
         run: |
           # From the release archive rather than a third-party action: one URL,
           # one version, and nothing else enters the runner.
-          curl -fsSL -o /tmp/terraform.zip \
+          curl -fsSL --proto '=https' --proto-redir '=https' -o /tmp/terraform.zip \
             "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
           sudo unzip -o -q /tmp/terraform.zip -d /usr/local/bin
           terraform version

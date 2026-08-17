@@ -12,36 +12,11 @@ mod common;
 #[allow(unused_imports)]
 use common::*;
 
-use actix_web::test::{call_service, read_body_json, TestRequest};
-use batlehub_config::schema::RegistryMode;
+use actix_web::test::call_service;
 use serde_json::Value;
 
-async fn app() -> impl actix_web::dev::Service<
-    actix_http::Request,
-    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-    Error = actix_web::Error,
-> {
-    build_local_registry_app(
-        local_registry_app_parts("local-gems", "rubygems", RegistryMode::Proxy, None),
-        batlehub_web::CargoIndexMap::default(),
-        None,
-    )
-    .await
-}
-
-async fn get_json<S>(app: &S, uri: &str) -> Value
-where
-    S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
-{
-    let req = TestRequest::get()
-        .uri(uri)
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    read_body_json(call_service(app, req).await).await
+async fn app() -> impl TestService {
+    proxy_registry_app("local-gems", "rubygems").await
 }
 
 fn numbers(doc: &Value) -> Vec<String> {
@@ -139,11 +114,8 @@ async fn proxy_direct_request_for_a_blocked_version_is_still_denied() {
 
     block_version(&app, "local-gems", "rails", "1.1.0").await;
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-gems/gems/rails-1.1.0.gem")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    assert_eq!(call_service(&app, req).await.status(), 403);
+    let resp = call_service(&app, admin_get("/proxy/local-gems/gems/rails-1.1.0.gem")).await;
+    assert_eq!(resp.status(), 403);
 }
 
 // ── The compact index (RFC 0009 §7.3) ─────────────────────────────────────────
@@ -156,23 +128,6 @@ async fn proxy_direct_request_for_a_blocked_version_is_still_denied() {
 // `Gemfile.lock`, and only then refused at download.
 //
 // These assert the leak is closed on the documents the default client uses.
-
-async fn get_text<S>(app: &S, uri: &str) -> String
-where
-    S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
-{
-    let req = TestRequest::get()
-        .uri(uri)
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let resp = call_service(app, req).await;
-    assert_eq!(resp.status(), 200, "{uri} should be served");
-    String::from_utf8(actix_web::test::read_body(resp).await.to_vec()).unwrap()
-}
 
 #[actix_web::test]
 async fn compact_info_hides_a_blocked_version_from_bundler() {
@@ -252,10 +207,7 @@ async fn a_block_does_not_reach_an_already_warm_snapshot() {
     );
 
     // ...and the gate that actually refuses the bytes does not lag.
-    let denied = TestRequest::get()
-        .uri("/proxy/local-gems/gems/rails-1.1.0.gem")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
+    let denied = admin_get("/proxy/local-gems/gems/rails-1.1.0.gem");
     assert_eq!(
         call_service(&app, denied).await.status(),
         403,

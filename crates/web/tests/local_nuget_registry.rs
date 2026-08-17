@@ -55,13 +55,7 @@ fn make_nuget_publish_body(nupkg: &[u8]) -> (Vec<u8>, String) {
 #[actix_web::test]
 async fn nuget_service_index_returns_valid_json() {
     let app = make_local_nuget_app(RegistryMode::Local).await;
-    let req = TestRequest::get()
-        .uri("/proxy/local-nuget/nuget/v3/index.json")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 200);
-    let body: Value = read_body_json(resp).await;
+    let body: Value = user_json(&app, "/proxy/local-nuget/nuget/v3/index.json").await;
     assert_eq!(body["version"], "3.0.0");
     assert!(body["resources"]
         .as_array()
@@ -72,13 +66,7 @@ async fn nuget_service_index_returns_valid_json() {
 #[actix_web::test]
 async fn nuget_service_index_includes_vulnerabilities_url_resource() {
     let app = make_local_nuget_app(RegistryMode::Local).await;
-    let req = TestRequest::get()
-        .uri("/proxy/local-nuget/nuget/v3/index.json")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 200);
-    let body: Value = read_body_json(resp).await;
+    let body: Value = user_json(&app, "/proxy/local-nuget/nuget/v3/index.json").await;
     let resources = body["resources"]
         .as_array()
         .expect("resources must be an array");
@@ -93,29 +81,64 @@ async fn nuget_service_index_includes_vulnerabilities_url_resource() {
     );
 }
 
-#[actix_web::test]
-async fn nuget_publish_creates_version() {
-    let app = make_local_nuget_app(RegistryMode::Local).await;
-    let nupkg = make_sample_nupkg("MyLib", "1.0.0", "A test library");
+/// PUT a freshly packed `.nupkg` to `uri` as the admin, and answer with the
+/// status. The URI is a parameter because `dotnet nuget push` appends a
+/// trailing slash and the symbol package has a path of its own.
+async fn publish_to<S: TestService>(
+    app: &S,
+    uri: &str,
+    id: &str,
+    version: &str,
+    description: &str,
+) -> actix_web::http::StatusCode {
+    let nupkg = make_sample_nupkg(id, version, description);
     let (body, ct) = make_nuget_publish_body(&nupkg);
-
     let req = TestRequest::put()
-        .uri("/proxy/local-nuget/nuget/api/v2/package")
+        .uri(uri)
         .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
         .insert_header(("Content-Type", ct))
         .set_payload(body)
         .to_request();
-    let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 201);
+    call_service(app, req).await.status()
+}
 
-    // Version should now appear in flat container
-    let req2 = TestRequest::get()
-        .uri("/proxy/local-nuget/nuget/v3/flat/mylib/index.json")
+/// [`publish_to`] on the unslashed publish path, which is what everything but
+/// the two trailing-slash regressions uses.
+async fn publish<S: TestService>(
+    app: &S,
+    id: &str,
+    version: &str,
+    description: &str,
+) -> actix_web::http::StatusCode {
+    publish_to(
+        app,
+        "/proxy/local-nuget/nuget/api/v2/package",
+        id,
+        version,
+        description,
+    )
+    .await
+}
+
+/// A read as an ordinary user — the consumer side of every publish here.
+async fn user_json<S: TestService>(app: &S, uri: &str) -> Value {
+    let req = TestRequest::get()
+        .uri(uri)
         .insert_header(("Authorization", bearer(USER_TOKEN)))
         .to_request();
-    let resp2 = call_service(&app, req2).await;
-    assert_eq!(resp2.status(), 200);
-    let body2: Value = read_body_json(resp2).await;
+    let resp = call_service(app, req).await;
+    assert_eq!(resp.status(), 200, "{uri} should be served");
+    read_body_json(resp).await
+}
+
+#[actix_web::test]
+async fn nuget_publish_creates_version() {
+    let app = make_local_nuget_app(RegistryMode::Local).await;
+
+    assert_eq!(publish(&app, "MyLib", "1.0.0", "A test library").await, 201);
+
+    // Version should now appear in flat container
+    let body2: Value = user_json(&app, "/proxy/local-nuget/nuget/v3/flat/mylib/index.json").await;
     let versions = body2["versions"].as_array().unwrap();
     assert!(versions.iter().any(|v| v == "1.0.0"));
 }
@@ -138,25 +161,12 @@ async fn nuget_publish_requires_auth() {
 #[actix_web::test]
 async fn nuget_publish_duplicate_returns_409() {
     let app = make_local_nuget_app(RegistryMode::Local).await;
-    let nupkg = make_sample_nupkg("MyLib", "1.0.0", "Test");
-
-    let (body1, ct1) = make_nuget_publish_body(&nupkg);
-    let req1 = TestRequest::put()
-        .uri("/proxy/local-nuget/nuget/api/v2/package")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .insert_header(("Content-Type", ct1))
-        .set_payload(body1)
-        .to_request();
-    assert_eq!(call_service(&app, req1).await.status(), 201);
-
-    let (body2, ct2) = make_nuget_publish_body(&nupkg);
-    let req2 = TestRequest::put()
-        .uri("/proxy/local-nuget/nuget/api/v2/package")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .insert_header(("Content-Type", ct2))
-        .set_payload(body2)
-        .to_request();
-    assert_eq!(call_service(&app, req2).await.status(), 409);
+    assert_eq!(publish(&app, "MyLib", "1.0.0", "Test").await, 201);
+    assert_eq!(
+        publish(&app, "MyLib", "1.0.0", "Test").await,
+        409,
+        "the second publish of the same coordinate is a conflict"
+    );
 }
 
 #[actix_web::test]
@@ -183,17 +193,9 @@ async fn nuget_xnuget_apikey_header_authenticates() {
 #[actix_web::test]
 async fn nuget_yank_removes_from_versions() {
     let app = make_local_nuget_app(RegistryMode::Local).await;
-    let nupkg = make_sample_nupkg("YankLib", "2.0.0", "Yank test");
-    let (body, ct) = make_nuget_publish_body(&nupkg);
 
     // Publish first
-    let req = TestRequest::put()
-        .uri("/proxy/local-nuget/nuget/api/v2/package")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .insert_header(("Content-Type", ct))
-        .set_payload(body)
-        .to_request();
-    assert_eq!(call_service(&app, req).await.status(), 201);
+    assert_eq!(publish(&app, "YankLib", "2.0.0", "Yank test").await, 201);
 
     // Yank it
     let req_yank = TestRequest::delete()
@@ -203,13 +205,8 @@ async fn nuget_yank_removes_from_versions() {
     assert_eq!(call_service(&app, req_yank).await.status(), 204);
 
     // Versions list should be empty (yanked packages are excluded)
-    let req_list = TestRequest::get()
-        .uri("/proxy/local-nuget/nuget/v3/flat/yanklib/index.json")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .to_request();
-    let resp_list = call_service(&app, req_list).await;
-    assert_eq!(resp_list.status(), 200);
-    let body_list: Value = read_body_json(resp_list).await;
+    let body_list: Value =
+        user_json(&app, "/proxy/local-nuget/nuget/v3/flat/yanklib/index.json").await;
     let versions = body_list["versions"].as_array().unwrap();
     assert!(
         versions.is_empty(),
@@ -220,24 +217,17 @@ async fn nuget_yank_removes_from_versions() {
 #[actix_web::test]
 async fn nuget_registration_local_has_catalog_entry() {
     let app = make_local_nuget_app(RegistryMode::Local).await;
-    let nupkg = make_sample_nupkg("RegLib", "1.0.0", "Registration test");
-    let (body, ct) = make_nuget_publish_body(&nupkg);
 
-    let req = TestRequest::put()
-        .uri("/proxy/local-nuget/nuget/api/v2/package")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .insert_header(("Content-Type", ct))
-        .set_payload(body)
-        .to_request();
-    assert_eq!(call_service(&app, req).await.status(), 201);
+    assert_eq!(
+        publish(&app, "RegLib", "1.0.0", "Registration test").await,
+        201
+    );
 
-    let req2 = TestRequest::get()
-        .uri("/proxy/local-nuget/nuget/v3/registration5/reglib/index.json")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .to_request();
-    let resp2 = call_service(&app, req2).await;
-    assert_eq!(resp2.status(), 200);
-    let body2: Value = read_body_json(resp2).await;
+    let body2: Value = user_json(
+        &app,
+        "/proxy/local-nuget/nuget/v3/registration5/reglib/index.json",
+    )
+    .await;
     assert!(body2["count"].as_u64().unwrap_or(0) >= 1);
     let items = body2["items"].as_array().unwrap();
     assert!(!items.is_empty());
@@ -250,16 +240,8 @@ async fn nuget_registration_local_has_catalog_entry() {
 #[actix_web::test]
 async fn nuget_publish_proxy_mode_returns_404() {
     let app = make_local_nuget_app(RegistryMode::Proxy).await;
-    let nupkg = make_sample_nupkg("PxLib", "1.0.0", "test");
-    let (body, ct) = make_nuget_publish_body(&nupkg);
 
-    let req = TestRequest::put()
-        .uri("/proxy/local-nuget/nuget/api/v2/package")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .insert_header(("Content-Type", ct))
-        .set_payload(body)
-        .to_request();
-    assert_eq!(call_service(&app, req).await.status(), 404);
+    assert_eq!(publish(&app, "PxLib", "1.0.0", "test").await, 404);
 }
 
 #[actix_web::test]
@@ -267,44 +249,26 @@ async fn nuget_publish_traversal_id_returns_400() {
     let app = make_local_nuget_app(RegistryMode::Local).await;
     // A traversal sequence in the package ID (inside the .nuspec) must be rejected
     // by validate_package_name before reaching the storage layer — clean 400.
-    let nupkg = make_sample_nupkg("../../etc/x", "1.0.0", "traversal test");
-    let (body, ct) = make_nuget_publish_body(&nupkg);
-    let req = TestRequest::put()
-        .uri("/proxy/local-nuget/nuget/api/v2/package")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .insert_header(("Content-Type", ct))
-        .set_payload(body)
-        .to_request();
-    assert_eq!(call_service(&app, req).await.status(), 400);
+    assert_eq!(
+        publish(&app, "../../etc/x", "1.0.0", "traversal test").await,
+        400
+    );
 }
 
 #[actix_web::test]
 async fn nuget_publish_traversal_version_returns_400() {
     let app = make_local_nuget_app(RegistryMode::Local).await;
-    let nupkg = make_sample_nupkg("SafeLib", "../../etc/x", "traversal test");
-    let (body, ct) = make_nuget_publish_body(&nupkg);
-    let req = TestRequest::put()
-        .uri("/proxy/local-nuget/nuget/api/v2/package")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .insert_header(("Content-Type", ct))
-        .set_payload(body)
-        .to_request();
-    assert_eq!(call_service(&app, req).await.status(), 400);
+    assert_eq!(
+        publish(&app, "SafeLib", "../../etc/x", "traversal test").await,
+        400
+    );
 }
 
 #[actix_web::test]
 async fn nuget_flat_download_local_returns_nupkg() {
     let app = make_local_nuget_app(RegistryMode::Local).await;
-    let nupkg = make_sample_nupkg("DlLib", "1.0.0", "Download test");
-    let (body, ct) = make_nuget_publish_body(&nupkg);
 
-    let req = TestRequest::put()
-        .uri("/proxy/local-nuget/nuget/api/v2/package")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .insert_header(("Content-Type", ct))
-        .set_payload(body)
-        .to_request();
-    assert_eq!(call_service(&app, req).await.status(), 201);
+    assert_eq!(publish(&app, "DlLib", "1.0.0", "Download test").await, 201);
 
     let req_dl = TestRequest::get()
         .uri("/proxy/local-nuget/nuget/v3/flat/dllib/1.0.0/dllib.1.0.0.nupkg")
@@ -322,16 +286,11 @@ async fn nuget_flat_download_local_returns_nupkg() {
 #[actix_web::test]
 async fn nuget_flat_download_local_returns_nuspec() {
     let app = make_local_nuget_app(RegistryMode::Local).await;
-    let nupkg = make_sample_nupkg("NuspecLib", "2.0.0", "Nuspec extract test");
-    let (body, ct) = make_nuget_publish_body(&nupkg);
 
-    let req = TestRequest::put()
-        .uri("/proxy/local-nuget/nuget/api/v2/package")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .insert_header(("Content-Type", ct))
-        .set_payload(body)
-        .to_request();
-    assert_eq!(call_service(&app, req).await.status(), 201);
+    assert_eq!(
+        publish(&app, "NuspecLib", "2.0.0", "Nuspec extract test").await,
+        201
+    );
 
     let req_nuspec = TestRequest::get()
         .uri("/proxy/local-nuget/nuget/v3/flat/nuspeclib/2.0.0/nuspeclib.2.0.0.nuspec")
@@ -354,24 +313,10 @@ async fn nuget_flat_download_local_returns_nuspec() {
 #[actix_web::test]
 async fn nuget_search_local_returns_packages() {
     let app = make_local_nuget_app(RegistryMode::Local).await;
-    let nupkg = make_sample_nupkg("SearchMe", "1.0.0", "Search test");
-    let (body, ct) = make_nuget_publish_body(&nupkg);
 
-    let req = TestRequest::put()
-        .uri("/proxy/local-nuget/nuget/api/v2/package")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .insert_header(("Content-Type", ct))
-        .set_payload(body)
-        .to_request();
-    assert_eq!(call_service(&app, req).await.status(), 201);
+    assert_eq!(publish(&app, "SearchMe", "1.0.0", "Search test").await, 201);
 
-    let req2 = TestRequest::get()
-        .uri("/proxy/local-nuget/nuget/v3/query?q=search")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .to_request();
-    let resp2 = call_service(&app, req2).await;
-    assert_eq!(resp2.status(), 200);
-    let body2: Value = read_body_json(resp2).await;
+    let body2: Value = user_json(&app, "/proxy/local-nuget/nuget/v3/query?q=search").await;
     assert!(
         body2["totalHits"].as_u64().unwrap_or(0) >= 1,
         "search should return at least one hit"
@@ -399,24 +344,20 @@ async fn nuget_flat_download_missing_returns_404() {
 #[actix_web::test]
 async fn nuget_publish_accepts_the_trailing_slash_dotnet_sends() {
     let app = make_local_nuget_app(RegistryMode::Local).await;
-    let nupkg = make_sample_nupkg("SlashLib", "1.0.0", "A test library");
-    let (body, ct) = make_nuget_publish_body(&nupkg);
 
-    let req = TestRequest::put()
-        .uri("/proxy/local-nuget/nuget/api/v2/package/")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .insert_header(("Content-Type", ct))
-        .set_payload(body)
-        .to_request();
-    assert_eq!(call_service(&app, req).await.status(), 201);
+    assert_eq!(
+        publish_to(
+            &app,
+            "/proxy/local-nuget/nuget/api/v2/package/",
+            "SlashLib",
+            "1.0.0",
+            "A test library"
+        )
+        .await,
+        201
+    );
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-nuget/nuget/v3/flat/slashlib/index.json")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 200);
-    let doc: Value = read_body_json(resp).await;
+    let doc: Value = user_json(&app, "/proxy/local-nuget/nuget/v3/flat/slashlib/index.json").await;
     assert!(doc["versions"]
         .as_array()
         .unwrap()
@@ -429,25 +370,19 @@ async fn nuget_publish_accepts_the_trailing_slash_dotnet_sends() {
 #[actix_web::test]
 async fn nuget_symbol_publish_accepts_the_trailing_slash() {
     let app = make_local_nuget_app(RegistryMode::Local).await;
-    let nupkg = make_sample_nupkg("SymLib", "1.0.0", "A test library");
-    let (body, ct) = make_nuget_publish_body(&nupkg);
-    let req = TestRequest::put()
-        .uri("/proxy/local-nuget/nuget/api/v2/package")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .insert_header(("Content-Type", ct))
-        .set_payload(body)
-        .to_request();
-    assert_eq!(call_service(&app, req).await.status(), 201);
+    assert_eq!(
+        publish(&app, "SymLib", "1.0.0", "A test library").await,
+        201
+    );
 
-    let snupkg = make_sample_nupkg("SymLib", "1.0.0", "Symbols");
-    let (body, ct) = make_nuget_publish_body(&snupkg);
-    let req = TestRequest::put()
-        .uri("/proxy/local-nuget/nuget/api/v2/symbolpackage/")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .insert_header(("Content-Type", ct))
-        .set_payload(body)
-        .to_request();
-    let status = call_service(&app, req).await.status();
+    let status = publish_to(
+        &app,
+        "/proxy/local-nuget/nuget/api/v2/symbolpackage/",
+        "SymLib",
+        "1.0.0",
+        "Symbols",
+    )
+    .await;
     assert_ne!(
         status, 404,
         "the slashed symbol-publish path must reach the handler, not the route table"

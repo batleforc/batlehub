@@ -16,54 +16,21 @@ mod common;
 #[allow(unused_imports)]
 use common::*;
 
-use actix_web::test::{call_service, read_body, read_body_json, TestRequest};
-use batlehub_config::schema::RegistryMode;
+use actix_web::test::call_service;
 use serde_json::Value;
 
 const MODULE: &str = "github.com/acme/widget";
 
-async fn app() -> impl actix_web::dev::Service<
-    actix_http::Request,
-    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-    Error = actix_web::Error,
-> {
-    build_local_registry_app(
-        local_registry_app_parts("local-go", "goproxy", RegistryMode::Proxy, None),
-        batlehub_web::CargoIndexMap::default(),
-        None,
-    )
-    .await
+async fn app() -> impl TestService {
+    proxy_registry_app("local-go", "goproxy").await
 }
 
-async fn version_list<S>(app: &S, module: &str) -> String
-where
-    S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
-{
-    let req = TestRequest::get()
-        .uri(&format!("/proxy/local-go/{module}@v/list"))
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let body = read_body(call_service(app, req).await).await;
-    String::from_utf8(body.to_vec()).expect("@v/list is UTF-8 text")
+async fn version_list<S: TestService>(app: &S, module: &str) -> String {
+    get_text(app, &format!("/proxy/local-go/{module}@v/list")).await
 }
 
-async fn latest<S>(app: &S, module: &str) -> Value
-where
-    S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
-{
-    let req = TestRequest::get()
-        .uri(&format!("/proxy/local-go/{module}@latest"))
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    read_body_json(call_service(app, req).await).await
+async fn latest<S: TestService>(app: &S, module: &str) -> Value {
+    get_json(app, &format!("/proxy/local-go/{module}@latest")).await
 }
 
 #[actix_web::test]
@@ -141,10 +108,7 @@ async fn proxy_latest_with_every_version_blocked_is_not_found() {
         block_version(&app, "local-go", MODULE, v).await;
     }
 
-    let req = TestRequest::get()
-        .uri(&format!("/proxy/local-go/{MODULE}@latest"))
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
+    let req = admin_get(&format!("/proxy/local-go/{MODULE}@latest"));
     assert_eq!(call_service(&app, req).await.status(), 404);
 }
 
@@ -152,21 +116,12 @@ async fn proxy_latest_with_every_version_blocked_is_not_found() {
 async fn proxy_version_list_is_plain_text() {
     let app = app().await;
 
-    let req = TestRequest::get()
-        .uri(&format!("/proxy/local-go/{MODULE}@v/list"))
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-
-    assert_eq!(resp.status(), 200);
-    let ct = resp
-        .headers()
-        .get("content-type")
-        .expect("content-type set")
-        .to_str()
-        .unwrap()
-        .to_owned();
-    assert!(ct.starts_with("text/plain"), "content-type was {ct}");
+    assert_content_type(
+        &app,
+        &format!("/proxy/local-go/{MODULE}@v/list"),
+        "text/plain",
+    )
+    .await;
 }
 
 #[actix_web::test]
@@ -188,9 +143,6 @@ async fn proxy_direct_request_for_a_blocked_version_is_still_denied() {
 
     block_version(&app, "local-go", MODULE, "v1.1.0").await;
 
-    let req = TestRequest::get()
-        .uri(&format!("/proxy/local-go/{MODULE}@v/v1.1.0.zip"))
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
+    let req = admin_get(&format!("/proxy/local-go/{MODULE}@v/v1.1.0.zip"));
     assert_eq!(call_service(&app, req).await.status(), 403);
 }

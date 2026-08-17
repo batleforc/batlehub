@@ -168,19 +168,18 @@ log "Tap listening on $HEAVY_TAP_PORT, Bundler will use $SOURCE"
 # ── 2. Build two gems, the second depending on the first ─────────────────────
 
 build_gem() {  # name, dependency line
-  local name=$1 dep=${2:-}
+  local name="$1" dep="${2:-}"
   mkdir -p "$WORK/gems/$name/lib"
   echo "module Probe; end" > "$WORK/gems/$name/lib/$name.rb"
-  cat > "$WORK/gems/$name/$name.gemspec" <<EOF
-Gem::Specification.new do |s|
-  s.name        = "$name"
-  s.version     = "1.0.0"
-  s.summary     = "compact index probe"
-  s.authors     = ["batlehub heavy tests"]
-  s.files       = ["lib/$name.rb"]
-  $dep
-end
-EOF
+  printf '%s\n' \
+    "Gem::Specification.new do |s|" \
+    "  s.name        = \"$name\"" \
+    "  s.version     = \"1.0.0\"" \
+    "  s.summary     = \"compact index probe\"" \
+    "  s.authors     = [\"batlehub heavy tests\"]" \
+    "  s.files       = [\"lib/$name.rb\"]" \
+    "  $dep" \
+    "end" > "$WORK/gems/$name/$name.gemspec"
   (cd "$WORK/gems/$name" && ruby_run gem build "$name.gemspec" >/dev/null)
 }
 
@@ -189,10 +188,11 @@ build_gem "$GEM_A"
 build_gem "$GEM_B" "s.add_dependency \"$GEM_A\", \">= 1.0.0\""
 
 publish() {
+  local name="$1"
   curl -fsS -o /dev/null -X POST \
     -H "Authorization: Bearer $ADMIN_TOKEN" \
-    --data-binary @"$WORK/gems/$1/$1-1.0.0.gem" \
-    "$SOURCE/api/v1/gems" || fail "publishing $1 failed"
+    --data-binary @"$WORK/gems/$name/$name-1.0.0.gem" \
+    "$SOURCE/api/v1/gems" || fail "publishing $name failed"
 }
 
 # ── 3. First install: is a locally published gem visible to Bundler at all ───

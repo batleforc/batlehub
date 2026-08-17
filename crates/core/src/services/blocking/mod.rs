@@ -1058,40 +1058,49 @@ mod tests {
                     continue;
                 }
 
-                for name in entry.documents {
-                    if DOCUMENTS_FILTERED_ELSEWHERE
-                        .iter()
-                        .any(|(k, d, _)| k == kind && d == name)
-                    {
-                        continue;
-                    }
-                    let document = document_kind_named(name).unwrap_or_else(|| {
-                        panic!(
-                            "{kind}: {:?} names document kind {name:?}, which no \
-                             `DocumentKind` answers to — a typo here would otherwise \
-                             skip the document silently",
-                            entry.label
-                        )
-                    });
-
-                    let mut doc = VersionDocument::json(serde_json::json!({}));
-                    let blocked = BlockedVersions::new(*kind, vec!["1.0.0".to_owned()]);
-                    let ctx = ListingContext {
-                        registry: "r1",
-                        kind: *kind,
-                        document,
-                        package: "p",
-                        public_base: "https://h/proxy/r1",
-                    };
-
-                    assert!(
-                        strip(&ctx, &mut doc, &blocked).is_some(),
-                        "{kind}: listing_filter() advertises {:?} as covering the {name:?} \
-                         document, but strip() reaches no filter for it",
-                        entry.label
-                    );
-                }
+                assert_documents_reach_a_filter(kind, entry);
             }
+        }
+    }
+
+    /// Every `DocumentKind` one `listing_filter()` row claims to cover must
+    /// reach a filter in `strip`.
+    fn assert_documents_reach_a_filter(
+        kind: &RegistryKind,
+        entry: &crate::entities::ListingDocument,
+    ) {
+        for name in entry.documents {
+            if DOCUMENTS_FILTERED_ELSEWHERE
+                .iter()
+                .any(|(k, d, _)| k == kind && d == name)
+            {
+                continue;
+            }
+            let document = document_kind_named(name).unwrap_or_else(|| {
+                panic!(
+                    "{kind}: {:?} names document kind {name:?}, which no \
+                     `DocumentKind` answers to — a typo here would otherwise \
+                     skip the document silently",
+                    entry.label
+                )
+            });
+
+            let mut doc = VersionDocument::json(serde_json::json!({}));
+            let blocked = BlockedVersions::new(*kind, vec!["1.0.0".to_owned()]);
+            let ctx = ListingContext {
+                registry: "r1",
+                kind: *kind,
+                document,
+                package: "p",
+                public_base: "https://h/proxy/r1",
+            };
+
+            assert!(
+                strip(&ctx, &mut doc, &blocked).is_some(),
+                "{kind}: listing_filter() advertises {:?} as covering the {name:?} \
+                 document, but strip() reaches no filter for it",
+                entry.label
+            );
         }
     }
 

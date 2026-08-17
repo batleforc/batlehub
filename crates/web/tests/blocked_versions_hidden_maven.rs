@@ -14,41 +14,21 @@ mod common;
 #[allow(unused_imports)]
 use common::*;
 
-use actix_web::test::{call_service, read_body, TestRequest};
-use batlehub_config::schema::RegistryMode;
+use actix_web::test::call_service;
 
 const COORD: &str = "com/example/mylib";
 const NAME: &str = "com.example:mylib";
 
-async fn app() -> impl actix_web::dev::Service<
-    actix_http::Request,
-    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-    Error = actix_web::Error,
-> {
-    build_local_registry_app(
-        local_registry_app_parts("local-mvn", "maven", RegistryMode::Proxy, None),
-        batlehub_web::CargoIndexMap::default(),
-        None,
-    )
-    .await
+async fn app() -> impl TestService {
+    proxy_registry_app("local-mvn", "maven").await
 }
 
-async fn metadata<S>(app: &S) -> String
-where
-    S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
-{
-    let req = TestRequest::get()
-        .uri(&format!(
-            "/proxy/local-mvn/maven2/{COORD}/maven-metadata.xml"
-        ))
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let body = read_body(call_service(app, req).await).await;
-    String::from_utf8(body.to_vec()).expect("maven-metadata.xml is UTF-8")
+async fn metadata<S: TestService>(app: &S) -> String {
+    get_text(
+        app,
+        &format!("/proxy/local-mvn/maven2/{COORD}/maven-metadata.xml"),
+    )
+    .await
 }
 
 #[actix_web::test]
@@ -91,14 +71,15 @@ async fn proxy_metadata_repairs_latest_and_release_differently() {
 async fn proxy_metadata_is_xml() {
     let app = app().await;
 
-    let req = TestRequest::get()
-        .uri(&format!(
+    // `contains` rather than `starts_with`: Maven is served as
+    // `application/xml` or `text/xml` depending on what upstream declared.
+    let resp = call_service(
+        &app,
+        admin_get(&format!(
             "/proxy/local-mvn/maven2/{COORD}/maven-metadata.xml"
-        ))
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-
+        )),
+    )
+    .await;
     assert_eq!(resp.status(), 200);
     let ct = resp
         .headers()
@@ -131,11 +112,8 @@ async fn proxy_direct_request_for_a_blocked_version_is_still_denied() {
 
     block_version(&app, "local-mvn", NAME, "1.1.0").await;
 
-    let req = TestRequest::get()
-        .uri(&format!(
-            "/proxy/local-mvn/maven2/{COORD}/1.1.0/mylib-1.1.0.jar"
-        ))
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
+    let req = admin_get(&format!(
+        "/proxy/local-mvn/maven2/{COORD}/1.1.0/mylib-1.1.0.jar"
+    ));
     assert_eq!(call_service(&app, req).await.status(), 403);
 }

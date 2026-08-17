@@ -15,39 +15,15 @@ mod common;
 #[allow(unused_imports)]
 use common::*;
 
-use actix_web::test::{call_service, read_body_json, TestRequest};
-use batlehub_config::schema::RegistryMode;
+use actix_web::test::call_service;
 use serde_json::Value;
 
-async fn app(
-    name: &str,
-    kind: &str,
-) -> impl actix_web::dev::Service<
-    actix_http::Request,
-    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-    Error = actix_web::Error,
-> {
-    build_local_registry_app(
-        local_registry_app_parts(name, kind, RegistryMode::Proxy, None),
-        batlehub_web::CargoIndexMap::default(),
-        None,
-    )
-    .await
+async fn app(name: &str, kind: &str) -> impl TestService {
+    proxy_registry_app(name, kind).await
 }
 
-async fn releases<S>(app: &S, uri: &str) -> Vec<String>
-where
-    S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
-{
-    let req = TestRequest::get()
-        .uri(uri)
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let doc: Value = read_body_json(call_service(app, req).await).await;
+async fn releases<S: TestService>(app: &S, uri: &str) -> Vec<String> {
+    let doc: Value = get_json(app, uri).await;
     doc.as_array()
         .expect("a release array")
         .iter()
@@ -127,9 +103,6 @@ async fn a_direct_request_for_a_blocked_release_is_still_denied() {
 
     block_version(&app, "local-gh", "acme/widget", "v1.1.0").await;
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-gh/acme/widget/releases/tags/v1.1.0")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
+    let req = admin_get("/proxy/local-gh/acme/widget/releases/tags/v1.1.0");
     assert_eq!(call_service(&app, req).await.status(), 403);
 }

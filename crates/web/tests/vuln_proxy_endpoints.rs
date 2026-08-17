@@ -90,49 +90,7 @@ async fn audit_bulk_forwards_to_upstream_and_returns_response() {
     });
 
     let upstream_url = format!("http://127.0.0.1:{port}");
-    let repo_dyn: Arc<dyn batlehub_core::ports::PackageRepository> = InMemoryRepo::new();
-    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
-    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
-        "npm".to_owned(),
-        FixedRegistry::new("npm") as Arc<dyn RegistryClient>,
-    )]
-    .into();
-    let policies: HashMap<String, Arc<batlehub_core::services::RegistryPolicy>> =
-        [("npm".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
-    let local_svc = make_local_svc(storage.clone());
-    let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
-        storage,
-        cache,
-        repo: repo_dyn.clone(),
-        artifact_meta: NoopArtifactMeta::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
-        sbom: None,
-    });
-    let mut upstream_entries = std::collections::HashMap::new();
-    upstream_entries.insert("npm".to_owned(), upstream_url);
-    let upstream_map = batlehub_web::UpstreamMap::from(upstream_entries);
-    let app = finish_test_app(
-        proxy_svc,
-        Arc::new(AdminService::new(repo_dyn)),
-        Arc::new(NullTokenRepository),
-        access_config_for(&["npm"]),
-        registry_map_for(&[("npm", "npm")]),
-        local_svc,
-        RegistryModeMap::default(),
-        batlehub_web::CargoIndexMap::default(),
-        ConfigureAppDefaults {
-            upstream_map,
-            ..Default::default()
-        },
-        test_auth_providers(),
-    )
-    .await;
+    let app = upstream_forwarding_app("npm", "npm", upstream_url, rbac_policy).await;
 
     let req = TestRequest::post()
         .uri("/proxy/npm/-/npm/v1/audit/bulk")
@@ -187,56 +145,8 @@ async fn nuget_vuln_page_invalid_id_returns_400() {
 }
 
 /// Builds a minimal app with one "nuget" registry and an upstream map pointing to `upstream_url`.
-async fn build_nuget_vuln_test_app(
-    upstream_url: String,
-) -> impl actix_web::dev::Service<
-    actix_http::Request,
-    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-    Error = actix_web::Error,
-> {
-    let repo_dyn: Arc<dyn batlehub_core::ports::PackageRepository> = InMemoryRepo::new();
-    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
-    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
-        "nuget".to_owned(),
-        FixedRegistry::new("nuget") as Arc<dyn RegistryClient>,
-    )]
-    .into();
-    let policies: HashMap<String, Arc<batlehub_core::services::RegistryPolicy>> =
-        [("nuget".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
-    let local_svc = make_local_svc(storage.clone());
-    let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
-        storage,
-        cache,
-        repo: repo_dyn.clone(),
-        artifact_meta: NoopArtifactMeta::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
-        sbom: None,
-    });
-    let mut upstream_entries = std::collections::HashMap::new();
-    upstream_entries.insert("nuget".to_owned(), upstream_url);
-    let upstream_map = batlehub_web::UpstreamMap::from(upstream_entries);
-    finish_test_app(
-        proxy_svc,
-        Arc::new(AdminService::new(repo_dyn)),
-        Arc::new(NullTokenRepository),
-        access_config_for(&["nuget"]),
-        registry_map_for(&[("nuget", "nuget")]),
-        local_svc,
-        RegistryModeMap::default(),
-        batlehub_web::CargoIndexMap::default(),
-        ConfigureAppDefaults {
-            upstream_map,
-            ..Default::default()
-        },
-        test_auth_providers(),
-    )
-    .await
+async fn build_nuget_vuln_test_app(upstream_url: String) -> impl TestService {
+    upstream_forwarding_app("nuget", "nuget", upstream_url, rbac_policy).await
 }
 
 #[actix_web::test]
@@ -454,37 +364,8 @@ async fn goproxy_vuln_entry_invalid_id_returns_400() {
 }
 
 /// Builds a minimal goproxy app with a custom `VulnDbMap` (not the shared default).
-async fn build_goproxy_vuln_test_app(
-    vuln_db_map: batlehub_web::VulnDbMap,
-) -> impl actix_web::dev::Service<
-    actix_http::Request,
-    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-    Error = actix_web::Error,
-> {
-    let repo_dyn: Arc<dyn batlehub_core::ports::PackageRepository> = InMemoryRepo::new();
-    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
-    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
-        "go".to_owned(),
-        FixedRegistry::new("goproxy") as Arc<dyn RegistryClient>,
-    )]
-    .into();
-    let policies: HashMap<String, Arc<batlehub_core::services::RegistryPolicy>> =
-        [("go".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
-    let local_svc = make_local_svc(storage.clone());
-    let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
-        storage,
-        cache,
-        repo: repo_dyn.clone(),
-        artifact_meta: NoopArtifactMeta::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
-        sbom: None,
-    });
+async fn build_goproxy_vuln_test_app(vuln_db_map: batlehub_web::VulnDbMap) -> impl TestService {
+    let (proxy_svc, repo_dyn, local_svc) = one_registry_proxy("go", "goproxy", rbac_policy);
 
     let (app, _) = App::new()
         .into_utoipa_app()
@@ -666,49 +547,7 @@ async fn audit_bulk_relays_upstream_response_body() {
     });
 
     let upstream_url = format!("http://127.0.0.1:{port}");
-    let repo_dyn: Arc<dyn batlehub_core::ports::PackageRepository> = InMemoryRepo::new();
-    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
-    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
-        "npm".to_owned(),
-        FixedRegistry::new("npm") as Arc<dyn RegistryClient>,
-    )]
-    .into();
-    let policies: HashMap<String, Arc<batlehub_core::services::RegistryPolicy>> =
-        [("npm".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
-    let local_svc = make_local_svc(storage.clone());
-    let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
-        storage,
-        cache,
-        repo: repo_dyn.clone(),
-        artifact_meta: NoopArtifactMeta::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
-        sbom: None,
-    });
-    let mut upstream_entries = std::collections::HashMap::new();
-    upstream_entries.insert("npm".to_owned(), upstream_url);
-    let upstream_map = batlehub_web::UpstreamMap::from(upstream_entries);
-    let app = finish_test_app(
-        proxy_svc,
-        Arc::new(AdminService::new(repo_dyn)),
-        Arc::new(NullTokenRepository),
-        access_config_for(&["npm"]),
-        registry_map_for(&[("npm", "npm")]),
-        local_svc,
-        RegistryModeMap::default(),
-        batlehub_web::CargoIndexMap::default(),
-        ConfigureAppDefaults {
-            upstream_map,
-            ..Default::default()
-        },
-        test_auth_providers(),
-    )
-    .await;
+    let app = upstream_forwarding_app("npm", "npm", upstream_url, rbac_policy).await;
 
     let req = TestRequest::post()
         .uri("/proxy/npm/-/npm/v1/audit/bulk")
@@ -760,59 +599,14 @@ async fn one_shot_upstream(body: &'static str) -> String {
     format!("http://127.0.0.1:{port}")
 }
 
-async fn audit_app(
-    upstream_url: String,
-    serve_stale: bool,
-) -> impl actix_web::dev::Service<
-    actix_http::Request,
-    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-    Error = actix_web::Error,
-> {
-    let repo_dyn: Arc<dyn batlehub_core::ports::PackageRepository> = InMemoryRepo::new();
-    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
-    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
-        "npm".to_owned(),
-        FixedRegistry::new("npm") as Arc<dyn RegistryClient>,
-    )]
-    .into();
-    let mut policy = rbac_policy(repo_dyn.clone());
-    policy.serve_stale_metadata = serve_stale;
-    // A short TTL so the second request is a stale read rather than a fresh hit.
-    policy.metadata_ttl = Some(std::time::Duration::from_millis(1));
-    let policies: HashMap<String, Arc<batlehub_core::services::RegistryPolicy>> =
-        [("npm".to_owned(), Arc::new(policy))].into();
-    let local_svc = make_local_svc(storage.clone());
-    let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
-        storage,
-        cache,
-        repo: repo_dyn.clone(),
-        artifact_meta: NoopArtifactMeta::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
-        sbom: None,
-    });
-    let mut upstream_entries = std::collections::HashMap::new();
-    upstream_entries.insert("npm".to_owned(), upstream_url);
-    finish_test_app(
-        proxy_svc,
-        Arc::new(AdminService::new(repo_dyn)),
-        Arc::new(NullTokenRepository),
-        access_config_for(&["npm"]),
-        registry_map_for(&[("npm", "npm")]),
-        local_svc,
-        RegistryModeMap::default(),
-        batlehub_web::CargoIndexMap::default(),
-        ConfigureAppDefaults {
-            upstream_map: batlehub_web::UpstreamMap::from(upstream_entries),
-            ..Default::default()
-        },
-        test_auth_providers(),
-    )
+async fn audit_app(upstream_url: String, serve_stale: bool) -> impl TestService {
+    upstream_forwarding_app("npm", "npm", upstream_url, move |repo| {
+        let mut policy = rbac_policy(repo);
+        policy.serve_stale_metadata = serve_stale;
+        // A short TTL so the second request is a stale read rather than a fresh hit.
+        policy.metadata_ttl = Some(std::time::Duration::from_millis(1));
+        policy
+    })
     .await
 }
 
@@ -916,39 +710,12 @@ async fn a_different_dependency_set_is_a_different_cache_entry() {
 // signed — the signature travels with the bytes, so a cached record is exactly
 // as trustworthy as a live one, and nothing here parses or rewrites it.
 
-async fn sumdb_app(
-    sumdb_url: Option<&str>,
-) -> impl actix_web::dev::Service<
-    actix_http::Request,
-    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-    Error = actix_web::Error,
-> {
-    let repo_dyn: Arc<dyn batlehub_core::ports::PackageRepository> = InMemoryRepo::new();
-    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
-    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
-        "go".to_owned(),
-        FixedRegistry::new("goproxy") as Arc<dyn RegistryClient>,
-    )]
-    .into();
-    let mut policy = rbac_policy(repo_dyn.clone());
-    policy.serve_stale_metadata = true;
-    policy.metadata_ttl = Some(std::time::Duration::from_millis(1));
-    let policies: HashMap<String, Arc<batlehub_core::services::RegistryPolicy>> =
-        [("go".to_owned(), Arc::new(policy))].into();
-    let local_svc = make_local_svc(storage.clone());
-    let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
-        storage,
-        cache,
-        repo: repo_dyn.clone(),
-        artifact_meta: NoopArtifactMeta::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
-        sbom: None,
+async fn sumdb_app(sumdb_url: Option<&str>) -> impl TestService {
+    let (proxy_svc, repo_dyn, local_svc) = one_registry_proxy("go", "goproxy", |repo| {
+        let mut policy = rbac_policy(repo);
+        policy.serve_stale_metadata = true;
+        policy.metadata_ttl = Some(std::time::Duration::from_millis(1));
+        policy
     });
 
     let sumdb_map = match sumdb_url {

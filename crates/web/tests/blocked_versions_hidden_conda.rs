@@ -19,36 +19,15 @@ mod common;
 #[allow(unused_imports)]
 use common::*;
 
-use actix_web::test::{call_service, read_body_json, TestRequest};
-use batlehub_config::schema::RegistryMode;
+use actix_web::test::{call_service, TestRequest};
 use serde_json::Value;
 
-async fn app() -> impl actix_web::dev::Service<
-    actix_http::Request,
-    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-    Error = actix_web::Error,
-> {
-    build_local_registry_app(
-        local_registry_app_parts("local-conda", "conda", RegistryMode::Proxy, None),
-        batlehub_web::CargoIndexMap::default(),
-        None,
-    )
-    .await
+async fn app() -> impl TestService {
+    proxy_registry_app("local-conda", "conda").await
 }
 
-async fn repodata<S>(app: &S, document: &str) -> Value
-where
-    S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
-{
-    let req = TestRequest::get()
-        .uri(&format!("/proxy/local-conda/linux-64/{document}"))
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    read_body_json(call_service(app, req).await).await
+async fn repodata<S: TestService>(app: &S, document: &str) -> Value {
+    get_json(app, &format!("/proxy/local-conda/linux-64/{document}")).await
 }
 
 fn filenames(doc: &Value, key: &str) -> Vec<String> {
@@ -163,10 +142,7 @@ async fn a_block_does_not_reach_an_already_warm_snapshot() {
          true, the admin guide's stated delay is wrong and should be removed"
     );
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-conda/linux-64/numpy-1.1.0-py311_0.tar.bz2")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
+    let req = admin_get("/proxy/local-conda/linux-64/numpy-1.1.0-py311_0.tar.bz2");
     assert_eq!(
         call_service(&app, req).await.status(),
         403,
@@ -181,10 +157,7 @@ async fn proxy_direct_download_of_a_blocked_package_is_still_denied() {
 
     block_version(&app, "local-conda", "numpy", "1.1.0").await;
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-conda/linux-64/numpy-1.1.0-py311_0.tar.bz2")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
+    let req = admin_get("/proxy/local-conda/linux-64/numpy-1.1.0-py311_0.tar.bz2");
     assert_eq!(call_service(&app, req).await.status(), 403);
 }
 
@@ -199,23 +172,6 @@ async fn proxy_direct_download_of_a_blocked_package_is_still_denied() {
 // second filter to keep in step — only a second encoding of the first one's
 // output. These assert exactly that: what comes back out of the decompressor is
 // the *filtered* channel, not the upstream one.
-
-async fn get_bytes<S>(app: &S, uri: &str) -> Vec<u8>
-where
-    S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
-{
-    let req = TestRequest::get()
-        .uri(uri)
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let resp = call_service(app, req).await;
-    assert_eq!(resp.status(), 200, "{uri} should be served");
-    actix_web::test::read_body(resp).await.to_vec()
-}
 
 /// The filtered channel, only zstd-encoded. `scipy-1.1.0` survives: the block
 /// is on the *pair* `numpy 1.1.0`, not on the version string.

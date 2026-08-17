@@ -40,17 +40,8 @@ fn vsix(version: &str) -> Vec<u8> {
 }
 
 /// A registry holding two versions of one extension.
-async fn app() -> impl actix_web::dev::Service<
-    actix_http::Request,
-    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-    Error = actix_web::Error,
-> {
-    let app = build_local_registry_app(
-        local_registry_app_parts("local-vsx", "openvsx", RegistryMode::Local, None),
-        batlehub_web::CargoIndexMap::default(),
-        None,
-    )
-    .await;
+async fn app() -> impl TestService {
+    let app = registry_app("local-vsx", "openvsx", RegistryMode::Local).await;
 
     for v in ["1.0.0", "1.1.0"] {
         let req = TestRequest::put()
@@ -64,14 +55,7 @@ async fn app() -> impl actix_web::dev::Service<
     app
 }
 
-async fn gallery_versions<S>(app: &S) -> Vec<String>
-where
-    S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
-{
+async fn gallery_versions<S: TestService>(app: &S) -> Vec<String> {
     let req = TestRequest::post()
         .uri("/proxy/local-vsx/vscode/gallery/extensionquery")
         .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
@@ -91,19 +75,8 @@ where
         .unwrap_or_default()
 }
 
-async fn api_versions<S>(app: &S) -> Vec<String>
-where
-    S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
-{
-    let req = TestRequest::get()
-        .uri("/proxy/local-vsx/api/acme/tool")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let doc: Value = read_body_json(call_service(app, req).await).await;
+async fn api_versions<S: TestService>(app: &S) -> Vec<String> {
+    let doc: Value = get_json(app, "/proxy/local-vsx/api/acme/tool").await;
     let mut vs: Vec<String> = doc["allVersions"]
         .as_object()
         .map(|m| m.keys().cloned().collect())
@@ -146,11 +119,7 @@ async fn the_reported_newest_version_moves_to_an_allowed_one() {
 
     block_version(&app, "local-vsx", EXT, "1.1.0").await;
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-vsx/api/acme/tool")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let doc: Value = read_body_json(call_service(&app, req).await).await;
+    let doc: Value = get_json(&app, "/proxy/local-vsx/api/acme/tool").await;
     assert_eq!(doc["version"], "1.0.0");
 }
 
@@ -169,10 +138,7 @@ async fn a_direct_download_of_a_blocked_version_is_still_denied() {
         "/proxy/local-vsx/vscode/asset/acme/tool/1.1.0/Microsoft.VisualStudio.Services.VSIXPackage"
             .to_owned(),
     ] {
-        let req = TestRequest::get()
-            .uri(&uri)
-            .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-            .to_request();
+        let req = admin_get(&uri);
         assert_eq!(
             call_service(&app, req).await.status(),
             403,
@@ -191,10 +157,7 @@ async fn blocking_every_version_leaves_no_installable_extension() {
 
     assert!(gallery_versions(&app).await.is_empty());
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-vsx/api/acme/tool")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
+    let req = admin_get("/proxy/local-vsx/api/acme/tool");
     let status = call_service(&app, req).await.status();
     assert!(
         status == 403 || status == 404,
@@ -215,10 +178,6 @@ async fn another_extension_is_untouched() {
 
     block_version(&app, "local-vsx", EXT, "1.1.0").await;
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-vsx/api/acme/other")
-        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
-        .to_request();
-    let doc: Value = read_body_json(call_service(&app, req).await).await;
+    let doc: Value = get_json(&app, "/proxy/local-vsx/api/acme/other").await;
     assert_eq!(doc["version"], "1.1.0");
 }

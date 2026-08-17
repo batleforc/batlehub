@@ -63,7 +63,9 @@ registry=$LOCAL_URL
 //127.0.0.1:$HEAVY_TAP_PORT/proxy/$LOCAL/:_authToken=$ADMIN_TOKEN
 //127.0.0.1:$HEAVY_TAP_PORT/proxy/$PROXY/:_authToken=$ADMIN_TOKEN
 EOF
-export npm_config_userconfig="$NPMRC"
+# npm lowercases every `NPM_CONFIG_*` variable it reads, so the upper-case
+# spelling is the same knob as `npm_config_*`.
+export NPM_CONFIG_USERCONFIG="$NPMRC"
 # Keep npm's own cache inside the run: a cached packument from a previous run
 # is an answer this server did not give. The *publish* phase gets a cache of
 # its own, and the consumer a different one, because `npm publish` writes the
@@ -71,25 +73,26 @@ export npm_config_userconfig="$NPMRC"
 # same cache and npm never asks for the tarball at all. Measured: the first
 # version of this script asserted the tarball fetch and found no request in the
 # transcript, having proved only that npm can read its own cache.
-export npm_config_cache="$HEAVY_WORK/npm-cache-publish"
-export npm_config_fund=false npm_config_audit=false npm_config_update_notifier=false
+export NPM_CONFIG_CACHE="$HEAVY_WORK/npm-cache-publish"
+export NPM_CONFIG_FUND=false NPM_CONFIG_AUDIT=false NPM_CONFIG_UPDATE_NOTIFIER=false
 
 heavy_log "npm $(npm --version), node $(node --version)"
 
 # ── 1. Publish into a registry nothing else has heard of ─────────────────────
 
 make_package() {  # dir, version
-  mkdir -p "$1"
-  cat > "$1/package.json" <<EOF
+  local dir="$1" version="$2"
+  mkdir -p "$dir"
+  cat > "$dir/package.json" <<EOF
 {
   "name": "$PKG",
-  "version": "$2",
+  "version": "$version",
   "description": "RFC 0009 heavy test probe",
   "license": "MIT",
   "main": "index.js"
 }
 EOF
-  echo "module.exports = '$PKG';" > "$1/index.js"
+  echo "module.exports = '$PKG';" > "$dir/index.js"
 }
 
 make_package "$HEAVY_WORK/pkg" "1.0.0"
@@ -154,7 +157,7 @@ heavy_wire "GET /proxy/$LOCAL/-/v1/search" "npm search did not reach /-/v1/searc
 # ── 5. Install it back, from a clean project ─────────────────────────────────
 
 heavy_mark "local-install"
-export npm_config_cache="$HEAVY_WORK/npm-cache-consumer"
+export NPM_CONFIG_CACHE="$HEAVY_WORK/npm-cache-consumer"
 mkdir -p "$HEAVY_WORK/consumer"
 cat > "$HEAVY_WORK/consumer/package.json" <<EOF
 { "name": "consumer", "version": "1.0.0", "private": true }

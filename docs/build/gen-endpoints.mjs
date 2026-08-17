@@ -33,7 +33,10 @@ const docsDir = join(here, "..");
 const registriesDir = join(docsDir, "registries");
 const specPath = join(docsDir, "..", "ui", "openapi.json");
 
-const BEGIN = /^<!--\s*BEGIN endpoints:\s*([^>]*?)\s*-->\s*$/;
+// The tag list is captured raw and trimmed by the caller: a `\s*(…*?)\s*`
+// sandwich around a lazy group is ambiguous, and the scanner has to backtrack
+// over every split of the trailing whitespace to prove a non-match.
+const BEGIN = /^<!--\s*BEGIN endpoints:([^>]*)-->\s*$/;
 const END = /^<!--\s*END endpoints\s*-->\s*$/;
 
 const METHOD_ORDER = ["get", "post", "put", "patch", "delete"];
@@ -51,8 +54,8 @@ function rowsFor(spec, tags) {
         .trim()
         // Backslash first: escaping `|` introduces backslashes of its own, so
         // doing it the other way round would double-escape them.
-        .replace(/\\/g, "\\\\")
-        .replace(/\|/g, "\\|");
+        .replaceAll("\\", String.raw`\\`)
+        .replaceAll("|", String.raw`\|`);
       rows.push({ method: method.toUpperCase(), path, summary });
     }
   }
@@ -98,8 +101,7 @@ function rewrite(source, spec, file) {
           `either the tag is misspelled or the spec is stale (run 'task dump-spec')`,
       );
     }
-    out.push(lines[i++]); // the BEGIN marker
-    out.push(renderTable(rows));
+    out.push(lines[i++], renderTable(rows)); // the BEGIN marker, then the table
     while (i < lines.length && !END.test(lines[i])) i++;
     if (i >= lines.length) {
       throw new Error(`${file}: BEGIN endpoints marker has no matching END`);
@@ -115,7 +117,7 @@ const check = process.argv.includes("--check");
 
 let pages = 0;
 let stale = [];
-for (const name of readdirSync(registriesDir).sort()) {
+for (const name of readdirSync(registriesDir).sort((a, b) => a.localeCompare(b))) {
   if (!name.endsWith(".md")) continue;
   const file = join(registriesDir, name);
   const before = readFileSync(file, "utf8");

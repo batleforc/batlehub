@@ -5,73 +5,22 @@ mod common;
 #[allow(unused_imports)]
 use common::*;
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use actix_web::test::{call_service, read_body, read_body_json, TestRequest};
 use serde_json::Value;
 
 use base64::Engine as _;
-use batlehub_adapters::cache::InMemoryCacheStore;
-use batlehub_adapters::in_memory::{
-    InMemoryPackageRepository as InMemoryRepo, InMemoryStorageBackend as InMemoryStorage,
-    NoopArtifactMetaRepository as NoopArtifactMeta, NullUserTokenRepository as NullTokenRepository,
-};
 use batlehub_config::schema::RegistryMode;
-use batlehub_core::{
-    ports::{CacheStore, PackageRepository, RegistryClient, StorageBackend},
-    services::{new_hot_lock, AdminService, HotConfig, ProxyMetrics, ProxyService, RegistryPolicy},
-};
 use batlehub_web::RegistryModeMap;
 
 // ══ Terraform local registry tests ════════════════════════════════════════════
 
-async fn make_local_terraform_app(
-    mode: RegistryMode,
-) -> impl actix_web::dev::Service<
-    actix_http::Request,
-    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-    Error = actix_web::Error,
-> {
-    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
-    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
-    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
-    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
-        "local-tf".to_owned(),
-        Arc::new(rbac_policy(repo_dyn.clone())),
-    )]
-    .into();
-
-    let local_svc = make_local_svc(storage.clone());
-    let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
-        storage,
-        cache,
-        repo: repo_dyn.clone(),
-        artifact_meta: NoopArtifactMeta::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
-        sbom: None,
-    });
-    let admin_svc = Arc::new(AdminService::new(repo_dyn));
-    let mode_map = RegistryModeMap::default();
-    mode_map.insert("local-tf".to_owned(), mode);
-
-    let parts = LocalRegistryAppParts {
-        proxy_svc,
-        admin_svc,
-        token_repo: Arc::new(NullTokenRepository),
-        access_config: access_config(&[], &["local-tf"]),
-        registry_map: registry_map_for(&[("local-tf", "terraform")]),
-        local_svc,
-        mode_map,
-    };
-    build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await
+async fn make_local_terraform_app(mode: RegistryMode) -> impl TestService {
+    build_local_registry_app(
+        local_only_app_parts("local-tf", "terraform", mode, false),
+        batlehub_web::CargoIndexMap::default(),
+        None,
+    )
+    .await
 }
 
 /// Like `make_local_terraform_app`, but also returns the `RegistryModeMap` handle
@@ -79,52 +28,9 @@ async fn make_local_terraform_app(
 /// hot-reload) to confirm mode-gated endpoints re-check the *current* mode.
 async fn make_local_terraform_app_with_mode_map(
     mode: RegistryMode,
-) -> (
-    impl actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
-    RegistryModeMap,
-) {
-    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
-    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
-    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
-    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
-        "local-tf".to_owned(),
-        Arc::new(rbac_policy(repo_dyn.clone())),
-    )]
-    .into();
-
-    let local_svc = make_local_svc(storage.clone());
-    let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
-        storage,
-        cache,
-        repo: repo_dyn.clone(),
-        artifact_meta: NoopArtifactMeta::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
-        sbom: None,
-    });
-    let admin_svc = Arc::new(AdminService::new(repo_dyn));
-    let mode_map = RegistryModeMap::default();
-    mode_map.insert("local-tf".to_owned(), mode);
-
-    let parts = LocalRegistryAppParts {
-        proxy_svc,
-        admin_svc,
-        token_repo: Arc::new(NullTokenRepository),
-        access_config: access_config(&[], &["local-tf"]),
-        registry_map: registry_map_for(&[("local-tf", "terraform")]),
-        local_svc,
-        mode_map: mode_map.clone(),
-    };
+) -> (impl TestService, RegistryModeMap) {
+    let parts = local_only_app_parts("local-tf", "terraform", mode, false);
+    let mode_map = parts.mode_map.clone();
     let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
     (app, mode_map)
 }
