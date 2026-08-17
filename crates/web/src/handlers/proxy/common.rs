@@ -427,6 +427,43 @@ pub async fn serve_local_or_proxy_artifact(
 /// streaming it from the upstream registry (Proxy mode, or a Hybrid miss).
 ///
 /// This is the shared shape behind `get_packument`, `get_version`, `gem_info`,
+/// The local half of the mode ladder: `Ok(None)` means "fall through upstream".
+///
+/// Local and hybrid both try the local store first; what differs is what a miss
+/// means. In hybrid a miss is a fall-through, in local it is the answer — and
+/// getting that backwards either hides a published package or turns a proxy
+/// read into a `404`. Proxy mode never looks.
+///
+/// RBAC is enforced here rather than left to the local fetch: that fetch checks
+/// per-package `Visibility` only, not the registry rule chain the proxy
+/// fall-through would run.
+async fn local_first<T, F, Fut>(
+    svc: &ProxyService,
+    mode: RegistryMode,
+    identity: &AuthIdentity,
+    local_fetch: F,
+    not_found_msg: String,
+    pkg: &PackageId,
+    resource_type: &str,
+) -> Result<Option<T>, AppError>
+where
+    F: FnOnce(batlehub_core::entities::Identity) -> Fut,
+    Fut: std::future::Future<Output = Result<T, CoreError>>,
+{
+    if !matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        return Ok(None);
+    }
+    svc.authorize_read(pkg, &identity.0, resource_type)
+        .await
+        .map_err(AppError::from)?;
+    match local_fetch(identity.0.clone()).await {
+        Ok(x) => Ok(Some(x)),
+        Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => Ok(None),
+        Err(CoreError::NotFound(_)) => Err(AppError::not_found(not_found_msg)),
+        Err(e) => Err(AppError::from(e)),
+    }
+}
+
 /// `gem_versions`, `goproxy_latest`, and `composer_p2_metadata`: check the
 /// registry mode, try `local_fetch` in Local/Hybrid mode, fall through to
 /// `proxy_stream` on a Hybrid miss (or directly in Proxy mode).
@@ -447,21 +484,18 @@ where
     F: FnOnce(batlehub_core::entities::Identity) -> Fut,
     Fut: std::future::Future<Output = Result<T, CoreError>>,
 {
-    let mode = mode_map.get(registry);
-    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        // Enforce the registry's RBAC before serving metadata from local storage:
-        // the local fetch only checks per-package Visibility, not the registry
-        // rule chain (which the proxy fall-through would run). See the artifact
-        // helper above for the full rationale.
-        svc.authorize_read(&pkg, &identity.0, resource_type)
-            .await
-            .map_err(AppError::from)?;
-        match local_fetch(identity.0.clone()).await {
-            Ok(x) => return Ok(HttpResponse::Ok().content_type("application/json").json(x)),
-            Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}
-            Err(CoreError::NotFound(_)) => return Err(AppError::not_found(not_found_msg)),
-            Err(e) => return Err(AppError::from(e)),
-        }
+    let local = local_first(
+        &svc,
+        mode_map.get(registry),
+        &identity,
+        local_fetch,
+        not_found_msg,
+        &pkg,
+        resource_type,
+    )
+    .await?;
+    if let Some(x) = local {
+        return Ok(HttpResponse::Ok().content_type("application/json").json(x));
     }
     proxy_stream(svc, pkg, identity, resource_type, proxy_content_type).await
 }
@@ -495,30 +529,22 @@ where
     F: FnOnce(batlehub_core::entities::Identity) -> Fut,
     Fut: std::future::Future<Output = Result<T, CoreError>>,
 {
-    let mode = mode_map.get(registry);
-    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        svc.authorize_read(&pkg, &identity.0, resource_type)
-            .await
-            .map_err(AppError::from)?;
-        match local_fetch(identity.0.clone()).await {
-            Ok(x) => return Ok(HttpResponse::Ok().content_type(local_content_type).json(x)),
-            Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}
-            Err(CoreError::NotFound(_)) => return Err(AppError::not_found(not_found_msg)),
-            Err(e) => return Err(AppError::from(e)),
-        }
+    let local = local_first(
+        &svc,
+        mode_map.get(registry),
+        &identity,
+        local_fetch,
+        not_found_msg,
+        &pkg,
+        resource_type,
+    )
+    .await?;
+    if let Some(x) = local {
+        return Ok(HttpResponse::Ok().content_type(local_content_type).json(x));
     }
 
-    let req = ProxyRequest {
-        package_id: pkg,
-        identity: identity.0,
-        resource_type: resource_type.to_owned(),
-        ip_address: None,
-        user_agent: None,
-    };
-    let doc = svc
-        .version_document(&req, doc_kind, &public_base)
-        .await
-        .map_err(AppError::from)?;
+    let doc =
+        fetch_proxy_document(svc, pkg, identity, resource_type, doc_kind, public_base).await?;
     Ok(document_response(doc))
 }
 
@@ -555,34 +581,30 @@ where
     F: FnOnce(batlehub_core::entities::Identity) -> Fut,
     Fut: std::future::Future<Output = Result<T, CoreError>>,
 {
-    let mode = mode_map.get(registry);
-    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        svc.authorize_read(&pkg, &identity.0, resource_type)
-            .await
-            .map_err(AppError::from)?;
-        match local_fetch(identity.0.clone()).await {
-            Ok(x) => {
-                return serde_json::to_value(x).map_err(|e| {
-                    AppError::internal(format!("could not render the local document: {e}"))
-                })
-            }
-            Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}
-            Err(CoreError::NotFound(_)) => return Err(AppError::not_found(not_found_msg)),
-            Err(e) => return Err(AppError::from(e)),
-        }
+    let local = local_first(
+        svc,
+        mode_map.get(registry),
+        &identity,
+        local_fetch,
+        not_found_msg,
+        &pkg,
+        resource_type,
+    )
+    .await?;
+    if let Some(x) = local {
+        return serde_json::to_value(x)
+            .map_err(|e| AppError::internal(format!("could not render the local document: {e}")));
     }
 
-    let req = ProxyRequest {
-        package_id: pkg,
-        identity: identity.0,
-        resource_type: resource_type.to_owned(),
-        ip_address: None,
-        user_agent: None,
-    };
-    let doc = svc
-        .version_document(&req, doc_kind, &public_base)
-        .await
-        .map_err(AppError::from)?;
+    let doc = fetch_proxy_document(
+        svc.clone(),
+        pkg,
+        identity,
+        resource_type,
+        doc_kind,
+        public_base,
+    )
+    .await?;
     doc.body.as_json().cloned().ok_or_else(|| {
         AppError::internal("upstream document is not JSON and cannot be read as one".to_owned())
     })

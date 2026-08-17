@@ -16,6 +16,7 @@ use super::super::common::{
     require_registry_type, MAX_UPLOAD_BYTES,
 };
 use super::nuspec::{extract_nuspec_from_nupkg, parse_nuspec};
+use crate::handlers::proxy::search::resolve_and_search;
 use crate::handlers::schemas::{MessageResponse, ProtocolDocument, UpstreamDocument};
 use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
@@ -40,6 +41,56 @@ struct SearchQuery {
 
 fn default_take() -> usize {
     20
+}
+
+/// Collect the single uploaded file out of a `multipart/form-data` body.
+///
+/// `dotnet nuget push` and `nuget.exe` both send multipart, so both publish
+/// paths have to walk the fields. `preferred` names the field to take when the
+/// client labels one; without it, the first field wins. `what` names the file
+/// in the two error messages.
+///
+/// Raw `Multipart` is not covered by `PayloadConfig`, so the cumulative size is
+/// bounded here — otherwise an unauthenticated client could stream an unbounded
+/// body into memory (OOM). Same ceiling as `collect_payload`.
+async fn collect_multipart_file(
+    multipart: &mut Multipart,
+    preferred: Option<&str>,
+    what: &str,
+) -> Result<bytes::Bytes, AppError> {
+    let mut found: Option<bytes::Bytes> = None;
+    let mut total_bytes: u64 = 0;
+    while let Some(field_result) = multipart.next().await {
+        let mut field =
+            field_result.map_err(|e| AppError::bad_request(format!("multipart error: {e}")))?;
+        let field_name = field
+            .content_disposition()
+            .and_then(|cd| cd.get_name())
+            .unwrap_or("")
+            .to_owned();
+        let mut buf = BytesMut::new();
+        while let Some(chunk) = field.next().await {
+            let chunk = chunk.map_err(|e| AppError::bad_request(format!("chunk error: {e}")))?;
+            total_bytes += chunk.len() as u64;
+            if total_bytes > MAX_UPLOAD_BYTES {
+                return Err(AppError::from(
+                    batlehub_core::error::CoreError::PayloadTooLarge(format!(
+                        "upload exceeds the {MAX_UPLOAD_BYTES}-byte limit"
+                    )),
+                ));
+            }
+            buf.extend_from_slice(&chunk);
+        }
+        if preferred.is_some_and(|p| field_name == p) || found.is_none() {
+            found = Some(buf.freeze());
+        }
+    }
+    let bytes =
+        found.ok_or_else(|| AppError::bad_request(format!("no {what} in multipart body")))?;
+    if bytes.is_empty() {
+        return Err(AppError::bad_request(format!("empty {what} body")));
+    }
+    Ok(bytes)
 }
 
 /// Search for NuGet packages.
@@ -73,7 +124,6 @@ pub async fn nuget_search(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_registry_type(&registry, "nuget", &map)?;
 
     // RFC 0009 §7.7. Proxy and hybrid mode used to return
     // `{"totalHits": 0, "data": []}` unconditionally, under a comment saying it
@@ -82,29 +132,22 @@ pub async fn nuget_search(
     // reported zero results against a registry holding thousands of packages,
     // and nothing anywhere looked broken.
     //
-    // `ProxyService::search` is the shared three-rung path: cached, then
-    // upstream, then what this registry actually holds. The last rung is why
-    // the service index can go on advertising this endpoint — there is now no
-    // state in which it has nothing to say.
-    let _ = &identity;
-    // Ask for the whole window the client is paging through, not just one
+    // `resolve_and_search` is the shared three-rung path: cached, then upstream,
+    // then what this registry actually holds. The last rung is why the service
+    // index can go on advertising this endpoint — there is now no state in which
+    // it has nothing to say.
+    //
+    // The window is the whole range the client is paging through, not one
     // page's worth. `skip` was added when §12.4 measured it being ignored, and
     // added in the wrong place: the search was limited to `take` hits and the
     // offset then applied to *that*, so `take=1&skip=1` returned nothing and
     // `take=20&skip=20` — the second page `dotnet package search` asks for —
     // was empty on every registry, however many packages it held (§12.16).
     let window = query.skip.saturating_add(query.take);
-    let results = svc
-        .search(
-            &registry,
-            &query.q,
-            window,
-            crate::handlers::proxy::search::search_mode(mode_map.get(&registry)),
-            crate::handlers::proxy::search::local_hits(&local_svc, &registry, &query.q, window)
-                .await,
-        )
-        .await
-        .map_err(AppError::from)?;
+    let results = resolve_and_search(
+        &registry, "nuget", &query.q, window, &identity, &svc, &local_svc, &map, &mode_map,
+    )
+    .await?;
 
     let data: Vec<serde_json::Value> = results
         .hits
@@ -163,23 +206,14 @@ pub async fn nuget_autocomplete(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_registry_type(&registry, "nuget", &map)?;
-    let _ = &identity;
 
     // Same window as `nuget_search`: the offset is into the result set, not
     // into a page that was already truncated to `take`.
     let window = query.skip.saturating_add(query.take);
-    let results = svc
-        .search(
-            &registry,
-            &query.q,
-            window,
-            crate::handlers::proxy::search::search_mode(mode_map.get(&registry)),
-            crate::handlers::proxy::search::local_hits(&local_svc, &registry, &query.q, window)
-                .await,
-        )
-        .await
-        .map_err(AppError::from)?;
+    let results = resolve_and_search(
+        &registry, "nuget", &query.q, window, &identity, &svc, &local_svc, &map, &mode_map,
+    )
+    .await?;
 
     // The autocomplete document is ids only — no versions, no descriptions.
     let data: Vec<String> = results
@@ -242,45 +276,7 @@ pub async fn nuget_publish(
     require_registry_type(&registry, "nuget", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
-    // dotnet nuget push and nuget.exe always send multipart/form-data.
-    // Accept any field that looks like the package file.
-    let mut nupkg_bytes_opt: Option<bytes::Bytes> = None;
-    // Raw `Multipart` is not covered by `PayloadConfig`, so bound the cumulative
-    // accumulation ourselves — otherwise an unauthenticated client could stream
-    // an unbounded body into memory (OOM). Same ceiling as `collect_payload`.
-    let mut total_bytes: u64 = 0;
-    while let Some(field_result) = multipart.next().await {
-        let mut field =
-            field_result.map_err(|e| AppError::bad_request(format!("multipart error: {e}")))?;
-        let field_name = field
-            .content_disposition()
-            .and_then(|cd| cd.get_name())
-            .unwrap_or("")
-            .to_owned();
-        let mut buf = BytesMut::new();
-        while let Some(chunk) = field.next().await {
-            let chunk = chunk.map_err(|e| AppError::bad_request(format!("chunk error: {e}")))?;
-            total_bytes += chunk.len() as u64;
-            if total_bytes > MAX_UPLOAD_BYTES {
-                return Err(AppError::from(
-                    batlehub_core::error::CoreError::PayloadTooLarge(format!(
-                        "upload exceeds the {MAX_UPLOAD_BYTES}-byte limit"
-                    )),
-                ));
-            }
-            buf.extend_from_slice(&chunk);
-        }
-        // Accept "package" field or the first non-empty field.
-        if field_name == "package" || nupkg_bytes_opt.is_none() {
-            nupkg_bytes_opt = Some(buf.freeze());
-        }
-    }
-    let nupkg_bytes =
-        nupkg_bytes_opt.ok_or_else(|| AppError::bad_request("no .nupkg in multipart body"))?;
-
-    if nupkg_bytes.is_empty() {
-        return Err(AppError::bad_request("empty .nupkg body"));
-    }
+    let nupkg_bytes = collect_multipart_file(&mut multipart, Some("package"), ".nupkg").await?;
 
     // Extract .nuspec from the ZIP archive.
     let nuspec_bytes = extract_nuspec_from_nupkg(&nupkg_bytes)?;
@@ -370,33 +366,9 @@ pub async fn nuget_symbol_publish(
     require_registry_type(&registry, "nuget", &map)?;
     require_local_mode(&registry, &mode_map)?;
 
-    let mut snupkg_opt: Option<bytes::Bytes> = None;
-    let mut total_bytes: u64 = 0;
-    while let Some(field_result) = multipart.next().await {
-        let mut field =
-            field_result.map_err(|e| AppError::bad_request(format!("multipart error: {e}")))?;
-        let mut buf = BytesMut::new();
-        while let Some(chunk) = field.next().await {
-            let chunk = chunk.map_err(|e| AppError::bad_request(format!("chunk error: {e}")))?;
-            total_bytes += chunk.len() as u64;
-            if total_bytes > MAX_UPLOAD_BYTES {
-                return Err(AppError::from(
-                    batlehub_core::error::CoreError::PayloadTooLarge(format!(
-                        "upload exceeds the {MAX_UPLOAD_BYTES}-byte limit"
-                    )),
-                ));
-            }
-            buf.extend_from_slice(&chunk);
-        }
-        if snupkg_opt.is_none() {
-            snupkg_opt = Some(buf.freeze());
-        }
-    }
-    let snupkg_bytes =
-        snupkg_opt.ok_or_else(|| AppError::bad_request("no .snupkg in multipart body"))?;
-    if snupkg_bytes.is_empty() {
-        return Err(AppError::bad_request("empty .snupkg body"));
-    }
+    // No preferred field name: the symbol push sends one part and labels it
+    // nothing in particular, so the first is the one.
+    let snupkg_bytes = collect_multipart_file(&mut multipart, None, ".snupkg").await?;
 
     // A `.snupkg` is a ZIP with a `.nuspec` exactly like a `.nupkg`, so the
     // coordinate is read the same way — which is what lets it share one.

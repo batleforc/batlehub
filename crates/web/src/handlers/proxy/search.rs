@@ -126,7 +126,7 @@ fn default_size() -> usize {
 /// is here so they cannot drift apart on which sources a search draws from,
 /// which is the property the module doc claims.
 #[allow(clippy::too_many_arguments)]
-async fn resolve_and_search(
+pub(crate) async fn resolve_and_search(
     registry: &str,
     kind: &str,
     query: &str,
