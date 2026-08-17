@@ -61,6 +61,101 @@ fn text_response(req: &HttpRequest, doc: batlehub_core::ports::VersionDocument) 
     compact_response(req, document_text(doc))
 }
 
+/// Which whole-registry compact document is being served.
+///
+/// `/versions` and `/names` are one procedure with three substitutions, and
+/// were written out twice. This names the substitutions.
+#[derive(Clone, Copy)]
+enum Compact {
+    Versions,
+    Names,
+}
+
+impl Compact {
+    /// The synthetic package name the coordinate carries. The document is
+    /// scoped to the registry rather than to a gem, so it needs one.
+    fn coordinate(self) -> &'static str {
+        match self {
+            Compact::Versions => "_versions",
+            Compact::Names => "_names",
+        }
+    }
+
+    fn document_kind(self) -> batlehub_core::ports::DocumentKind {
+        match self {
+            Compact::Versions => batlehub_core::ports::DocumentKind::COMPACT_VERSIONS,
+            Compact::Names => batlehub_core::ports::DocumentKind::COMPACT_NAMES,
+        }
+    }
+
+    /// The half generated from what this registry has published.
+    async fn local(
+        self,
+        local_svc: &LocalRegistryService,
+        registry: &str,
+        identity: &batlehub_core::entities::Identity,
+    ) -> Result<String, batlehub_core::error::CoreError> {
+        match self {
+            Compact::Versions => {
+                local_svc
+                    .get_rubygems_compact_versions(registry, identity)
+                    .await
+            }
+            Compact::Names => {
+                local_svc
+                    .get_rubygems_compact_names(registry, identity)
+                    .await
+            }
+        }
+    }
+}
+
+/// Serve one of the two whole-registry compact documents.
+#[allow(clippy::too_many_arguments)]
+async fn serve_compact(
+    which: Compact,
+    http_req: &HttpRequest,
+    registry: String,
+    identity: AuthIdentity,
+    svc: &ProxyService,
+    local_svc: &LocalRegistryService,
+    map: &RegistryMap,
+    mode_map: &RegistryModeMap,
+) -> Result<HttpResponse, AppError> {
+    require_registry_type(&registry, "rubygems", map)?;
+    let mode = mode_map.get(&registry);
+
+    let local = if mode == RegistryMode::Local || mode == RegistryMode::Hybrid {
+        which
+            .local(local_svc, &registry, &identity.0)
+            .await
+            .map_err(AppError::from)?
+    } else {
+        String::new()
+    };
+    if mode == RegistryMode::Local {
+        return Ok(text_body(http_req, local));
+    }
+
+    // The registry itself is the coordinate: this document is scoped to the
+    // whole channel, not to a gem — the same shape conda's repodata uses.
+    let req = batlehub_core::services::ProxyRequest {
+        package_id: PackageId::new(&registry, which.coordinate(), "__compact__"),
+        identity: identity.0,
+        resource_type: batlehub_core::rules::resource_type::RELEASES_READ.to_owned(),
+        ip_address: None,
+        user_agent: None,
+    };
+    let doc = svc
+        .multi_package_document(&req, which.document_kind(), "")
+        .await
+        .map_err(AppError::from)?;
+    Ok(text_body(
+        http_req,
+        merge_compact(document_text(doc), &local),
+    ))
+}
+
 /// The whole-registry version list Bundler fetches first.
 #[utoipa::path(
     get,
@@ -87,43 +182,17 @@ pub async fn gem_compact_versions(
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
-    let registry = path.into_inner();
-    require_registry_type(&registry, "rubygems", &map)?;
-    let mode = mode_map.get(&registry);
-
-    let local = if mode == RegistryMode::Local || mode == RegistryMode::Hybrid {
-        local_svc
-            .get_rubygems_compact_versions(&registry, &identity.0)
-            .await
-            .map_err(AppError::from)?
-    } else {
-        String::new()
-    };
-    if mode == RegistryMode::Local {
-        return Ok(text_body(&http_req, local));
-    }
-
-    // The registry itself is the coordinate: this document is scoped to the
-    // whole channel, not to a gem — the same shape conda's repodata uses.
-    let req = batlehub_core::services::ProxyRequest {
-        package_id: PackageId::new(&registry, "_versions", "__compact__"),
-        identity: identity.0,
-        resource_type: batlehub_core::rules::resource_type::RELEASES_READ.to_owned(),
-        ip_address: None,
-        user_agent: None,
-    };
-    let doc = svc
-        .multi_package_document(
-            &req,
-            batlehub_core::ports::DocumentKind::COMPACT_VERSIONS,
-            "",
-        )
-        .await
-        .map_err(AppError::from)?;
-    Ok(text_body(
+    serve_compact(
+        Compact::Versions,
         &http_req,
-        merge_compact(document_text(doc), &local),
-    ))
+        path.into_inner(),
+        identity,
+        &svc,
+        &local_svc,
+        &map,
+        &mode_map,
+    )
+    .await
 }
 
 /// Render a compact-index document from text we generated ourselves.
@@ -195,37 +264,17 @@ pub async fn gem_compact_names(
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
-    let registry = path.into_inner();
-    require_registry_type(&registry, "rubygems", &map)?;
-    let mode = mode_map.get(&registry);
-
-    let local = if mode == RegistryMode::Local || mode == RegistryMode::Hybrid {
-        local_svc
-            .get_rubygems_compact_names(&registry, &identity.0)
-            .await
-            .map_err(AppError::from)?
-    } else {
-        String::new()
-    };
-    if mode == RegistryMode::Local {
-        return Ok(text_body(&http_req, local));
-    }
-
-    let req = batlehub_core::services::ProxyRequest {
-        package_id: PackageId::new(&registry, "_names", "__compact__"),
-        identity: identity.0,
-        resource_type: batlehub_core::rules::resource_type::RELEASES_READ.to_owned(),
-        ip_address: None,
-        user_agent: None,
-    };
-    let doc = svc
-        .multi_package_document(&req, batlehub_core::ports::DocumentKind::COMPACT_NAMES, "")
-        .await
-        .map_err(AppError::from)?;
-    Ok(text_body(
+    serve_compact(
+        Compact::Names,
         &http_req,
-        merge_compact(document_text(doc), &local),
-    ))
+        path.into_inner(),
+        identity,
+        &svc,
+        &local_svc,
+        &map,
+        &mode_map,
+    )
+    .await
 }
 
 /// One gem's versions and dependencies — what Bundler resolves against.

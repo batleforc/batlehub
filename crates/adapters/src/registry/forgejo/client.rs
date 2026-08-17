@@ -3,8 +3,8 @@ use chrono::DateTime;
 use futures::TryStreamExt;
 
 use super::super::http_client::{
-    apply_upstream_tls, basic_auth_get, ensure_same_origin, fetch_json_document, to_registry_error,
-    upstream_auth_headers, UpstreamHttpOptions,
+    apply_upstream_tls, basic_auth_get, ensure_same_origin, fetch_release_listing,
+    to_registry_error, upstream_auth_headers, UpstreamHttpOptions,
 };
 use super::super::ssrf;
 use super::models::{FjAsset, FjRelease};
@@ -197,24 +197,13 @@ impl RegistryClient for ForgejoRegistryClient {
         "forgejo"
     }
 
-    /// The repository's release listing — the document a client reads to decide
-    /// which release to download.
-    ///
-    /// Fetched fresh rather than paged through `fetch_all_releases`: the filter
-    /// rewrites the document the client asked for, so it has to be *that*
-    /// document rather than a re-serialisation of a typed subset.
     async fn fetch_version_document(
         &self,
         package: &str,
         kind: DocumentKind,
     ) -> Result<VersionDocument, CoreError> {
-        if kind != DocumentKind::Versions {
-            return Err(CoreError::NotSupported(format!(
-                "forgejo has no '{kind}' listing document"
-            )));
-        }
         let url = format!("{}/repos/{}/releases?limit=50", self.base_url, package);
-        fetch_json_document(self.get(&url), &format!("Forgejo releases for '{package}'")).await
+        fetch_release_listing(self.get(&url), kind, "forgejo", "Forgejo", package).await
     }
 
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {

@@ -31,6 +31,11 @@ ui/src/client/
 ui/.env
 ui/.env.*.local
 
+# Python bytecode. The CI helpers in .github/scripts/ are run directly, so a
+# __pycache__/ only ever appears when one is executed locally.
+__pycache__/
+*.pyc
+
 # Logs
 *.log
 

@@ -215,6 +215,31 @@ pub async fn fetch_json_document(
     Ok(batlehub_core::ports::VersionDocument::json(value))
 }
 
+/// The releases listing of a forge repository, as the client asked for it.
+///
+/// GitHub, Forgejo and GitLab answer `Versions` and nothing else, with the same
+/// guard and the same two error strings; only the URL differs between them.
+/// `kind_name` is the registry type as `RegistryClient::registry_type` spells
+/// it, `display` the forge's own capitalisation for the fetch error.
+///
+/// Fetched fresh rather than paged through a typed `fetch_all_releases`: the
+/// listing filter rewrites the document the client asked for, so it has to be
+/// *that* document rather than a re-serialisation of a typed subset.
+pub async fn fetch_release_listing(
+    req: reqwest::RequestBuilder,
+    kind: batlehub_core::ports::DocumentKind,
+    kind_name: &str,
+    display: &str,
+    package: &str,
+) -> Result<batlehub_core::ports::VersionDocument, CoreError> {
+    if kind != batlehub_core::ports::DocumentKind::Versions {
+        return Err(CoreError::NotSupported(format!(
+            "{kind_name} has no '{kind}' listing document"
+        )));
+    }
+    fetch_json_document(req, &format!("{display} releases for '{package}'")).await
+}
+
 /// [`fetch_json_document`] for the protocols whose listing is not JSON —
 /// `maven-metadata.xml`, a PyPI simple page, Go's `@v/list`, cargo's NDJSON
 /// sparse index.

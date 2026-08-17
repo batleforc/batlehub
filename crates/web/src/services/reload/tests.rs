@@ -17,6 +17,103 @@ async fn make_svc_with_file(
     make_svc_with_file_and_builder(enabled, initial_content, builder).await
 }
 
+// ── Fixture helpers ───────────────────────────────────────────────────────────
+//
+// `ConfigReloadParams`, `BuiltHotState` and `PendingReload` are wide structs
+// whose fields these tests almost never vary. Written out at every call site
+// they were the largest duplicated block in the crate, and adding a field meant
+// editing a dozen copies — which is how `sumdb_map` came to be added in twelve
+// places at once. Only what a test actually varies is passed in.
+
+/// An `AccessConfig` granting nothing.
+fn empty_access_config() -> crate::AccessConfig {
+    crate::AccessConfig {
+        anonymous: Default::default(),
+        user: Default::default(),
+        admin: Default::default(),
+        groups: Default::default(),
+        explore_anonymous: Default::default(),
+        explore_user: Default::default(),
+        explore_admin: Default::default(),
+    }
+}
+
+/// A `HotConfig` with no registries and no policies.
+fn empty_hot_config() -> batlehub_core::services::HotConfig {
+    batlehub_core::services::HotConfig {
+        registries: HashMap::new(),
+        policies: HashMap::new(),
+        ..Default::default()
+    }
+}
+
+/// What a successful builder returns: `hot`, and empty everything else.
+fn built_hot_state(hot: batlehub_core::services::HotConfig) -> BuiltHotState {
+    BuiltHotState {
+        hot,
+        access: empty_access_config(),
+        registry_map: crate::RegistryMap::new(HashMap::new()),
+        registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
+        upstream_map: crate::UpstreamMap::new(HashMap::new()),
+        cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
+        repo_signer_map: crate::RepoSignerMap::default(),
+        vuln_db_map: crate::VulnDbMap::default(),
+        sumdb_map: crate::SumDbMap::default(),
+        registry_host_map: crate::RegistryHostMap::default(),
+    }
+}
+
+/// The service's construction parameters. Three of the sixteen ever vary.
+fn reload_params(
+    config_path: String,
+    hot_reload_enabled: bool,
+    builder: HotConfigBuilder,
+) -> ConfigReloadParams {
+    ConfigReloadParams {
+        hot: new_hot_lock(empty_hot_config()),
+        access: crate::new_access_lock(empty_access_config()),
+        registry_map: crate::RegistryMap::new(HashMap::new()),
+        registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
+        upstream_map: crate::UpstreamMap::new(HashMap::new()),
+        cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
+        repo_signer_map: crate::RepoSignerMap::default(),
+        vuln_db_map: crate::VulnDbMap::default(),
+        sumdb_map: crate::SumDbMap::default(),
+        registry_host_map: crate::RegistryHostMap::default(),
+        proxy_trust: crate::middleware::ProxyTrust::default(),
+        config_path,
+        config_change_repo: None,
+        hot_reload_enabled,
+        builder,
+        banner: None,
+    }
+}
+
+/// A staged reload that changes nothing — the base for `..empty_pending()`,
+/// which is how every test here builds one.
+fn empty_pending() -> PendingReload {
+    PendingReload {
+        id: Uuid::new_v4(),
+        created_at: chrono::Utc::now(),
+        expires_at: chrono::Utc::now() + chrono::Duration::seconds(600),
+        source: ReloadSource::AdminRequest,
+        diff: ReloadDiff::default(),
+        content: None,
+        new_hot: batlehub_core::services::HotConfig::default(),
+        new_access: empty_access_config(),
+        new_registry_map: crate::RegistryMap::new(HashMap::new()),
+        new_registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
+        new_upstream_map: crate::UpstreamMap::new(HashMap::new()),
+        new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
+        new_repo_signer_map: crate::RepoSignerMap::default(),
+        new_vuln_db_map: crate::VulnDbMap::default(),
+        new_sumdb_map: crate::SumDbMap::default(),
+        new_registry_host_map: crate::RegistryHostMap::default(),
+        new_proxy_trust: crate::middleware::ProxyTrust::default(),
+        warnings: Vec::new(),
+    }
+}
+
 /// Same as `make_svc_with_file` but lets the caller supply a `builder` that
 /// actually succeeds, for tests that exercise `load_pending`'s diff computation.
 async fn make_svc_with_file_and_builder(
@@ -29,77 +126,21 @@ async fn make_svc_with_file_and_builder(
     tmp.write_all(initial_content.as_bytes()).expect("write");
     let path = tmp.path().to_str().unwrap().to_owned();
 
-    let hot = new_hot_lock(batlehub_core::services::HotConfig {
-        registries: HashMap::new(),
-        policies: HashMap::new(),
-        ..Default::default()
-    });
-    let access = crate::new_access_lock(crate::AccessConfig {
-        anonymous: Default::default(),
-        user: Default::default(),
-        admin: Default::default(),
-        groups: Default::default(),
-        explore_anonymous: Default::default(),
-        explore_user: Default::default(),
-        explore_admin: Default::default(),
-    });
-    let svc = Arc::new(ConfigReloadService::new(ConfigReloadParams {
-        hot,
-        access,
-        registry_map: crate::RegistryMap::new(HashMap::new()),
-        registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
-        upstream_map: crate::UpstreamMap::new(HashMap::new()),
-        cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
-        repo_signer_map: crate::RepoSignerMap::default(),
-        vuln_db_map: crate::VulnDbMap::default(),
-        sumdb_map: crate::SumDbMap::default(),
-        registry_host_map: crate::RegistryHostMap::default(),
-        proxy_trust: crate::middleware::ProxyTrust::default(),
-        config_path: path,
-        config_change_repo: None,
-        hot_reload_enabled: enabled,
-        builder,
-        banner: None,
-    }));
+    let svc = Arc::new(ConfigReloadService::new(reload_params(
+        path, enabled, builder,
+    )));
     (svc, tmp)
 }
 
 // ── Shared helper ─────────────────────────────────────────────────────────────
 
 pub(super) fn make_svc(enabled: bool) -> Arc<ConfigReloadService> {
-    let hot = new_hot_lock(batlehub_core::services::HotConfig {
-        registries: HashMap::new(),
-        policies: HashMap::new(),
-        ..Default::default()
-    });
-    let access = crate::new_access_lock(crate::AccessConfig {
-        anonymous: Default::default(),
-        user: Default::default(),
-        admin: Default::default(),
-        groups: Default::default(),
-        explore_anonymous: Default::default(),
-        explore_user: Default::default(),
-        explore_admin: Default::default(),
-    });
     let builder: HotConfigBuilder = Arc::new(|_| anyhow::bail!("builder not used in unit tests"));
-    Arc::new(ConfigReloadService::new(ConfigReloadParams {
-        hot,
-        access,
-        registry_map: crate::RegistryMap::new(HashMap::new()),
-        registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
-        upstream_map: crate::UpstreamMap::new(HashMap::new()),
-        cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
-        repo_signer_map: crate::RepoSignerMap::default(),
-        vuln_db_map: crate::VulnDbMap::default(),
-        sumdb_map: crate::SumDbMap::default(),
-        registry_host_map: crate::RegistryHostMap::default(),
-        proxy_trust: crate::middleware::ProxyTrust::default(),
-        config_path: "config.toml".to_owned(),
-        config_change_repo: None,
-        hot_reload_enabled: enabled,
+    Arc::new(ConfigReloadService::new(reload_params(
+        "config.toml".to_owned(),
+        enabled,
         builder,
-        banner: None,
-    }))
+    )))
 }
 
 // ── Basic guard tests ─────────────────────────────────────────────────────────
@@ -248,65 +289,19 @@ async fn reload_immediate_applies_config() {
     )
     .unwrap();
 
-    let hot = new_hot_lock(batlehub_core::services::HotConfig {
-        registries: HashMap::new(),
-        policies: HashMap::new(),
-        ..Default::default()
-    });
-    let access = crate::new_access_lock(crate::AccessConfig {
-        anonymous: Default::default(),
-        user: Default::default(),
-        admin: Default::default(),
-        groups: Default::default(),
-        explore_anonymous: Default::default(),
-        explore_user: Default::default(),
-        explore_admin: Default::default(),
-    });
     let builder: HotConfigBuilder = Arc::new(|_| {
-        Ok(BuiltHotState {
-            hot: batlehub_core::services::HotConfig {
-                registries: HashMap::new(),
-                policies: HashMap::new(),
-                max_artifact_size_bytes: Some(999),
-                ..Default::default()
-            },
-            access: crate::AccessConfig {
-                anonymous: Default::default(),
-                user: Default::default(),
-                admin: Default::default(),
-                groups: Default::default(),
-                explore_anonymous: Default::default(),
-                explore_user: Default::default(),
-                explore_admin: Default::default(),
-            },
-            registry_map: crate::RegistryMap::new(HashMap::new()),
-            registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
-            upstream_map: crate::UpstreamMap::new(HashMap::new()),
-            cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
-            repo_signer_map: crate::RepoSignerMap::default(),
-            vuln_db_map: crate::VulnDbMap::default(),
-            sumdb_map: crate::SumDbMap::default(),
-            registry_host_map: crate::RegistryHostMap::default(),
-        })
+        Ok(built_hot_state(batlehub_core::services::HotConfig {
+            registries: HashMap::new(),
+            policies: HashMap::new(),
+            max_artifact_size_bytes: Some(999),
+            ..Default::default()
+        }))
     });
-    let svc = Arc::new(ConfigReloadService::new(ConfigReloadParams {
-        hot,
-        access,
-        registry_map: crate::RegistryMap::new(HashMap::new()),
-        registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
-        upstream_map: crate::UpstreamMap::new(HashMap::new()),
-        cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
-        repo_signer_map: crate::RepoSignerMap::default(),
-        vuln_db_map: crate::VulnDbMap::default(),
-        sumdb_map: crate::SumDbMap::default(),
-        registry_host_map: crate::RegistryHostMap::default(),
-        proxy_trust: crate::middleware::ProxyTrust::default(),
-        config_path: tmp_path.clone(),
-        config_change_repo: None,
-        hot_reload_enabled: true,
+    let svc = Arc::new(ConfigReloadService::new(reload_params(
+        tmp_path.clone(),
+        true,
         builder,
-        banner: None,
-    }));
+    )));
 
     let diff = svc.reload_immediate("test").await.unwrap();
     assert!(diff.added_registries.is_empty());
@@ -337,20 +332,8 @@ async fn apply_expired_pending_returns_error() {
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 fn make_pending(expires_offset_secs: i64, already_expired: bool) -> PendingReload {
-    let hot = batlehub_core::services::HotConfig {
-        registries: HashMap::new(),
-        policies: HashMap::new(),
-        ..Default::default()
-    };
-    let access = crate::AccessConfig {
-        anonymous: Default::default(),
-        user: Default::default(),
-        admin: Default::default(),
-        groups: Default::default(),
-        explore_anonymous: Default::default(),
-        explore_user: Default::default(),
-        explore_admin: Default::default(),
-    };
+    let hot = empty_hot_config();
+    let access = empty_access_config();
     let created_at = if already_expired {
         chrono::Utc::now() - chrono::Duration::seconds(700)
     } else {
@@ -369,16 +352,7 @@ fn make_pending(expires_offset_secs: i64, already_expired: bool) -> PendingReloa
         content: None,
         new_hot: hot,
         new_access: access,
-        new_registry_map: crate::RegistryMap::new(HashMap::new()),
-        new_registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
-        new_upstream_map: crate::UpstreamMap::new(HashMap::new()),
-        new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
-        new_repo_signer_map: crate::RepoSignerMap::default(),
-        new_vuln_db_map: crate::VulnDbMap::default(),
-        new_sumdb_map: crate::SumDbMap::default(),
-        new_registry_host_map: crate::RegistryHostMap::default(),
-        new_proxy_trust: crate::middleware::ProxyTrust::default(),
-        warnings: Vec::new(),
+        ..empty_pending()
     }
 }
 
@@ -428,26 +402,9 @@ async fn load_pending_from_content_returns_error_for_invalid_toml() {
 #[tokio::test]
 async fn load_pending_stores_pending_even_when_diff_is_structurally_noop() {
     let builder: HotConfigBuilder = Arc::new(|_| {
-        Ok(BuiltHotState {
-            hot: batlehub_core::services::HotConfig::default(),
-            access: crate::AccessConfig {
-                anonymous: Default::default(),
-                user: Default::default(),
-                admin: Default::default(),
-                groups: Default::default(),
-                explore_anonymous: Default::default(),
-                explore_user: Default::default(),
-                explore_admin: Default::default(),
-            },
-            registry_map: crate::RegistryMap::new(HashMap::new()),
-            registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
-            upstream_map: crate::UpstreamMap::new(HashMap::new()),
-            cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
-            repo_signer_map: crate::RepoSignerMap::default(),
-            vuln_db_map: crate::VulnDbMap::default(),
-            sumdb_map: crate::SumDbMap::default(),
-            registry_host_map: crate::RegistryHostMap::default(),
-        })
+        Ok(built_hot_state(
+            batlehub_core::services::HotConfig::default(),
+        ))
     });
     let minimal_config = r#"
         [server]
@@ -480,26 +437,9 @@ async fn load_pending_stores_pending_even_when_diff_is_structurally_noop() {
 /// staging bookkeeping rather than what gets built.
 fn noop_builder() -> HotConfigBuilder {
     Arc::new(|_| {
-        Ok(BuiltHotState {
-            hot: batlehub_core::services::HotConfig::default(),
-            access: crate::AccessConfig {
-                anonymous: Default::default(),
-                user: Default::default(),
-                admin: Default::default(),
-                groups: Default::default(),
-                explore_anonymous: Default::default(),
-                explore_user: Default::default(),
-                explore_admin: Default::default(),
-            },
-            registry_map: crate::RegistryMap::new(HashMap::new()),
-            registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
-            upstream_map: crate::UpstreamMap::new(HashMap::new()),
-            cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
-            repo_signer_map: crate::RepoSignerMap::default(),
-            vuln_db_map: crate::VulnDbMap::default(),
-            sumdb_map: crate::SumDbMap::default(),
-            registry_host_map: crate::RegistryHostMap::default(),
-        })
+        Ok(built_hot_state(
+            batlehub_core::services::HotConfig::default(),
+        ))
     })
 }
 
@@ -578,26 +518,9 @@ async fn validate_content_never_reports_a_staged_pending() {
 #[tokio::test]
 async fn load_pending_skips_rebuild_when_raw_content_is_unchanged() {
     let builder: HotConfigBuilder = Arc::new(|_| {
-        Ok(BuiltHotState {
-            hot: batlehub_core::services::HotConfig::default(),
-            access: crate::AccessConfig {
-                anonymous: Default::default(),
-                user: Default::default(),
-                admin: Default::default(),
-                groups: Default::default(),
-                explore_anonymous: Default::default(),
-                explore_user: Default::default(),
-                explore_admin: Default::default(),
-            },
-            registry_map: crate::RegistryMap::new(HashMap::new()),
-            registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
-            upstream_map: crate::UpstreamMap::new(HashMap::new()),
-            cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
-            repo_signer_map: crate::RepoSignerMap::default(),
-            vuln_db_map: crate::VulnDbMap::default(),
-            sumdb_map: crate::SumDbMap::default(),
-            registry_host_map: crate::RegistryHostMap::default(),
-        })
+        Ok(built_hot_state(
+            batlehub_core::services::HotConfig::default(),
+        ))
     });
     let minimal_config = r#"
         [server]
@@ -644,15 +567,7 @@ async fn load_pending_from_content_stores_raw_content_in_pending() {
     let hot = batlehub_core::services::HotConfig {
         ..Default::default()
     };
-    let access = crate::AccessConfig {
-        anonymous: Default::default(),
-        user: Default::default(),
-        admin: Default::default(),
-        groups: Default::default(),
-        explore_anonymous: Default::default(),
-        explore_user: Default::default(),
-        explore_admin: Default::default(),
-    };
+    let access = empty_access_config();
     // Inject a pending with content set, simulating a successful parse.
     let pending = PendingReload {
         id: Uuid::new_v4(),
@@ -663,16 +578,7 @@ async fn load_pending_from_content_stores_raw_content_in_pending() {
         content: Some(raw.to_owned()),
         new_hot: hot,
         new_access: access,
-        new_registry_map: crate::RegistryMap::new(HashMap::new()),
-        new_registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
-        new_upstream_map: crate::UpstreamMap::new(HashMap::new()),
-        new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
-        new_repo_signer_map: crate::RepoSignerMap::default(),
-        new_vuln_db_map: crate::VulnDbMap::default(),
-        new_sumdb_map: crate::SumDbMap::default(),
-        new_registry_host_map: crate::RegistryHostMap::default(),
-        new_proxy_trust: crate::middleware::ProxyTrust::default(),
-        warnings: Vec::new(),
+        ..empty_pending()
     };
     *svc.pending.lock().unwrap() = Some(pending);
 
@@ -694,26 +600,7 @@ async fn apply_writes_editor_content_to_disk() {
         source: ReloadSource::AdminRequest,
         diff: ReloadDiff::default(),
         content: Some(new_toml.to_owned()),
-        new_hot: batlehub_core::services::HotConfig::default(),
-        new_access: crate::AccessConfig {
-            anonymous: Default::default(),
-            user: Default::default(),
-            admin: Default::default(),
-            groups: Default::default(),
-            explore_anonymous: Default::default(),
-            explore_user: Default::default(),
-            explore_admin: Default::default(),
-        },
-        new_registry_map: crate::RegistryMap::new(HashMap::new()),
-        new_registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
-        new_upstream_map: crate::UpstreamMap::new(HashMap::new()),
-        new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
-        new_repo_signer_map: crate::RepoSignerMap::default(),
-        new_vuln_db_map: crate::VulnDbMap::default(),
-        new_sumdb_map: crate::SumDbMap::default(),
-        new_registry_host_map: crate::RegistryHostMap::default(),
-        new_proxy_trust: crate::middleware::ProxyTrust::default(),
-        warnings: Vec::new(),
+        ..empty_pending()
     };
     *svc.pending.lock().unwrap() = Some(pending);
 
@@ -739,26 +626,7 @@ async fn apply_with_no_content_leaves_file_unchanged() {
         source: ReloadSource::FileWatcher,
         diff: ReloadDiff::default(),
         content: None, // file-watcher path — no content to write back
-        new_hot: batlehub_core::services::HotConfig::default(),
-        new_access: crate::AccessConfig {
-            anonymous: Default::default(),
-            user: Default::default(),
-            admin: Default::default(),
-            groups: Default::default(),
-            explore_anonymous: Default::default(),
-            explore_user: Default::default(),
-            explore_admin: Default::default(),
-        },
-        new_registry_map: crate::RegistryMap::new(HashMap::new()),
-        new_registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
-        new_upstream_map: crate::UpstreamMap::new(HashMap::new()),
-        new_cargo_index_map: crate::CargoIndexMap::new(HashMap::new()),
-        new_repo_signer_map: crate::RepoSignerMap::default(),
-        new_vuln_db_map: crate::VulnDbMap::default(),
-        new_sumdb_map: crate::SumDbMap::default(),
-        new_registry_host_map: crate::RegistryHostMap::default(),
-        new_proxy_trust: crate::middleware::ProxyTrust::default(),
-        warnings: Vec::new(),
+        ..empty_pending()
     };
     *svc.pending.lock().unwrap() = Some(pending);
     svc.apply("test-user").await.unwrap();

@@ -355,6 +355,42 @@ impl ProxyService {
         }
         Ok(())
     }
+    /// Authorise a listing read, filing a denial as its own audit event.
+    ///
+    /// A denial is recorded individually, with the identity, the coordinate and
+    /// the reason. It is a security event that has to be inspectable one at a
+    /// time, there are few of them, and an operator asking "who was refused,
+    /// and why" needs the answer rather than a count.
+    ///
+    /// `what` names the document in the audit-write warning: the two callers
+    /// serve different listing shapes, and a failed audit write should say
+    /// which one it was.
+    async fn authorize_listing_audited(
+        &self,
+        req: &ProxyRequest,
+        what: &'static str,
+    ) -> Result<(), CoreError> {
+        let Err(e) = self
+            .authorize_listing(&req.package_id, &req.identity, &req.resource_type)
+            .await
+        else {
+            return Ok(());
+        };
+        if let CoreError::AccessDenied(reason) = &e {
+            super::warn_if_audit_failed(
+                self.repo
+                    .record_access(AccessEvent::denied_metadata(
+                        req.package_id.clone(),
+                        req.identity.user_id.clone(),
+                        req.identity.role.clone(),
+                        reason.clone(),
+                    ))
+                    .await,
+                what,
+            );
+        }
+        Err(e)
+    }
 
     /// Serve a proxied registry's version-listing document — for npm, the
     /// packument — with blocked versions removed and artifact URLs pointed back
@@ -385,29 +421,8 @@ impl ProxyService {
         public_base: &str,
     ) -> Result<VersionDocument, CoreError> {
         let prelude = self.request_prelude(req).await?;
-        if let Err(e) = self
-            .authorize_listing(&req.package_id, &req.identity, &req.resource_type)
-            .await
-        {
-            // A denial is filed individually, with the identity, the coordinate
-            // and the reason. It is a security event that has to be inspectable
-            // one at a time, there are few of them, and an operator asking "who
-            // was refused, and why" needs the answer rather than a count.
-            if let CoreError::AccessDenied(reason) = &e {
-                super::warn_if_audit_failed(
-                    self.repo
-                        .record_access(AccessEvent::denied_metadata(
-                            req.package_id.clone(),
-                            req.identity.user_id.clone(),
-                            req.identity.role.clone(),
-                            reason.clone(),
-                        ))
-                        .await,
-                    "denied version document",
-                );
-            }
-            return Err(e);
-        }
+        self.authorize_listing_audited(req, "denied version document")
+            .await?;
 
         let name = req.package_id.name.as_str();
         let mut doc = self
@@ -596,25 +611,8 @@ impl ProxyService {
         public_base: &str,
     ) -> Result<VersionDocument, CoreError> {
         let prelude = self.request_prelude(req).await?;
-        if let Err(e) = self
-            .authorize_listing(&req.package_id, &req.identity, &req.resource_type)
-            .await
-        {
-            if let CoreError::AccessDenied(reason) = &e {
-                super::warn_if_audit_failed(
-                    self.repo
-                        .record_access(AccessEvent::denied_metadata(
-                            req.package_id.clone(),
-                            req.identity.user_id.clone(),
-                            req.identity.role.clone(),
-                            reason.clone(),
-                        ))
-                        .await,
-                    "denied multi-package index",
-                );
-            }
-            return Err(e);
-        }
+        self.authorize_listing_audited(req, "denied multi-package index")
+            .await?;
 
         let name = req.package_id.name.as_str();
         let mut doc = self

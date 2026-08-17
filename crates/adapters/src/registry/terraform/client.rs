@@ -60,6 +60,26 @@ impl TerraformRegistryClient {
             )));
         }
 
+        self.stream_resolved(resolved, pkg, &format!("'{field}'"))
+            .await
+    }
+
+    /// Fetch an already-resolved absolute URL and wrap it as an artifact stream.
+    ///
+    /// Both callers arrive here the same way: a Terraform pointer names an
+    /// absolute URL — the provider download document's `download_url`, or a
+    /// module's `X-Terraform-Get` — and from there the fetch is identical.
+    /// `what` names the pointer in the status error.
+    ///
+    /// The client is built with `Policy::none()` because
+    /// `ssrf::fetch_following_redirects` walks the redirect chain itself, so
+    /// that every hop is checked rather than only the first.
+    async fn stream_resolved(
+        &self,
+        resolved: reqwest::Url,
+        pkg: &PackageId,
+        what: &str,
+    ) -> Result<FetchedArtifact, CoreError> {
         let plain = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
@@ -76,7 +96,7 @@ impl TerraformRegistryClient {
 
         if !response.status().is_success() {
             return Err(CoreError::Registry(format!(
-                "terraform '{field}' returned {} for {}",
+                "terraform {what} returned {} for {}",
                 response.status(),
                 pkg.cache_key()
             )));
@@ -167,34 +187,7 @@ impl TerraformRegistryClient {
             )));
         }
 
-        let plain = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| CoreError::Registry(format!("terraform: building client: {e}")))?;
-
-        let response = super::super::ssrf::fetch_following_redirects(
-            &plain,
-            &plain,
-            &self.basic_auth,
-            &self.base_url,
-            resolved,
-        )
-        .await?;
-
-        if !response.status().is_success() {
-            return Err(CoreError::Registry(format!(
-                "terraform module archive returned {} for {}",
-                response.status(),
-                pkg.cache_key()
-            )));
-        }
-
-        let cache_control = cache_control(&response);
-        let stream = response.bytes_stream().map_err(to_registry_error);
-        Ok(FetchedArtifact {
-            stream: Box::pin(stream),
-            cache_control,
-        })
+        self.stream_resolved(resolved, pkg, "module archive").await
     }
 }
 

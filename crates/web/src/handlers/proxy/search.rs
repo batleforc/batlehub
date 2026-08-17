@@ -15,7 +15,9 @@ use actix_web::{get, web, HttpResponse, Responder};
 use serde::Deserialize;
 
 use batlehub_config::schema::RegistryMode;
-use batlehub_core::services::{LocalRegistryService, ProxyService, SearchHit, SearchMode};
+use batlehub_core::services::{
+    LocalRegistryService, ProxyService, SearchHit, SearchMode, SearchResults,
+};
 
 use crate::handlers::proxy::common::require_registry_type;
 use crate::handlers::schemas::ProtocolDocument;
@@ -117,6 +119,41 @@ fn default_size() -> usize {
     20
 }
 
+/// Check the registry speaks `kind`, then search it.
+///
+/// The four handlers below differ at two ends — the protocol they answer for,
+/// and the shape they render — and agree on everything in between. That middle
+/// is here so they cannot drift apart on which sources a search draws from,
+/// which is the property the module doc claims.
+#[allow(clippy::too_many_arguments)]
+async fn resolve_and_search(
+    registry: &str,
+    kind: &str,
+    query: &str,
+    limit: usize,
+    identity: &AuthIdentity,
+    svc: &ProxyService,
+    local_svc: &LocalRegistryService,
+    map: &RegistryMap,
+    mode_map: &RegistryModeMap,
+) -> Result<SearchResults, AppError> {
+    require_registry_type(registry, kind, map)?;
+    // Taken so the route still requires a resolvable identity; a hit names only
+    // what the listing filters already allow, so there is nothing further to
+    // authorise here.
+    let _ = identity;
+    let local = local_hits(local_svc, registry, query, limit).await;
+    svc.search(
+        registry,
+        query,
+        limit,
+        search_mode(mode_map.get(registry)),
+        local,
+    )
+    .await
+    .map_err(AppError::from)
+}
+
 /// `npm search` / `npm search --json`.
 #[utoipa::path(
     get,
@@ -145,24 +182,24 @@ pub async fn npm_search(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_registry_type(&registry, "npm", &map)?;
-    let _ = &identity;
     let query_text = query.text.clone();
     // The window is offset + page, and the page is sliced out of it below: a
     // search limited to `size` with the offset applied afterwards answers the
     // second page with nothing.
     let window = query.from.saturating_add(query.size);
 
-    let results = svc
-        .search(
-            &registry,
-            &query_text,
-            window,
-            search_mode(mode_map.get(&registry)),
-            local_hits(&local_svc, &registry, &query_text, window).await,
-        )
-        .await
-        .map_err(AppError::from)?;
+    let results = resolve_and_search(
+        &registry,
+        "npm",
+        &query_text,
+        window,
+        &identity,
+        &svc,
+        &local_svc,
+        &map,
+        &mode_map,
+    )
+    .await?;
 
     let objects: Vec<serde_json::Value> = results
         .hits
@@ -230,20 +267,20 @@ pub async fn cargo_search(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_registry_type(&registry, "cargo", &map)?;
-    let _ = &identity;
     let (query_text, limit) = (query.q.clone(), query.per_page);
 
-    let results = svc
-        .search(
-            &registry,
-            &query_text,
-            limit,
-            search_mode(mode_map.get(&registry)),
-            local_hits(&local_svc, &registry, &query_text, limit).await,
-        )
-        .await
-        .map_err(AppError::from)?;
+    let results = resolve_and_search(
+        &registry,
+        "cargo",
+        &query_text,
+        limit,
+        &identity,
+        &svc,
+        &local_svc,
+        &map,
+        &mode_map,
+    )
+    .await?;
 
     let crates: Vec<serde_json::Value> = results
         .hits
@@ -296,20 +333,20 @@ pub async fn composer_list(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_registry_type(&registry, "composer", &map)?;
-    let _ = &identity;
     let (query_text, limit) = (query.filter.clone(), 250usize);
 
-    let results = svc
-        .search(
-            &registry,
-            &query_text,
-            limit,
-            search_mode(mode_map.get(&registry)),
-            local_hits(&local_svc, &registry, &query_text, limit).await,
-        )
-        .await
-        .map_err(AppError::from)?;
+    let results = resolve_and_search(
+        &registry,
+        "composer",
+        &query_text,
+        limit,
+        &identity,
+        &svc,
+        &local_svc,
+        &map,
+        &mode_map,
+    )
+    .await?;
 
     let names: Vec<String> = results.hits.iter().map(|h| h.name.clone()).collect();
 
@@ -346,20 +383,20 @@ pub async fn composer_search(
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
-    require_registry_type(&registry, "composer", &map)?;
-    let _ = &identity;
     let (query_text, limit) = (query.q.clone(), query.per_page);
 
-    let results = svc
-        .search(
-            &registry,
-            &query_text,
-            limit,
-            search_mode(mode_map.get(&registry)),
-            local_hits(&local_svc, &registry, &query_text, limit).await,
-        )
-        .await
-        .map_err(AppError::from)?;
+    let results = resolve_and_search(
+        &registry,
+        "composer",
+        &query_text,
+        limit,
+        &identity,
+        &svc,
+        &local_svc,
+        &map,
+        &mode_map,
+    )
+    .await?;
 
     let items: Vec<serde_json::Value> = results
         .hits
