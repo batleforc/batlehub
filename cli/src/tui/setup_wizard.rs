@@ -144,6 +144,8 @@ mod tests {
             package_name: name.map(|s| s.to_owned()),
             instructions: format!("setup {registry_type}"),
             relative_path: String::new(),
+            base_url: "http://localhost:8080/proxy/<registry>".to_owned(),
+            registry_name: None,
         }
     }
 

@@ -29,7 +29,7 @@ product that is not true.
 | [0005 — One documentation tree](/rfc/0005-docs-site-design-system) | Merging the two documentation trees, and putting the design system on the result |
 | [0005-bis — Two readers, one home each](/rfc/0005-bis-audience-split-and-one-home) | Splitting the guide by audience, giving every instruction one home, cutting each page down to one subject, and turning the showcase back into an introduction |
 | [0006 — A block every ecosystem can see](/rfc/0006-blocked-versions-hidden-everywhere) | Hiding blocked versions from every registry's listings, not just npm's, and stating which protocols cannot be filtered |
-| [0007 — The README, per version](/rfc/0007-package-readmes) | Storing each version's own README, rendering it safely on the server, and putting it on the package page |
+| [0007 — The README, per version](/rfc/0007-package-readmes) | Storing each version's own README, rendering it safely on the server, and making the package page answer — versions and documentation — for packages this instance holds nothing of |
 | [0008 — mise in an air-gapped estate](/rfc/0008-mise-in-an-air-gapped-estate) | Making `mise install` work with no route off the site: `mise.lock` as the bill of materials, a server that will not dial out, and verification moved to the connected side |
 | [0009 — Every endpoint the client actually calls](/rfc/0009-protocol-coverage) | Serving the paths each package manager really requests, and two mechanisms so the next invented endpoint fails the build |
 

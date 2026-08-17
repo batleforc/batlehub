@@ -539,9 +539,10 @@ fn manifest_registry(detected: &str) -> Option<(&'static str, &'static str)> {
 }
 
 fn collect_from_manifests(root: &Path, depth: usize, acc: &mut Accumulator) {
-    // `scan_project_types` builds instruction text with the server URL embedded;
-    // only the detected type is used here, so the placeholder never surfaces.
-    for det in scan_project_types(root, "", depth) {
+    // `scan_project_types` builds instruction text against a registry list;
+    // only the detected type is used here, so an empty one never surfaces.
+    let targets = crate::api::registry::RegistryTargets::new("", &[]);
+    for det in scan_project_types(root, &targets, depth) {
         let Some((registry_type, name)) = manifest_registry(det.registry_type) else {
             continue;
         };

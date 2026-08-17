@@ -78,6 +78,70 @@ function withCredentials(rawUrl: string, ctx: SnippetContext): string {
   }
 }
 
+/**
+ * `https://host/path` → `https://login:password@host/path`.
+ *
+ * Unlike {@link withCredentials} this keeps `login`/`password` literal, so a
+ * `<your-token>` placeholder stays readable instead of being percent-encoded by
+ * the URL parser.
+ */
+function embedCredentials(rawUrl: string, login: string, password: string): string {
+  return rawUrl.replace(/^(https?:\/\/)/i, `$1${login}:${password}@`);
+}
+
+/** Hostname of `url`; falls back to the input when it does not parse. */
+export function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Every host a client may have to authenticate against: the main host, plus the
+ * host of each registry that is advertised on one of its own (`public_url`,
+ * i.e. host-based routing — RFC 0001).
+ *
+ * `.netrc` entries are matched by hostname, so a file that lists only the main
+ * host sends no credentials to a registry the setup snippets point at by
+ * subdomain, and every authenticated install would 401.
+ */
+export function netrcHostsFor(
+  base: string,
+  registries: ReadonlyArray<{ public_url?: string | null }>,
+): string[] {
+  const hosts = [hostOf(base)];
+  for (const registry of registries) {
+    if (!registry.public_url) continue;
+    const host = hostOf(registry.public_url);
+    if (!hosts.includes(host)) hosts.push(host);
+  }
+  return hosts;
+}
+
+/**
+ * The commented-out `machine / login / password` stanzas for a `~/.netrc`.
+ *
+ * One stanza per **distinct host**, deduplicated in order. `.netrc` is matched
+ * by hostname, so a snippet that rewrites downloads to several registries needs
+ * an entry for each of them once they are host-routed onto their own subdomain
+ * (RFC 0001) — a single stanza would leave every other host unauthenticated,
+ * and the install would 401 on the first package it did not fetch from the one
+ * host that was listed. Without host routing the hosts collapse to the main
+ * one and this emits exactly the single stanza it always did.
+ */
+function netrcStanzas(hosts: string[], ctx: SnippetContext): string[] {
+  const distinct = [...new Set(hosts.filter(Boolean))];
+  if (distinct.length === 0) distinct.push(ctx.netrcHost);
+  return distinct.flatMap((host, i) => [
+    ...(i > 0 ? [`#`] : []),
+    `# machine ${host}`,
+    `# login ${ctx.netrcLogin}`,
+    `# password ${ctx.token}`,
+  ]);
+}
+
 export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
   // ── mise (composite: github + npm + cargo) ─────────────────────────────────
   {
@@ -94,7 +158,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         key: "mise",
         lang: "toml",
         template: (ctx) => {
-          const { urlFor, isAuthenticated, token, netrcHost, netrcLogin, selectedNames } = ctx;
+          const { urlFor, isAuthenticated, selectedNames } = ctx;
           const gh = selectedNames["github"];
           const np = selectedNames["npm"];
           const cg = selectedNames["cargo"];
@@ -102,9 +166,12 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           if (isAuthenticated) {
             lines.push(
               `# Authentication: mise reads ~/.netrc for HTTP Basic Auth`,
-              `# machine ${netrcHost}`,
-              `# login ${netrcLogin}`,
-              `# password ${token}`,
+              // One stanza per registry host: these three rules can point at
+              // three different subdomains.
+              ...netrcStanzas(
+                [gh, np, cg].filter(Boolean).map((n) => hostOf(urlFor(n))),
+                ctx,
+              ),
               ``,
             );
           }
@@ -871,14 +938,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "~/.pip/pip.conf — global pip configuration",
         lang: "ini",
         template: (ctx) => {
-          const {
-            registryUrl,
-            registryName: reg,
-            isAuthenticated,
-            token,
-            netrcLogin,
-            netrcHost,
-          } = ctx;
+          const { registryUrl, isAuthenticated, token, netrcLogin } = ctx;
           const lines = [
             `# ~/.pip/pip.conf  (Linux/macOS)`,
             String.raw`# %APPDATA%\pip\pip.ini  (Windows)`,
@@ -889,7 +949,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             lines.push(
               ``,
               `# Credentials: use ~/.netrc (recommended) or embed in the URL:`,
-              `# index-url = https://${netrcLogin}:${token}@${netrcHost}/proxy/${reg}/simple/`,
+              `# index-url = ${embedCredentials(`${registryUrl}/simple/`, netrcLogin, token)}`,
             );
           }
           return lines.join("\n");
@@ -1310,7 +1370,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "Private registry auth",
         lang: "bash",
         template: (ctx) => {
-          const { netrcHost, netrcLogin, token, registryName: reg } = ctx;
+          const { registryUrl, netrcHost, netrcLogin, token, registryName: reg } = ctx;
           const login = ctx.isAuthenticated ? netrcLogin : "<your-username>";
           const password = ctx.isAuthenticated ? token : "<your-token>";
           return [
@@ -1328,7 +1388,7 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
             ``,
             `# Alternative: embed credentials directly in the source URL`,
             `# (less secure — credentials visible in sources.list)`,
-            `# echo "deb [signed-by=...] https://${login}:${password}@${netrcHost}/proxy/${reg}/deb stable main" \\`,
+            `# echo "deb [signed-by=...] ${embedCredentials(`${registryUrl}/deb`, login, password)} stable main" \\`,
             `#   | sudo tee /etc/apt/sources.list.d/${reg}.list`,
           ].join("\n");
         },
@@ -1708,14 +1768,25 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
         label: "mise url_replacements",
         lang: "toml",
         template: (ctx) => {
+          const mirrors = [
+            "node-dist",
+            "rust-dist",
+            "go-dl",
+            "helm-bin",
+            "minio-dl",
+            "sonar-binaries",
+          ];
           const p = (name: string) => `${ctx.urlFor(name)}/generic`;
           const lines: string[] = [];
           if (ctx.isAuthenticated) {
             lines.push(
               `# Authentication: mise reads ~/.netrc for HTTP Basic Auth`,
-              `# machine ${ctx.netrcHost}`,
-              `# login ${ctx.netrcLogin}`,
-              `# password ${ctx.token}`,
+              // Each mirror is its own registry, so each may sit on its own
+              // subdomain — one stanza per host actually referenced below.
+              ...netrcStanzas(
+                mirrors.map((name) => hostOf(ctx.urlFor(name))),
+                ctx,
+              ),
               ``,
             );
           }

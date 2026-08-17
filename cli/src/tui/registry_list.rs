@@ -90,6 +90,7 @@ mod tests {
             name: name.to_owned(),
             registry_type: "npm".to_owned(),
             mode: "proxy".to_owned(),
+            public_url: None,
         }
     }
 

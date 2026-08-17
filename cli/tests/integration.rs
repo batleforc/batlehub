@@ -72,6 +72,31 @@ impl TestServer {
     /// Like `start()`, but with an arbitrary set of `(name, registry_type)`
     /// local-mode registries instead of the single hardcoded nuget one.
     fn start_with(registries: &[(&str, &str)]) -> Self {
+        Self::start_with_hosts(registries, &[])
+    }
+
+    /// Like `start_with()`, plus `(registry, public_url)` host bindings — what
+    /// `[subdomain_routing]` produces, and what `GET /api/v1/registries`
+    /// advertises as `public_url`.
+    fn start_with_hosts(registries: &[(&str, &str)], public_urls: &[(&str, &str)]) -> Self {
+        let host_map = batlehub_web::RegistryHostMap::new(
+            public_urls
+                .iter()
+                .map(|(reg, url)| {
+                    (
+                        url.trim_start_matches("https://")
+                            .trim_start_matches("http://")
+                            .to_string(),
+                        reg.to_string(),
+                    )
+                })
+                .collect(),
+            public_urls
+                .iter()
+                .map(|(reg, url)| (reg.to_string(), url.to_string()))
+                .collect(),
+            HashMap::new(),
+        );
         let registry_map = RegistryMap::from(
             registries
                 .iter()
@@ -229,6 +254,7 @@ impl TestServer {
             let reload_svc = reload_svc.clone();
             let user_block_repo = user_block_repo.clone();
             let team_namespace_store = team_namespace_store.clone();
+            let host_map = host_map.clone();
 
             let server = HttpServer::new(move || {
                 let (app, _) = App::new()
@@ -244,6 +270,7 @@ impl TestServer {
                     .app_data(web::Data::new(reload_svc.clone()))
                     .app_data(web::Data::new(user_block_repo.clone()))
                     .app_data(web::Data::new(team_namespace_store.clone()))
+                    .app_data(web::Data::new(host_map.clone()))
                     .wrap(AuthMiddlewareFactory::new(auth_providers.clone()))
             })
             .bind("127.0.0.1:0")
@@ -2007,6 +2034,141 @@ fn setup_ide_json_detects_idea_project() {
         .find(|v| v["registry_type"] == "jetbrains-marketplace")
         .unwrap_or_else(|| panic!("expected a jetbrains-marketplace entry; got: {items:?}"));
     assert_eq!(jb["registry_configured"], serde_json::json!(false));
+}
+
+/// `setup detect` asks the server which registries exist, so the snippet names
+/// the real one instead of `<registry>`.
+#[test]
+fn setup_detect_names_the_configured_registry() {
+    let server = TestServer::start_with(&[("npm1", "npm")]);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("package.json"), r#"{"name":"my-app"}"#).unwrap();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
+        .args(["--server", &server.base_url(), "setup", "detect", "--dir"])
+        .arg(dir.path())
+        .env("HOME", "/tmp")
+        .env("XDG_CONFIG_HOME", "/tmp/.xdg-batlehub-detect-named")
+        .output()
+        .expect("failed to run batlehub-cli");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(out.status.success(), "setup detect failed: {stdout}");
+    assert!(
+        stdout.contains(&format!("registry={}/proxy/npm1/npm/", server.base_url())),
+        "expected the configured registry name in the snippet; got:\n{stdout}"
+    );
+    // Path-routed: everything answers on the one host.
+    assert!(
+        stdout.contains("machine 127.0.0.1"),
+        "expected a .netrc stanza for the server host; got:\n{stdout}"
+    );
+}
+
+/// A host-routed registry (RFC 0001) is advertised on its own subdomain. The
+/// snippet must point there *without* `/proxy/{name}` — that host adds the
+/// prefix itself — and the `.netrc` stanza must name that host, not the API's.
+#[test]
+fn setup_detect_uses_the_registry_subdomain_and_netrc_host() {
+    let server = TestServer::start_with_hosts(
+        &[("npm1", "npm")],
+        &[("npm1", "https://npm1.batlehub.example.com")],
+    );
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("package.json"), r#"{"name":"my-app"}"#).unwrap();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
+        .args(["--server", &server.base_url(), "setup", "detect", "--dir"])
+        .arg(dir.path())
+        .env("HOME", "/tmp")
+        .env("XDG_CONFIG_HOME", "/tmp/.xdg-batlehub-detect-subdomain")
+        .output()
+        .expect("failed to run batlehub-cli");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(out.status.success(), "setup detect failed: {stdout}");
+    assert!(
+        stdout.contains("registry=https://npm1.batlehub.example.com/npm/"),
+        "expected the registry's own host in the snippet; got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("/proxy/npm1"),
+        "the registry host prefixes /proxy/{{name}} itself; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("machine npm1.batlehub.example.com"),
+        "expected a .netrc stanza for the registry host; got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("machine 127.0.0.1"),
+        "credentials go to the host the client talks to, not the API host; got:\n{stdout}"
+    );
+}
+
+/// The JSON output carries the resolved registry and base URL.
+#[test]
+fn setup_detect_json_reports_the_resolved_registry() {
+    let server = TestServer::start_with_hosts(
+        &[("cargo1", "cargo")],
+        &[("cargo1", "https://cargo1.batlehub.example.com")],
+    );
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"c\"\n").unwrap();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
+        .args([
+            "--server",
+            &server.base_url(),
+            "setup",
+            "detect",
+            "--json",
+            "--dir",
+        ])
+        .arg(dir.path())
+        .env("HOME", "/tmp")
+        .env("XDG_CONFIG_HOME", "/tmp/.xdg-batlehub-detect-json-reg")
+        .output()
+        .expect("failed to run batlehub-cli");
+
+    assert!(out.status.success());
+    let items: Vec<serde_json::Value> =
+        serde_json::from_slice(&out.stdout).expect("stdout should be a JSON array");
+    assert_eq!(items[0]["registry_name"], serde_json::json!("cargo1"));
+    assert_eq!(
+        items[0]["base_url"],
+        serde_json::json!("https://cargo1.batlehub.example.com")
+    );
+}
+
+/// `--offline` keeps the placeholders and must not touch the network at all,
+/// even when a reachable server is configured.
+#[test]
+fn setup_detect_offline_keeps_the_placeholder() {
+    let server = TestServer::start_with(&[("npm1", "npm")]);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("package.json"), r#"{"name":"my-app"}"#).unwrap();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
+        .args([
+            "--server",
+            &server.base_url(),
+            "setup",
+            "detect",
+            "--offline",
+            "--dir",
+        ])
+        .arg(dir.path())
+        .env("HOME", "/tmp")
+        .env("XDG_CONFIG_HOME", "/tmp/.xdg-batlehub-detect-offline")
+        .output()
+        .expect("failed to run batlehub-cli");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(out.status.success(), "setup detect failed: {stdout}");
+    assert!(
+        stdout.contains("/proxy/<registry>/npm/"),
+        "expected the placeholder; got:\n{stdout}"
+    );
 }
 
 #[test]
