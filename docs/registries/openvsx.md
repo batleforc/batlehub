@@ -104,6 +104,8 @@ curl -X PUT \
 
 The server reads the publisher and extension name from the URL path. The `{extension_id}` segment is the full `{publisher}.{name}` identifier.
 
+A package built with `vsce package --pre-release` (or published with `ovsx publish --pre-release`) keeps its pre-release marker: BatleHub reads it from the VSIX's own `extension.vsixmanifest`, reports it to the gallery as `Microsoft.VisualStudio.Code.PreRelease` and to the OpenVSX API as `preRelease`, and an editor then offers that version only to users who opted into pre-releases.
+
 ### Download / install
 
 ```sh

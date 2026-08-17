@@ -81,33 +81,7 @@ pub async fn openvsx_publish(
     let version = manifest.version.clone();
     let checksum = hex::encode(sha2::Sha256::digest(&vsix_bytes));
 
-    let mut index_metadata = serde_json::json!({
-        "id": extension_id,
-        "version": version,
-        "publisher": manifest.publisher,
-    });
-    if let Some(obj) = index_metadata.as_object_mut() {
-        for (k, v) in [
-            ("displayName", manifest.display_name.clone()),
-            ("description", manifest.description.clone()),
-            ("engine", manifest.engines.vscode.clone()),
-            ("icon", manifest.icon.clone()),
-        ] {
-            if let Some(v) = v.filter(|s| !s.is_empty()) {
-                obj.insert(k.to_owned(), serde_json::Value::String(v));
-            }
-        }
-        for (key, list) in [
-            ("categories", &manifest.categories),
-            ("keywords", &manifest.keywords),
-            ("extensionPack", &manifest.extension_pack),
-            ("extensionDependencies", &manifest.extension_dependencies),
-        ] {
-            if !list.is_empty() {
-                obj.insert(key.to_owned(), serde_json::json!(list));
-            }
-        }
-    }
+    let index_metadata = manifest.index_metadata(&extension_id, &version);
 
     let (signature_bytes, signature_type) =
         crate::handlers::proxy::common::extract_signature_headers(&req);

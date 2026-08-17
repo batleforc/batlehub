@@ -141,8 +141,12 @@ pub async fn search_entries(
             )
             .await
             .map_err(AppError::from)?;
-        for v in local {
-            if let Some(e) = GalleryEntry::from_local(std::slice::from_ref(&v)) {
+        // One group per extension, carrying every visible version — an entry
+        // built from the newest version alone would answer a uuid lookup with a
+        // one-version history, and the editor needs the whole list to fall back
+        // from a pre-release to the last release.
+        for versions in local {
+            if let Some(e) = GalleryEntry::from_local(&versions) {
                 entries.push(e);
             }
         }

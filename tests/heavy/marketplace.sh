@@ -171,7 +171,14 @@ if [[ "${SKIP_VSCODE:-0}" != "1" ]]; then
   head -c 2 "$WORK/from-proxy.vsix" | grep -q "PK" \
     || { echo "ERROR: proxied VSIX is not a ZIP" >&2; exit 1; }
 
-  CODE=("$CODE_BIN" --user-data-dir "$WORK/vscode-data" --extensions-dir "$WORK/vscode-ext")
+  # `env -u VSCODE_IPC_HOOK_CLI`: when this script runs from a terminal *inside*
+  # VS Code, the CLI forwards every command to that editor over the IPC socket
+  # instead of running locally. The install would then happen in the developer's
+  # own editor, against the developer's own gallery, and `--list-extensions`
+  # would report that editor's extensions — a pass that proves nothing about
+  # BatleHub. Unset, so `code` is always this build, talking to this server.
+  CODE=(env -u VSCODE_IPC_HOOK_CLI "$CODE_BIN"
+        --user-data-dir "$WORK/vscode-data" --extensions-dir "$WORK/vscode-ext")
   if [[ -z "${DISPLAY:-}" ]] && command -v xvfb-run >/dev/null 2>&1; then
     CODE=(xvfb-run -a "${CODE[@]}")
   fi
@@ -209,7 +216,8 @@ if [[ "${SKIP_VSCODE:-0}" != "1" ]]; then
     BASE="$BASE" python3 tests/heavy/patch_product_json.py "$PRODUCT_JSON"
 
     # A fresh profile, so the file install above cannot be what makes this pass.
-    GALLERY_CODE=("$CODE_BIN" --user-data-dir "$WORK/vscode-gallery-data" --extensions-dir "$WORK/vscode-gallery-ext")
+    GALLERY_CODE=(env -u VSCODE_IPC_HOOK_CLI "$CODE_BIN"
+                  --user-data-dir "$WORK/vscode-gallery-data" --extensions-dir "$WORK/vscode-gallery-ext")
     if [[ -z "${DISPLAY:-}" ]] && command -v xvfb-run >/dev/null 2>&1; then
       GALLERY_CODE=(xvfb-run -a "${GALLERY_CODE[@]}")
     fi

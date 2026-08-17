@@ -133,54 +133,34 @@ pub async fn vsix_publish(
         .next()
         .unwrap_or(&extension_id)
         .to_owned();
-    let mut index_metadata = serde_json::json!({
-        "id": extension_id,
-        "version": version,
-        "publisher": publisher
-    });
-
     // Record what the manifest says, so the gallery can render more than a bare
     // coordinate. Best-effort on purpose: this endpoint takes raw bytes and
     // makes no claim they are a VSIX, so an unreadable manifest degrades to the
-    // three keys above rather than refusing the publish. An extension that
+    // three keys below rather than refusing the publish. An extension that
     // appears in the editor with no description is worse than one that renders
     // fully, and far better than one that could not be published.
-    if let Some(manifest) = super::vsx::archive::parse_manifest(&vsix_bytes) {
-        // The URL is the coordinate every other route addresses by, so it wins
-        // over a manifest that disagrees — but a disagreement is worth saying
-        // out loud, since it usually means the wrong file was uploaded.
-        let manifest_id = manifest.extension_id();
-        if manifest_id != extension_id || manifest.version != version {
-            tracing::warn!(
-                url_coordinate = %format!("{extension_id}@{version}"),
-                manifest_coordinate = %format!("{manifest_id}@{}", manifest.version),
-                "VSIX manifest disagrees with the publish URL; using the URL"
-            );
-        }
-        if let Some(obj) = index_metadata.as_object_mut() {
-            let put = |obj: &mut serde_json::Map<String, serde_json::Value>,
-                       k: &str,
-                       v: Option<String>| {
-                if let Some(v) = v.filter(|s| !s.is_empty()) {
-                    obj.insert(k.to_owned(), serde_json::Value::String(v));
-                }
-            };
-            put(obj, "displayName", manifest.display_name.clone());
-            put(obj, "description", manifest.description.clone());
-            put(obj, "engine", manifest.engines.vscode.clone());
-            put(obj, "icon", manifest.icon.clone());
-            for (key, list) in [
-                ("categories", &manifest.categories),
-                ("keywords", &manifest.keywords),
-                ("extensionPack", &manifest.extension_pack),
-                ("extensionDependencies", &manifest.extension_dependencies),
-            ] {
-                if !list.is_empty() {
-                    obj.insert(key.to_owned(), serde_json::json!(list));
-                }
+    let index_metadata = match super::vsx::archive::parse_manifest(&vsix_bytes) {
+        Some(manifest) => {
+            // The URL is the coordinate every other route addresses by, so it
+            // wins over a manifest that disagrees — but a disagreement is worth
+            // saying out loud, since it usually means the wrong file was
+            // uploaded.
+            let manifest_id = manifest.extension_id();
+            if manifest_id != extension_id || manifest.version != version {
+                tracing::warn!(
+                    url_coordinate = %format!("{extension_id}@{version}"),
+                    manifest_coordinate = %format!("{manifest_id}@{}", manifest.version),
+                    "VSIX manifest disagrees with the publish URL; using the URL"
+                );
             }
+            manifest.index_metadata(&extension_id, &version)
         }
-    }
+        None => serde_json::json!({
+            "id": extension_id,
+            "version": version,
+            "publisher": publisher,
+        }),
+    };
 
     let (signature_bytes, signature_type) = extract_signature_headers(&req);
 

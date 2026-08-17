@@ -27,10 +27,19 @@ const VERSION: &str = "1.2.3";
 /// editor's detail pane asks for. Built rather than faked because the asset
 /// routes serve files *out of* it, so a placeholder would test nothing.
 fn make_vsix() -> Vec<u8> {
+    make_vsix_version(VERSION, false)
+}
+
+/// The same VSIX at a chosen version, optionally packaged as a pre-release.
+///
+/// `pre_release` writes the `extension.vsixmanifest` property `vsce package
+/// --pre-release` writes — the *only* place that bit exists, since
+/// `package.json` has no such field.
+fn make_vsix_version(version: &str, pre_release: bool) -> Vec<u8> {
     let manifest = json!({
         "publisher": "acme",
         "name": "tool",
-        "version": VERSION,
+        "version": version,
         "displayName": "Acme Tool",
         "description": "Does the thing",
         "categories": ["Linters"],
@@ -40,6 +49,25 @@ fn make_vsix() -> Vec<u8> {
     })
     .to_string();
 
+    let pre_release_property = if pre_release {
+        r#"<Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true" />"#
+    } else {
+        ""
+    };
+    let vsix_manifest = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+        <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
+          <Metadata>
+            <Identity Language="en-US" Id="tool" Version="{version}" Publisher="acme" />
+            <DisplayName>Acme Tool</DisplayName>
+          </Metadata>
+          <Properties>
+            <Property Id="Microsoft.VisualStudio.Code.Engine" Value="^1.85.0" />
+            {pre_release_property}
+          </Properties>
+        </PackageManifest>"#
+    );
+
     let mut buf = Vec::new();
     {
         let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
@@ -47,6 +75,7 @@ fn make_vsix() -> Vec<u8> {
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         for (name, body) in [
             ("extension/package.json", manifest.as_bytes()),
+            ("extension.vsixmanifest", vsix_manifest.as_bytes()),
             ("extension/README.md", b"# Acme Tool" as &[u8]),
             ("extension/CHANGELOG.md", b"## 1.2.3" as &[u8]),
             ("extension/LICENSE.txt", b"MIT" as &[u8]),
@@ -101,6 +130,16 @@ where
     read_body_json(resp).await
 }
 
+/// The flag set VS Code composes to resolve one extension: `IncludeFiles`,
+/// `IncludeCategoryAndTags`, `IncludeVersionProperties`, `ExcludeNonValidated`,
+/// `IncludeAssetUri`, `IncludeStatistics`, `IncludeLatestVersionOnly`.
+///
+/// `IncludeVersions` (0x1) is deliberately **absent** — the editor does not send
+/// it for an install or an update check, and a fixture that adds it tests a
+/// request no editor makes. That is how the empty-`versions` bug reached a real
+/// `code --install-extension`.
+const VSCODE_INSTALL_FLAGS: u32 = 0x2 | 0x4 | 0x10 | 0x20 | 0x80 | 0x100 | 0x200;
+
 /// The body VS Code sends to resolve one extension — install and update both
 /// take this path.
 fn lookup_body(name: &str) -> Value {
@@ -113,7 +152,7 @@ fn lookup_body(name: &str) -> Value {
             "pageNumber": 1, "pageSize": 50, "sortBy": 0, "sortOrder": 0
         }],
         "assetTypes": [],
-        "flags": 0x1 | 0x2 | 0x4 | 0x10 | 0x80 | 0x100
+        "flags": VSCODE_INSTALL_FLAGS
     })
 }
 
@@ -140,6 +179,177 @@ async fn an_exact_lookup_returns_the_extension_with_a_total_count() {
     assert_eq!(e["extensionName"], "tool");
     assert_eq!(e["displayName"], "Acme Tool");
     assert_eq!(e["versions"][0]["version"], VERSION);
+}
+
+/// The editor's install path, end to end: resolve by id with the flags a real
+/// `code --install-extension <id>` sends, then fetch the package from the
+/// `files` entry that response advertised.
+///
+/// `tests/heavy/marketplace.sh` runs the same scenario against a real editor,
+/// and that is where this first failed — the response carried `versions: []`
+/// because the request did not set `IncludeVersions`, and VS Code died with
+/// `Cannot read properties of undefined (reading 'files')`.
+#[actix_web::test]
+async fn an_install_by_id_resolves_a_version_and_its_package() {
+    let app = gallery_app().await;
+    let doc = query(&app, lookup_body(EXT)).await;
+
+    let e = first_extension(&doc);
+    assert!(
+        e["flags"].as_str().is_some_and(|f| !f.is_empty()),
+        "the editor calls flags.indexOf(\"preview\") without a guard"
+    );
+    assert!(
+        e["lastUpdated"].is_string() && e["releaseDate"].is_string(),
+        "both are Date.parsed, and the extension pane shows them"
+    );
+
+    let version = &e["versions"][0];
+    assert_eq!(
+        version["version"], VERSION,
+        "the editor reads versions[0] without checking that it exists"
+    );
+
+    let source = version["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .find(|f| f["assetType"] == "Microsoft.VisualStudio.Services.VSIXPackage")
+        .and_then(|f| f["source"].as_str())
+        .expect("the VSIX asset the editor downloads")
+        .to_owned();
+
+    // The advertised URL is absolute (that is the point of it); call it back as
+    // a path against this app.
+    let path = source
+        .split_once("://")
+        .map_or(&source[..], |(_, rest)| rest);
+    let path = &path[path.find('/').expect("an absolute URL has a path")..];
+
+    let req = TestRequest::get()
+        .uri(path)
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200, "GET {path}");
+    assert_eq!(&read_body(resp).await[..2], b"PK");
+}
+
+/// A pre-release must reach the editor marked as one.
+///
+/// This is the one version-level marker that changes what gets *installed*: VS
+/// Code hides a pre-release from anyone who did not opt in
+/// (`if (!includePreRelease && properties.isPreReleaseVersion) return false`), so
+/// a lost marker offers a release-candidate build to everybody as the release.
+/// And it only exists in `extension.vsixmanifest`, never in `package.json`.
+///
+/// Published through `/api/-/publish` — what `ovsx publish --pre-release` calls,
+/// and the route that takes its whole coordinate from the archive.
+#[actix_web::test]
+async fn a_pre_release_version_is_reported_as_a_pre_release() {
+    const PRE_RELEASE_VERSION: &str = "2.0.0-rc.1";
+    const PRE_RELEASE_KEY: &str = "Microsoft.VisualStudio.Code.PreRelease";
+
+    let app = gallery_app().await;
+    let req = TestRequest::post()
+        .uri("/proxy/local-vsx/api/-/publish")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_payload(make_vsix_version(PRE_RELEASE_VERSION, true))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 201, "ovsx-style publish");
+
+    // Every version, so the two can be compared without depending on which of
+    // them sorts newest.
+    let doc = query(
+        &app,
+        json!({
+            "filters": [{ "criteria": [{ "filterType": 7, "value": EXT }] }],
+            "flags": 0x1 | 0x2 | 0x10
+        }),
+    )
+    .await;
+    let versions = first_extension(&doc)["versions"]
+        .as_array()
+        .expect("versions");
+    let property = |version: &str, key: &str| -> Option<String> {
+        versions.iter().find(|v| v["version"] == version)?["properties"]
+            .as_array()?
+            .iter()
+            .find(|p| p["key"] == key)?["value"]
+            .as_str()
+            .map(str::to_owned)
+    };
+
+    assert_eq!(
+        property(PRE_RELEASE_VERSION, PRE_RELEASE_KEY).as_deref(),
+        Some("true"),
+        "the editor gates the install on this property"
+    );
+    assert_eq!(
+        property(VERSION, PRE_RELEASE_KEY),
+        None,
+        "the release published before it must stay a release"
+    );
+
+    // The OpenVSX document reports the same bit, per version.
+    let (status, doc) = api_get(
+        &app,
+        &format!("/proxy/local-vsx/api/acme/tool/{PRE_RELEASE_VERSION}"),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(doc["preRelease"], true);
+
+    let (status, doc) = api_get(&app, &format!("/proxy/local-vsx/api/acme/tool/{VERSION}")).await;
+    assert_eq!(status, 200);
+    assert_eq!(doc["preRelease"], false);
+}
+
+/// The query a real editor makes when the newest version is a pre-release and
+/// the user did not opt in: it re-asks by **uuid** (filter type 4) with
+/// `IncludeVersions`, and picks the newest release out of the history.
+///
+/// That lookup does not take the by-name fast path — it falls through to the
+/// registry scan, which used to report only each extension's newest version. VS
+/// Code then saw a history containing nothing but the pre-release and refused the
+/// install with "has no release version".
+#[actix_web::test]
+async fn a_uuid_lookup_returns_the_whole_version_history() {
+    let app = gallery_app().await;
+    let req = TestRequest::post()
+        .uri("/proxy/local-vsx/api/-/publish")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_payload(make_vsix_version("2.0.0-rc.1", true))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 201);
+
+    // The uuid as the editor learned it, from the extension itself.
+    let uuid = first_extension(&query(&app, lookup_body(EXT)).await)["extensionId"]
+        .as_str()
+        .expect("extensionId")
+        .to_owned();
+
+    let doc = query(
+        &app,
+        json!({
+            "filters": [{ "criteria": [{ "filterType": 4, "value": uuid }] }],
+            "flags": 0x1 | 0x2 | 0x10
+        }),
+    )
+    .await;
+
+    assert_eq!(total_count(&doc), 1, "the uuid resolves to one extension");
+    let versions: Vec<&str> = first_extension(&doc)["versions"]
+        .as_array()
+        .expect("versions")
+        .iter()
+        .map(|v| v["version"].as_str().unwrap_or_default())
+        .collect();
+    assert!(
+        versions.contains(&"2.0.0-rc.1") && versions.contains(&VERSION),
+        "the whole history, so a pre-release can fall back to a release: {versions:?}"
+    );
 }
 
 #[actix_web::test]

@@ -49,6 +49,11 @@ pub struct GalleryVersion {
     pub pre_release: bool,
 }
 
+/// The extension-level `flags` string, as the marketplace reports it for an
+/// ordinary published extension. See where it is inserted in [`extension_json`]
+/// for why it is never omitted.
+const EXTENSION_FLAGS: &str = "validated public";
+
 /// `{publisher}.{name}`.
 pub fn qualified_name(publisher: &str, name: &str) -> String {
     format!("{publisher}.{name}")
@@ -331,6 +336,35 @@ pub fn extension_json(entry: &GalleryEntry, urls: &GalleryUrls, query: &GalleryQ
         json!(entry.short_description.clone().unwrap_or_default()),
     );
 
+    // `flags` is a space-separated **string**, and the editor reads it with no
+    // guard at all: `preview: flags.indexOf("preview") !== -1`. Omitted, that is
+    // `Cannot read properties of undefined (reading 'indexOf')` and the install
+    // dies before a single asset is fetched.
+    //
+    // `preview` is never among the flags this server reports: the manifest's
+    // `preview` field is not carried through the local registry, so claiming it
+    // either way would be a guess. The cost is a missing badge in the extension
+    // pane. An upstream string is kept as it came, since the marketplace does
+    // know.
+    if !obj.get("flags").is_some_and(Value::is_string) {
+        obj.insert("flags".to_owned(), json!(EXTENSION_FLAGS));
+    }
+
+    // `Date.parse`d unguarded, so an absent value is `NaN` rather than a crash —
+    // but then every date the extension pane shows is blank. Both are derived
+    // from the versions, newest first, and an upstream value wins because it
+    // knows the history this proxy may only hold part of.
+    if !obj.get("lastUpdated").is_some_and(Value::is_string) {
+        if let Some(newest) = entry.versions.first() {
+            obj.insert("lastUpdated".to_owned(), json!(newest.last_updated));
+        }
+    }
+    if !obj.get("releaseDate").is_some_and(Value::is_string) {
+        if let Some(oldest) = entry.versions.last() {
+            obj.insert("releaseDate".to_owned(), json!(oldest.last_updated));
+        }
+    }
+
     if query.wants(flag::INCLUDE_CATEGORY_AND_TAGS) {
         obj.insert("categories".to_owned(), json!(entry.categories));
         obj.insert("tags".to_owned(), json!(entry.tags));
@@ -350,27 +384,35 @@ pub fn extension_json(entry: &GalleryEntry, urls: &GalleryUrls, query: &GalleryQ
         );
     }
 
-    // `IncludeLatestVersionOnly` is applied **after** blocked versions were
-    // removed upstream of here. Truncating first would offer the editor a
-    // blocked build as *the* version, and the install would then be refused —
-    // the exact failure hiding exists to prevent.
-    let versions: Vec<&GalleryVersion> = if query.wants(flag::INCLUDE_LATEST_VERSION_ONLY) {
-        entry.versions.iter().take(1).collect()
-    } else {
-        entry.versions.iter().collect()
-    };
+    // The flags choose **how many** versions ship, never whether any do.
+    //
+    // VS Code does not send `IncludeVersions` (0x1) for an install or an update
+    // check — it sends `IncludeLatestVersionOnly` (0x200) and expects the latest
+    // version in `versions` anyway, which is what the marketplace answers with.
+    // Its gallery service then reads `versions[0].files` without checking, so an
+    // empty array is not "versions were not requested", it is
+    // `Cannot read properties of undefined (reading 'files')` and a failed
+    // install. (The editor also drops `IncludeVersions` itself whenever both
+    // flags are set, which is why the two are read as one choice here.)
+    //
+    // Truncating happens **after** blocked versions were removed upstream of
+    // here. Truncating first would offer the editor a blocked build as *the*
+    // version, and the install would then be refused — the exact failure hiding
+    // exists to prevent.
+    let versions: Vec<&GalleryVersion> =
+        if query.wants(flag::INCLUDE_VERSIONS) && !query.wants(flag::INCLUDE_LATEST_VERSION_ONLY) {
+            entry.versions.iter().collect()
+        } else {
+            entry.versions.iter().take(1).collect()
+        };
 
-    if query.wants(flag::INCLUDE_VERSIONS) {
-        obj.insert(
-            "versions".to_owned(),
-            json!(versions
-                .iter()
-                .map(|v| version_json(entry, v, urls, query))
-                .collect::<Vec<_>>()),
-        );
-    } else {
-        obj.insert("versions".to_owned(), json!([]));
-    }
+    obj.insert(
+        "versions".to_owned(),
+        json!(versions
+            .iter()
+            .map(|v| version_json(entry, v, urls, query))
+            .collect::<Vec<_>>()),
+    );
 
     out
 }
@@ -448,12 +490,29 @@ pub fn query_response_json(
     urls: &GalleryUrls,
     query: &GalleryQuery,
 ) -> Value {
+    // An entry with no version is dropped rather than rendered: the editor
+    // dereferences `versions[0]` unconditionally, so listing an extension it
+    // cannot resolve a version for crashes its install rather than telling it
+    // there is nothing to install. Every caller already filters these out
+    // (`source::extension_entry` returns `None`, `from_local` needs a version),
+    // so this states the invariant rather than serving a use case.
+    let extensions: Vec<Value> = entries
+        .iter()
+        .filter(|e| {
+            if e.versions.is_empty() {
+                tracing::warn!(
+                    extension = %e.qualified_name(),
+                    "dropped a gallery entry with no visible version"
+                );
+            }
+            !e.versions.is_empty()
+        })
+        .map(|e| extension_json(e, urls, query))
+        .collect();
+
     json!({
         "results": [{
-            "extensions": entries
-                .iter()
-                .map(|e| extension_json(e, urls, query))
-                .collect::<Vec<_>>(),
+            "extensions": extensions,
             "pagingToken": Value::Null,
             "resultMetadata": [{
                 "metadataType": "ResultCount",
@@ -482,6 +541,10 @@ pub fn openvsx_extension_json(
         "tags": entry.tags,
         "engines": { "vscode": version.engine },
         "downloadCount": entry.install_count,
+        // OpenVSX reports this per version, and `ovsx`/the web UI read it to
+        // label a pre-release. Same bit the gallery sends as the
+        // `Microsoft.VisualStudio.Code.PreRelease` property.
+        "preRelease": version.pre_release,
         "files": {
             "download": file(asset_type::VSIX_PACKAGE),
             "manifest": file(asset_type::MANIFEST),
@@ -666,16 +729,99 @@ mod tests {
         assert_eq!(versions[0]["version"], "2.0.0");
     }
 
+    /// The flags VS Code actually sends to install by id: `IncludeFiles`,
+    /// `IncludeVersionProperties`, `IncludeAssetUri`, `IncludeStatistics`,
+    /// `ExcludeNonValidated`, `IncludeCategoryAndTags`, and
+    /// `IncludeLatestVersionOnly` — but **not** `IncludeVersions`.
+    ///
+    /// The editor reads `versions[0].files` without checking, so answering this
+    /// with `versions: []` fails the install with
+    /// `Cannot read properties of undefined (reading 'files')`. This is the
+    /// regression the heavy marketplace test caught with a real editor.
+    #[test]
+    fn the_flag_set_a_real_editor_sends_still_carries_the_latest_version() {
+        const VSCODE_INSTALL_FLAGS: u32 = 950;
+
+        let doc = extension_json(&entry(), &urls(), &q(VSCODE_INSTALL_FLAGS));
+        let versions = doc["versions"].as_array().unwrap();
+        assert_eq!(versions.len(), 1, "the newest version, not none");
+        assert_eq!(versions[0]["version"], "2.0.0");
+        assert!(
+            versions[0]["files"]
+                .as_array()
+                .expect("files")
+                .iter()
+                .any(|f| f["assetType"] == asset_type::VSIX_PACKAGE),
+            "the editor downloads the VSIX from this list"
+        );
+    }
+
+    /// Even a client that asks for nothing gets a version it can install from —
+    /// only *how many* versions ship is negotiable.
+    #[test]
+    fn a_flagless_query_gets_the_latest_version_rather_than_none() {
+        let doc = extension_json(&entry(), &urls(), &q(0));
+        let versions = doc["versions"].as_array().unwrap();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0]["version"], "2.0.0");
+    }
+
+    #[test]
+    fn include_versions_alone_returns_the_whole_history() {
+        let doc = extension_json(&entry(), &urls(), &q(ALL_FLAGS));
+        let versions = doc["versions"].as_array().unwrap();
+        assert_eq!(versions.len(), 2, "newest first");
+        assert_eq!(versions[0]["version"], "2.0.0");
+        assert_eq!(versions[1]["version"], "1.0.0");
+    }
+
     #[test]
     fn the_flags_gate_what_is_included() {
         let bare = extension_json(&entry(), &urls(), &q(0));
-        assert_eq!(bare["versions"], json!([]));
+        assert_eq!(bare["versions"][0]["files"], json!([]));
         assert_eq!(bare["categories"], json!([]));
         assert!(bare.get("statistics").is_none());
 
         let full = extension_json(&entry(), &urls(), &q(ALL_FLAGS));
         assert_eq!(full["categories"], json!(["Linters"]));
         assert!(full["statistics"].is_array());
+    }
+
+    /// The editor reads `flags` with `.indexOf` and the two dates with
+    /// `Date.parse`, none of them guarded. A real `code --install-extension`
+    /// failed on the missing `flags` with
+    /// `Cannot read properties of undefined (reading 'indexOf')`.
+    #[test]
+    fn the_extension_carries_the_flag_string_and_the_dates() {
+        let doc = extension_json(&entry(), &urls(), &q(ALL_FLAGS));
+
+        let flags = doc["flags"].as_str().expect("flags is a string");
+        assert!(!flags.is_empty());
+        assert!(
+            !flags.contains("preview"),
+            "this server does not know whether an extension is a preview"
+        );
+        assert_eq!(doc["lastUpdated"], "2024-03-01T00:00:00+00:00", "newest");
+        assert_eq!(doc["releaseDate"], "2024-01-01T00:00:00+00:00", "oldest");
+    }
+
+    /// The marketplace knows things this proxy is guessing at, so its own values
+    /// win where it sent them.
+    #[test]
+    fn upstream_flags_and_dates_are_not_overwritten() {
+        let mut e = entry();
+        e.upstream = Some(json!({
+            "extensionName": "tool",
+            "publisher": { "publisherName": "acme" },
+            "flags": "validated public preview",
+            "lastUpdated": "2024-06-01T00:00:00Z",
+            "releaseDate": "2020-01-01T00:00:00Z",
+        }));
+
+        let doc = extension_json(&e, &urls(), &q(ALL_FLAGS));
+        assert_eq!(doc["flags"], "validated public preview");
+        assert_eq!(doc["lastUpdated"], "2024-06-01T00:00:00Z");
+        assert_eq!(doc["releaseDate"], "2020-01-01T00:00:00Z");
     }
 
     /// The fidelity guarantee: a key the marketplace sent that this proxy does
@@ -727,6 +873,17 @@ mod tests {
             42
         );
         assert_eq!(doc["results"][0]["extensions"].as_array().unwrap().len(), 1);
+    }
+
+    /// Every version blocked (or filtered for this identity) means there is
+    /// nothing to install, and the editor cannot be told that by an extension
+    /// object — it would crash on `versions[0]`. It is told by absence.
+    #[test]
+    fn an_entry_with_no_visible_version_is_dropped_from_the_envelope() {
+        let mut e = entry();
+        e.versions.clear();
+        let doc = query_response_json(&[e], 1, &urls(), &q(ALL_FLAGS));
+        assert_eq!(doc["results"][0]["extensions"], json!([]));
     }
 
     #[test]

@@ -150,50 +150,71 @@ impl LocalRegistryService {
         Ok(versions)
     }
 
-    /// The newest visible version of every extension in `registry` matching
-    /// `query`, for the search both protocols expose.
+    /// Every extension in `registry` matching `query`, as one group of visible
+    /// versions per extension — for the search both protocols expose.
+    ///
+    /// **All the versions, not just the newest.** A client that looks an
+    /// extension up by its *uuid* (`extensionquery` filter type 4) is answered
+    /// from here rather than from the by-id fast path, and VS Code takes exactly
+    /// that route when the newest version is a pre-release and it has to fall
+    /// back to the last release. Answered with a single version, the editor
+    /// concludes the extension "has no release version" and refuses to install
+    /// it — measured against a real `code --install-extension`.
+    ///
+    /// `query` is matched against the **newest** version's fields, since that is
+    /// the one a search result renders.
     ///
     /// Packages whose visibility check denies `identity` are skipped rather
     /// than surfaced as an error: a search should show what the caller may see,
     /// and a `403` from one private extension must not blank the whole result
-    /// set. Results are sorted by id so paging is stable across requests.
+    /// set. Groups are sorted by extension id so paging is stable across
+    /// requests.
     pub async fn get_openvsx_extensions(
         &self,
         registry: &str,
         query: &str,
         identity: &Identity,
-    ) -> Result<Vec<OpenVsxExtensionVersion>, CoreError> {
+    ) -> Result<Vec<Vec<OpenVsxExtensionVersion>>, CoreError> {
         let names = self.backend.list_package_names(registry).await?;
-        let mut hits = Vec::new();
+        let mut hits: Vec<Vec<OpenVsxExtensionVersion>> = Vec::new();
         for name in names {
             let versions = match self.load_visible_versions(registry, &name, identity).await {
                 Ok(v) => v,
                 Err(CoreError::AccessDenied(_)) => continue,
                 Err(e) => return Err(e),
             };
-            if let Some(best) = Self::newest_openvsx(&versions) {
-                if best.matches(query) {
-                    hits.push(best);
-                }
+            // Yanked versions are dropped for the same reason
+            // `get_openvsx_versions` drops them: neither protocol can say
+            // "exists but withdrawn".
+            let visible: Vec<OpenVsxExtensionVersion> = versions
+                .iter()
+                .filter(|p| !p.yanked)
+                .map(OpenVsxExtensionVersion::from_published)
+                .collect();
+
+            // Newest by publish date, not by version string: extension versions
+            // are conventionally semver but nothing enforces it, and `1.10.0`
+            // sorts below `1.9.0` lexicographically. Same reasoning as
+            // `newest_jetbrains_match`.
+            let Some(newest) = visible.iter().max_by_key(|v| v.published_at) else {
+                continue;
+            };
+            if newest.matches(query) {
+                hits.push(visible);
             }
         }
-        hits.sort_by(|a, b| a.extension_id.cmp(&b.extension_id));
+        hits.sort_by(|a, b| group_id(a).cmp(group_id(b)));
         Ok(hits)
     }
+}
 
-    /// Newest version by publish date.
-    ///
-    /// Extension versions are conventionally semver, but nothing enforces it
-    /// and `1.10.0` sorts below `1.9.0` lexicographically — the publish
-    /// timestamp is the ordering the registry actually knows to be true. Same
-    /// reasoning as `newest_jetbrains_match`.
-    fn newest_openvsx(versions: &[PublishedPackage]) -> Option<OpenVsxExtensionVersion> {
-        versions
-            .iter()
-            .filter(|p| !p.yanked)
-            .max_by_key(|p| p.published_at)
-            .map(OpenVsxExtensionVersion::from_published)
-    }
+/// The extension id a group of versions belongs to. Every group this module
+/// builds is non-empty; an empty one sorts first rather than panicking.
+fn group_id(group: &[OpenVsxExtensionVersion]) -> &str {
+    group
+        .first()
+        .map(|v| v.extension_id.as_str())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
