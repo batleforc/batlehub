@@ -114,6 +114,19 @@ pub fn sha256_hex(data: &[u8]) -> String {
     hex::encode(Sha256::digest(data))
 }
 
+/// Bare SHA-1 hex digest of `data`.
+///
+/// Not for integrity — [`sha256_hex`] is the stored checksum and SHA-1 is not a
+/// defence against anyone. This exists because two package protocols *define*
+/// their published digest as SHA-1 and their clients verify against it: npm's
+/// `dist.shasum` and Composer's `dist.shasum`. Publishing a SHA-256 in a field
+/// the client hashes with SHA-1 does not degrade to "unverified", it fails
+/// every download (RFC 0009 §12.16).
+pub fn sha1_hex(data: &[u8]) -> String {
+    use sha1::Digest as _;
+    hex::encode(Sha1::digest(data))
+}
+
 /// Incremental ("streaming") counterpart to [`verify`].
 ///
 /// Callers that want to verify a large artifact without buffering the whole

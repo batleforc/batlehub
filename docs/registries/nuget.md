@@ -122,17 +122,42 @@ curl -s https://batlehub.example.com/proxy/internal-nuget/nuget/v3/flat/mylib/in
 
 ### Endpoint reference
 
+<!-- BEGIN endpoints: proxy/nuget -->
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/proxy/{registry}/nuget/v3/index.json` | Generated service index |
-| `GET` | `/proxy/{registry}/nuget/v3/flat/{id}/index.json` | Version list |
-| `GET` | `/proxy/{registry}/nuget/v3/flat/{id}/{ver}/{file}` | Download `.nupkg` / `.nuspec` |
-| `GET` | `/proxy/{registry}/nuget/v3/registration5/{id}/index.json` | Package metadata |
-| `GET` | `/proxy/{registry}/nuget/v3/query` | Search |
-| `PUT` | `/proxy/{registry}/nuget/api/v2/package` | Publish `.nupkg` |
-| `DELETE` | `/proxy/{registry}/nuget/v2/package/{id}/{ver}` | Yank |
+| `PUT` | `/proxy/{registry}/nuget/api/v2/package` | Publish a `.nupkg` to the local registry. |
+| `PUT` | `/proxy/{registry}/nuget/api/v2/symbolpackage` | Publish a `.snupkg` symbol package. |
+| `DELETE` | `/proxy/{registry}/nuget/v2/package/{id}/{version}` | Yank (unlist) a NuGet package version from the local registry. |
+| `GET` | `/proxy/{registry}/nuget/v3/autocomplete` | `SearchAutocompleteService` — package-id completion. |
+| `GET` | `/proxy/{registry}/nuget/v3/flat/{id}/{version}/{filename}` | Download a NuGet package artifact (`.nupkg`, `.nuspec`, checksum, etc.). |
+| `GET` | `/proxy/{registry}/nuget/v3/flat/{id}/index.json` | Return the list of available versions for a NuGet package (flat container). |
+| `GET` | `/proxy/{registry}/nuget/v3/index.json` | Return a NuGet v3 service index pointing all resource URLs back to this proxy. |
+| `GET` | `/proxy/{registry}/nuget/v3/query` | Search for NuGet packages. |
+| `GET` | `/proxy/{registry}/nuget/v3/registration5/{id}/index.json` | Return NuGet v3 registration metadata for a package. |
+| `GET` | `/proxy/{registry}/nuget/v3/vulnerabilities/index.json` | Proxy the NuGet vulnerability database index. |
+| `GET` | `/proxy/{registry}/nuget/v3/vulnerabilities/page/{page}` | Proxy a single page of NuGet vulnerability records. |
+<!-- END endpoints -->
 
 ---
+
+## Blocked versions
+
+Both of NuGet's listing documents hide an administratively blocked version.
+
+- The **flat index** (`/v3/flat/{id}/index.json`) — what `dotnet restore`
+  resolves a version range against — drops the version outright.
+- The **registration pages** drop the leaf and recompute each page's `count`,
+  `lower` and `upper`; a page left empty is removed. Registrations whose pages
+  are served by URL rather than inline pass through unfiltered and are logged.
+
+Version spellings are folded before comparison, so a block recorded as
+`1.0.0.0` hides a listing that spells the same release `1.0.0`.
+
+The upstream document is cached for the registry's `metadata_ttl`; blocks are
+applied on top of the cached copy on every request, so blocking a version takes
+effect immediately rather than when the cache expires.
+
+See [blocking a package version](/guide/admin-policies#block-a-package-version) for the two halves of a block, and [which listings are filtered](/guide/admin-policies#which-listings-are-filtered) for the full table.
 
 ## Authentication
 
@@ -142,6 +167,42 @@ Pass the BatleHub token as the source password (username `__token__`), or as `--
 
 - `dotnet list package --vulnerable` works automatically — BatleHub advertises a `VulnerabilitiesUrl` resource in the v3 service index and proxies the upstream vulnerability catalogue. See [Using BatleHub → security auditing](/use/#security-audit).
 - A `401` on push usually means the token lacks `releases:write` (or admin) on the registry.
+
+## Search
+
+``dotnet package search`` is answered in three steps: a cached result for that query, then the
+upstream, then — when the upstream is unreachable — **the packages this registry
+already holds**. An outage degrades search to what BatleHub can honestly answer
+for, rather than to an error or to an empty result list.
+
+Every response carries `X-BatleHub-Cache: hit | miss | stale`. `stale` means the
+upstream could not be reached and the answer came from the cache or from the held
+set, so a short result list is never silently presented as complete.
+
+::: warning Search queries reach the upstream
+Step two forwards the query string to the configured upstream. Search terms are a
+record of what your organisation is looking for. Set `serve_stale = false` and
+leave the registry without an upstream if you want the held-package answer and no
+egress at all.
+:::
+
+Blocked versions are removed from results, and the reported total is adjusted to
+match — clients paginate by offset, so a silently shortened page would make the
+next one skip a result.
+
+## A plain-HTTP instance needs an explicit opt-in
+
+NuGet refuses an `http:` package source outright. If BatleHub is not behind TLS —
+a local instance, or an internal network — the source entry needs
+`allowInsecureConnections`:
+
+```xml
+<add key="batlehub" value="http://localhost:8080/proxy/my-nuget/nuget/v3/index.json"
+     allowInsecureConnections="true" />
+```
+
+Measured against dotnet 10.0.400. Without it the CLI stops before making any
+request, with a message pointing at <https://aka.ms/nuget-https-everywhere>.
 
 ## See also
 

@@ -1,5 +1,84 @@
 use serde::{Deserialize, Serialize};
 
+/// Whether blocked versions are removed from one listing document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListingSupport {
+    /// Blocked versions are absent from this document, and whatever it calls
+    /// "newest" is repaired to name a version that is still allowed.
+    Filtered,
+    /// Filtered, with a caveat an operator has to know about. The string
+    /// completes "yes — …".
+    Qualified(&'static str),
+    /// Not filtered, and why. The string completes "no — …".
+    ///
+    /// The reason travels with the code that decides it so the published
+    /// coverage table cannot drift from the behaviour. Two reasons exist today:
+    /// editing a signed repository index invalidates its signature and the
+    /// client rejects the whole repository (a worse failure than the one
+    /// filtering fixes), and RubyGems' Marshal indexes would need a Ruby
+    /// Marshal encoder in Rust to hide a version its JSON APIs already hide for
+    /// every client released this decade.
+    Unsupported(&'static str),
+}
+
+/// One version-listing document a registry kind serves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListingDocument {
+    /// How the admin guide names it — "packument", "`maven-metadata.xml`".
+    pub label: &'static str,
+    pub support: ListingSupport,
+    /// The `DocumentKind` discriminants this row covers — the same strings
+    /// `DocumentKind::as_str()` returns and the metadata cache key uses.
+    ///
+    /// Strings rather than the enum because `entities` does not depend on
+    /// `ports`, and this is the one fact it needs from there. They are checked
+    /// against the real enum in `blocking`'s
+    /// `every_advertised_filter_is_reachable_from_dispatch`, which resolves each
+    /// one and fails on a name no `DocumentKind` answers to — so a typo here is
+    /// a test failure, not a silently skipped document.
+    ///
+    /// One row may cover several: PyPI's HTML and PEP 691 JSON pages are one
+    /// *document* to a reader of the admin guide and two `DocumentKind`s to the
+    /// cache (RFC 0006 §13.4). Empty means the row describes something that
+    /// never travels through `strip` at all — a signed index, or a kind that
+    /// filters at a handler chokepoint.
+    ///
+    /// RFC 0009 §4.1: the reachability contract used to be exhaustive over
+    /// *kinds* and blind to *documents*, so a kind already answering "filtered"
+    /// for one document could grow a second, unfiltered one in silence. This
+    /// field is what closes that.
+    pub documents: &'static [&'static str],
+}
+
+impl ListingDocument {
+    const fn filtered(label: &'static str, documents: &'static [&'static str]) -> Self {
+        Self {
+            label,
+            support: ListingSupport::Filtered,
+            documents,
+        }
+    }
+    const fn qualified(
+        label: &'static str,
+        note: &'static str,
+        documents: &'static [&'static str],
+    ) -> Self {
+        Self {
+            label,
+            support: ListingSupport::Qualified(note),
+            documents,
+        }
+    }
+    /// No `documents`: an unsupported row names something `strip` never sees.
+    const fn unsupported(label: &'static str, reason: &'static str) -> Self {
+        Self {
+            label,
+            support: ListingSupport::Unsupported(reason),
+            documents: &[],
+        }
+    }
+}
+
 /// The protocol a registry adapter speaks — e.g. `"cargo"`, `"npm"`, `"maven"`.
 ///
 /// Distinct from a registry's user-configured *instance* name (e.g. `"my-maven"`
@@ -121,6 +200,144 @@ impl RegistryKind {
         )
     }
 
+    /// The version-listing documents this kind serves, and whether blocked
+    /// versions are hidden from each.
+    ///
+    /// The single source of truth for "which registries filter their listings".
+    /// The coverage table in `docs/guide/admin-policies.md` is *generated* from
+    /// this rather than maintained beside it, because the previous arrangement —
+    /// a warning box in the admin guide naming npm as the only filtered
+    /// ecosystem — was a fact about the code that nothing kept true.
+    ///
+    /// Exhaustive with no wildcard arm, so adding a registry kind does not
+    /// compile until it answers the question, in the same way
+    /// `server/src/builders.rs`'s match already forces a decision about client
+    /// construction. An empty slice is a legitimate answer and means the
+    /// protocol has no version listing at all.
+    ///
+    /// `blocking::strip` is checked against this in
+    /// `every_advertised_filter_is_reachable_from_dispatch`: a document
+    /// advertised here as filtered must reach a real filter.
+    pub fn listing_filter(&self) -> &'static [ListingDocument] {
+        // Named consts rather than inline slice literals: a `&[...]` holding
+        // const-fn calls is not promoted to `'static`, so each arm needs a
+        // const item to borrow from.
+        const NPM: &[ListingDocument] = &[ListingDocument::filtered("packument", &["versions"])];
+        const NUGET: &[ListingDocument] = &[
+            ListingDocument::filtered("flat index", &["versions"]),
+            ListingDocument::qualified(
+                "registration pages",
+                "inline pages only; paged registrations pass through, and are logged",
+                &["registration"],
+            ),
+        ];
+        const MAVEN: &[ListingDocument] = &[ListingDocument::filtered(
+            "`maven-metadata.xml`",
+            &["versions"],
+        )];
+        const PYPI: &[ListingDocument] = &[ListingDocument::filtered(
+            "simple index (HTML and PEP 691 JSON)",
+            &["versions", "simple-json"],
+        )];
+        const CARGO: &[ListingDocument] = &[ListingDocument::qualified(
+            "sparse index",
+            "blocked versions are marked `yanked` rather than removed, which is cargo's own \
+             mechanism for \"exists, do not select\" and keeps lockfile diagnostics honest",
+            &["versions"],
+        )];
+        const GOPROXY: &[ListingDocument] = &[ListingDocument::filtered(
+            "`@v/list` and `@latest`",
+            &["versions", "latest"],
+        )];
+        const RUBYGEMS: &[ListingDocument] = &[
+            // `/versions` is whole-registry and filters through `dispatch_multi`,
+            // so it carries the same up-to-30-second snapshot lag conda does.
+            ListingDocument::qualified(
+                "compact index (`/versions`, `/info/{gem}`)",
+                "`/versions` describes the whole registry, so a new block reaches it within \
+                 the blocked-set snapshot's 30-second TTL rather than instantly; `/info` is \
+                 per-gem and immediate",
+                &["compact-versions", "compact-info"],
+            ),
+            ListingDocument::filtered("versions and gem JSON APIs", &["versions", "gem"]),
+            ListingDocument::unsupported(
+                "`specs.4.8.gz`, `quick/Marshal.4.8`",
+                "hiding a version from a Ruby Marshal index would need a Marshal encoder in \
+                 Rust, and nothing reads it: Bundler resolves from the compact index above, \
+                 and the JSON APIs answer every other client released this decade",
+            ),
+        ];
+        const COMPOSER: &[ListingDocument] = &[ListingDocument::filtered(
+            "p2 metadata",
+            &["versions", "p2-dev"],
+        )];
+        const TERRAFORM: &[ListingDocument] = &[ListingDocument::filtered(
+            "module and provider versions",
+            &["versions"],
+        )];
+        // Filtered through `dispatch_multi` (a whole-channel blocked set), so
+        // the documents are listed for the admin table but `strip` never sees
+        // them — the exemption is `FILTERED_ELSEWHERE`.
+        const CONDA: &[ListingDocument] = &[
+            ListingDocument::filtered(
+                "`repodata.json`, `current_repodata.json` (and their `.zst`/`.bz2` encodings)",
+                &["versions", "current-repodata"],
+            ),
+            ListingDocument::qualified(
+                "`channeldata.json`",
+                "a blocked newest release drops the package from the channel summary rather \
+                 than moving it to an older one: channeldata names one version and carries no \
+                 list to pick a replacement from, so `conda search` stops showing it while \
+                 `conda install` still resolves it from `repodata.json`",
+                &["channeldata"],
+            ),
+        ];
+        // Filtered at a handler chokepoint, not through `strip` — three
+        // rendered documents from one intermediate version list.
+        const JETBRAINS_MARKETPLACE: &[ListingDocument] = &[ListingDocument::filtered(
+            "`updatePlugins.xml`, `/plugins/list` and the plugin-updates API",
+            &[],
+        )];
+        const FORGE: &[ListingDocument] =
+            &[ListingDocument::filtered("release listings", &["versions"])];
+        const SIGNED: &[ListingDocument] = &[ListingDocument::unsupported(
+            "signed repository indexes",
+            "editing one invalidates its signature and the client rejects the whole \
+             repository, which is a worse failure than the one filtering fixes",
+        )];
+        // Filtered on the entries in `vsx/source.rs`: the gallery response is
+        // selected by a POST body rather than a URL, so `strip`'s
+        // `(kind, document, package)` signature cannot address it, and the same
+        // entries render into two protocols (RFC 0006 §13.1-bis).
+        const EXTENSION_GALLERY: &[ListingDocument] = &[ListingDocument::filtered(
+            "extension gallery (`extensionquery`) and the OpenVSX API",
+            &[],
+        )];
+
+        match self {
+            Self::Npm => NPM,
+            Self::Nuget => NUGET,
+            Self::Maven => MAVEN,
+            Self::Pypi => PYPI,
+            Self::Cargo => CARGO,
+            Self::Goproxy => GOPROXY,
+            Self::Rubygems => RUBYGEMS,
+            Self::Composer => COMPOSER,
+            Self::Terraform => TERRAFORM,
+            Self::Conda => CONDA,
+            Self::JetbrainsMarketplace => JETBRAINS_MARKETPLACE,
+            Self::Github | Self::Gitlab | Self::Forgejo => FORGE,
+            Self::Deb | Self::Rpm | Self::Pacman => SIGNED,
+            Self::Openvsx | Self::VscodeMarketplace => EXTENSION_GALLERY,
+            // `generic` and `jetbrains` mirror an arbitrary file tree by path —
+            // there is no listing document in the protocol at all, so there is
+            // nothing to say beyond that. (JetBrains *plugins* are the separate
+            // `jetbrains-marketplace` kind above, and are filtered; VS Code
+            // extensions are `openvsx`/`vscode-marketplace` above.)
+            Self::Generic | Self::Jetbrains => &[],
+        }
+    }
+
     /// The `PackageId::artifact` sub-coordinate this kind's primary downloadable
     /// artifact is cached under, when it uses one.
     ///
@@ -137,6 +354,13 @@ impl RegistryKind {
     pub fn warm_artifact(&self) -> Option<&'static str> {
         match self {
             Self::JetbrainsMarketplace => Some("plugin"),
+            // Both extension kinds read with `.with_artifact("vsix")` in
+            // `handlers/proxy/openvsx.rs`. Returning `None` here — as this did —
+            // made the warmer write `artifact:{registry}/{name}/{version}` while
+            // every read looked in `…/{version}/vsix`, so warming an extension
+            // filled a slot nothing ever read and the first real request still
+            // went upstream.
+            Self::Openvsx | Self::VscodeMarketplace => Some("vsix"),
             _ => None,
         }
     }
@@ -207,6 +431,59 @@ mod tests {
         assert!(!RegistryKind::Pacman.requires_explicit_upstream_in_proxy_mode());
         assert!(!RegistryKind::Npm.requires_explicit_upstream_in_proxy_mode());
         assert!(!RegistryKind::JetbrainsMarketplace.requires_explicit_upstream_in_proxy_mode());
+    }
+
+    #[test]
+    fn every_kind_answers_the_listing_filter_question() {
+        for kind in RegistryKind::ALL {
+            let docs = kind.listing_filter();
+            if matches!(kind, RegistryKind::Generic | RegistryKind::Jetbrains) {
+                assert!(
+                    docs.is_empty(),
+                    "{kind} is path-addressed and has no listing document"
+                );
+                continue;
+            }
+            assert!(
+                !docs.is_empty(),
+                "{kind} names no listing document; if it genuinely has none, say so here"
+            );
+            for d in docs {
+                assert!(!d.label.is_empty(), "{kind}: a document needs a name");
+                if let ListingSupport::Unsupported(reason) | ListingSupport::Qualified(reason) =
+                    d.support
+                {
+                    assert!(
+                        !reason.is_empty(),
+                        "{kind}/{}: the published table prints this reason verbatim",
+                        d.label
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every "no" row of the coverage table, and only those. Each one is a
+    /// deliberate decision with a reason an operator can read, not an omission.
+    #[test]
+    fn the_unfiltered_documents_are_the_ones_we_decided_not_to_filter() {
+        let unfiltered: Vec<&str> = RegistryKind::ALL
+            .iter()
+            .filter(|k| {
+                k.listing_filter()
+                    .iter()
+                    .any(|d| matches!(d.support, ListingSupport::Unsupported(_)))
+            })
+            .map(|k| k.as_str())
+            .collect();
+        assert_eq!(
+            unfiltered,
+            [
+                // Marshal indexes only; the JSON APIs are filtered.
+                "rubygems", // Signed repository indexes.
+                "deb", "rpm", "pacman",
+            ]
+        );
     }
 
     #[test]

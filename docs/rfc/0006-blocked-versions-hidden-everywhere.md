@@ -2,7 +2,7 @@
 
 | Field       | Value                                                                 |
 | ----------- | --------------------------------------------------------------------- |
-| Status      | In review — every open question resolved, awaiting sign-off            |
+| Status      | **Implemented** — all eight phases landed; see the implementation notes in §13 |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                                |
 | Co-author   | —                                                                      |
 | Created     | 2026-08-15                                                             |
@@ -845,3 +845,155 @@ Phases 1 and 2 are each useful on their own: they close the gap for the
 ecosystems whose users hit it most, and neither depends on the ones after it.
 Phase 0 is a prerequisite for all of them and is the only phase with no
 user-visible effect.
+
+---
+
+## 13. Implementation notes
+
+All eight phases landed. Everything below is a place where the implementation
+departed from the design above, or where the design turned out to rest on a
+wrong assumption about the codebase.
+
+### 13.1 The coverage table was wrong about five registry kinds
+
+§4.3's table was written from the RFC's reading of the protocols rather than
+from this server's routes, and `RegistryKind::listing_filter()` — being the
+generated source of the published table — had to be corrected to what actually
+ships:
+
+| Kind | §4.3 said | What ships, and why |
+| --- | --- | --- |
+| **openvsx** | extension version listings, filtered | Filtered — **once the gallery existed**. When this RFC landed there was no listing route at all: `crates/web` exposed `GET`/`PUT` of `…/{extension}/{version}/vsix` and nothing else. See §13.1-bis. |
+| **vscode-marketplace** | extension version listings, filtered | Same: filtered now, via the same handlers. |
+| **jetbrains** | `updatePlugins.xml`, filtered | **No listing document.** `jetbrains` is the path-addressed *IDE archive* mirror (`download.jetbrains.com`); `updatePlugins.xml` belongs to `jetbrains-marketplace`, which is a separate kind and *is* filtered — see the row below. |
+| **jetbrains-marketplace** | plugin updates, filtered | Filtered, and **wider than stated**: `updatePlugins.xml`, `/plugins/list` and `/api/plugins/{id}/updates` all render from one intermediate version list, so the filter sits on that list rather than on three documents. |
+| **conda** | `repodata.json`, filtered | Filtered as designed, through `dispatch_multi` rather than `dispatch`. |
+
+### 13.1-bis BatleHub cannot serve as an editor's extension gallery
+
+Following the openvsx and vscode-marketplace rows above to their conclusion:
+an editor discovers, searches and updates extensions through a **gallery** —
+`extensionsGallery.serviceUrl` in `product.json`, queried with
+`POST {serviceUrl}/extensionquery` for the Microsoft marketplace, or
+`/vscode/gallery` + `/vscode/item` for Open VSX. BatleHub exposes none of those
+routes, so it cannot be set as an editor's marketplace. It caches and gates the
+VSIX **bytes**, by coordinate.
+
+`docs/registries/openvsx.md` said otherwise — it published a
+`vscode-extension-marketplace.serviceUrl` snippet pointing an editor at
+BatleHub, which is neither a real VS Code setting nor a route this server
+answers. Corrected to state the limitation where an operator would otherwise
+try it.
+
+Out of scope for this RFC, which was about hiding blocked versions from listings
+that exist — but named here because "openvsx has no listing to filter" was true
+of this server and *not* of the protocol, which made it a feature gap rather
+than a design decision.
+
+**Since closed.** `crates/web/src/handlers/proxy/vsx/` now serves both the VS
+Code gallery and the OpenVSX REST API, and `docs/registries/openvsx.md` carries
+the working `product.json`. Both kinds moved from `Unsupported` to `Filtered` in
+`listing_filter()`, and into `FILTERED_ELSEWHERE` in `blocking/mod.rs`: the
+gallery response is selected by a POST body rather than a URL, so `strip`'s
+`(kind, document, package)` signature cannot address it, and the same entries
+render into two protocols — so the filter sits on the entries in
+`vsx/source.rs`, exactly as JetBrains Marketplace does.
+
+### 13.2 `<lastUpdated>` in `maven-metadata.xml` is not refreshed
+
+§6.3 asks for it. It is deliberately left alone.
+
+Filtering happens per request (§4.2), so a filter has to be a pure function of
+`(document, blocked set)`. A clock in that function makes two identical requests
+produce different bytes, which breaks `ETag`/`If-Modified-Since` on a metadata
+path and makes Maven's multi-repository metadata merge non-deterministic. The
+staleness decision the field would drive is one Maven makes from its own
+local `.lastUpdated` marker and update policy, not from this field, so the cost
+is real and the benefit is not.
+
+### 13.3 `@latest` and the gem document are repaired by composition
+
+§6.3 describes Go's `@latest` re-resolving from `@v/list`. Both that and
+RubyGems' single-gem document name exactly one version and carry no list, so
+neither can be repaired by a pure function over its own bytes. Both are handled
+the same way: the handler fetches *both* documents through
+`ProxyService::version_document` — so both are authorised, cached and filtered —
+and repairs the single-version document against the filtered list.
+
+Both fail open on the *list* fetch: an unreachable `@v/list` serves `@latest`
+unrepaired rather than turning a metadata blip into a broken module.
+
+### 13.4 PyPI's two representations are two `DocumentKind`s
+
+§6.3 treats the HTML and PEP 691 JSON simple pages as one document chosen by
+`Accept`. They cannot share a metadata-cache key: whichever representation
+warmed the entry would be served to clients that asked for the other. They are
+`DocumentKind::Versions` and `DocumentKind::SIMPLE_JSON`, and the `Accept` sent
+upstream is derived from the kind rather than forwarded from the client.
+
+### 13.5 The conda snapshot lives in the metadata cache
+
+§6.6 specifies a 30-second snapshot without saying where it lives. It is a
+`blocks:{registry}` entry in the existing metadata cache rather than a
+process-local map, so a Redis-backed deployment shares one query across
+replicas instead of paying for one per replica. The TTL mechanism is the store's,
+already tested.
+
+### 13.6 Terraform's proxy-mode download is not gated, and was not by this RFC
+
+`…/{version}/download` in proxy mode resolves the upstream's `X-Terraform-Get`
+and hands the client a URL to fetch **directly**, so no bytes pass through this
+proxy and the rule chain never runs on them. That predates this work and is
+unchanged by it; the blocked-versions test asserts the `403` in local mode,
+where the artifact route does go through the gate. Worth a look in its own
+right — it is the same class of finding as cargo's index (§6.7), on a download
+path rather than a metadata one.
+
+### 13.6-bis Conda's download gate did not work, and now does
+
+Found by this RFC's own test, and worth calling out because it contradicts §7's
+central claim.
+
+Conda's proxy-mode download route addressed its coordinate as
+`PackageId::new(registry, filename_stem, platform)` — so a block recorded
+against `numpy@1.1.0` was compared against
+`("numpy-1.1.0-py311_0", "linux-64")` and matched nothing. **The `403` never
+fired.** Conda would have been the one ecosystem where hiding a version from
+the channel index was the entire block, with the "download gate is the thing
+that actually refuses the bytes" property simply false — and with the 30-second
+snapshot delay meaning there was a window where neither half worked.
+
+The route now addresses the package coordinate the filename encodes
+(`parse_conda_filename`, splitting from the right because conda names may
+contain hyphens), with the filename kept as the artifact sub-coordinate so two
+builds of one version stay distinct in the cache. Conda artifacts cached under
+the old key shape are a cache miss on upgrade, not a mis-read.
+
+`blocked_versions_hidden_conda.rs::a_block_does_not_reach_an_already_warm_snapshot`
+pins both halves of the trade: the listing lags by up to the TTL, the `403` does
+not.
+
+### 13.7 What the exhaustive matches actually enforce
+
+Three compile-time or test-time contracts hold the design together:
+
+- `RegistryKind::listing_filter()` is an exhaustive match — a new registry kind
+  does not compile until it answers the question.
+- `blocking::strip` is exhaustive over `RegistryKind` for the same reason.
+- `every_advertised_filter_is_reachable_from_dispatch` checks the two against
+  each other, so the generated admin-guide table cannot promise filtering the
+  code declines to do. Conda and JetBrains Marketplace are explicitly exempt
+  (they filter through `dispatch_multi` and a handler chokepoint respectively),
+  and the exemption list carries the reason for each.
+
+### 13.8 Test and gate additions
+
+- `crates/web/tests/blocked_versions_hidden_<registry>.rs` for npm (pre-existing),
+  NuGet, Terraform, RubyGems, Go, Maven, PyPI, cargo, Composer, conda, and the
+  forges.
+- `crates/web/tests/listing_audit.rs` — the §4.5 regression: an allowed listing
+  writes **no** `AccessEvent` and moves `listing_reads`; a denial writes exactly
+  one, with action `ViewMetadata`.
+- `task docs:listing-coverage` / `:check`, wired into `task docs:design`, so the
+  published table cannot drift from `listing_filter()`.
+- Migration `033_stats_history_listing_reads.sql` for the rolled-up counter.

@@ -71,6 +71,10 @@ pub struct IdeSetup {
     /// Whether `registry_name` is a real configured registry (`true`) or a
     /// placeholder the user still needs to create (`false`).
     pub registry_configured: bool,
+    /// Base URL the instructions point at — the registry's own host when it has
+    /// one, otherwise `{server}/proxy/{registry_name}`. Also the host a
+    /// `~/.netrc` entry has to name.
+    pub base_url: String,
     /// Human-readable reason this editor was detected (env var / config path).
     pub detected_via: String,
     /// Multi-line setup instructions shown in the detail pane / CLI output.
@@ -220,6 +224,13 @@ fn build_setup(
     let registry_name = matched
         .map(str::to_string)
         .unwrap_or_else(|| kind.registry_placeholder().to_string());
+    // The URL the editor talks to: the registry's own host when it has one,
+    // else the `/proxy/{name}` subpath — on a host-routed registry the server
+    // prefixes that path itself, so writing it here would double it.
+    let base = matched
+        .and_then(|name| registries.iter().find(|r| r.name == name))
+        .map(|r| r.base_url(server))
+        .unwrap_or_else(|| format!("{server}/proxy/{registry_name}"));
     // The instruction's registry *type* is the one we matched, or the editor's
     // primary preference when nothing is configured yet.
     let registry_type = matched
@@ -236,11 +247,14 @@ fn build_setup(
         IdeKind::VsCode | IdeKind::VsCodium => vscode_instructions(
             kind,
             server,
+            &base,
             &registry_name,
             registry_type,
             registry_configured,
         ),
-        IdeKind::JetBrains => jetbrains_instructions(server, &registry_name, registry_configured),
+        IdeKind::JetBrains => {
+            jetbrains_instructions(server, &base, &registry_name, registry_configured)
+        }
     };
 
     IdeSetup {
@@ -250,6 +264,7 @@ fn build_setup(
         registry_configured,
         detected_via,
         instructions,
+        base_url: base,
     }
 }
 
@@ -273,6 +288,7 @@ fn hint_if_placeholder(server: &str, registry_type: &str, configured: bool) -> S
 fn vscode_instructions(
     kind: IdeKind,
     server: &str,
+    base: &str,
     reg: &str,
     registry_type: &str,
     configured: bool,
@@ -284,7 +300,7 @@ fn vscode_instructions(
          Registry     : {registry_type}  ({reg})\n\
          \n\
          Install a single extension directly (always works):\n\
-         curl -L {server}/proxy/{reg}/<publisher>.<name>/<version>/vsix \\\n\
+         curl -L {base}/<publisher>.<name>/<version>/vsix \\\n\
            -o ext.vsix\n\
          code --install-extension ext.vsix   # or: codium --install-extension\n\
          \n\
@@ -292,30 +308,32 @@ fn vscode_instructions(
          ~/.config/VSCodium/User/product.json — restart after editing):\n\
          {{\n\
            \"extensionGallery\": {{\n\
-             \"serviceUrl\": \"{server}/proxy/{reg}/vscode/gallery\",\n\
-             \"itemUrl\":    \"{server}/proxy/{reg}/vscode/item\"\n\
+             \"serviceUrl\": \"{base}/vscode/gallery\",\n\
+             \"itemUrl\":    \"{base}/vscode/item\"\n\
            }}\n\
          }}\n\
          Note: gallery override needs a build that honours product.json;\n\
          VSIX proxying (above) is always supported.\n\
+         The editor sends no credentials to its gallery — the registry needs\n\
+         anonymous read, or put the credentials in ~/.netrc (below).\n\
          {hint}",
         ide = kind.label(),
         hint = hint_if_placeholder(server, registry_type, configured),
     )
 }
 
-fn jetbrains_instructions(server: &str, reg: &str, configured: bool) -> String {
+fn jetbrains_instructions(server: &str, base: &str, reg: &str, configured: bool) -> String {
     format!(
         "IDE          : JetBrains IDE (IntelliJ / GoLand / PyCharm / …)\n\
          Registry     : jetbrains-marketplace  ({reg})\n\
          \n\
          Additive custom plugin repository (recommended):\n\
          Settings → Plugins → ⚙ → Manage Plugin Repositories… → add:\n\
-         {server}/proxy/{reg}/updatePlugins.xml\n\
+         {base}/updatePlugins.xml\n\
          \n\
          Full replacement of plugins.jetbrains.com\n\
          (Help → Edit Custom Properties… → idea.properties):\n\
-         idea.plugins.host={server}/proxy/{reg}\n\
+         idea.plugins.host={base}\n\
          Restart the IDE to apply.\n\
          \n\
          IDE installer archives use a separate `jetbrains` (proxy) registry:\n\
@@ -334,6 +352,14 @@ mod tests {
             name: name.to_owned(),
             registry_type: ty.to_owned(),
             mode: "proxy".to_owned(),
+            public_url: None,
+        }
+    }
+
+    fn hosted_reg(name: &str, ty: &str, public_url: &str) -> RegistryInfo {
+        RegistryInfo {
+            public_url: Some(public_url.to_owned()),
+            ..reg(name, ty)
         }
     }
 
@@ -428,6 +454,32 @@ mod tests {
             .contains("No `jetbrains-marketplace` registry"));
         // Trailing slash on server URL must be trimmed before it reaches URLs.
         assert!(!setup.instructions.contains("h:8080//"));
+    }
+
+    /// A host-routed registry is addressed on its own subdomain, without the
+    /// `/proxy/{name}` prefix that host adds itself.
+    #[test]
+    fn build_setup_uses_the_registry_subdomain_when_advertised() {
+        let regs = vec![hosted_reg(
+            "ovsx1",
+            "openvsx",
+            "https://ovsx1.batlehub.example.com/",
+        )];
+        let setup = build_setup(
+            IdeKind::VsCodium,
+            "test".to_owned(),
+            "https://batlehub.example.com",
+            &regs,
+        );
+        assert_eq!(setup.base_url, "https://ovsx1.batlehub.example.com");
+        assert!(setup
+            .instructions
+            .contains("\"serviceUrl\": \"https://ovsx1.batlehub.example.com/vscode/gallery\""));
+        assert!(
+            !setup.instructions.contains("/proxy/ovsx1"),
+            "the registry host prefixes /proxy/{{name}} itself: {}",
+            setup.instructions
+        );
     }
 
     #[test]

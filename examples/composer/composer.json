@@ -26,7 +26,8 @@
     ],
     "config": {
         "optimize-autoloader": true,
-        "sort-packages": true
+        "sort-packages": true,
+        "secure-http": false
     },
     "autoload": {
         "psr-4": {

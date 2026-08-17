@@ -6,12 +6,12 @@ use serde::Deserialize;
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient},
+    ports::{DocumentKind, FetchedArtifact, RegistryClient, VersionDocument},
 };
 
 use super::http_client::{
-    basic_auth_get, cache_control, new_http_client, percent_encode,
-    same_origin as urls_same_origin, to_registry_error, UpstreamHttpOptions,
+    basic_auth_get, cache_control, fetch_json_document, fetch_text_document, new_http_client,
+    percent_encode, same_origin as urls_same_origin, to_registry_error, UpstreamHttpOptions,
 };
 
 use batlehub_core::ports::UpstreamPackage;
@@ -208,6 +208,37 @@ impl RegistryClient for GoProxyRegistryClient {
             extra,
             cache_control: None,
         })
+    }
+
+    /// `@v/list` is the version listing; `@latest` is a second document that
+    /// names one version and carries no list.
+    ///
+    /// Repairing `@latest` needs the filtered `@v/list` as well, so it is not
+    /// done here — see `blocking::goproxy::repaired_latest` and the handler that
+    /// composes the two.
+    async fn fetch_version_document(
+        &self,
+        package: &str,
+        kind: DocumentKind,
+    ) -> Result<VersionDocument, CoreError> {
+        match kind {
+            DocumentKind::Versions => {
+                let url = format!("{}/@v/list", self.module_base(package));
+                fetch_text_document(
+                    self.get(&url),
+                    &format!("go @v/list for '{package}'"),
+                    "text/plain; charset=utf-8",
+                )
+                .await
+            }
+            DocumentKind::LATEST => {
+                let url = format!("{}/@latest", self.module_base(package));
+                fetch_json_document(self.get(&url), &format!("go @latest for '{package}'")).await
+            }
+            other => Err(CoreError::NotSupported(format!(
+                "go proxy has no '{other}' listing document"
+            ))),
+        }
     }
 
     async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {

@@ -19,6 +19,8 @@ import { Card, CardHeader, CardDescription, CardContent } from "@/components/ui/
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   REGISTRY_TYPE_DEFS,
+  hostOf,
+  netrcHostsFor,
   type RegistryTypeDef,
   type SnippetContext,
 } from "@/config/registryTypes";
@@ -30,14 +32,6 @@ const copied = ref<string | null>(null);
 
 const { token, identity, isAuthenticated, isAdmin, expiresAt } = useAuth();
 
-function hostnameOf(url: string): string {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return url;
-  }
-}
-
 const netrcLogin = computed(() => identity.value?.user_id ?? "token");
 const isOidc = computed(() => expiresAt.value > 0);
 
@@ -46,22 +40,8 @@ const { data: registries, loading } = useApi<Array<RegistryInfo>>(
   [],
 );
 
-/**
- * Every host a client may authenticate against: this origin, plus the hostname of
- * each host-routed registry. `.netrc` entries are matched by hostname, so a guide
- * that lists only the main host sends no credentials to a registry advertised on
- * its own `public_url` — the per-registry snippets point there, and every
- * authenticated install would 401.
- */
-const netrcHosts = computed(() => {
-  const hosts = [hostnameOf(base.value)];
-  for (const registry of registries.value ?? []) {
-    if (!registry.public_url) continue;
-    const host = hostnameOf(registry.public_url);
-    if (!hosts.includes(host)) hosts.push(host);
-  }
-  return hosts;
-});
+/** This origin plus every host-routed registry's own host — see `netrcHostsFor`. */
+const netrcHosts = computed(() => netrcHostsFor(base.value, registries.value ?? []));
 
 const netrcSnippet = computed(() =>
   netrcHosts.value
@@ -160,7 +140,7 @@ function ctxFor(def: RegistryTypeDef): SnippetContext {
     token: token.value ?? "",
     // Credentials are keyed by the host the client actually talks to, which is
     // the registry's own host once it has one.
-    netrcHost: hostnameOf(registryUrl),
+    netrcHost: hostOf(registryUrl),
     netrcLogin: netrcLogin.value,
     identity: identity.value,
     selectedNames: selectedNames.value,

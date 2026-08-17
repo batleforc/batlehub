@@ -60,4 +60,125 @@ impl LocalRegistryService {
             .collect();
         Ok(result)
     }
+
+    /// The compact-index `/info/{gem}` document for a locally published gem.
+    ///
+    /// This is what Bundler resolves from — the JSON APIs above are a fallback
+    /// it reaches for only when the compact index is absent. Nothing generated
+    /// it, so the handlers proxied upstream in every mode: a gem published to a
+    /// local registry was invisible to `bundle install`, and a `local` registry
+    /// answered `/versions` with rubygems.org's index (RFC 0009 §12.15).
+    ///
+    /// Format is one line per version:
+    ///
+    /// ```text
+    /// ---
+    /// 1.0.0 rake:~> 13.0,json:>= 2.0|checksum:<sha256>
+    /// ```
+    ///
+    /// Versions come from [`Self::load_visible_versions`], so blocking and
+    /// visibility are applied before a line is written rather than stripped
+    /// afterwards — the filtering obligation is met by construction here.
+    pub async fn get_rubygems_compact_info(
+        &self,
+        registry: &str,
+        name: &str,
+        identity: &Identity,
+    ) -> Result<String, CoreError> {
+        let versions = self
+            .load_visible_versions_or_not_found(registry, name, identity, "gem")
+            .await?;
+        Ok(Self::render_compact_info(&versions))
+    }
+
+    fn render_compact_info(versions: &[crate::entities::PublishedPackage]) -> String {
+        let mut out = String::from("---\n");
+        for pkg in versions.iter().filter(|p| !p.yanked) {
+            let meta = &pkg.index_metadata;
+            let deps = meta
+                .get("dependencies")
+                .and_then(|d| d.as_array())
+                .map(|deps| {
+                    deps.iter()
+                        .filter_map(|d| {
+                            let name = d.get("name")?.as_str()?;
+                            let req = d.get("requirement").and_then(|r| r.as_str()).unwrap_or("");
+                            Some(format!("{name}:{req}"))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+                .unwrap_or_default();
+            let checksum = meta.get("sha").and_then(|v| v.as_str()).unwrap_or("");
+            out.push_str(&format!("{} {deps}|checksum:{checksum}\n", pkg.version));
+        }
+        out
+    }
+
+    /// The compact-index `/versions` document: every gem in the registry.
+    ///
+    /// Each line ends with the MD5 of that gem's `/info` document, which is how
+    /// Bundler decides whether its cached copy is current — so it is computed
+    /// from the same bytes [`Self::get_rubygems_compact_info`] would return,
+    /// not from the gem's own contents.
+    pub async fn get_rubygems_compact_versions(
+        &self,
+        registry: &str,
+        identity: &Identity,
+    ) -> Result<String, CoreError> {
+        use md5::{Digest as _, Md5};
+
+        let names = self.backend.list_package_names(registry).await?;
+        // A fixed epoch rather than "now": Bundler treats this header as the
+        // point its incremental fetches start from, and a timestamp that moves
+        // on every request invalidates every cache on every request.
+        let mut out = String::from("created_at: 1970-01-01T00:00:00Z\n---\n");
+        for name in &names {
+            let Ok(versions) = self.load_visible_versions(registry, name, identity).await else {
+                // Not visible to this identity is not an error here — it is a
+                // gem this caller does not get to see, like every other listing.
+                continue;
+            };
+            let live: Vec<String> = versions
+                .iter()
+                .filter(|p| !p.yanked)
+                .map(|p| p.version.clone())
+                .collect();
+            if live.is_empty() {
+                continue;
+            }
+            let info = Self::render_compact_info(&versions);
+            let digest = Md5::digest(info.as_bytes());
+            out.push_str(&format!(
+                "{name} {} {}\n",
+                live.join(","),
+                hex::encode(digest)
+            ));
+        }
+        Ok(out)
+    }
+
+    /// The compact-index `/names` document.
+    ///
+    /// Unfiltered by version on purpose, like the handler that serves it: a gem
+    /// with one blocked version is still a gem that exists. A gem whose every
+    /// version is invisible to this caller is not listed.
+    pub async fn get_rubygems_compact_names(
+        &self,
+        registry: &str,
+        identity: &Identity,
+    ) -> Result<String, CoreError> {
+        let names = self.backend.list_package_names(registry).await?;
+        let mut out = String::from("---\n");
+        for name in &names {
+            let Ok(versions) = self.load_visible_versions(registry, name, identity).await else {
+                continue;
+            };
+            if versions.iter().any(|p| !p.yanked) {
+                out.push_str(name);
+                out.push('\n');
+            }
+        }
+        Ok(out)
+    }
 }

@@ -482,7 +482,33 @@ Valid keys for `config set`: `server_url`, `token`, `registry`.
 
 ---
 
-## 12. TUI mode
+## 12. Commands — setup
+
+```
+batlehub-cli setup detect [--dir <path>] [--depth <n>] [--offline] [--json]
+batlehub-cli setup ide [--offline] [--json]
+```
+
+`setup detect` scans a directory for project manifests (`Cargo.toml`, `go.mod`,
+`package.json`, `pyproject.toml`, `pom.xml`, `composer.json`, `*.gemspec`,
+`*.nuspec`, `*.csproj`, `*.tf`, `environment.yml`) and prints the configuration
+snippet for each package manager it finds. `setup ide` does the same for the
+editor you are running in (VS Code / VSCodium → OpenVSX or the VS Code
+Marketplace; JetBrains → the JetBrains Marketplace).
+
+Both ask the server which registries exist, so the snippets carry the real
+registry name and the URL that registry actually answers on — its own subdomain
+when [host-based routing](../rfc/0001-subdomain-routing.md) advertises one,
+`{server}/proxy/{name}` otherwise. Each run ends with the matching `~/.netrc`
+stanzas, one per host: credentials are matched by hostname, so a host-routed
+registry needs its own entry.
+
+If the server cannot be reached the commands still work — they print `<registry>`
+placeholders and say so on stderr. `--offline` skips the request entirely.
+
+---
+
+## 13. TUI mode
 
 ```
 batlehub-cli tui

@@ -12,7 +12,8 @@ pub mod read;
 pub mod write;
 
 pub use read::{
-    terraform_provider_artifact, terraform_provider_download, terraform_provider_versions,
+    terraform_provider_artifact, terraform_provider_download, terraform_provider_shasums,
+    terraform_provider_shasums_sig, terraform_provider_versions,
 };
 pub use write::{
     terraform_provider_binary_upload, terraform_provider_unyank, terraform_provider_upload,

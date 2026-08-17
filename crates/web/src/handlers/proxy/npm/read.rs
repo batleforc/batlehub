@@ -5,6 +5,7 @@ use super::{
     LocalRegistryService, PackageId, ProxyService, RegistryMap, RegistryModeMap, Responder,
     UpstreamMap,
 };
+use crate::handlers::proxy::upstream::{cached_forward, Outbound};
 use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 
 /// Fetch package metadata (all versions / packument).
@@ -59,6 +60,8 @@ pub async fn get_packument(
             not_found_msg,
             pkg,
             batlehub_core::rules::resource_type::RELEASES_READ,
+            batlehub_core::ports::DocumentKind::Versions,
+            "application/json",
             proxy_url,
         )
         .await;
@@ -193,77 +196,168 @@ pub async fn download_tarball(
     .await
 }
 
-/// Proxy npm audit requests to the upstream npm registry.
+/// `npm audit`, quick mode — on the path npm sends.
+///
+/// See `AUDIT_QUICK` below for why there are two routes per endpoint.
 #[utoipa::path(
     post,
-    path = "/proxy/{registry}/-/npm/v1/audit/quick",
+    path = "/proxy/{registry}/-/npm/v1/security/audits/quick",
     tag = "proxy/npm",
     params(
         ("registry" = String, Path, description = "npm registry name"),
     ),
     request_body = serde_json::Value,
     responses(
-        (status = 200, description = "Audit advisory data from upstream", body = UpstreamDocument),
+        (status = 200, description = "Audit advisory data, from cache or upstream", body = UpstreamDocument),
         (status = 404, description = "Unknown or non-npm registry"),
-        (status = 502, description = "Upstream audit request failed"),
+        (status = 502, description = "Upstream unreachable and no cached answer"),
     ),
     security(("bearer_token" = [])),
 )]
-#[post("/proxy/{registry}/-/npm/v1/audit/quick")]
+#[post("/proxy/{registry}/-/npm/v1/security/audits/quick")]
 pub async fn audit_quick(
     path: web::Path<(String,)>,
     body: web::Json<serde_json::Value>,
     map: web::Data<RegistryMap>,
     upstream_map: web::Data<UpstreamMap>,
+    svc: web::Data<Arc<ProxyService>>,
     client: web::Data<reqwest::Client>,
 ) -> Result<impl Responder, AppError> {
     let (registry,) = path.into_inner();
     forward_npm_audit(
         &registry,
-        "quick",
+        AUDIT_QUICK,
         body.into_inner(),
         &map,
         &upstream_map,
+        &svc,
         &client,
     )
     .await
 }
 
-/// Proxy full npm bulk audit requests (`npm audit` default mode).
+/// `npm audit`, bulk mode — the default since npm 7, on the path npm sends.
 #[utoipa::path(
     post,
-    path = "/proxy/{registry}/-/npm/v1/audit/bulk",
+    path = "/proxy/{registry}/-/npm/v1/security/advisories/bulk",
     tag = "proxy/npm",
     params(
         ("registry" = String, Path, description = "npm registry name"),
     ),
     request_body = serde_json::Value,
     responses(
-        (status = 200, description = "Bulk audit advisory data from upstream", body = UpstreamDocument),
+        (status = 200, description = "Bulk advisory data, from cache or upstream", body = UpstreamDocument),
         (status = 404, description = "Unknown or non-npm registry"),
-        (status = 502, description = "Upstream audit request failed"),
+        (status = 502, description = "Upstream unreachable and no cached answer"),
     ),
     security(("bearer_token" = [])),
 )]
-#[post("/proxy/{registry}/-/npm/v1/audit/bulk")]
+#[post("/proxy/{registry}/-/npm/v1/security/advisories/bulk")]
 pub async fn audit_bulk(
     path: web::Path<(String,)>,
     body: web::Json<serde_json::Value>,
     map: web::Data<RegistryMap>,
     upstream_map: web::Data<UpstreamMap>,
+    svc: web::Data<Arc<ProxyService>>,
     client: web::Data<reqwest::Client>,
 ) -> Result<impl Responder, AppError> {
     let (registry,) = path.into_inner();
     forward_npm_audit(
         &registry,
-        "bulk",
+        AUDIT_BULK,
         body.into_inner(),
         &map,
         &upstream_map,
+        &svc,
         &client,
     )
     .await
 }
+
+/// Deprecated alias of the quick audit endpoint — npm sends `/-/npm/v1/security/audits/quick`.
+///
+/// This path was never npm's, so nothing is lost by removing it — but it has
+/// shipped, some deployment may have scripted it, and removing a live route is
+/// a separate decision from fixing the bug. To be removed in a later release.
+#[utoipa::path(
+    post,
+    path = "/proxy/{registry}/-/npm/v1/audit/quick",
+    tag = "proxy/npm",
+    params(("registry" = String, Path, description = "npm registry name")),
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "Deprecated alias of the quick audit endpoint", body = UpstreamDocument),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[post("/proxy/{registry}/-/npm/v1/audit/quick")]
+pub async fn audit_quick_legacy(
+    path: web::Path<(String,)>,
+    body: web::Json<serde_json::Value>,
+    map: web::Data<RegistryMap>,
+    upstream_map: web::Data<UpstreamMap>,
+    svc: web::Data<Arc<ProxyService>>,
+    client: web::Data<reqwest::Client>,
+) -> Result<impl Responder, AppError> {
+    let (registry,) = path.into_inner();
+    forward_npm_audit(
+        &registry,
+        AUDIT_QUICK,
+        body.into_inner(),
+        &map,
+        &upstream_map,
+        &svc,
+        &client,
+    )
+    .await
+}
+
+/// Deprecated alias of the bulk audit endpoint — npm sends `/-/npm/v1/security/advisories/bulk`.
+#[utoipa::path(
+    post,
+    path = "/proxy/{registry}/-/npm/v1/audit/bulk",
+    tag = "proxy/npm",
+    params(("registry" = String, Path, description = "npm registry name")),
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "Deprecated alias of the bulk audit endpoint", body = UpstreamDocument),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[post("/proxy/{registry}/-/npm/v1/audit/bulk")]
+pub async fn audit_bulk_legacy(
+    path: web::Path<(String,)>,
+    body: web::Json<serde_json::Value>,
+    map: web::Data<RegistryMap>,
+    upstream_map: web::Data<UpstreamMap>,
+    svc: web::Data<Arc<ProxyService>>,
+    client: web::Data<reqwest::Client>,
+) -> Result<impl Responder, AppError> {
+    let (registry,) = path.into_inner();
+    forward_npm_audit(
+        &registry,
+        AUDIT_BULK,
+        body.into_inner(),
+        &map,
+        &upstream_map,
+        &svc,
+        &client,
+    )
+    .await
+}
+
+/// The two audit endpoints npm actually calls, as sub-paths of the registry.
+///
+/// RFC 0009 §7.1. This used to be a single `"quick"`/`"bulk"` discriminant
+/// interpolated into `{upstream}/-/npm/v1/audit/{endpoint}` — a path
+/// `registry.npmjs.org` does not answer, matching inbound routes npm does not
+/// send. Both halves of the round trip were addressed to an endpoint that
+/// exists in neither direction, and four tests asserted the invented paths
+/// because they were written from our implementation rather than from npm's.
+///
+/// The real ones, from npm's own registry client:
+pub(super) const AUDIT_QUICK: &str = "/-/npm/v1/security/audits/quick";
+pub(super) const AUDIT_BULK: &str = "/-/npm/v1/security/advisories/bulk";
 
 async fn forward_npm_audit(
     registry: &str,
@@ -271,6 +365,7 @@ async fn forward_npm_audit(
     body: serde_json::Value,
     map: &RegistryMap,
     upstream_map: &UpstreamMap,
+    svc: &Arc<ProxyService>,
     client: &reqwest::Client,
 ) -> Result<HttpResponse, AppError> {
     require_npm(registry, map)?;
@@ -279,24 +374,23 @@ async fn forward_npm_audit(
         .upstream_for(registry)
         .ok_or_else(|| AppError::not_found(format!("no upstream configured for '{registry}'")))?;
 
-    let url = format!("{upstream}/-/npm/v1/audit/{endpoint}");
+    // The request body selects the answer — `npm audit` POSTs the dependency
+    // set — so it belongs in the key. Hashed rather than embedded: a lockfile's
+    // worth of dependencies is far too long for a cache key, and the digest is
+    // stable across the map ordering `serde_json` happens to emit.
+    let digest = {
+        use sha2::{Digest, Sha256};
+        let canonical = serde_json::to_vec(&body).unwrap_or_default();
+        hex::encode(Sha256::digest(&canonical))
+    };
+    let cache_key = format!("audit:{registry}:{endpoint}:{digest}");
 
-    let resp = client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| AppError::bad_gateway(format!("upstream audit request failed: {e}")))?;
-
-    let status = actix_web::http::StatusCode::from_u16(resp.status().as_u16())
-        .unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR);
-    let response_body = resp
-        .bytes()
-        .await
-        .map_err(|e| AppError::bad_gateway(format!("upstream audit response read failed: {e}")))?;
-
-    Ok(HttpResponse::build(status)
-        .content_type("application/json")
-        .body(response_body))
+    cached_forward(
+        svc,
+        client,
+        registry,
+        &cache_key,
+        Outbound::post_json(format!("{upstream}{endpoint}"), body),
+    )
+    .await
 }

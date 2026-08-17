@@ -161,15 +161,35 @@ mvn dependency:get -Dartifact=com.example:mylib:1.0.0
 
 ### Endpoint reference
 
+<!-- BEGIN endpoints: proxy/maven -->
 | Method | Path | Description |
 |--------|------|-------------|
-| `PUT` | `/proxy/{registry}/maven2/{group}/{artifact}/{version}/{file}` | Upload artifact (`.pom` triggers version record) |
-| `GET` | `/proxy/{registry}/maven2/{group}/{artifact}/maven-metadata.xml` | Generated version list XML |
-| `GET` | `/proxy/{registry}/maven2/{group}/{artifact}/{version}/{file}` | Download artifact |
+| `GET` | `/proxy/{registry}/maven2/{path}` | Proxy or serve a Maven repository request. |
+| `PUT` | `/proxy/{registry}/maven2/{path}` | Upload a Maven artifact to the local registry. |
+<!-- END endpoints -->
 
 `{group}` uses path segments: `com/example` maps to groupId `com.example`.
 
 ---
+
+## Blocked versions
+
+`maven-metadata.xml` is filtered and both of its pointers are repaired:
+`<versions>` loses the blocked entry, `<latest>` is recomputed to the newest
+surviving version (snapshots included), and `<release>` to the newest surviving
+version that is **not** qualified — the distinction the two elements exist to
+draw. A `LATEST` or `RELEASE` resolution therefore lands on a version the
+operator allows.
+
+A document BatleHub cannot parse is served unchanged and logged, rather than
+half-rewritten: Maven rejects malformed metadata outright, where an unfiltered
+document merely over-lists.
+
+The upstream document is cached for the registry's `metadata_ttl`; blocks are
+applied on top of the cached copy on every request, so blocking a version takes
+effect immediately rather than when the cache expires.
+
+See [blocking a package version](/guide/admin-policies#block-a-package-version) for the two halves of a block, and [which listings are filtered](/guide/admin-policies#which-listings-are-filtered) for the full table.
 
 ## Authentication
 

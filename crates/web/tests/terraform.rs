@@ -5,73 +5,22 @@ mod common;
 #[allow(unused_imports)]
 use common::*;
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use actix_web::test::{call_service, read_body, read_body_json, TestRequest};
 use serde_json::Value;
 
 use base64::Engine as _;
-use batlehub_adapters::cache::InMemoryCacheStore;
-use batlehub_adapters::in_memory::{
-    InMemoryPackageRepository as InMemoryRepo, InMemoryStorageBackend as InMemoryStorage,
-    NoopArtifactMetaRepository as NoopArtifactMeta, NullUserTokenRepository as NullTokenRepository,
-};
 use batlehub_config::schema::RegistryMode;
-use batlehub_core::{
-    ports::{CacheStore, PackageRepository, RegistryClient, StorageBackend},
-    services::{new_hot_lock, AdminService, HotConfig, ProxyMetrics, ProxyService, RegistryPolicy},
-};
 use batlehub_web::RegistryModeMap;
 
 // ══ Terraform local registry tests ════════════════════════════════════════════
 
-async fn make_local_terraform_app(
-    mode: RegistryMode,
-) -> impl actix_web::dev::Service<
-    actix_http::Request,
-    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-    Error = actix_web::Error,
-> {
-    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
-    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
-    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
-    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
-        "local-tf".to_owned(),
-        Arc::new(rbac_policy(repo_dyn.clone())),
-    )]
-    .into();
-
-    let local_svc = make_local_svc(storage.clone());
-    let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
-        storage,
-        cache,
-        repo: repo_dyn.clone(),
-        artifact_meta: NoopArtifactMeta::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
-        sbom: None,
-    });
-    let admin_svc = Arc::new(AdminService::new(repo_dyn));
-    let mode_map = RegistryModeMap::default();
-    mode_map.insert("local-tf".to_owned(), mode);
-
-    let parts = LocalRegistryAppParts {
-        proxy_svc,
-        admin_svc,
-        token_repo: Arc::new(NullTokenRepository),
-        access_config: access_config(&[], &["local-tf"]),
-        registry_map: registry_map_for(&[("local-tf", "terraform")]),
-        local_svc,
-        mode_map,
-    };
-    build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await
+async fn make_local_terraform_app(mode: RegistryMode) -> impl TestService {
+    build_local_registry_app(
+        local_only_app_parts("local-tf", "terraform", mode, false),
+        batlehub_web::CargoIndexMap::default(),
+        None,
+    )
+    .await
 }
 
 /// Like `make_local_terraform_app`, but also returns the `RegistryModeMap` handle
@@ -79,52 +28,9 @@ async fn make_local_terraform_app(
 /// hot-reload) to confirm mode-gated endpoints re-check the *current* mode.
 async fn make_local_terraform_app_with_mode_map(
     mode: RegistryMode,
-) -> (
-    impl actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
-    RegistryModeMap,
-) {
-    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
-    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
-    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-
-    let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
-    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
-        "local-tf".to_owned(),
-        Arc::new(rbac_policy(repo_dyn.clone())),
-    )]
-    .into();
-
-    let local_svc = make_local_svc(storage.clone());
-    let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
-        storage,
-        cache,
-        repo: repo_dyn.clone(),
-        artifact_meta: NoopArtifactMeta::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
-        sbom: None,
-    });
-    let admin_svc = Arc::new(AdminService::new(repo_dyn));
-    let mode_map = RegistryModeMap::default();
-    mode_map.insert("local-tf".to_owned(), mode);
-
-    let parts = LocalRegistryAppParts {
-        proxy_svc,
-        admin_svc,
-        token_repo: Arc::new(NullTokenRepository),
-        access_config: access_config(&[], &["local-tf"]),
-        registry_map: registry_map_for(&[("local-tf", "terraform")]),
-        local_svc,
-        mode_map: mode_map.clone(),
-    };
+) -> (impl TestService, RegistryModeMap) {
+    let parts = local_only_app_parts("local-tf", "terraform", mode, false);
+    let mode_map = parts.mode_map.clone();
     let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
     (app, mode_map)
 }
@@ -157,12 +63,26 @@ async fn terraform_provider_artifact_proxy_mode_rejects_previously_published_bin
 
     // Simulate a hot-reload switching the registry to Proxy mode: the binary
     // must no longer be servable from local storage.
+    //
+    // Since RFC 0009 §7.2 this route also has a proxy fall-through — the
+    // provider download document points `download_url` here so the zip is
+    // gated and cached instead of fetched from upstream's CDN directly — so the
+    // request no longer stops at a `require_local_mode` guard. The property
+    // under test is unchanged and is asserted directly: whatever the proxy path
+    // answers, it must not be the locally published bytes.
     mode_map.insert("local-tf".to_owned(), RegistryMode::Proxy);
     let req = TestRequest::get()
         .uri("/proxy/local-tf/v1/providers/hashicorp/aws/5.0.0/artifact/linux/amd64")
         .insert_header(("Authorization", bearer(USER_TOKEN)))
         .to_request();
-    assert_eq!(call_service(&app, req).await.status(), 404);
+    let resp = call_service(&app, req).await;
+    assert_ne!(
+        resp.status(),
+        200,
+        "local storage must not answer once the registry is in proxy mode"
+    );
+    let body = actix_web::test::read_body(resp).await;
+    assert_ne!(body.as_ref(), b"fake-zip-bytes".as_slice());
 }
 
 #[actix_web::test]
@@ -186,12 +106,24 @@ async fn terraform_module_artifact_proxy_mode_rejects_previously_published_tarba
 
     // Simulate a hot-reload switching the registry to Proxy mode: the tarball
     // must no longer be servable from local storage.
+    //
+    // Since RFC 0009 §7.2 this route also has a proxy fall-through — module
+    // downloads are redirected here rather than to upstream so the bytes go
+    // through the rule chain — so the request no longer stops at a
+    // `require_local_mode` guard. The property under test is unchanged.
     mode_map.insert("local-tf".to_owned(), RegistryMode::Proxy);
     let req = TestRequest::get()
         .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.1.0/artifact")
         .insert_header(("Authorization", bearer(USER_TOKEN)))
         .to_request();
-    assert_eq!(call_service(&app, req).await.status(), 404);
+    let resp = call_service(&app, req).await;
+    assert_ne!(
+        resp.status(),
+        200,
+        "local storage must not answer once the registry is in proxy mode"
+    );
+    let body = actix_web::test::read_body(resp).await;
+    assert_ne!(body.as_ref(), payload.as_slice());
 }
 
 // ── Terraform module tests ────────────────────────────────────────────────────
@@ -809,4 +741,118 @@ async fn terraform_provider_artifact_returns_uploaded_binary() {
     );
     let body = read_body(resp).await;
     assert_eq!(&body[..], b"fake-zip-bytes");
+}
+
+// ── Discovery, the network mirror, and the download gate (RFC 0009 §7.2) ─────
+//
+// Three defects, one phase. Discovery did not exist, so Terraform could not find
+// the `/v1/` routes at all. The network mirror our own docs configured was a
+// different protocol from the one implemented. And provider/module downloads
+// handed the client an upstream URL, so the bytes never passed through the rule
+// chain — RFC 0006 §13.6, which this closes.
+
+/// Discovery is host-rooted by the protocol. Under path routing there is no
+/// single registry it could describe, so it declines rather than guessing.
+#[actix_web::test]
+async fn discovery_declines_on_a_path_routed_request() {
+    let (app, _mode_map) = make_local_terraform_app_with_mode_map(RegistryMode::Local).await;
+    let req = TestRequest::get()
+        .uri("/.well-known/terraform.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+
+    // ...and says why, rather than looking like a missing route.
+    let body = actix_web::test::read_body(resp).await;
+    let text = String::from_utf8_lossy(&body);
+    assert!(
+        text.contains("host bound to a single") || text.contains("subdomain_routing"),
+        "the 404 must name the host-routing prerequisite, got: {text}"
+    );
+}
+
+/// The mirror path carries the *origin* registry's hostname so one mirror can
+/// serve several. We are one upstream per registry, so a mismatch is refused
+/// rather than echoed — otherwise the document would attach an `example.com`
+/// provenance to a `registry.terraform.io` provider (RFC 0009 §11.1).
+#[actix_web::test]
+async fn the_mirror_refuses_a_hostname_that_is_not_this_registrys_upstream() {
+    let (app, _mode_map) = make_local_terraform_app_with_mode_map(RegistryMode::Proxy).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/evil.example.com/hashicorp/aws/index.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 404);
+}
+
+/// The regression `protocol_conformance.rs` caught while this phase was being
+/// written: the mirror's four-segment pattern claimed RubyGems'
+/// `/api/v1/versions/{gem}.json` as host="api", ns="v1", type="versions".
+///
+/// Pinned here as well as in the conformance table, because the constraint that
+/// fixes it (a hostname must contain a dot) is easy to relax by accident.
+#[actix_web::test]
+async fn the_mirror_pattern_does_not_claim_a_dotless_four_segment_path() {
+    let (app, _mode_map) = make_local_terraform_app_with_mode_map(RegistryMode::Proxy).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/api/v1/versions/rails.json")
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_ne!(
+        resp.request().match_pattern().as_deref(),
+        Some(r"/proxy/{registry}/{hostname:[^/]+\.[^/]+}/{namespace}/{ptype}/{version}.json"),
+        "a dotless segment must not be taken for a registry hostname"
+    );
+}
+
+/// `index.json` is a legal `{version}` capture, so the two mirror routes are
+/// order-sensitive. Registered the wrong way round, the version route answers
+/// the index request.
+#[actix_web::test]
+async fn the_mirror_index_is_not_claimed_by_the_version_route() {
+    let (app, _mode_map) = make_local_terraform_app_with_mode_map(RegistryMode::Proxy).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/registry.terraform.io/hashicorp/aws/index.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(
+        resp.request().match_pattern().as_deref(),
+        Some(r"/proxy/{registry}/{hostname:[^/]+\.[^/]+}/{namespace}/{ptype}/index.json"),
+        "index.json must reach the index route, not the version route"
+    );
+}
+
+/// The gate this phase closes: a module download must not hand the client an
+/// upstream URL. Whatever mode the registry is in, `X-Terraform-Get` points at
+/// a route on *this* host, which runs the rule chain on the bytes.
+#[actix_web::test]
+async fn a_module_download_points_at_this_proxy_not_upstream() {
+    for mode in [
+        RegistryMode::Local,
+        RegistryMode::Proxy,
+        RegistryMode::Hybrid,
+    ] {
+        let (app, _mode_map) = make_local_terraform_app_with_mode_map(mode.clone()).await;
+        let req = TestRequest::get()
+            .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.1.0/download")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request();
+        let resp = call_service(&app, req).await;
+        let header = resp
+            .headers()
+            .get("X-Terraform-Get")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            header.contains("/v1/modules/hashicorp/consul/aws/0.1.0/artifact"),
+            "{mode:?}: X-Terraform-Get must name our own artifact route, got {header:?}"
+        );
+        assert!(
+            !header.contains("registry.terraform.io"),
+            "{mode:?}: the client must never be sent to upstream directly, got {header:?}"
+        );
+    }
 }

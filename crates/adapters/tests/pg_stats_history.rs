@@ -84,6 +84,9 @@ fn row_at(registry: &str, window_start: DateTime<Utc>, hits: u64, misses: u64) -
         window_start,
         hits,
         misses,
+        // Kept proportional to `hits` so the accumulate-on-conflict test below
+        // exercises this column too rather than summing a constant.
+        listing_reads: hits * 3,
         cached_bytes: 2_048,
     }
 }

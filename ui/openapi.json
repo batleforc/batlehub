@@ -10,6 +10,31 @@
     "version": "1.1.0"
   },
   "paths": {
+    "/.well-known/terraform.json": {
+      "get": {
+        "tags": [
+          "proxy/terraform"
+        ],
+        "summary": "`GET /.well-known/terraform.json` — the document Terraform reads first.",
+        "description": "Served at the host root, not under `/proxy/{registry}/`, because that is\nwhere the protocol looks for it.",
+        "operationId": "terraform_discovery",
+        "responses": {
+          "200": {
+            "description": "Terraform service discovery document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "This host is not bound to a single Terraform registry"
+          }
+        }
+      }
+    },
     "/api/v1/admin/access-check": {
       "post": {
         "tags": [
@@ -4258,7 +4283,98 @@
         "tags": [
           "proxy/npm"
         ],
-        "summary": "Proxy full npm bulk audit requests (`npm audit` default mode).",
+        "summary": "Deprecated alias of the bulk audit endpoint — npm sends `/-/npm/v1/security/advisories/bulk`.",
+        "operationId": "audit_bulk_legacy",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "npm registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Deprecated alias of the bulk audit endpoint",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/-/npm/v1/audit/quick": {
+      "post": {
+        "tags": [
+          "proxy/npm"
+        ],
+        "summary": "Deprecated alias of the quick audit endpoint — npm sends `/-/npm/v1/security/audits/quick`.",
+        "description": "This path was never npm's, so nothing is lost by removing it — but it has\nshipped, some deployment may have scripted it, and removing a live route is\na separate decision from fixing the bug. To be removed in a later release.",
+        "operationId": "audit_quick_legacy",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "npm registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Deprecated alias of the quick audit endpoint",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/-/npm/v1/security/advisories/bulk": {
+      "post": {
+        "tags": [
+          "proxy/npm"
+        ],
+        "summary": "`npm audit`, bulk mode — the default since npm 7, on the path npm sends.",
         "operationId": "audit_bulk",
         "parameters": [
           {
@@ -4281,7 +4397,7 @@
         },
         "responses": {
           "200": {
-            "description": "Bulk audit advisory data from upstream",
+            "description": "Bulk advisory data, from cache or upstream",
             "content": {
               "application/json": {
                 "schema": {
@@ -4294,7 +4410,7 @@
             "description": "Unknown or non-npm registry"
           },
           "502": {
-            "description": "Upstream audit request failed"
+            "description": "Upstream unreachable and no cached answer"
           }
         },
         "security": [
@@ -4304,12 +4420,13 @@
         ]
       }
     },
-    "/proxy/{registry}/-/npm/v1/audit/quick": {
+    "/proxy/{registry}/-/npm/v1/security/audits/quick": {
       "post": {
         "tags": [
           "proxy/npm"
         ],
-        "summary": "Proxy npm audit requests to the upstream npm registry.",
+        "summary": "`npm audit`, quick mode — on the path npm sends.",
+        "description": "See `AUDIT_QUICK` below for why there are two routes per endpoint.",
         "operationId": "audit_quick",
         "parameters": [
           {
@@ -4332,7 +4449,7 @@
         },
         "responses": {
           "200": {
-            "description": "Audit advisory data from upstream",
+            "description": "Audit advisory data, from cache or upstream",
             "content": {
               "application/json": {
                 "schema": {
@@ -4345,7 +4462,487 @@
             "description": "Unknown or non-npm registry"
           },
           "502": {
-            "description": "Upstream audit request failed"
+            "description": "Upstream unreachable and no cached answer"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/-/package/{package}/dist-tags": {
+      "get": {
+        "tags": [
+          "proxy/npm"
+        ],
+        "summary": "`npm dist-tag ls`.",
+        "description": "Filtered: see the module docs. A tag naming a blocked version is repaired\nonto the newest allowed release rather than served, because a tag is a\npromise that the version it names can be installed.",
+        "operationId": "npm_dist_tags",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "package",
+            "in": "path",
+            "description": "Package name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tag to version map",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Unknown registry or package"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/-/package/{package}/dist-tags/{tag}": {
+      "put": {
+        "tags": [
+          "proxy/npm"
+        ],
+        "summary": "`npm dist-tag add` — declined, with a reason the client prints.",
+        "description": "BatleHub *derives* `dist-tags` from the published version set: `latest` is\nthe newest allowed release, recomputed on every read so a block moves it\nimmediately (RFC 0006). A stored tag would be overwritten by the next\nrequest, and `npm dist-tag ls` would then report something the client never\nset — so accepting the write would be a `200` that does not hold.\n\n`501` rather than `404`: the route exists and the request is well-formed,\nand the difference tells a client to stop rather than to look elsewhere.",
+        "operationId": "npm_dist_tag_add",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "package",
+            "in": "path",
+            "description": "Package name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "path",
+            "description": "Tag name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "The version to tag, as a JSON string",
+          "content": {
+            "application/json": {}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tag set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Unknown registry, or not in local/hybrid mode"
+          },
+          "501": {
+            "description": "Tag writes are not implemented for this registry"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "proxy/npm"
+        ],
+        "summary": "`npm dist-tag rm`. Declined for the same reason as `add`.",
+        "operationId": "npm_dist_tag_remove",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "package",
+            "in": "path",
+            "description": "Package name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "path",
+            "description": "Tag name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "404": {
+            "description": "Unknown registry"
+          },
+          "501": {
+            "description": "Tag writes are not implemented for this registry"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/-/ping": {
+      "get": {
+        "tags": [
+          "proxy/npm"
+        ],
+        "summary": "`npm ping`.",
+        "description": "npm treats any `200` with a JSON body as a healthy registry. It is the first\ncall `npm doctor` makes, and it used to be answered by the package handler.",
+        "operationId": "npm_ping",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Registry is reachable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or non-npm registry"
+          }
+        }
+      }
+    },
+    "/proxy/{registry}/-/v1/search": {
+      "get": {
+        "tags": [
+          "proxy/npm"
+        ],
+        "summary": "`npm search` / `npm search --json`.",
+        "operationId": "npm_search",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "text",
+            "in": "query",
+            "description": "Search text",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "description": "Maximum results",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "npm search results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or non-npm registry"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/-/whoami": {
+      "get": {
+        "tags": [
+          "proxy/npm"
+        ],
+        "summary": "`npm whoami`.",
+        "description": "Answers from the identity the auth middleware already resolved, so it\nreports who BatleHub thinks you are rather than who the upstream would —\nwhich is the useful answer when the token is BatleHub's.",
+        "operationId": "npm_whoami",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The authenticated username",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "404": {
+            "description": "Unknown or non-npm registry"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/.well-known/terraform.json": {
+      "get": {
+        "tags": [
+          "proxy/terraform"
+        ],
+        "summary": "The same document at the path the host-routing middleware actually produces.",
+        "description": "This route is not a second public address; it is where the *first* one ends\nup. The middleware rewrites every request on a vanity host to\n`/proxy/{registry}{path}` before routing (see `middleware/host_routing.rs`),\nso a request for `/.well-known/terraform.json` on `tf.example.com` never\nreaches a route registered at the host root — it is matched, and was matched,\nby the npm/cargo catch-all `/proxy/{registry}/{package}/{version}`, which\nanswered *\"registry 'x' is not an npm or cargo registry\"*.\n\nDiscovery is host-routed only, and host routing is the one condition under\nwhich the host-root route cannot match: it was unreachable everywhere it was\nmeant to work. Measured against Terraform 1.8.5 through a TLS front on a\nvanity host (RFC 0009 §12.11).\n\nThe `host_routed_registry` guard still applies, and the registry name in the\npath is deliberately ignored in favour of it — so this does not become a way\nto ask a shared host which registry it would like to be.",
+        "operationId": "terraform_discovery_host_routed",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name (ignored: the host decides)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Terraform service discovery document, as reached through host routing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "This request did not arrive on a host bound to a single Terraform registry"
+          }
+        }
+      }
+    },
+    "/proxy/{registry}/api/-/publish": {
+      "post": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "`ovsx publish` — `POST /api/-/publish`.",
+        "description": "RFC 0009 §7.6 said this was what `ovsx publish` calls and that BatleHub\nserved only `PUT …/{ext}/{version}/vsix`, \"which no tool sends\". Measured\nagainst **ovsx 1.1.1** (§12.6): it sends exactly\n`POST /api/-/publish?token=…`, and got a `404`.\n\nTwo things the URL does not carry, both of which shape this handler:\n\n- **No coordinate.** The extension id and version come from the VSIX's own\n  `extension/package.json`. `vsix_publish` prefers the URL when the two\n  disagree; here there is nothing to prefer, so an unreadable manifest is a\n  `400` rather than a degraded publish.\n- **The token is a query parameter**, not an `Authorization` header. The\n  auth middleware only reads the header, so a bare `ovsx publish` arrives\n  anonymous. That is left to the middleware rather than worked around here —\n  see the note on `PublishToken`.",
+        "operationId": "openvsx_publish",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "description": "Publish token, as `ovsx` sends it",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "VSIX bytes",
+          "content": {
+            "application/octet-stream": {}
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Extension published",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a readable VSIX"
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Unknown registry, or not in local/hybrid mode"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/api/-/search": {
+      "get": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "Search the registry — `GET …/api/-/search`.",
+        "description": "Registered **before** the `{namespace}` routes below, or `-` is taken for a\npublisher name.",
+        "operationId": "openvsx_search",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "description": "Free-text query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "description": "Page size",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Result offset",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Search results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown registry or wrong type"
           }
         },
         "security": [
@@ -4991,6 +5588,65 @@
         ]
       }
     },
+    "/proxy/{registry}/api/v1/crates": {
+      "get": {
+        "tags": [
+          "proxy/cargo"
+        ],
+        "summary": "`cargo search`.",
+        "operationId": "cargo_search",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Search text",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "per_page",
+            "in": "query",
+            "description": "Maximum results",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "cargo search results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or non-cargo registry"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
     "/proxy/{registry}/api/v1/crates/new": {
       "put": {
         "tags": [
@@ -5083,6 +5739,129 @@
           },
           "404": {
             "description": "Crate not found"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "proxy/cargo"
+        ],
+        "summary": "`cargo owner --add`.",
+        "operationId": "cargo_add_owners",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Crate name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CargoOwnersRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Owners added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CargoOwnersChanged"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an owner of this crate"
+          },
+          "404": {
+            "description": "Unknown registry, or ownership not enabled"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "proxy/cargo"
+        ],
+        "summary": "`cargo owner --remove`.",
+        "operationId": "cargo_remove_owners",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Crate name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CargoOwnersRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Owners removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CargoOwnersChanged"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an owner of this crate"
+          },
+          "404": {
+            "description": "Unknown registry, or ownership not enabled"
+          },
+          "409": {
+            "description": "Removing this owner would leave the crate unowned"
           }
         },
         "security": [
@@ -5528,6 +6307,344 @@
           },
           "404": {
             "description": "Not found or unknown registry"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/api/version": {
+      "get": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "`GET /api/version` — the registry's own version document.",
+        "description": "`ovsx` and the Open VSX web UI read it to decide which API shape they are\ntalking to. Trivial, and its absence makes a client assume the oldest\nbehaviour it supports.",
+        "operationId": "openvsx_version",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Registry API version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or non-extension registry"
+          }
+        }
+      }
+    },
+    "/proxy/{registry}/api/{namespace}": {
+      "get": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "`GET /api/{namespace}` — what a publisher has here.",
+        "description": "A namespace document, not an extension one: `ovsx` reads it to check a\nnamespace exists before publishing into it, and the web UI lists a\npublisher's extensions from it.\n\nBuilt from the same filtered entry list the gallery and the extension\ndocument use, so a blocked version cannot be visible through this route\nwhile hidden in the other two.",
+        "operationId": "openvsx_namespace",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "path",
+            "description": "Publisher namespace",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Namespace document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Unknown registry or namespace"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/api/{namespace}/{extension}": {
+      "get": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "The newest version of one extension — `GET …/api/{namespace}/{extension}`.",
+        "operationId": "openvsx_extension",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "path",
+            "description": "Extension publisher",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "extension",
+            "in": "path",
+            "description": "Extension name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Extension metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown registry or extension"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/api/{namespace}/{extension}/{version}": {
+      "get": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "One specific version — `GET …/api/{namespace}/{extension}/{version}`.",
+        "operationId": "openvsx_extension_version",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "path",
+            "description": "Extension publisher",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "extension",
+            "in": "path",
+            "description": "Extension name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Extension version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Extension version metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown registry, extension or version"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/api/{namespace}/{extension}/{version}/file/{filename}": {
+      "get": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "One file out of an extension — `GET …/api/{ns}/{ext}/{version}/file/{name}`.",
+        "description": "OpenVSX's own download URL shape. `ovsx get` resolves the extension through\nthe metadata route above and then fetches `files.download`, which this\nserver points here.",
+        "operationId": "openvsx_file",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "path",
+            "description": "Extension publisher",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "extension",
+            "in": "path",
+            "description": "Extension name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Extension version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "filename",
+            "in": "path",
+            "description": "File name, or a path inside the extension",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "No such file"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/channeldata.json": {
+      "get": {
+        "tags": [
+          "proxy/conda"
+        ],
+        "summary": "`channeldata.json` — the cross-platform summary `conda search` reads.",
+        "description": "A whole-channel document like `repodata.json`, so it filters through\n`dispatch_multi` against the same 30-second snapshot. Its absence degraded\nsearch rather than install, which is why it is here rather than in phase 1.",
+        "operationId": "conda_channeldata",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "channeldata.json",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Channel not found"
           }
         },
         "security": [
@@ -6207,6 +7324,74 @@
         ]
       }
     },
+    "/proxy/{registry}/info/{gem}": {
+      "get": {
+        "tags": [
+          "proxy/rubygems"
+        ],
+        "summary": "One gem's versions and dependencies — what Bundler resolves against.",
+        "operationId": "gem_compact_info",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gem",
+            "in": "path",
+            "description": "Gem name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Compact index gem info",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "The tail of the document, for a client that already holds the rest",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The client's copy is current (`If-None-Match` matched)"
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Unknown registry or gem"
+          },
+          "416": {
+            "description": "The requested range starts past the end of the document"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
     "/proxy/{registry}/jetbrains/{path}": {
       "get": {
         "tags": [
@@ -6346,6 +7531,56 @@
         ]
       }
     },
+    "/proxy/{registry}/list.json": {
+      "get": {
+        "tags": [
+          "proxy/composer"
+        ],
+        "summary": "`composer` bulk package enumeration — `list.json`.",
+        "description": "Names only, no versions: it is the Composer equivalent of RubyGems' `/names`\nand carries the same consequence — a block has nothing in it to hide, and\nremoving a partly-blocked package would report it as nonexistent.",
+        "operationId": "composer_list",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "filter",
+            "in": "query",
+            "description": "Optional name filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Package name list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or non-composer registry"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
     "/proxy/{registry}/maven2/{path}": {
       "get": {
         "tags": [
@@ -6469,6 +7704,66 @@
         ]
       }
     },
+    "/proxy/{registry}/names": {
+      "get": {
+        "tags": [
+          "proxy/rubygems"
+        ],
+        "summary": "Every gem name in the registry.",
+        "description": "Unfiltered by design: it names no version, so there is nothing in it a block\napplies to. A gem with one blocked version is still a gem that exists, and\nremoving its name would make `bundle install` report it as nonexistent\nrather than as partly restricted.",
+        "operationId": "gem_compact_names",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Compact index gem names",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "The tail of the document, for a client that already holds the rest",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The client's copy is current (`If-None-Match` matched)"
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Unknown or non-rubygems registry"
+          },
+          "416": {
+            "description": "The requested range starts past the end of the document"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
     "/proxy/{registry}/nuget/api/v2/package": {
       "put": {
         "tags": [
@@ -6507,6 +7802,53 @@
           },
           "409": {
             "description": "Version already published"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/nuget/api/v2/symbolpackage": {
+      "put": {
+        "tags": [
+          "proxy/nuget"
+        ],
+        "summary": "Publish a `.snupkg` symbol package.",
+        "description": "RFC 0009 §7.6. `nuget push` sends symbols here when the service index\nadvertises `SymbolPackagePublish` — and it did not, so `dotnet nuget push`\nof a `.snupkg` failed with no route rather than with an answer.\n\nStored under the **same coordinate** as its `.nupkg` with a `snupkg`\nartifact sub-coordinate (RFC 0009 §11.3), not as a separate package. Symbol\n*servers* are conventionally separate infrastructure, but that is a\ndeployment convention of the ecosystem rather than a property of the\nartifact — and splitting the coordinate would put a package's symbols\noutside every policy that addresses the package.",
+        "operationId": "nuget_symbol_publish",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Symbol package published",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or missing .snupkg"
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Unknown registry, or not in local/hybrid mode"
           }
         },
         "security": [
@@ -6562,6 +7904,66 @@
           },
           "404": {
             "description": "Package not found"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/nuget/v3/autocomplete": {
+      "get": {
+        "tags": [
+          "proxy/nuget"
+        ],
+        "summary": "`SearchAutocompleteService` — package-id completion.",
+        "description": "Advertised by the service index since RFC 0009 §7.6 and answered from the\nsame three-rung search path, so completion cannot offer a package the search\nbelow it would not return, nor a version a block has hidden.",
+        "operationId": "nuget_autocomplete",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Partial package id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "take",
+            "in": "query",
+            "description": "Maximum results",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Package id completions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or non-nuget registry"
           }
         },
         "security": [
@@ -7416,6 +8818,59 @@
         ]
       }
     },
+    "/proxy/{registry}/pypi/{package}/json": {
+      "get": {
+        "tags": [
+          "proxy/pypi"
+        ],
+        "summary": "The PyPI JSON API — `GET /pypi/{package}/json`.",
+        "description": "RFC 0009 §7.6. pip does not need it (the simple index is the resolver's\ninput), but Poetry reads it for some sources and a good deal of ad-hoc\ntooling assumes it exists.\n\nRendered from the **filtered** simple index rather than fetched separately,\nso it cannot list a release the simple page hides — two documents describing\none package have to agree, and the cheapest way to guarantee that is to give\nthem one source.",
+        "operationId": "pypi_json",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "package",
+            "in": "path",
+            "description": "Project name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "PyPI JSON API document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Unknown registry or project"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
     "/proxy/{registry}/quick/Marshal.4.8/{filename}": {
       "get": {
         "tags": [
@@ -7655,6 +9110,65 @@
         ]
       }
     },
+    "/proxy/{registry}/search.json": {
+      "get": {
+        "tags": [
+          "proxy/composer"
+        ],
+        "summary": "`composer search`.",
+        "operationId": "composer_search",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Search text",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "per_page",
+            "in": "query",
+            "description": "Maximum results",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Composer search results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or non-composer registry"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
     "/proxy/{registry}/simple/": {
       "get": {
         "tags": [
@@ -7776,6 +9290,59 @@
           },
           "404": {
             "description": "Not available for local-only registries"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/sumdb/{path}": {
+      "get": {
+        "tags": [
+          "proxy/goproxy"
+        ],
+        "summary": "Proxy the Go checksum database.",
+        "description": "The `sumdb/` half of the `GOPROXY` protocol, and until this route existed it\nwas simply absent: `go mod download` through BatleHub still opened a direct\nconnection to `sum.golang.org` for every module it had not seen. So the\nproxy had *moved* the egress rather than removed it, and an air-gapped\nestate failed closed on a lookup it could not make.\n\n**Cached, and that is the point.** A sumdb lookup answerable only while\n`sum.golang.org` is reachable buys nothing; cached, the second build needs no\nroute off the site. Caching is sound because the log is signed — the\nsignature travels with the bytes, so a cached checksum record is exactly as\ntrustworthy as a live one, and this proxy neither parses nor rewrites it.\n\nNo filtering, for the same reason: a transparency log that has been edited is\na transparency log the client rejects.",
+        "operationId": "goproxy_sumdb",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name (must be a goproxy registry)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "description": "Checksum database path, e.g. sum.golang.org/supported",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Checksum database response, verbatim",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Registry not found or sumdb proxying disabled"
+          },
+          "502": {
+            "description": "Checksum database unreachable and nothing cached"
           }
         },
         "security": [
@@ -8160,6 +9727,84 @@
       }
     },
     "/proxy/{registry}/v1/modules/{namespace}/{name}/{provider}/{version}": {
+      "get": {
+        "tags": [
+          "proxy/terraform"
+        ],
+        "summary": "`GET /v1/modules/{ns}/{name}/{provider}/{version}` — one module version's\nmetadata.",
+        "description": "Part of the registry protocol and missing until RFC 0009 §7.2. Terraform\nreads it to learn a module's inputs, outputs and submodules before planning.\n\nA blocked version is a `404` rather than a filtered document: this names\nexactly one version, so there is nothing to remove from it and no list to\nrepair it against — the same treatment the mirror's `{version}.json` gets.",
+        "operationId": "terraform_module_metadata",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "path",
+            "description": "Module namespace",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Module name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "provider",
+            "in": "path",
+            "description": "Module provider",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Module version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Module version metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Unknown module, or this version is blocked"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      },
       "post": {
         "tags": [
           "proxy/terraform"
@@ -8934,6 +10579,147 @@
         ]
       }
     },
+    "/proxy/{registry}/v1/providers/{namespace}/{ptype}/{version}/shasums": {
+      "get": {
+        "tags": [
+          "proxy/terraform"
+        ],
+        "summary": "The provider's checksum manifest (`SHA256SUMS`) and its detached signature.",
+        "description": "Terraform verifies the archive against these, so leaving them pointing at\nthe upstream made an otherwise air-gapped install reach the internet at the\nlast step — gated archive, ungated checksums (RFC 0009 §12.8). The URL is\nnamed inside the download document rather than addressed by a path, so the\nadapter resolves that document and follows the field.",
+        "operationId": "terraform_provider_shasums",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "path",
+            "description": "Provider namespace",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ptype",
+            "in": "path",
+            "description": "Provider type",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Provider version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SHA256SUMS manifest",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Unknown provider or no checksum manifest"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/v1/providers/{namespace}/{ptype}/{version}/shasums.sig": {
+      "get": {
+        "tags": [
+          "proxy/terraform"
+        ],
+        "summary": "The detached signature over the checksum manifest. See\n[`terraform_provider_shasums`].",
+        "operationId": "terraform_provider_shasums_sig",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "path",
+            "description": "Provider namespace",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ptype",
+            "in": "path",
+            "description": "Provider type",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Provider version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Detached signature",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Unknown provider or no signature"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
     "/proxy/{registry}/v1/query": {
       "post": {
         "tags": [
@@ -8975,6 +10761,396 @@
           },
           "502": {
             "description": "Upstream vuln DB error"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/versions": {
+      "get": {
+        "tags": [
+          "proxy/rubygems"
+        ],
+        "summary": "The whole-registry version list Bundler fetches first.",
+        "operationId": "gem_compact_versions",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Compact index version list",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "The tail of the document, for a client that already holds the rest",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The client's copy is current (`If-None-Match` matched)"
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Unknown or non-rubygems registry"
+          },
+          "416": {
+            "description": "The requested range starts past the end of the document"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/vscode/asset/{publisher}/{name}/{version}/{asset_type}": {
+      "get": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "`GET …/vscode/asset/{publisher}/{name}/{version}/{asset_type}`",
+        "description": "What the editor builds by appending an asset type to `assetUri`.",
+        "operationId": "vsx_asset",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "publisher",
+            "in": "path",
+            "description": "Extension publisher",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Extension name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Extension version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "asset_type",
+            "in": "path",
+            "description": "Microsoft.VisualStudio.* asset type",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Asset bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Unknown asset type, or the extension does not ship it"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/vscode/gallery/extensionquery": {
+      "post": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "Query the extension gallery.",
+        "description": "The body is the VS Code Marketplace `extensionquery` shape; see\n[`ExtensionQueryRequest`]. Every field is optional, so a hand-written client\ngets results rather than a `400`.",
+        "operationId": "vsx_extension_query",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExtensionQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Gallery query results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Unknown registry or wrong type"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/vscode/gallery/publishers/{publisher}/vsextensions/{name}/{version}/vspackage": {
+      "get": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "`GET …/vscode/gallery/publishers/{publisher}/vsextensions/{name}/{version}/vspackage`",
+        "description": "The download URL the editor takes from `fallbackAssetUri`, and the one\n`code --install-extension` resolves to upstream. Serves the same bytes as\nthe `Microsoft.VisualStudio.Services.VSIXPackage` asset below; both exist\nbecause different editor versions reach for different ones.",
+        "operationId": "vsx_vspackage",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "publisher",
+            "in": "path",
+            "description": "Extension publisher",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Extension name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Extension version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "VSIX package",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Unknown registry or extension"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/vscode/item": {
+      "get": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "`GET …/vscode/item?itemName=publisher.name`",
+        "description": "`itemUrl` — where the editor's \"View in Marketplace\" link goes. A redirect\nrather than rendered HTML: the only thing this needs to do is point at a\npage that already exists, and hand-writing markup here would be the one\nplace in this feature where escaping mattered.",
+        "operationId": "vsx_item",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "itemName",
+            "in": "query",
+            "description": "Extension ID in publisher.name format",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to the extension's page"
+          },
+          "400": {
+            "description": "Missing or malformed itemName"
+          },
+          "404": {
+            "description": "Unknown registry"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/vscode/unpkg/{publisher}/{name}/{version}/{path}": {
+      "get": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "`GET …/vscode/unpkg/{publisher}/{name}/{version}/{path}`",
+        "description": "`resourceUrlTemplate`: an arbitrary file inside the extension, which the\neditor uses for web extensions and for rendering the detail pane without\ndownloading the whole package.",
+        "operationId": "vsx_unpkg",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "publisher",
+            "in": "path",
+            "description": "Extension publisher",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Extension name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Extension version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "description": "Path inside the extension",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path"
+          },
+          "404": {
+            "description": "No such file in the extension"
           }
         },
         "security": [
@@ -9106,6 +11282,157 @@
           },
           "409": {
             "description": "Version already published"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/{hostname}/{namespace}/{ptype}/index.json": {
+      "get": {
+        "tags": [
+          "proxy/terraform"
+        ],
+        "summary": "`GET {mirror}/{hostname}/{namespace}/{type}/index.json` — the versions a\nnetwork mirror offers for one provider.",
+        "description": "The mirror protocol's own shape: a bare `versions` object whose keys are\nversion strings and whose values are (currently empty) objects.",
+        "operationId": "terraform_mirror_index",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "hostname",
+            "in": "path",
+            "description": "Origin registry hostname, e.g. registry.terraform.io",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "path",
+            "description": "Provider namespace",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ptype",
+            "in": "path",
+            "description": "Provider type",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Mirror version index",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Unknown registry, or hostname does not match this registry's upstream"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/{hostname}/{namespace}/{ptype}/{version}.json": {
+      "get": {
+        "tags": [
+          "proxy/terraform"
+        ],
+        "summary": "`GET {mirror}/{hostname}/{namespace}/{type}/{version}.json` — where one\nversion's archives live.",
+        "description": "`url` is **relative to this document**, which is what makes the mirror\nprotocol immune to the problem §7.2 had to fix on the registry protocol: the\ndownload target points back at our own artifact route by construction, so\nthere is no upstream URL to leak and no gate to bypass.",
+        "operationId": "terraform_mirror_version",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "hostname",
+            "in": "path",
+            "description": "Origin registry hostname",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "path",
+            "description": "Provider namespace",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ptype",
+            "in": "path",
+            "description": "Provider type",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Provider version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Mirror archive list for one version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolDocument"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied, or this version is blocked"
+          },
+          "404": {
+            "description": "Unknown registry, hostname mismatch, or unknown version"
           }
         },
         "security": [
@@ -9357,6 +11684,8 @@
         "tags": [
           "proxy/npm"
         ],
+        "summary": "Publish a new npm package version (`npm publish`).",
+        "description": "Accepts the standard npm publish wire format: a JSON body containing the\npackage metadata under `versions` and the base64-encoded tarball under\n`_attachments`.",
         "operationId": "npm_publish",
         "parameters": [
           {
@@ -10292,6 +12621,110 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UpstreamDocument"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Channel not found"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/{platform}/repodata.json.bz2": {
+      "get": {
+        "tags": [
+          "proxy/conda"
+        ],
+        "summary": "`repodata.json.bz2` — the older compressed encoding, for clients that\npredate zstd support.",
+        "operationId": "conda_repodata_bz2",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "platform",
+            "in": "path",
+            "description": "Platform string, e.g. linux-64 or noarch",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "bzip2-compressed repodata.json",
+            "content": {
+              "application/x-bzip2": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Channel not found"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/proxy/{registry}/{platform}/repodata.json.zst": {
+      "get": {
+        "tags": [
+          "proxy/conda"
+        ],
+        "summary": "`repodata.json.zst` — the first index request conda 23.x and mamba make.",
+        "operationId": "conda_repodata_zst",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "platform",
+            "in": "path",
+            "description": "Platform string, e.g. linux-64 or noarch",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "zstd-compressed repodata.json",
+            "content": {
+              "application/zstd": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
                 }
               }
             }
@@ -11533,6 +13966,38 @@
           }
         }
       },
+      "CargoOwnersChanged": {
+        "type": "object",
+        "description": "cargo's acknowledgement: `ok` plus a message it prints verbatim.",
+        "required": [
+          "ok",
+          "msg"
+        ],
+        "properties": {
+          "msg": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "CargoOwnersRequest": {
+        "type": "object",
+        "description": "The body `cargo owner --add`/`--remove` sends.",
+        "required": [
+          "users"
+        ],
+        "properties": {
+          "users": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Logins to add or remove. cargo sends one per invocation, but the\nprotocol is a list."
+          }
+        }
+      },
       "CargoOwnersResponse": {
         "type": "object",
         "description": "`cargo owner --list`'s response, in the shape crates.io defines.",
@@ -12283,6 +14748,32 @@
           }
         }
       },
+      "ExtensionQueryRequest": {
+        "type": "object",
+        "description": "`POST …/vscode/gallery/extensionquery`.\n\nEvery field is `#[serde(default)]`: a hand-written `product.json` or a\nnon-VS-Code client that omits half of this should get results, not a `400`.",
+        "properties": {
+          "assetTypes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          },
+          "filters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QueryFilter"
+            },
+            "default": []
+          },
+          "flags": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0,
+            "minimum": 0
+          }
+        }
+      },
       "FirewallDto": {
         "oneOf": [
           {
@@ -12840,7 +15331,7 @@
       },
       "NpmPublishResponse": {
         "type": "object",
-        "description": "Publish a new npm package version (`npm publish`).\n\nAccepts the standard npm publish wire format: a JSON body containing the\npackage metadata under `versions` and the base64-encoded tarball under\n`_attachments`.\nnpm's publish acknowledgement: an empty JSON object.\n\n`npm publish` reports success from the status code and the quota headers;\nthe body carries nothing, and this type says so rather than leaving the\nresponse undocumented."
+        "description": "npm's publish acknowledgement: an empty JSON object.\n\n`npm publish` reports success from the status code and the quota headers;\nthe body carries nothing, and this type says so rather than leaving the\nresponse undocumented."
       },
       "OidcProviderInfo": {
         "type": "object",
@@ -13439,6 +15930,61 @@
           "deleted": {
             "type": "integer",
             "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "QueryCriterion": {
+        "type": "object",
+        "properties": {
+          "filterType": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0,
+            "minimum": 0
+          },
+          "value": {
+            "type": "string",
+            "default": ""
+          }
+        }
+      },
+      "QueryFilter": {
+        "type": "object",
+        "properties": {
+          "criteria": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QueryCriterion"
+            },
+            "default": []
+          },
+          "pageNumber": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null,
+            "minimum": 0
+          },
+          "pageSize": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null,
+            "minimum": 0
+          },
+          "sortBy": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0,
+            "minimum": 0
+          },
+          "sortOrder": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0,
             "minimum": 0
           }
         }
@@ -14530,7 +17076,7 @@
     },
     {
       "name": "proxy/openvsx",
-      "description": "OpenVSX proxy — VS Code extension metadata and VSIX packages"
+      "description": "OpenVSX & VS Code Marketplace — extension gallery (extensionquery, assets, item), the OpenVSX REST API, VSIX packages, and private extension publishing"
     },
     {
       "name": "proxy/goproxy",

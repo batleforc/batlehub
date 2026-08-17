@@ -14,6 +14,24 @@ Proxy and cache VS Code extension VSIX downloads from Microsoft's [Visual Studio
 
 ## Proxy setup
 
+### Use BatleHub as your extension gallery
+
+Same protocol, same routes as the [OpenVSX page](/registries/openvsx#use-batlehub-as-your-extension-gallery) — the gallery is the *client* side, so it does not depend on which upstream sits behind the registry:
+
+```jsonc
+{
+  "extensionsGallery": {
+    "serviceUrl": "https://batlehub.example.com/proxy/<registry>/vscode/gallery",
+    "itemUrl": "https://batlehub.example.com/proxy/<registry>/vscode/item",
+    "resourceUrlTemplate": "https://batlehub.example.com/proxy/<registry>/vscode/unpkg/{publisher}/{name}/{version}/{path}"
+  }
+}
+```
+
+The editor sends no credentials to its gallery, so this registry needs `anonymous = ["releases:read", "source:read"]` under `[registries.rbac]`, or an authenticating ingress. See the warning on the [OpenVSX page](/registries/openvsx#use-batlehub-as-your-extension-gallery).
+
+### Download a VSIX directly
+
 Download a VSIX directly by coordinate and install it. Replace `<registry>` with your configured registry name; use `latest` as the version to fetch the newest release:
 
 ```sh
@@ -49,7 +67,6 @@ Pass a BatleHub token as a Bearer header on the VSIX request. Anonymous access w
 ## Notes
 
 - The direct VSIX route is `…/proxy/<registry>/{publisher}.{name}/{version}/vsix`, identical to OpenVSX — the two types share the same handler.
-- Full VS Code gallery protocol (`/vscode/gallery`) is not implemented — only VSIX proxying is supported today.
 - Prefer [OpenVSX](/registries/openvsx) for extensions that are mirrored on open-vsx.org; use this type only for Microsoft-marketplace-exclusive extensions.
 
 ## See also

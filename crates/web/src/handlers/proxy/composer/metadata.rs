@@ -10,7 +10,7 @@ use batlehub_core::{
 
 use crate::handlers::proxy::common::{
     registry_public_base, require_registry_type, serve_local_or_proxy_artifact,
-    serve_local_or_proxy_json, LocalOrProxyArtifactOpts,
+    serve_local_or_proxy_document, LocalOrProxyArtifactOpts,
 };
 use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
@@ -49,21 +49,51 @@ pub async fn composer_packages_json(
     let metadata_url = format!("{base_url}/p2/%package%.json");
 
     let mode = mode_map.get(&registry);
-    let available_packages: Vec<String> =
-        if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+    // `available-packages` is an assertion that this list is the **complete**
+    // contents of the repository, and Composer treats it as authoritative: a
+    // package absent from it is not requested at all, whatever `metadata-url`
+    // would have answered.
+    //
+    // So it may only be sent when the claim is true — `local` mode, where this
+    // registry is the whole world. It used to be sent in every mode
+    // (RFC 0009 §12.10):
+    //
+    // - **proxy** sent `[]`, which says "this repository is empty". Composer
+    //   read that, never requested `p2/…`, and reported every package as
+    //   "could not be found in any version". A proxy-mode Composer registry
+    //   could not resolve anything at all.
+    // - **hybrid** sent the locally published packages only, which says
+    //   "upstream's packages do not exist here" — so hybrid could resolve what
+    //   it hosted and nothing it proxied.
+    //
+    // Omitted, Composer falls back to asking `metadata-url` per package, which
+    // is exactly what a proxy can answer.
+    let available_packages: Option<Vec<String>> = if mode == RegistryMode::Local {
+        Some(
             local_svc
                 .get_composer_packages_list(&registry)
                 .await
-                .unwrap_or_default()
-        } else {
-            vec![]
-        };
+                .unwrap_or_default(),
+        )
+    } else {
+        None
+    };
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "packages": [],
         "metadata-url": metadata_url,
-        "available-packages": available_packages,
+        // Composer discovers every endpoint but `packages.json` itself from a
+        // URL template here. Without these two it never requests `search.json`
+        // or `list.json`, however correctly they are implemented — measured
+        // against Composer 2.10.2, which is how phase 6's search route and
+        // phase 7's list route were found to be unreachable (RFC 0009 §12.5).
+        "search": format!("{base_url}/search.json?q=%query%&type=%type%"),
+        "list": format!("{base_url}/list.json"),
     });
+
+    if let (Some(list), Some(obj)) = (available_packages, body.as_object_mut()) {
+        obj.insert("available-packages".to_owned(), serde_json::json!(list));
+    }
 
     Ok(HttpResponse::Ok()
         .content_type("application/json")
@@ -114,13 +144,24 @@ pub async fn composer_p2_metadata(
     let p2_artifact = if is_dev { "p2~dev" } else { "p2" };
 
     let base_url = registry_public_base(&req, &registry);
+    let local_base_url = base_url.clone();
 
     // Use version="_index" so the artifact key is stable; p2_artifact encodes the ~dev variant.
     let pkg = PackageId::new(&registry, &package_name, "_index").with_artifact(p2_artifact);
     let not_found_msg =
         format!("composer package '{package_name}' not found in local registry '{registry}'");
     let (fetch_registry, fetch_package_name) = (registry.clone(), package_name.clone());
-    serve_local_or_proxy_json(
+    // A version listing, not an artifact. The proxy fall-through fetches and
+    // filters the p2 document — expanding the `composer/2.0` minified encoding
+    // first, because removing a middle entry from a minified list silently
+    // changes what the entries after it inherit — and repoints `dist.url` at
+    // this proxy.
+    let doc_kind = if is_dev {
+        batlehub_core::ports::DocumentKind::P2_DEV
+    } else {
+        batlehub_core::ports::DocumentKind::Versions
+    };
+    serve_local_or_proxy_document(
         svc,
         &mode_map,
         &registry,
@@ -130,7 +171,7 @@ pub async fn composer_p2_metadata(
                 .get_composer_p2_response(
                     &fetch_registry,
                     &fetch_package_name,
-                    &base_url,
+                    &local_base_url,
                     &identity,
                 )
                 .await
@@ -138,7 +179,9 @@ pub async fn composer_p2_metadata(
         not_found_msg,
         pkg,
         batlehub_core::rules::resource_type::RELEASES_READ,
-        Some("application/json"),
+        doc_kind,
+        "application/json",
+        base_url,
     )
     .await
 }
@@ -226,6 +269,7 @@ pub async fn composer_security_advisories(
     _identity: AuthIdentity,
     map: web::Data<RegistryMap>,
     upstream_map: web::Data<UpstreamMap>,
+    svc: web::Data<Arc<ProxyService>>,
     client: web::Data<reqwest::Client>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
@@ -243,20 +287,18 @@ pub async fn composer_security_advisories(
         format!("{upstream}/api/security-advisories/?{query}")
     };
 
-    let resp = client.get(&url).send().await.map_err(|e| {
-        AppError::bad_gateway(format!("upstream security advisory request failed: {e}"))
-    })?;
-
-    let status = actix_web::http::StatusCode::from_u16(resp.status().as_u16())
-        .unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR);
-    let body = resp
-        .bytes()
-        .await
-        .map_err(|e| AppError::bad_gateway(format!("reading security advisory response: {e}")))?;
-
-    Ok(HttpResponse::build(status)
-        .content_type("application/json")
-        .body(body))
+    // Through the §4.2 helper like every other advisory passthrough: a
+    // `composer audit` whose upstream is unreachable is answered from cache
+    // rather than failed, for the same reason `npm audit` is.
+    let key = format!("advisories:{registry}:{query}");
+    crate::handlers::proxy::upstream::cached_forward(
+        &svc,
+        &client,
+        &registry,
+        &key,
+        crate::handlers::proxy::upstream::Outbound::get(url),
+    )
+    .await
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

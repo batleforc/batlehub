@@ -1,0 +1,57 @@
+# Server configuration for the heavy PyPI integration test
+# (tests/heavy/pypi.sh). See tests/heavy/config.npm.toml for the env-var
+# conventions; `${HEAVY_RUN}` keeps each run's registries out of the last one's.
+
+[server]
+host = "127.0.0.1"
+port = 8083
+
+[database]
+type = "postgresql"
+url = "${DATABASE_URL}"
+max_connections = 5
+
+[[auth]]
+type = "token"
+
+[[auth.tokens]]
+# `twine upload -u __token__ -p <this>` arrives as HTTP Basic, and the token
+# provider reads the password field — which is the only reason the documented
+# publish flow authenticates at all (crates/adapters/src/auth/token.rs).
+value = "heavy-admin-token"
+role = "admin"
+user_id = "ci-admin"
+
+[storage]
+type = "filesystem"
+path = "./tmp/heavy-pypi-storage"
+
+# ── Local registry: the distribution exists ONLY here ────────────────────────
+[[registries]]
+type = "pypi"
+name = "pypi-local-${HEAVY_RUN}"
+mode = "local"
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
+
+# ── Proxy registry: PEP 658 is an upstream property ──────────────────────────
+#
+# The `.metadata` sibling only exists because pypi.org advertises
+# `data-core-metadata` on the simple page and BatleHub's rewrite preserves the
+# attribute. Serving the sibling is therefore only testable against a real
+# upstream — and it is the defect RFC 0009 §12.7 found: pip trusts the
+# attribute, requests the sibling, gets a 404, and does *not* fall back to
+# downloading the wheel.
+[[registries]]
+type = "pypi"
+name = "pypi-proxy-${HEAVY_RUN}"
+mode = "proxy"
+upstreams = ["https://pypi.org"]
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]

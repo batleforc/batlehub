@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 
 use batlehub_core::{
     entities::NotificationEventType,
-    services::{LocalRegistryService, PublishRequest},
+    services::{sha1_hex, LocalRegistryService, PublishRequest, COMPOSER_DIST_SHA1},
 };
 
 use crate::handlers::proxy::common::{
@@ -79,7 +79,23 @@ pub async fn composer_upload(
 
     let checksum = hex::encode(Sha256::digest(&data));
 
-    let index_metadata = meta.composer_json.clone();
+    // Composer verifies `dist.shasum` as **SHA-1** (`FileDownloader`), so the
+    // SHA-256 we store as the artifact's own checksum cannot be published in
+    // that field: every `composer install` of a locally published package
+    // failed with "The checksum verification of the file failed" — a package
+    // that resolves, downloads, and is then thrown away (RFC 0009 §12.16).
+    //
+    // It is computed here, at publish, and carried in the stored metadata:
+    // `get_composer_p2_response` renders a listing of every version, and
+    // hashing each artifact on read would turn a metadata request into one
+    // storage read per version.
+    let mut index_metadata = meta.composer_json.clone();
+    if let Some(obj) = index_metadata.as_object_mut() {
+        obj.insert(
+            COMPOSER_DIST_SHA1.to_owned(),
+            serde_json::Value::String(sha1_hex(&data)),
+        );
+    }
 
     let name = meta.name.clone();
     let version = meta.version.clone();

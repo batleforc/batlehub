@@ -3,6 +3,13 @@ name = "batlehub-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# This crate has a second, tiny binary (`listing_coverage`, which prints the
+# blocked-version coverage table for the admin guide). Without `default-run`,
+# adding it makes a bare `cargo run -p batlehub-server` ambiguous — which breaks
+# `task dump-spec` and the `cargo run -p batlehub-server -- … dump-spec` step in
+# `.github/workflows/front-test.yaml`, both of which redirect into
+# `ui/openapi.json` and would truncate it on the way to failing.
+default-run = "batlehub"
 
 [[bin]]
 name = "batlehub"

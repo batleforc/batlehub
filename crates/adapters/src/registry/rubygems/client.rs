@@ -2,12 +2,14 @@ use async_trait::async_trait;
 use futures::TryStreamExt;
 use serde::Deserialize;
 
-use super::super::http_client::{cache_control, percent_encode, to_registry_error};
-use super::models::{GemInfo, GemVersion};
+use super::super::http_client::{
+    cache_control, fetch_json_document, fetch_text_document, percent_encode, to_registry_error,
+};
+use super::models::{GemDependency, GemInfo, GemVersion};
 use super::{models, CoreError, RubyGemsRegistryClient};
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
-    ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
+    ports::{DocumentKind, FetchedArtifact, RegistryClient, UpstreamPackage, VersionDocument},
 };
 use models::GemMetadata;
 
@@ -157,13 +159,143 @@ pub(super) fn parse_gem_yaml(yaml: &str) -> Result<GemMetadata, CoreError> {
         }
     }
 
-    Ok(GemMetadata {
+    Ok(models::GemMetadata {
         name,
         version,
         platform,
         summary,
         authors,
+        dependencies: parse_gem_dependencies(yaml),
     })
+}
+
+/// Extract runtime dependencies from a gemspec's YAML.
+///
+/// The block looks like:
+///
+/// ```yaml
+/// dependencies:
+/// - !ruby/object:Gem::Dependency
+///   name: rake
+///   requirement: !ruby/object:Gem::Requirement
+///     requirements:
+///     - - "~>"
+///       - !ruby/object:Gem::Version
+///         version: '13.0'
+///   type: :runtime
+/// ```
+///
+/// Scanned line-wise like the rest of this parser rather than deserialised: the
+/// document is full of Ruby object tags that a general YAML reader has to be
+/// taught to ignore, and only four fields are wanted.
+///
+/// Development dependencies are skipped — they are not part of what an
+/// installer resolves, and the compact index does not carry them.
+fn parse_gem_dependencies(yaml: &str) -> Vec<GemDependency> {
+    let mut acc = DependencyAccumulator::new();
+    let mut in_block = false;
+
+    for line in yaml.lines() {
+        if !line.starts_with(' ') && !line.starts_with('-') {
+            // A new top-level key ends the block — and starts it again when the
+            // key is `dependencies:` itself.
+            if in_block {
+                acc.flush();
+            }
+            in_block = line.starts_with("dependencies:");
+            continue;
+        }
+        if in_block {
+            acc.absorb(line.trim());
+        }
+    }
+    acc.finish()
+}
+
+/// The dependency [`parse_gem_dependencies`] is currently assembling.
+///
+/// One `!ruby/object:Gem::Dependency` entry arrives as several lines, and none
+/// of them is complete on its own: the name, the operators and the versions
+/// each land separately, and only the *next* entry (or the end of the block)
+/// says the previous one is finished. This holds that partial state so the scan
+/// itself stays a flat dispatch on the line's prefix.
+struct DependencyAccumulator {
+    name: Option<String>,
+    /// Operators from `- - "~>"` lines, awaiting the version that closes them.
+    ops: Vec<String>,
+    constraints: Vec<String>,
+    runtime: bool,
+    deps: Vec<GemDependency>,
+}
+
+impl DependencyAccumulator {
+    fn new() -> Self {
+        Self {
+            name: None,
+            ops: Vec::new(),
+            constraints: Vec::new(),
+            // Absent `type:`, a Gem::Dependency is a runtime one.
+            runtime: true,
+            deps: Vec::new(),
+        }
+    }
+
+    /// One line of the `dependencies:` block, already trimmed.
+    fn absorb(&mut self, trimmed: &str) {
+        if trimmed.starts_with("- !ruby/object:Gem::Dependency") {
+            self.flush();
+        } else if let Some(rest) = trimmed.strip_prefix("name: ") {
+            // Only the first `name:` after a Dependency header is the gem's;
+            // nested ones do not occur, but taking the first is what makes that
+            // independent of order.
+            if self.name.is_none() {
+                self.name = Some(strip_yaml_quotes(rest.trim()).to_owned());
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("type: ") {
+            self.runtime = rest.trim() != ":development";
+        } else if let Some(rest) = trimmed.strip_prefix("- - ") {
+            // `- - "~>"` opens a constraint pair; `- '13.0'` and
+            // `version: '13.0'` close it.
+            self.ops.push(strip_yaml_quotes(rest.trim()).to_owned());
+        } else if let Some(rest) = trimmed.strip_prefix("version: ") {
+            self.close_constraint(rest.trim());
+        }
+    }
+
+    /// Close the open operator with `value`, if `value` is a version at all.
+    fn close_constraint(&mut self, value: &str) {
+        // `!ruby/object:Gem::Version` — the tag, not the version under it.
+        if value.starts_with('!') {
+            return;
+        }
+        let v = strip_yaml_quotes(value);
+        let op = self.ops.pop().unwrap_or_else(|| ">=".to_owned());
+        // `>= 0` is how "no constraint" is written, and the compact index
+        // leaves it out.
+        if !(op == ">=" && v == "0") {
+            self.constraints.push(format!("{op} {v}"));
+        }
+    }
+
+    /// Emit the entry being assembled, if there is one, and reset.
+    fn flush(&mut self) {
+        if let Some(name) = self.name.take() {
+            if self.runtime {
+                self.deps.push(GemDependency {
+                    name,
+                    requirement: self.constraints.join("&"),
+                });
+            }
+        }
+        self.constraints.clear();
+        self.ops.clear();
+        self.runtime = true;
+    }
+
+    fn finish(mut self) -> Vec<GemDependency> {
+        self.flush();
+        self.deps
+    }
 }
 
 /// Split a gem filename stem (without `.gem`) into `(name, version)`.
@@ -187,6 +319,64 @@ pub fn split_gem_stem(stem: &str) -> Option<(&str, &str)> {
 impl RegistryClient for RubyGemsRegistryClient {
     fn registry_type(&self) -> &str {
         "rubygems"
+    }
+
+    /// Two documents, both read by `bundler`/`gem` on different paths: the
+    /// versions API resolves a constraint, the gem document answers "what is
+    /// the current release". Both have to hide a blocked version.
+    ///
+    /// The Marshal indexes are deliberately absent — see
+    /// `RegistryKind::listing_filter`.
+    async fn fetch_version_document(
+        &self,
+        package: &str,
+        kind: DocumentKind,
+    ) -> Result<VersionDocument, CoreError> {
+        let base = self.base_url.trim_end_matches('/');
+        let name = percent_encode(package);
+        let (url, what) = match kind {
+            DocumentKind::Versions => (
+                format!("{base}/api/v1/versions/{name}.json"),
+                format!("rubygems versions for '{package}'"),
+            ),
+            DocumentKind::GEM => (
+                format!("{base}/api/v1/gems/{name}.json"),
+                format!("rubygems gem document for '{package}'"),
+            ),
+            // The compact index — what Bundler actually resolves from. Plain
+            // text, so `DocumentBody::Text` carries it and no Marshal encoder
+            // is involved (RFC 0009 §7.3).
+            DocumentKind::COMPACT_VERSIONS => {
+                return fetch_text_document(
+                    self.get(&format!("{base}/versions")),
+                    "rubygems compact index /versions",
+                    "text/plain; charset=utf-8",
+                )
+                .await
+            }
+            DocumentKind::COMPACT_NAMES => {
+                return fetch_text_document(
+                    self.get(&format!("{base}/names")),
+                    "rubygems compact index /names",
+                    "text/plain; charset=utf-8",
+                )
+                .await
+            }
+            DocumentKind::COMPACT_INFO => {
+                return fetch_text_document(
+                    self.get(&format!("{base}/info/{name}")),
+                    &format!("rubygems compact info for '{package}'"),
+                    "text/plain; charset=utf-8",
+                )
+                .await
+            }
+            other => {
+                return Err(CoreError::NotSupported(format!(
+                    "rubygems has no '{other}' listing document"
+                )))
+            }
+        };
+        fetch_json_document(self.get(&url), &what).await
     }
 
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {

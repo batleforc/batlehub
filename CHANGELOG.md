@@ -8,6 +8,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Setup snippets name the host the client actually talks to.** With host-based
+  routing (RFC 0001) a registry answers on its own subdomain, and on that host
+  the server prefixes `/proxy/{name}` to every path itself. Three things had not
+  followed:
+
+  - The Setup Guide's composite tabs (`mise`, and the `generic` mirror rules)
+    rewrite downloads to several registries but printed a single `~/.netrc`
+    stanza — the selected registry's. Every other host got no credentials and
+    would have 401'd. They now print one stanza per host referenced.
+  - Two snippets hand-built `https://{host}/proxy/{name}/…` (the pip.conf
+    embedded-credentials line, the apt `sources.list` alternative), which on a
+    registry host resolves to `/proxy/{name}/proxy/{name}/…` and 404s. Both now
+    derive from the registry's own base URL.
+  - `batlehub-cli setup detect` / `setup ide` ignored host routing entirely:
+    they never read `public_url` and always printed `{server}/proxy/<registry>`.
+    They now ask the server for the registry list, name the real registry, point
+    at its own host when it has one, and end with the matching `~/.netrc`
+    stanzas. `--offline` keeps the old placeholder output, which is also the
+    fallback when the server cannot be reached.
+
 ### Changed
 
 - **One documentation tree, and it wears the design system** (RFC 0005). The

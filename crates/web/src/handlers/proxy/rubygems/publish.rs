@@ -59,6 +59,14 @@ pub async fn gem_publish(
         "summary": gem_meta.summary,
         "authors": gem_meta.authors,
         "sha": checksum,
+        // The compact index carries dependencies inline, and it is the document
+        // Bundler resolves from — a gem stored without them resolves as though
+        // it needed nothing (RFC 0009 §12.15).
+        "dependencies": gem_meta
+            .dependencies
+            .iter()
+            .map(|d| serde_json::json!({ "name": d.name, "requirement": d.requirement }))
+            .collect::<Vec<_>>(),
     });
 
     let name = gem_meta.name.clone();

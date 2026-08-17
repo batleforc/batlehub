@@ -142,6 +142,7 @@ mod tests {
             registry_configured: configured,
             detected_via: "test".to_owned(),
             instructions: format!("setup {}", kind.label()),
+            base_url: "http://localhost:8080/proxy/ovsx".to_owned(),
         }
     }
 

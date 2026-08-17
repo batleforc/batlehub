@@ -1,12 +1,12 @@
 use async_trait::async_trait;
 use futures::TryStreamExt;
 
-use super::super::http_client::{cache_control, to_registry_error};
+use super::super::http_client::{cache_control, fetch_json_document, to_registry_error};
 use super::{models, CondaRegistryClient};
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient},
+    ports::{DocumentKind, FetchedArtifact, RegistryClient, VersionDocument},
 };
 use models::{CondaIndexJson, CondaPackageInfo, CondaRepodata};
 
@@ -104,6 +104,47 @@ impl CondaRegistryClient {
 impl RegistryClient for CondaRegistryClient {
     fn registry_type(&self) -> &str {
         "conda"
+    }
+
+    /// A channel's `repodata.json` (or `current_repodata.json`) for one
+    /// platform.
+    ///
+    /// The `package` argument carries the **platform** here — `linux-64`,
+    /// `noarch` — because a conda listing is scoped to a subdir rather than to a
+    /// package. That is also why this document goes through
+    /// `ProxyService::multi_package_document`: it describes the whole channel.
+    async fn fetch_version_document(
+        &self,
+        package: &str,
+        kind: DocumentKind,
+    ) -> Result<VersionDocument, CoreError> {
+        let filename = match kind {
+            DocumentKind::Versions => "repodata.json",
+            DocumentKind::CURRENT_REPODATA => "current_repodata.json",
+            // Channel-root rather than per-subdir: `channeldata.json` describes
+            // every platform at once, so it takes no `{package}` path segment
+            // (RFC 0009 §7.5).
+            DocumentKind::CHANNELDATA => {
+                let base = self.base_url.trim_end_matches('/');
+                return fetch_json_document(
+                    self.get(&format!("{base}/channeldata.json")),
+                    "conda channeldata.json",
+                )
+                .await;
+            }
+            other => {
+                return Err(CoreError::NotSupported(format!(
+                    "conda has no '{other}' listing document"
+                )))
+            }
+        };
+        let base = self.base_url.trim_end_matches('/');
+        let url = format!("{base}/{package}/{filename}");
+        fetch_json_document(
+            self.get(&url),
+            &format!("conda {filename} for platform '{package}'"),
+        )
+        .await
     }
 
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {

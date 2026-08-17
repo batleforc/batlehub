@@ -24,10 +24,14 @@ on:
       - "ui/package*.json"
       - "sonar-project.properties"
       - ".github/workflows/sonar.yaml"
+      - ".github/scripts/sonar_quality_gate.py"
   workflow_dispatch:
 permissions:
   contents: read
-  pull-requests: read
+  # `write`, not `read`: the gate result is posted back as a pull request
+  # comment. A fork's `GITHUB_TOKEN` stays read-only whatever this says, but a
+  # fork has no `SONAR_TOKEN` either, so the scan does not run there at all.
+  pull-requests: write
 env:
   CARGO_TERM_COLOR: always
   DATABASE_URL: postgresql://postgres:testpass@localhost:5432/postgres
@@ -149,3 +153,45 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      # ── Quality gate ─────────────────────────────────────────────────────────
+      # The scan step submits the analysis and returns, so on its own it is
+      # green whatever the gate says. These three steps wait for the server to
+      # finish, publish the verdict where it will be read, and only then fail.
+      - name: Wait for the quality gate
+        id: gate
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          python3 .github/scripts/sonar_quality_gate.py \
+            --pull-request "${{ github.event.pull_request.number }}" \
+            | tee quality-gate.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment the quality gate on the pull request
+        # No `always()`: a red gate is a *successful* run of the step above, so
+        # this still runs for the case that matters. If that step failed
+        # outright there is no verdict to report, and the job stops there.
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          # One comment per pull request, edited in place: a new comment per
+          # push buries the conversation under a wall of near-identical reports.
+          # The marker is the first line of the body the script emits.
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+            --jq '.[] | select(.body | startswith("<!-- sonar-quality-gate -->")) | .id' \
+            | head -n1)
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" \
+              -F body=@quality-gate.md >/dev/null
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+              -F body=@quality-gate.md >/dev/null
+          fi
+
+      - name: Fail on a red quality gate
+        if: steps.gate.outputs.status != 'PASSED'
+        run: |
+          echo "::error::SonarCloud quality gate: ${{ steps.gate.outputs.status }} — see the job summary"
+          exit 1

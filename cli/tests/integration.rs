@@ -72,6 +72,31 @@ impl TestServer {
     /// Like `start()`, but with an arbitrary set of `(name, registry_type)`
     /// local-mode registries instead of the single hardcoded nuget one.
     fn start_with(registries: &[(&str, &str)]) -> Self {
+        Self::start_with_hosts(registries, &[])
+    }
+
+    /// Like `start_with()`, plus `(registry, public_url)` host bindings — what
+    /// `[subdomain_routing]` produces, and what `GET /api/v1/registries`
+    /// advertises as `public_url`.
+    fn start_with_hosts(registries: &[(&str, &str)], public_urls: &[(&str, &str)]) -> Self {
+        let host_map = batlehub_web::RegistryHostMap::new(
+            public_urls
+                .iter()
+                .map(|(reg, url)| {
+                    (
+                        url.trim_start_matches("https://")
+                            .trim_start_matches("http://")
+                            .to_string(),
+                        reg.to_string(),
+                    )
+                })
+                .collect(),
+            public_urls
+                .iter()
+                .map(|(reg, url)| (reg.to_string(), url.to_string()))
+                .collect(),
+            HashMap::new(),
+        );
         let registry_map = RegistryMap::from(
             registries
                 .iter()
@@ -186,6 +211,7 @@ impl TestServer {
             cargo_index_map: batlehub_web::CargoIndexMap::default(),
             repo_signer_map: batlehub_web::RepoSignerMap::default(),
             vuln_db_map: batlehub_web::VulnDbMap::default(),
+            sumdb_map: batlehub_web::SumDbMap::default(),
             registry_host_map: batlehub_web::RegistryHostMap::default(),
             proxy_trust: batlehub_web::ProxyTrust::default(),
             config_path: "config.toml".to_owned(),
@@ -228,6 +254,7 @@ impl TestServer {
             let reload_svc = reload_svc.clone();
             let user_block_repo = user_block_repo.clone();
             let team_namespace_store = team_namespace_store.clone();
+            let host_map = host_map.clone();
 
             let server = HttpServer::new(move || {
                 let (app, _) = App::new()
@@ -243,6 +270,7 @@ impl TestServer {
                     .app_data(web::Data::new(reload_svc.clone()))
                     .app_data(web::Data::new(user_block_repo.clone()))
                     .app_data(web::Data::new(team_namespace_store.clone()))
+                    .app_data(web::Data::new(host_map.clone()))
                     .wrap(AuthMiddlewareFactory::new(auth_providers.clone()))
             })
             .bind("127.0.0.1:0")
@@ -305,12 +333,25 @@ fn wait_for_port(port: u16, timeout: Duration) -> bool {
 
 /// Run the CLI binary with env-injected server/token and return (success, stdout, stderr).
 fn cli_cmd(args: &[&str], server: &str, token: &str) -> (bool, String, String) {
+    cli_cmd_in(args, server, token, "/tmp/.xdg-batlehub-test")
+}
+
+/// [`cli_cmd`] with a config directory of the caller's choosing.
+///
+/// The auth tests read and write stored credentials, so each needs its own —
+/// sharing the default one would let a login in one test satisfy another.
+fn cli_cmd_in(
+    args: &[&str],
+    server: &str,
+    token: &str,
+    config_home: &str,
+) -> (bool, String, String) {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
         .args(args)
         .env("BATLEHUB_SERVER", server)
         .env("BATLEHUB_TOKEN", token)
         .env("HOME", "/tmp")
-        .env("XDG_CONFIG_HOME", "/tmp/.xdg-batlehub-test")
+        .env("XDG_CONFIG_HOME", config_home)
         .output()
         .expect("failed to run batlehub-cli binary");
     (
@@ -1026,20 +1067,14 @@ fn auth_refresh_no_stored_token_fails() {
     let config_dir = tempfile::tempdir().unwrap();
     let srv = TestServer::start();
 
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
-        .args(["auth", "refresh"])
-        .env("BATLEHUB_SERVER", srv.base_url())
-        .env("BATLEHUB_TOKEN", AUTH_TOKEN)
-        .env("HOME", "/tmp")
-        .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())
-        .output()
-        .expect("failed to run batlehub-cli");
-
-    assert!(
-        !out.status.success(),
-        "auth refresh with no stored token should fail"
+    let (ok, _, stderr) = cli_cmd_in(
+        &["auth", "refresh"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+        config_dir.path().to_str().unwrap(),
     );
-    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(!ok, "auth refresh with no stored token should fail");
     assert!(
         stderr.contains("refresh token") || stderr.contains("auth login"),
         "error should guide the user; stderr: {stderr}"
@@ -1053,20 +1088,14 @@ fn auth_login_without_kubernetes_no_oidc_fails() {
     let config_dir = tempfile::tempdir().unwrap();
     let srv = TestServer::start();
 
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
-        .args(["auth", "login"])
-        .env("BATLEHUB_SERVER", srv.base_url())
-        .env("BATLEHUB_TOKEN", AUTH_TOKEN)
-        .env("HOME", "/tmp")
-        .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())
-        .output()
-        .expect("failed to run batlehub-cli");
-
-    assert!(
-        !out.status.success(),
-        "auth login without OIDC configured should fail"
+    let (ok, _, stderr) = cli_cmd_in(
+        &["auth", "login"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+        config_dir.path().to_str().unwrap(),
     );
-    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(!ok, "auth login without OIDC configured should fail");
     assert!(
         stderr.contains("OIDC is not configured"),
         "error should mention OIDC is not configured; stderr: {stderr}"
@@ -1093,20 +1122,17 @@ oidc_expires_at = 0
     )
     .unwrap();
 
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
-        .args(["auth", "refresh"])
-        .env("BATLEHUB_SERVER", srv.base_url())
-        .env("BATLEHUB_TOKEN", AUTH_TOKEN)
-        .env("HOME", "/tmp")
-        .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())
-        .output()
-        .expect("failed to run batlehub-cli");
+    let (ok, _, stderr) = cli_cmd_in(
+        &["auth", "refresh"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+        config_dir.path().to_str().unwrap(),
+    );
 
     assert!(
-        !out.status.success(),
+        !ok,
         "auth refresh against a server without OIDC SSO should fail"
     );
-    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("OIDC SSO is not configured"),
         "error should surface the server's response; stderr: {stderr}"
@@ -1700,29 +1726,21 @@ fn admin_deprecate_undeprecate_unlist_relist() {
     assert!(ok, "deprecate should succeed; stderr: {stderr}");
     assert!(stdout.contains("Deprecated"), "stdout: {stdout}");
 
-    let (ok, stdout, stderr) = cli_cmd(
-        &["admin", "undeprecate", REGISTRY, "DepLib", "1.0.0"],
-        &base,
-        AUTH_TOKEN,
-    );
-    assert!(ok, "undeprecate should succeed; stderr: {stderr}");
-    assert!(stdout.contains("Undeprecated"), "stdout: {stdout}");
-
-    let (ok, stdout, stderr) = cli_cmd(
-        &["admin", "unlist", REGISTRY, "DepLib", "1.0.0"],
-        &base,
-        AUTH_TOKEN,
-    );
-    assert!(ok, "unlist should succeed; stderr: {stderr}");
-    assert!(stdout.contains("Unlisted"), "stdout: {stdout}");
-
-    let (ok, stdout, stderr) = cli_cmd(
-        &["admin", "relist", REGISTRY, "DepLib", "1.0.0"],
-        &base,
-        AUTH_TOKEN,
-    );
-    assert!(ok, "relist should succeed; stderr: {stderr}");
-    assert!(stdout.contains("Relisted"), "stdout: {stdout}");
+    // The rest of the lifecycle takes the same three arguments and differs
+    // only in the word it reports back.
+    for (subcommand, reported) in [
+        ("undeprecate", "Undeprecated"),
+        ("unlist", "Unlisted"),
+        ("relist", "Relisted"),
+    ] {
+        let (ok, stdout, stderr) = cli_cmd(
+            &["admin", subcommand, REGISTRY, "DepLib", "1.0.0"],
+            &base,
+            AUTH_TOKEN,
+        );
+        assert!(ok, "{subcommand} should succeed; stderr: {stderr}");
+        assert!(stdout.contains(reported), "stdout: {stdout}");
+    }
 }
 
 #[test]
@@ -1920,6 +1938,33 @@ fn setup_detect_json(dir: &std::path::Path) -> (bool, Vec<serde_json::Value>, St
     setup_detect_json_depth(dir, 0)
 }
 
+/// `setup detect` against `server` in `dir`, with `extra` flags in between.
+///
+/// Each caller passes its own `config_home`: these run as subprocesses against
+/// the real binary, and a shared config directory would let one test's cached
+/// registry list answer another's question.
+fn setup_detect(
+    server: &str,
+    dir: &std::path::Path,
+    extra: &[&str],
+    config_home: &str,
+) -> (bool, String) {
+    let mut args: Vec<&str> = vec!["--server", server, "setup", "detect"];
+    args.extend_from_slice(extra);
+    args.push("--dir");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
+        .args(&args)
+        .arg(dir)
+        .env("HOME", "/tmp")
+        .env("XDG_CONFIG_HOME", config_home)
+        .output()
+        .expect("failed to run batlehub-cli");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
 fn setup_detect_json_depth(
     dir: &std::path::Path,
     depth: usize,
@@ -2006,6 +2051,120 @@ fn setup_ide_json_detects_idea_project() {
         .find(|v| v["registry_type"] == "jetbrains-marketplace")
         .unwrap_or_else(|| panic!("expected a jetbrains-marketplace entry; got: {items:?}"));
     assert_eq!(jb["registry_configured"], serde_json::json!(false));
+}
+
+/// `setup detect` asks the server which registries exist, so the snippet names
+/// the real one instead of `<registry>`.
+#[test]
+fn setup_detect_names_the_configured_registry() {
+    let server = TestServer::start_with(&[("npm1", "npm")]);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("package.json"), r#"{"name":"my-app"}"#).unwrap();
+
+    let (ok, stdout) = setup_detect(
+        &server.base_url(),
+        dir.path(),
+        &[],
+        "/tmp/.xdg-batlehub-detect-named",
+    );
+
+    assert!(ok, "setup detect failed: {stdout}");
+    assert!(
+        stdout.contains(&format!("registry={}/proxy/npm1/npm/", server.base_url())),
+        "expected the configured registry name in the snippet; got:\n{stdout}"
+    );
+    // Path-routed: everything answers on the one host.
+    assert!(
+        stdout.contains("machine 127.0.0.1"),
+        "expected a .netrc stanza for the server host; got:\n{stdout}"
+    );
+}
+
+/// A host-routed registry (RFC 0001) is advertised on its own subdomain. The
+/// snippet must point there *without* `/proxy/{name}` — that host adds the
+/// prefix itself — and the `.netrc` stanza must name that host, not the API's.
+#[test]
+fn setup_detect_uses_the_registry_subdomain_and_netrc_host() {
+    let server = TestServer::start_with_hosts(
+        &[("npm1", "npm")],
+        &[("npm1", "https://npm1.batlehub.example.com")],
+    );
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("package.json"), r#"{"name":"my-app"}"#).unwrap();
+
+    let (ok, stdout) = setup_detect(
+        &server.base_url(),
+        dir.path(),
+        &[],
+        "/tmp/.xdg-batlehub-detect-subdomain",
+    );
+
+    assert!(ok, "setup detect failed: {stdout}");
+    assert!(
+        stdout.contains("registry=https://npm1.batlehub.example.com/npm/"),
+        "expected the registry's own host in the snippet; got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("/proxy/npm1"),
+        "the registry host prefixes /proxy/{{name}} itself; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("machine npm1.batlehub.example.com"),
+        "expected a .netrc stanza for the registry host; got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("machine 127.0.0.1"),
+        "credentials go to the host the client talks to, not the API host; got:\n{stdout}"
+    );
+}
+
+/// The JSON output carries the resolved registry and base URL.
+#[test]
+fn setup_detect_json_reports_the_resolved_registry() {
+    let server = TestServer::start_with_hosts(
+        &[("cargo1", "cargo")],
+        &[("cargo1", "https://cargo1.batlehub.example.com")],
+    );
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"c\"\n").unwrap();
+
+    let (ok, stdout) = setup_detect(
+        &server.base_url(),
+        dir.path(),
+        &["--json"],
+        "/tmp/.xdg-batlehub-detect-json-reg",
+    );
+
+    assert!(ok);
+    let items: Vec<serde_json::Value> =
+        serde_json::from_str(&stdout).expect("stdout should be a JSON array");
+    assert_eq!(items[0]["registry_name"], serde_json::json!("cargo1"));
+    assert_eq!(
+        items[0]["base_url"],
+        serde_json::json!("https://cargo1.batlehub.example.com")
+    );
+}
+
+/// `--offline` keeps the placeholders and must not touch the network at all,
+/// even when a reachable server is configured.
+#[test]
+fn setup_detect_offline_keeps_the_placeholder() {
+    let server = TestServer::start_with(&[("npm1", "npm")]);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("package.json"), r#"{"name":"my-app"}"#).unwrap();
+
+    let (ok, stdout) = setup_detect(
+        &server.base_url(),
+        dir.path(),
+        &["--offline"],
+        "/tmp/.xdg-batlehub-detect-offline",
+    );
+
+    assert!(ok, "setup detect failed: {stdout}");
+    assert!(
+        stdout.contains("/proxy/<registry>/npm/"),
+        "expected the placeholder; got:\n{stdout}"
+    );
 }
 
 #[test]

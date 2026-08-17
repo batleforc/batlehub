@@ -164,3 +164,107 @@ summary: Full-stack web application framework.
     );
     assert_eq!(meta.authors, vec!["David Heinemeier Hansson"]);
 }
+
+// ── gemspec dependencies ──────────────────────────────────────────────────
+
+/// Runtime dependencies are captured; development ones are not.
+///
+/// The compact index carries what an installer resolves, and `:development`
+/// gems are not that. Nothing parsed these at all until a local compact index
+/// needed them (RFC 0009 §12.15).
+#[test]
+fn gemspec_dependencies_are_parsed_and_dev_ones_skipped() {
+    let yaml = r#"--- !ruby/object:Gem::Specification
+name: mygem
+version: !ruby/object:Gem::Version
+  version: 1.0.0
+platform: ruby
+authors:
+- me
+dependencies:
+- !ruby/object:Gem::Dependency
+  name: rake
+  requirement: !ruby/object:Gem::Requirement
+    requirements:
+    - - "~>"
+      - !ruby/object:Gem::Version
+        version: '13.0'
+  type: :runtime
+- !ruby/object:Gem::Dependency
+  name: json
+  requirement: !ruby/object:Gem::Requirement
+    requirements:
+    - - ">="
+      - !ruby/object:Gem::Version
+        version: '2.0'
+    - - "<"
+      - !ruby/object:Gem::Version
+        version: '3.0'
+  type: :runtime
+- !ruby/object:Gem::Dependency
+  name: rspec
+  requirement: !ruby/object:Gem::Requirement
+    requirements:
+    - - ">="
+      - !ruby/object:Gem::Version
+        version: '0'
+  type: :development
+summary: s
+"#;
+    let meta = super::client::parse_gem_yaml(yaml).unwrap();
+    let deps: Vec<(String, String)> = meta
+        .dependencies
+        .iter()
+        .map(|d| (d.name.clone(), d.requirement.clone()))
+        .collect();
+    assert_eq!(
+        deps,
+        vec![
+            ("rake".to_owned(), "~> 13.0".to_owned()),
+            ("json".to_owned(), ">= 2.0&< 3.0".to_owned()),
+        ],
+        "runtime deps in order, dev deps dropped"
+    );
+}
+
+/// `dependencies: []` is written inline, and the key that follows must not be
+/// read as part of the block.
+#[test]
+fn a_gem_with_no_dependencies_parses_to_none() {
+    let yaml = r#"--- !ruby/object:Gem::Specification
+name: mygem
+version: !ruby/object:Gem::Version
+  version: 1.0.0
+platform: ruby
+dependencies: []
+description:
+summary: s
+"#;
+    let meta = super::client::parse_gem_yaml(yaml).unwrap();
+    assert!(meta.dependencies.is_empty());
+}
+
+/// `>= 0` is how a gemspec writes "any version", and the compact index omits it
+/// rather than writing a constraint that constrains nothing.
+#[test]
+fn an_unconstrained_dependency_has_an_empty_requirement() {
+    let yaml = r#"--- !ruby/object:Gem::Specification
+name: mygem
+version: !ruby/object:Gem::Version
+  version: 1.0.0
+dependencies:
+- !ruby/object:Gem::Dependency
+  name: thor
+  requirement: !ruby/object:Gem::Requirement
+    requirements:
+    - - ">="
+      - !ruby/object:Gem::Version
+        version: '0'
+  type: :runtime
+summary: s
+"#;
+    let meta = super::client::parse_gem_yaml(yaml).unwrap();
+    assert_eq!(meta.dependencies.len(), 1);
+    assert_eq!(meta.dependencies[0].name, "thor");
+    assert_eq!(meta.dependencies[0].requirement, "");
+}

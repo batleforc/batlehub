@@ -1,0 +1,48 @@
+# Server configuration for the heavy Bundler integration test
+# (tests/heavy/bundler.sh): one local-mode RubyGems registry that a real
+# `bundle install` resolves against.
+#
+# `${DATABASE_URL}` is interpolated from the environment before TOML parsing.
+#
+# The registry name is rewritten to `gems-<run id>` by the script before the
+# server starts. The database persists between runs, and a gem left behind by an
+# earlier one changes what the client sees: a leftover name sorting *after* the
+# gem published mid-run turns the compact index's append into a
+# middle-insertion, which is correctly answered `200` instead of the `206` under
+# test (RFC 0009 §13.24). A fresh registry per run is the cheapest way to make
+# the measurement mean what it says.
+
+[server]
+host = "127.0.0.1"
+port = 8081
+
+[database]
+type = "postgresql"
+url = "${DATABASE_URL}"
+max_connections = 5
+
+[[auth]]
+type = "token"
+
+[[auth.tokens]]
+# CI-only credential for publishing the probe gems.
+value = "heavy-admin-token"
+role = "admin"
+user_id = "ci-admin"
+
+[storage]
+type = "filesystem"
+path = "./tmp/heavy-bundler-storage"
+
+# ── RubyGems registry (local: the gems exist ONLY here) ──────────────────────
+[[registries]]
+type = "rubygems"
+name = "gems"
+mode = "local"
+
+[registries.rbac]
+# Bundler sends no credentials, so the read path has to work anonymously —
+# which is also what makes this a test of the protocol rather than of auth.
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]

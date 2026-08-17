@@ -6,12 +6,12 @@ use serde::Deserialize;
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
+    ports::{DocumentKind, FetchedArtifact, RegistryClient, UpstreamPackage, VersionDocument},
 };
 
 use super::http_client::{
-    basic_auth_get, cache_control, new_http_client, percent_encode, to_registry_error,
-    UpstreamHttpOptions,
+    basic_auth_get, cache_control, fetch_text_document, new_http_client, percent_encode,
+    to_registry_error, UpstreamHttpOptions,
 };
 
 /// crates.io (or compatible) registry client.
@@ -23,6 +23,11 @@ use super::http_client::{
 pub struct CargoRegistryClient {
     http: reqwest::Client,
     base_url: String,
+    /// Sparse-index base (`https://index.crates.io`), which is a *different*
+    /// host from the API `base_url` (`https://crates.io`). Carried here so the
+    /// index can be served through `ProxyService` — authorised, audited and
+    /// filtered — rather than by a bare GET beside it.
+    index_url: Option<String>,
     basic_auth: Option<(String, String)>,
 }
 
@@ -32,12 +37,38 @@ impl CargoRegistryClient {
         Ok(Self {
             http,
             base_url: base_url.into(),
+            index_url: None,
             basic_auth: opts.basic_auth.clone(),
         })
     }
 
+    /// Point this client at the registry's sparse index.
+    ///
+    /// Separate from `new` because the index is configured independently of the
+    /// API upstream (`index_url` in `[[registries]]`, defaulted per upstream),
+    /// and a cargo registry in local-only mode has no index to proxy at all.
+    pub fn with_index_url(mut self, index_url: impl Into<String>) -> Self {
+        self.index_url = Some(index_url.into());
+        self
+    }
+
     fn get(&self, url: &str) -> reqwest::RequestBuilder {
         basic_auth_get(&self.http, &self.basic_auth, url)
+    }
+}
+
+/// The sparse index path for a crate name, per cargo's own layout.
+///
+/// `1/a`, `2/ab`, `3/a/abc`, then `ab/cd/abcdef`. Lower-cased, because the
+/// index is stored that way and cargo lower-cases before looking a crate up.
+pub fn sparse_index_path(name: &str) -> String {
+    let lower = name.to_lowercase();
+    match lower.chars().count() {
+        0 => lower,
+        1 => format!("1/{lower}"),
+        2 => format!("2/{lower}"),
+        3 => format!("3/{}/{lower}", &lower[..1]),
+        _ => format!("{}/{}/{lower}", &lower[..2], &lower[2..4]),
     }
 }
 
@@ -109,6 +140,41 @@ impl RegistryClient for CargoRegistryClient {
             extra,
             cache_control: None,
         })
+    }
+
+    /// The sparse index entry for one crate: newline-delimited JSON, one line
+    /// per version.
+    ///
+    /// This is the document `cargo` resolves every dependency against, and
+    /// routing it here is what puts it behind the rule chain, the audit trail
+    /// and the metadata cache — none of which it went through when the handler
+    /// fetched it with a bare `reqwest` GET.
+    async fn fetch_version_document(
+        &self,
+        package: &str,
+        kind: DocumentKind,
+    ) -> Result<VersionDocument, CoreError> {
+        if kind != DocumentKind::Versions {
+            return Err(CoreError::NotSupported(format!(
+                "cargo has no '{kind}' listing document"
+            )));
+        }
+        let Some(index) = self.index_url.as_deref() else {
+            return Err(CoreError::NotSupported(
+                "this cargo registry has no sparse index configured".to_owned(),
+            ));
+        };
+        let url = format!(
+            "{}/{}",
+            index.trim_end_matches('/'),
+            sparse_index_path(package)
+        );
+        fetch_text_document(
+            self.get(&url),
+            &format!("cargo sparse index for '{package}'"),
+            "text/plain; charset=utf-8",
+        )
+        .await
     }
 
     async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {

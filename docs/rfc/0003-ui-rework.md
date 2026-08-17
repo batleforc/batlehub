@@ -9,7 +9,7 @@
 | Supersedes  | —                                                             |
 | Touches     | `ui`, `website`, `PRODUCT.md`, `DESIGN.md`, CI, docs           |
 | Proof       | `ui/design-proof/` — the catalog surface built in the chosen world (R8/R9) |
-| Landed in   | `d463b84` … `b736970` on `feat/rework-ui` (pending merge to `main`) |
+| Landed in   | `5993e45` on `main` (#106, 2026-08-16) — squashed from `d463b84` … `b736970` on `feat/rework-ui` |
 | Followed by | RFC 0004 — takes over open questions 2 and 4 (§11) |
 
 ---

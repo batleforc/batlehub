@@ -167,14 +167,21 @@ async fn main() -> Result<()> {
     let sbom_repo: Arc<dyn batlehub_core::ports::SbomRepository> =
         Arc::new(batlehub_adapters::db::PgSbomRepository::new(repo.pool()));
 
-    let (init_hot, init_access, registry_map, registry_mode_map, upstream_map, vuln_db_map) =
-        hot_config::build_hot_bundle(
-            &config,
-            &beta_channel_store,
-            &(repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>),
-            &vuln_repo,
-            &sbom_repo,
-        )?;
+    let (
+        init_hot,
+        init_access,
+        registry_map,
+        registry_mode_map,
+        upstream_map,
+        vuln_db_map,
+        sumdb_map,
+    ) = hot_config::build_hot_bundle(
+        &config,
+        &beta_channel_store,
+        &(repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>),
+        &vuln_repo,
+        &sbom_repo,
+    )?;
     let warming_clients: HashMap<String, Arc<dyn batlehub_core::ports::RegistryClient>> = init_hot
         .registries
         .iter()
@@ -260,6 +267,7 @@ async fn main() -> Result<()> {
         cargo_index_map: cargo_index_map.clone(),
         repo_signer_map: repo_signer_map.clone(),
         vuln_db_map: vuln_db_map.clone(),
+        sumdb_map: sumdb_map.clone(),
         registry_host_map: registry_host_map.clone(),
         // The same handle wrapped into the host-routing middleware and registered
         // as `app_data` below — clones share a lock, which is what lets a reload
@@ -350,6 +358,7 @@ async fn main() -> Result<()> {
         registry_map,
         upstream_map,
         vuln_db_map,
+        sumdb_map,
         oidc_sso_flows,
         warming_map,
         eviction_map,

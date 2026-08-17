@@ -1,6 +1,6 @@
 use super::{
-    dispatch_notification, proxy_stream, require_local_mode, require_registry_type, web, AppError,
-    Arc, AuthIdentity, HttpResponse, LocalRegistryService, NotificationEventType,
+    dispatch_notification, proxy_document, require_local_mode, require_registry_type, web,
+    AppError, Arc, AuthIdentity, HttpResponse, LocalRegistryService, NotificationEventType,
     NotificationService, PackageId, ProxyService, RegistryMap, RegistryMode, RegistryModeMap,
 };
 use crate::handlers::schemas::MessageResponse;
@@ -86,13 +86,17 @@ pub async fn terraform_versions_response(
         }
     }
 
+    // A version listing, not an artifact: `proxy_document` fetches and filters
+    // it so `terraform init` never selects a blocked module or provider version
+    // and then be refused the download of it.
     let pkg = PackageId::new(registry, pkg_name, "versions");
-    proxy_stream(
+    proxy_document(
         svc,
         pkg,
         identity,
         batlehub_core::rules::resource_type::RELEASES_READ,
-        Some("application/json"),
+        batlehub_core::ports::DocumentKind::Versions,
+        String::new(),
     )
     .await
 }

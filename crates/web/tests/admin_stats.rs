@@ -128,6 +128,7 @@ fn rollup(registry: &str, hours_ago: i64, hits: u64, misses: u64) -> StatsRollup
         window_start: batlehub_core::services::hour_start(Utc::now() - Duration::hours(hours_ago)),
         hits,
         misses,
+        listing_reads: 0,
         cached_bytes: 1_024,
     }
 }

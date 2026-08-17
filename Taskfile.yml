@@ -42,6 +42,29 @@ tasks:
       - task: test
       - task: ui:test
 
+  test:cli:
+    desc: "Run every batlehub-cli test (unit + subprocess integration). Filter: task test:cli -- setup_detect"
+    cmds:
+      - cargo test -p batlehub-cli {{.CLI_ARGS}}
+
+  test:cli:unit:
+    desc: "Run batlehub-cli's inline unit tests only (seconds, no server started)"
+    cmds:
+      # `--bins`, not `--lib`: batlehub-cli is a binary-only crate, so `--lib`
+      # fails with "no library targets found in package".
+      - cargo test -p batlehub-cli --bins {{.CLI_ARGS}}
+
+  test:cli:integration:
+    desc: "Run the batlehub-cli integration suite (the built binary, as a subprocess, against an in-memory server)"
+    cmds:
+      - cargo test -p batlehub-cli --test integration {{.CLI_ARGS}}
+
+  test:cli:lint:
+    desc: "clippy + rustfmt over batlehub-cli, with the same -D warnings gate as CI"
+    cmds:
+      - cargo clippy -p batlehub-cli --all-targets -- -D warnings
+      - cargo fmt --all --check
+
   test:pg-cache:
     desc: Run PgCacheStore integration tests (starts a temporary Postgres container via Podman)
     vars:
@@ -237,6 +260,58 @@ tasks:
     desc: "Heavy marketplace integration: install weebo-bridge-notify into headless VS Code + IntelliJ from a local BatleHub instance (needs DATABASE_URL; downloads the IDEs on first run)"
     cmds:
       - bash tests/heavy/marketplace.sh
+
+  test:bundler-heavy:
+    desc: "Heavy Bundler integration: `bundle install` against a local rubygems registry, asserting the compact index's 206/304 answers are ones Bundler accepts (needs DATABASE_URL; installs bundler on first run)"
+    cmds:
+      - bash tests/heavy/bundler.sh
+
+  test:npm-heavy:
+    desc: "Heavy npm integration: publish/install/whoami/ping/dist-tags/search against a local registry, and `npm audit` on the path npm really sends (needs DATABASE_URL + network)"
+    cmds:
+      - bash tests/heavy/npm.sh
+
+  test:pypi-heavy:
+    desc: "Heavy PyPI integration: `twine upload` then `pip install`, and the PEP 658 `.metadata` sibling pip refuses to do without (needs DATABASE_URL + network)"
+    cmds:
+      - bash tests/heavy/pypi.sh
+
+  test:openvsx-heavy:
+    desc: "Heavy Open VSX integration: `ovsx publish` (token in a query parameter) and `ovsx get` following the rewritten download URL (needs DATABASE_URL + network)"
+    cmds:
+      - bash tests/heavy/openvsx.sh
+
+  test:conda-heavy:
+    desc: "Heavy conda integration: micromamba's `HEAD` probe for repodata.json.zst, and a package published after the compressed channel was warmed (needs DATABASE_URL; downloads micromamba on first run)"
+    cmds:
+      - bash tests/heavy/conda.sh
+
+  test:nuget-heavy:
+    desc: "Heavy NuGet integration: `dotnet nuget push`, `dotnet package search` (service discovery + skip pagination) and `dotnet add package` (needs DATABASE_URL + the .NET SDK)"
+    cmds:
+      - bash tests/heavy/nuget.sh
+
+  test:composer-heavy:
+    desc: "Heavy Composer integration: resolve from local and proxy repositories with Packagist disabled, and reach search.json through the advertised URL template (needs DATABASE_URL + network)"
+    cmds:
+      - bash tests/heavy/composer.sh
+
+  test:terraform-heavy:
+    desc: "Heavy Terraform integration: `terraform init` over TLS through host-routed discovery — versions, download document, shasums, signature and archive all through the proxy (needs DATABASE_URL + network)"
+    cmds:
+      - bash tests/heavy/terraform.sh
+
+  test:heavy:
+    desc: "Every heavy client suite except the marketplaces (which download two IDEs). Sequential: each one binds its own ports but they all share one Postgres."
+    cmds:
+      - bash tests/heavy/bundler.sh
+      - bash tests/heavy/npm.sh
+      - bash tests/heavy/pypi.sh
+      - bash tests/heavy/openvsx.sh
+      - bash tests/heavy/conda.sh
+      - bash tests/heavy/nuget.sh
+      - bash tests/heavy/composer.sh
+      - bash tests/heavy/terraform.sh
 
   coverage:
     desc: Generate an HTML coverage report and an lcov report for SonarQube — starts Postgres, MinIO and Redis to include all integration tests
@@ -979,14 +1054,88 @@ tasks:
 
   docs:roadmap:check:
     desc: Fail if the published roadmap page has drifted from ROADMAP.md
+    # Compares content rather than git state, for the reason above: the whole
+    # page is generated here, but `git diff` still conflates "the generator
+    # would produce something different" with "this file has any uncommitted
+    # change at all" (RFC 0009 §13.21).
     cmds:
-      - task: docs:roadmap
       - |
-        if ! git diff --quiet -- docs/guide/roadmap.md; then
+        set -euo pipefail
+        before=$(cat docs/guide/roadmap.md 2>/dev/null || true)
+        task docs:roadmap >/dev/null
+        if [ "$before" != "$(cat docs/guide/roadmap.md)" ]; then
           echo "published roadmap is stale — run 'task docs:roadmap' and commit the result" >&2
-          git --no-pager diff -- docs/guide/roadmap.md >&2
           exit 1
         fi
+        echo "the published roadmap matches ROADMAP.md"
+
+  # ── Listing-filter coverage (RFC 0006 §4.3, §7) ──────────────────────────────
+  # Which registries hide blocked versions from their listings used to be a
+  # warning box in the admin guide naming npm as the only one — a fact about the
+  # code that nothing kept true, and exactly the "documented but not closed"
+  # gap the RFC exists to remove. The table is now generated from
+  # `RegistryKind::listing_filter()`, an exhaustive match a new registry kind
+  # cannot be added without answering.
+  #
+  # Only the block between the two markers is replaced, so the surrounding prose
+  # stays hand-written.
+
+  docs:listing-coverage:
+    desc: Regenerate the listing-filter coverage table in the admin guide
+    cmds:
+      - |
+        set -euo pipefail
+        page=docs/guide/admin-policies.md
+        table=$(cargo run -q -p batlehub-server --bin listing_coverage)
+        awk -v table="$table" '
+          /^<!-- BEGIN listing-coverage/ { print; print table; skip = 1; next }
+          /^<!-- END listing-coverage/   { skip = 0 }
+          !skip                          { print }
+        ' "$page" > "$page.tmp"
+        mv "$page.tmp" "$page"
+
+  docs:listing-coverage:check:
+    desc: Fail if the admin guide's coverage table has drifted from the code
+    # Diffs only the region between the markers, not the whole page. A
+    # whole-file `git diff` fails on any uncommitted change — including
+    # hand-written prose this generator never touches — and then prints
+    # "run the task and commit the result", which fixes nothing because the
+    # generated block was already correct (RFC 0009 §13.21).
+    cmds:
+      - |
+        set -euo pipefail
+        page=docs/guide/admin-policies.md
+        block() {
+          awk '/^<!-- BEGIN listing-coverage/{f=1} f{print} /^<!-- END listing-coverage/{f=0}' "$1"
+        }
+        before=$(block "$page")
+        task docs:listing-coverage >/dev/null
+        if [ "$before" != "$(block "$page")" ]; then
+          echo "the listing-coverage table is stale — run 'task docs:listing-coverage' and commit the result" >&2
+          diff <(printf '%s\n' "$before") <(block "$page") >&2 || true
+          exit 1
+        fi
+        echo "the listing-coverage table matches the code"
+
+  # ── Per-registry endpoint reference (RFC 0009 §6) ────────────────────────────
+  # These tables were hand-maintained and drifted the way a hand-maintained
+  # inventory always does: rubygems listed six routes where ten exist, terraform
+  # documented a protocol the code does not implement, npm published an audit
+  # path npm never sends. Generated from the spec `task dump-spec` already
+  # produces, so the inventory cannot disagree with the routes. Only the block
+  # between the markers is replaced; the prose around it stays hand-written.
+
+  docs:endpoints:
+    desc: Regenerate the per-registry endpoint tables from ui/openapi.json
+    dir: docs
+    cmds:
+      - node build/gen-endpoints.mjs
+
+  docs:endpoints:check:
+    desc: Fail if a registry page's endpoint table has drifted from the API surface
+    dir: docs
+    cmds:
+      - node build/gen-endpoints.mjs --check
 
   # ── The docs site's design gates (RFC 0005 phase 4) ──────────────────────────
   # Until these existed the public site's entire design coverage was one static
@@ -1002,6 +1151,8 @@ tasks:
       # check guarded the freshness of a file no stylesheet read.
       - task: ui:tokens:check
       - task: docs:roadmap:check
+      - task: docs:listing-coverage:check
+      - task: docs:endpoints:check
       - task: docs:links
       - task: docs:structure
       - task: docs:audience

@@ -9,8 +9,8 @@ use batlehub_core::services::{HotConfig, HotConfigLock};
 
 use crate::{
     middleware::ProxyTrust, services::banner::BannerService, AccessConfig, AccessConfigLock,
-    CargoIndexMap, RegistryHostMap, RegistryMap, RegistryModeMap, RepoSignerMap, UpstreamMap,
-    VulnDbMap,
+    CargoIndexMap, RegistryHostMap, RegistryMap, RegistryModeMap, RepoSignerMap, SumDbMap,
+    UpstreamMap, VulnDbMap,
 };
 
 pub(super) const PENDING_TTL_SECS: i64 = 600; // 10 minutes
@@ -120,6 +120,7 @@ pub struct PendingReload {
     pub new_cargo_index_map: CargoIndexMap,
     pub new_repo_signer_map: RepoSignerMap,
     pub new_vuln_db_map: VulnDbMap,
+    pub new_sumdb_map: SumDbMap,
     pub new_registry_host_map: RegistryHostMap,
     /// The candidate's proxy-trust policy. Derived from the `AppConfig` directly
     /// rather than from the builder, since it needs no adapter wiring — see
@@ -161,6 +162,8 @@ pub struct BuiltHotState {
     pub cargo_index_map: CargoIndexMap,
     pub repo_signer_map: RepoSignerMap,
     pub vuln_db_map: VulnDbMap,
+    /// Go checksum database URLs (RFC 0009 §7.4).
+    pub sumdb_map: SumDbMap,
     pub registry_host_map: RegistryHostMap,
 }
 
@@ -182,6 +185,7 @@ pub struct ConfigReloadService {
     pub(super) cargo_index_map: CargoIndexMap,
     pub(super) repo_signer_map: RepoSignerMap,
     pub(super) vuln_db_map: VulnDbMap,
+    pub(super) sumdb_map: SumDbMap,
     pub(super) registry_host_map: RegistryHostMap,
     /// The live proxy-trust policy, swapped on apply just before
     /// `registry_host_map` — routing reads a header, so the table and the policy
@@ -235,6 +239,7 @@ pub struct ConfigReloadParams {
     pub cargo_index_map: CargoIndexMap,
     pub repo_signer_map: RepoSignerMap,
     pub vuln_db_map: VulnDbMap,
+    pub sumdb_map: SumDbMap,
     pub registry_host_map: RegistryHostMap,
     /// The app's live [`ProxyTrust`] handle — the same one wrapped into the
     /// host-routing middleware and registered as `app_data`, not a fresh one.
@@ -260,6 +265,7 @@ impl ConfigReloadService {
             cargo_index_map,
             repo_signer_map,
             vuln_db_map,
+            sumdb_map,
             registry_host_map,
             proxy_trust,
             config_path,
@@ -277,6 +283,7 @@ impl ConfigReloadService {
             cargo_index_map,
             repo_signer_map,
             vuln_db_map,
+            sumdb_map,
             registry_host_map,
             proxy_trust,
             config_path,

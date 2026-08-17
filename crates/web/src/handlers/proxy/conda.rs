@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder};
+use actix_web::{get, post, route, web, HttpRequest, HttpResponse, Responder};
 use sha2::{Digest, Sha256};
 
 use batlehub_config::schema::RegistryMode;
@@ -43,7 +43,11 @@ use crate::{
     ),
     security(("bearer_token" = [])),
 )]
-#[get("/proxy/{registry}/{platform}/repodata.json")]
+#[route(
+    "/proxy/{registry}/{platform}/repodata.json",
+    method = "GET",
+    method = "HEAD"
+)]
 pub async fn conda_repodata(
     path: web::Path<(String, String)>,
     identity: AuthIdentity,
@@ -55,74 +59,403 @@ pub async fn conda_repodata(
     let (registry, platform) = path.into_inner();
     require_registry_type(&registry, "conda", &map)?;
 
-    let mode = mode_map.get(&registry);
+    let body = repodata_bytes(
+        svc,
+        local_svc,
+        &registry,
+        &platform,
+        identity,
+        mode_map.get(&registry),
+        batlehub_core::ports::DocumentKind::Versions,
+    )
+    .await?;
 
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .body(body))
+}
+
+/// The bytes of one repodata document, mode-aware and filtered.
+///
+/// Shared by the plain route and both compressed ones (RFC 0009 §7.5) so the
+/// three encodings cannot come to describe different channels — which is the
+/// failure a second, parallel fetch path would eventually produce.
+#[allow(clippy::too_many_arguments)]
+async fn repodata_bytes(
+    svc: web::Data<Arc<ProxyService>>,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
+    registry: &str,
+    platform: &str,
+    identity: AuthIdentity,
+    mode: RegistryMode,
+    kind: batlehub_core::ports::DocumentKind,
+) -> Result<Vec<u8>, AppError> {
     if mode == RegistryMode::Local {
         let repodata = local_svc
-            .get_conda_repodata(&registry, &platform)
+            .get_conda_repodata(registry, platform)
             .await
             .map_err(AppError::from)?;
-        return Ok(HttpResponse::Ok()
-            .content_type("application/json")
-            .body(serde_json::to_string(&repodata).unwrap_or_default()));
+        return Ok(serde_json::to_vec(&repodata).unwrap_or_default());
     }
 
+    // Proxy mode, and the upstream half of Hybrid. `multi_package_document`
+    // rather than `proxy_stream`: `repodata.json` describes a whole channel, and
+    // a blocked package left in it gets selected by the solver and then refused
+    // at download — mid `conda install`, after the environment plan is fixed.
+    //
+    // Its blocked set comes from a 30-second snapshot rather than a per-request
+    // query; see `ProxyService::blocked_in_registry_snapshot` for why, and the
+    // admin guide for the operator-facing statement of the delay.
+    let upstream = fetch_conda_index(svc, registry, platform, identity, kind).await?;
+
     if mode == RegistryMode::Hybrid {
-        // Fetch upstream repodata via ProxyService (cached), then merge local packages.
-        let pkg = PackageId::new(&registry, "repodata", &platform).with_artifact("repodata.json");
-
-        match svc
-            .handle(batlehub_core::services::ProxyRequest {
-                package_id: pkg,
-                identity: identity.0.clone(),
-                resource_type: batlehub_core::rules::resource_type::RELEASES_READ.to_owned(),
-                ip_address: None,
-                user_agent: None,
-            })
+        let local_repodata = local_svc
+            .get_conda_repodata(registry, platform)
             .await
-            .map_err(AppError::from)?
-        {
-            batlehub_core::services::ProxyResponse::Denied { reason } => {
-                return Err(AppError::forbidden(reason));
-            }
-            batlehub_core::services::ProxyResponse::Stream(mut stream) => {
-                use futures::StreamExt;
-                let mut buf = bytes::BytesMut::new();
-                while let Some(chunk) = stream.next().await {
-                    match chunk {
-                        Ok(c) => buf.extend_from_slice(&c),
-                        Err(e) => {
-                            tracing::warn!(error = %e, "upstream repodata stream error");
-                            break;
-                        }
-                    }
-                }
-                let upstream_bytes = buf.freeze();
+            .map_err(AppError::from)?;
+        return Ok(merge_repodata(&upstream, &local_repodata));
+    }
 
-                // Merge with local packages
-                let local_repodata = local_svc
-                    .get_conda_repodata(&registry, &platform)
-                    .await
-                    .map_err(AppError::from)?;
+    Ok(upstream)
+}
 
-                let merged = merge_repodata(&upstream_bytes, &local_repodata);
-                return Ok(HttpResponse::Ok()
-                    .content_type("application/json")
-                    .body(merged));
-            }
+/// Fetch and filter one of a conda channel's index documents, as bytes.
+///
+/// Bytes rather than a `VersionDocument` because the Hybrid path has to merge
+/// locally published packages into it before answering.
+async fn fetch_conda_index(
+    svc: web::Data<Arc<ProxyService>>,
+    registry: &str,
+    platform: &str,
+    identity: AuthIdentity,
+    kind: batlehub_core::ports::DocumentKind,
+) -> Result<Vec<u8>, AppError> {
+    // The *platform* is the coordinate: a conda listing is scoped to a subdir,
+    // not to a package.
+    let req = batlehub_core::services::ProxyRequest {
+        package_id: PackageId::new(registry, platform, "__repodata__"),
+        identity: identity.0,
+        resource_type: batlehub_core::rules::resource_type::RELEASES_READ.to_owned(),
+        ip_address: None,
+        user_agent: None,
+    };
+    let doc = svc
+        .multi_package_document(&req, kind, "")
+        .await
+        .map_err(AppError::from)?;
+    Ok(match doc.body {
+        batlehub_core::ports::DocumentBody::Json(v) => serde_json::to_vec(&v).unwrap_or_default(),
+        batlehub_core::ports::DocumentBody::Text(t) => t.into_bytes(),
+    })
+}
+
+/// `repodata.json.zst` — the first index request conda 23.x and mamba make.
+#[utoipa::path(
+    get,
+    path = "/proxy/{registry}/{platform}/repodata.json.zst",
+    tag = "proxy/conda",
+    params(
+        ("registry" = String, Path, description = "Registry name"),
+        ("platform" = String, Path, description = "Platform string, e.g. linux-64 or noarch"),
+    ),
+    responses(
+        (status = 200, description = "zstd-compressed repodata.json", body = ArtifactBytes, content_type = "application/zstd"),
+        (status = 403, description = "Access denied"),
+        (status = 404, description = "Channel not found"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[route(
+    "/proxy/{registry}/{platform}/repodata.json.zst",
+    method = "GET",
+    method = "HEAD"
+)]
+pub async fn conda_repodata_zst(
+    path: web::Path<(String, String)>,
+    identity: AuthIdentity,
+    svc: web::Data<Arc<ProxyService>>,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
+    map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
+) -> Result<impl Responder, AppError> {
+    let (registry, platform) = path.into_inner();
+    serve_compressed_repodata(
+        Encoding::Zstd,
+        registry,
+        platform,
+        identity,
+        svc,
+        local_svc,
+        map,
+        mode_map,
+    )
+    .await
+}
+
+/// `repodata.json.bz2` — the older compressed encoding, for clients that
+/// predate zstd support.
+#[utoipa::path(
+    get,
+    path = "/proxy/{registry}/{platform}/repodata.json.bz2",
+    tag = "proxy/conda",
+    params(
+        ("registry" = String, Path, description = "Registry name"),
+        ("platform" = String, Path, description = "Platform string, e.g. linux-64 or noarch"),
+    ),
+    responses(
+        (status = 200, description = "bzip2-compressed repodata.json", body = ArtifactBytes, content_type = "application/x-bzip2"),
+        (status = 403, description = "Access denied"),
+        (status = 404, description = "Channel not found"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[route(
+    "/proxy/{registry}/{platform}/repodata.json.bz2",
+    method = "GET",
+    method = "HEAD"
+)]
+pub async fn conda_repodata_bz2(
+    path: web::Path<(String, String)>,
+    identity: AuthIdentity,
+    svc: web::Data<Arc<ProxyService>>,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
+    map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
+) -> Result<impl Responder, AppError> {
+    let (registry, platform) = path.into_inner();
+    serve_compressed_repodata(
+        Encoding::Bzip2,
+        registry,
+        platform,
+        identity,
+        svc,
+        local_svc,
+        map,
+        mode_map,
+    )
+    .await
+}
+
+/// `channeldata.json` — the cross-platform summary `conda search` reads.
+///
+/// A whole-channel document like `repodata.json`, so it filters through
+/// `dispatch_multi` against the same 30-second snapshot. Its absence degraded
+/// search rather than install, which is why it is here rather than in phase 1.
+#[utoipa::path(
+    get,
+    path = "/proxy/{registry}/channeldata.json",
+    tag = "proxy/conda",
+    params(("registry" = String, Path, description = "Registry name")),
+    responses(
+        (status = 200, description = "channeldata.json", body = UpstreamDocument),
+        (status = 403, description = "Access denied"),
+        (status = 404, description = "Channel not found"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[route("/proxy/{registry}/channeldata.json", method = "GET", method = "HEAD")]
+pub async fn conda_channeldata(
+    path: web::Path<String>,
+    identity: AuthIdentity,
+    svc: web::Data<Arc<ProxyService>>,
+    map: web::Data<RegistryMap>,
+) -> Result<impl Responder, AppError> {
+    let registry = path.into_inner();
+    require_registry_type(&registry, "conda", &map)?;
+
+    // No platform: `channeldata.json` sits at the channel root and describes
+    // every subdir at once.
+    let bytes = fetch_conda_index(
+        svc,
+        &registry,
+        "_channeldata",
+        identity,
+        batlehub_core::ports::DocumentKind::CHANNELDATA,
+    )
+    .await?;
+
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .body(bytes))
+}
+
+// ── Compressed repodata (RFC 0009 §7.5) ───────────────────────────────────────
+//
+// conda 23.x and mamba request `repodata.json.zst` **first** and fall back on
+// 404. The `{filename}` route regex admits only `.tar.bz2`/`.conda`, so a `.zst`
+// request did not reach a handler at all — it fell through the whole route table
+// into the npm three-segment catch-all. Every client therefore paid the full
+// uncompressed transfer of a document that runs to tens of megabytes and is
+// fetched on every solve.
+//
+// The filter runs on the JSON and compression happens after, so RFC 0006's
+// guarantee carries over unchanged: there is no second filter here, only a
+// second encoding of the first one's output.
+
+/// How a compressed repodata variant is encoded.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Encoding {
+    Zstd,
+    Bzip2,
+}
+
+impl Encoding {
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::Zstd => "zst",
+            Self::Bzip2 => "bz2",
         }
     }
 
-    // Proxy mode: stream through cache.
-    let pkg = PackageId::new(&registry, "repodata", &platform).with_artifact("repodata.json");
-    proxy_stream(
-        svc,
-        pkg,
+    fn content_type(self) -> &'static str {
+        match self {
+            Self::Zstd => "application/zstd",
+            Self::Bzip2 => "application/x-bzip2",
+        }
+    }
+
+    fn compress(self, raw: &[u8]) -> Result<Vec<u8>, AppError> {
+        match self {
+            // Level 3 is zstd's own default and what conda-forge publishes at:
+            // higher levels cost materially more CPU for a few percent of size
+            // on a document we recompress whenever the block list changes.
+            Self::Zstd => zstd::encode_all(raw, 3)
+                .map_err(|e| AppError::internal(format!("compressing repodata: {e}"))),
+            Self::Bzip2 => {
+                use bzip2::write::BzEncoder;
+                use std::io::Write;
+                let mut enc = BzEncoder::new(Vec::new(), bzip2::Compression::default());
+                enc.write_all(raw)
+                    .and_then(|_| enc.finish())
+                    .map_err(|e| AppError::internal(format!("compressing repodata: {e}")))
+            }
+        }
+    }
+}
+
+/// How long a compressed copy of an upstream `repodata.json` may outlive the
+/// fetch it was derived from.
+///
+/// It used to be stored with no expiry at all. Bounded rather than matched to
+/// the registry's own `metadata_ttl` because a handler cannot read the policy;
+/// the point is that the derived copy expires on its own, not that it expires
+/// in step.
+const COMPRESSED_REPODATA_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Serve a compressed encoding of the filtered `repodata.json`.
+///
+/// Compressing tens of megabytes on every request is not affordable, and
+/// caching the *filtered* document is forbidden — a cached filtered copy keeps
+/// serving a version for the rest of its TTL after an operator blocked it
+/// (RFC 0006 §4.2). Both are avoided by keying the cached compressed bytes on
+/// the blocked-set fingerprint: a block change produces a different key, so the
+/// entry filtered under the old list is never read rather than being raced
+/// against a TTL.
+///
+/// That fingerprint covers *blocking* and nothing else, which is why this cache
+/// is skipped entirely in local and hybrid mode. There the channel is generated
+/// from the database, and publishing a package changes it without changing the
+/// blocked set: the compressed copy — written with no expiry — kept describing
+/// the channel as it was before the publish, for good. The plain
+/// `repodata.json` is regenerated per request and was correct, so the two
+/// encodings described different channels, and the one micromamba asks for
+/// first is this one. Measured with micromamba 2.9.0 against a real server:
+/// a package published after a client had probed once stayed invisible while
+/// `curl` on the `.json` URL showed it (RFC 0009 §12.13).
+///
+/// In proxy mode the bytes derive from an upstream document that has its own
+/// TTL, so they are cached — but bounded, so a derived copy cannot outlive
+/// what it was derived from.
+#[allow(clippy::too_many_arguments)]
+async fn serve_compressed_repodata(
+    encoding: Encoding,
+    registry: String,
+    platform: String,
+    identity: AuthIdentity,
+    svc: web::Data<Arc<ProxyService>>,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
+    map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
+) -> Result<HttpResponse, AppError> {
+    require_registry_type(&registry, "conda", &map)?;
+
+    let mode = mode_map.get(&registry);
+    // Local and hybrid channels are generated from the database on every
+    // request; a cache keyed only on the blocked set cannot see a publish.
+    let cacheable = mode == RegistryMode::Proxy;
+
+    let fingerprint = svc
+        .blocked_snapshot_fingerprint(&registry, batlehub_core::entities::RegistryKind::Conda)
+        .await;
+    let cache_key = format!(
+        "repodata-{}:{registry}:{platform}:{fingerprint}",
+        encoding.suffix()
+    );
+
+    let cached = if cacheable {
+        svc.cache.get(&cache_key).await.ok().flatten()
+    } else {
+        None
+    };
+    if let Some(entry) = cached {
+        if let Some(bytes) = entry
+            .metadata
+            .extra
+            .get("compressed_b64")
+            .and_then(|v| v.as_str())
+            .and_then(|s| {
+                use base64::{engine::general_purpose::STANDARD, Engine as _};
+                STANDARD.decode(s).ok()
+            })
+        {
+            return Ok(HttpResponse::Ok()
+                .content_type(encoding.content_type())
+                .insert_header(("X-BatleHub-Cache", "hit"))
+                .body(bytes));
+        }
+    }
+
+    // The uncompressed path, filter and hybrid merge included — so the two
+    // encodings cannot describe a different channel from the plain one.
+    let raw = repodata_bytes(
+        svc.clone(),
+        local_svc,
+        &registry,
+        &platform,
         identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
-        Some("application/json"),
+        mode,
+        batlehub_core::ports::DocumentKind::Versions,
     )
-    .await
+    .await?;
+
+    let compressed = encoding.compress(&raw)?;
+
+    let encoded = {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        STANDARD.encode(&compressed)
+    };
+    let entry = batlehub_core::ports::CacheEntry {
+        metadata: batlehub_core::entities::PackageMetadata::minimal(
+            PackageId::new(&registry, &platform, "__repodata__"),
+            serde_json::json!({ "compressed_b64": encoded }),
+        ),
+        cached_at: chrono::Utc::now(),
+        expires_at: None,
+    };
+    if cacheable {
+        if let Err(e) = svc
+            .cache
+            .set(&cache_key, entry, Some(COMPRESSED_REPODATA_TTL))
+            .await
+        {
+            tracing::warn!(key = %cache_key, error = %e, "caching compressed repodata failed");
+        }
+    }
+
+    Ok(HttpResponse::Ok()
+        .content_type(encoding.content_type())
+        .insert_header(("X-BatleHub-Cache", "miss"))
+        .body(compressed))
 }
 
 /// Merge a locally-built repodata JSON overlay into upstream `repodata.json` bytes.
@@ -164,7 +497,11 @@ fn merge_repodata(upstream_bytes: &[u8], local: &serde_json::Value) -> Vec<u8> {
     ),
     security(("bearer_token" = [])),
 )]
-#[get("/proxy/{registry}/{platform}/current_repodata.json")]
+#[route(
+    "/proxy/{registry}/{platform}/current_repodata.json",
+    method = "GET",
+    method = "HEAD"
+)]
 pub async fn conda_current_repodata(
     path: web::Path<(String, String)>,
     identity: AuthIdentity,
@@ -181,16 +518,17 @@ pub async fn conda_current_repodata(
         ));
     }
 
-    let pkg =
-        PackageId::new(&registry, "repodata", &platform).with_artifact("current_repodata.json");
-    proxy_stream(
+    let body = fetch_conda_index(
         svc,
-        pkg,
+        &registry,
+        &platform,
         identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
-        Some("application/json"),
+        batlehub_core::ports::DocumentKind::CURRENT_REPODATA,
     )
-    .await
+    .await?;
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .body(body))
 }
 
 /// Download a conda package file (`.conda` or `.tar.bz2`) through the proxy cache.
@@ -220,7 +558,10 @@ pub async fn conda_file_download(
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
-    let (registry, platform, filename) = path.into_inner();
+    // `platform` is part of the route but not of the coordinate: a conda
+    // package's identity is its name and version, and the same release is
+    // served under several subdirs.
+    let (registry, _platform, filename) = path.into_inner();
     require_registry_type(&registry, "conda", &map)?;
 
     let mode = mode_map.get(&registry);
@@ -262,13 +603,19 @@ pub async fn conda_file_download(
         }
     }
 
-    // Proxy through cache. Use the filename stem as the package name and the
-    // platform as version to form a stable cache key.
-    let stem = filename
-        .strip_suffix(".conda")
-        .or_else(|| filename.strip_suffix(".tar.bz2"))
-        .unwrap_or(&filename);
-    let pkg = PackageId::new(&registry, stem, &platform).with_artifact(&filename);
+    // Proxy through cache, addressed by the *package* coordinate the filename
+    // encodes rather than by the filename stem and the platform.
+    //
+    // The coordinate is what the rule chain judges. Named
+    // `("numpy-1.1.0-py311_0", "linux-64")` — as this route used to be — a block
+    // recorded against `numpy@1.1.0` matches nothing and the download is
+    // allowed, which would make conda the one ecosystem where hiding a version
+    // from the channel index is the *only* half of a block that works. The
+    // filename stays as the artifact sub-coordinate, so two builds of one
+    // version keep distinct cache entries.
+    let (name, version) = parse_conda_filename(&filename)
+        .ok_or_else(|| AppError::bad_request(format!("unparseable conda filename: {filename}")))?;
+    let pkg = PackageId::new(&registry, name, version).with_artifact(&filename);
     proxy_stream(
         svc,
         pkg,
@@ -277,6 +624,28 @@ pub async fn conda_file_download(
         Some("application/octet-stream"),
     )
     .await
+}
+
+/// Split a conda filename into its `(name, version)`.
+///
+/// Conda filenames are `{name}-{version}-{build}.{tar.bz2,conda}` and **the name
+/// may contain hyphens** (`ruamel-yaml-0.17.21-py311_0.conda`), so the split is
+/// from the right: the last two fields are the build and the version, and
+/// whatever precedes them is the name.
+///
+/// `None` for anything that does not have all three fields, which the caller
+/// turns into a `400` rather than guessing at a coordinate the rule chain would
+/// then judge.
+fn parse_conda_filename(filename: &str) -> Option<(&str, &str)> {
+    let stem = filename
+        .strip_suffix(".conda")
+        .or_else(|| filename.strip_suffix(".tar.bz2"))?;
+    let (rest, _build) = stem.rsplit_once('-')?;
+    let (name, version) = rest.rsplit_once('-')?;
+    if name.is_empty() || version.is_empty() {
+        return None;
+    }
+    Some((name, version))
 }
 
 /// Extract package name from a conda filename.

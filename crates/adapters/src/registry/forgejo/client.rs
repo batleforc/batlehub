@@ -3,15 +3,15 @@ use chrono::DateTime;
 use futures::TryStreamExt;
 
 use super::super::http_client::{
-    apply_upstream_tls, basic_auth_get, ensure_same_origin, to_registry_error,
-    upstream_auth_headers, UpstreamHttpOptions,
+    apply_upstream_tls, basic_auth_get, ensure_same_origin, fetch_release_listing,
+    to_registry_error, upstream_auth_headers, UpstreamHttpOptions,
 };
 use super::super::ssrf;
 use super::models::{FjAsset, FjRelease};
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient},
+    ports::{DocumentKind, FetchedArtifact, RegistryClient, VersionDocument},
 };
 
 /// Forgejo / Gitea REST API v1 registry client.
@@ -195,6 +195,15 @@ pub(super) fn static_artifact_url(
 impl RegistryClient for ForgejoRegistryClient {
     fn registry_type(&self) -> &str {
         "forgejo"
+    }
+
+    async fn fetch_version_document(
+        &self,
+        package: &str,
+        kind: DocumentKind,
+    ) -> Result<VersionDocument, CoreError> {
+        let url = format!("{}/repos/{}/releases?limit=50", self.base_url, package);
+        fetch_release_listing(self.get(&url), kind, "forgejo", "Forgejo", package).await
     }
 
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {

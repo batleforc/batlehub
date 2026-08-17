@@ -23,7 +23,7 @@ pub use notification::{
     InboundWebhookEvent, NotificationEvent, NotificationEventType, NotificationSubscription,
 };
 pub use package::{PackageFilter, PackageId, PackageMetadata, PackageStatus, PackageSummary};
-pub use registry_kind::RegistryKind;
+pub use registry_kind::{ListingDocument, ListingSupport, RegistryKind};
 pub use sbom::{ArtifactSbom, SbomFormat, SbomSource};
 pub use team_namespace::{NamespacePackage, TeamNamespace};
 pub use vulnerability::{ArtifactVulnerability, Severity};

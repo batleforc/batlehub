@@ -1,9 +1,10 @@
 use actix_web::http::StatusCode;
 
 use super::{
-    get, registry_public_base, require_cargo, serve_local_or_proxy_artifact, web, AppError, Arc,
-    AuthIdentity, CargoIndexMap, CoreError, HttpRequest, HttpResponse, LocalOrProxyArtifactOpts,
-    LocalRegistryService, ProxyService, RegistryMap, RegistryMode, RegistryModeMap, Responder,
+    get, proxy_document, registry_public_base, require_cargo, serve_local_or_proxy_artifact, web,
+    AppError, Arc, AuthIdentity, CargoIndexMap, CoreError, HttpRequest, HttpResponse,
+    LocalOrProxyArtifactOpts, LocalRegistryService, ProxyService, RegistryMap, RegistryMode,
+    RegistryModeMap, Responder,
 };
 use crate::handlers::schemas::{ArtifactBytes, ProtocolDocument, UpstreamDocument};
 
@@ -78,6 +79,7 @@ pub async fn cargo_registry_index(
     indexes: web::Data<CargoIndexMap>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
+    svc: web::Data<Arc<ProxyService>>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
     identity: AuthIdentity,
 ) -> Result<impl Responder, AppError> {
@@ -97,13 +99,25 @@ pub async fn cargo_registry_index(
         RegistryMode::Hybrid => {
             match serve_local_index(&local_svc, &registry, &index_path, &identity).await {
                 Err(e) if e.status == StatusCode::NOT_FOUND => {
-                    proxy_upstream_index(&indexes, &registry, &index_path).await
+                    proxy_upstream_index(svc, &indexes, &registry, &index_path, identity).await
                 }
                 other => other,
             }
         }
-        RegistryMode::Proxy => proxy_upstream_index(&indexes, &registry, &index_path).await,
+        RegistryMode::Proxy => {
+            proxy_upstream_index(svc, &indexes, &registry, &index_path, identity).await
+        }
     }
+}
+
+/// The crate name a sparse-index path addresses.
+///
+/// The layout is `{prefix1}/{prefix2}/{name}` for names of 4+ characters and
+/// `{len}/{name}` for shorter ones, so the name is always the final component.
+/// `splitn(3, '/')` keeps slashes inside the name intact — a name decoded from
+/// `scope%2Fpkg` stays `scope/pkg` rather than being truncated to `pkg`.
+fn crate_name_from_index_path(index_path: &str) -> &str {
+    index_path.splitn(3, '/').last().unwrap_or(index_path)
 }
 
 async fn serve_local_index(
@@ -112,13 +126,7 @@ async fn serve_local_index(
     index_path: &str,
     identity: &batlehub_core::entities::Identity,
 ) -> Result<HttpResponse, AppError> {
-    // The Cargo sparse index path format is "{prefix1}/{prefix2}/{name}" for
-    // names ≥ 3 chars, or "{len}/{name}" for 1–2 char names.
-    // `splitn(3, '/')` captures everything after the prefix segments as the
-    // final component, which preserves slashes in package names (e.g. a
-    // name like "scope/pkg" decoded from "scope%2Fpkg" in the URL remains
-    // intact as "scope/pkg" rather than being truncated to "pkg").
-    let name = index_path.splitn(3, '/').last().unwrap_or(index_path);
+    let name = crate_name_from_index_path(index_path);
     match local_svc.get_index(registry, name, identity).await {
         Ok(content) => Ok(HttpResponse::Ok()
             .content_type("text/plain; charset=utf-8")
@@ -130,31 +138,39 @@ async fn serve_local_index(
     }
 }
 
+/// Serve a crate's sparse-index entry from upstream, through `ProxyService`.
+///
+/// This route used to answer with a bare `reqwest` GET forwarded to the client:
+/// no rule chain, no access event, no metadata cache. Blocked-version filtering
+/// is why it moved, but the **authorisation** gap was the more serious finding
+/// — a private cargo registry's crate names and versions were readable by
+/// anyone who could reach the port. Both are closed by the same change, and a
+/// client that was relying on the unauthenticated read will now get a `403`.
+///
+/// Blocked versions are marked `yanked` rather than dropped; see
+/// `blocking::cargo`.
 async fn proxy_upstream_index(
+    svc: web::Data<Arc<ProxyService>>,
     indexes: &CargoIndexMap,
     registry: &str,
     index_path: &str,
+    identity: AuthIdentity,
 ) -> Result<HttpResponse, AppError> {
-    let Some(index) = indexes.get(registry) else {
+    // The map is still the record of *whether* an index is configured; the URL
+    // itself now lives on the registry client, which is what fetches it.
+    if indexes.get(registry).is_none() {
         return Err(AppError::not_found("no cargo registry configured"));
-    };
-    let url = format!("{}/{}", index.index_url.trim_end_matches('/'), index_path);
-    tracing::debug!(url = %url, "fetching cargo sparse index entry");
-    let resp = match index.http.get(&url).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!(url = %url, error = %e, "cargo index fetch failed");
-            return Err(AppError::bad_gateway(e.to_string()));
-        }
-    };
-    let status =
-        StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    match resp.bytes().await {
-        Ok(bytes) => Ok(HttpResponse::build(status)
-            .content_type("text/plain; charset=utf-8")
-            .body(bytes)),
-        Err(e) => Err(AppError::bad_gateway(e.to_string())),
     }
+    let name = crate_name_from_index_path(index_path);
+    proxy_document(
+        svc,
+        batlehub_core::entities::PackageId::new(registry, name, "__index__"),
+        identity,
+        batlehub_core::rules::resource_type::RELEASES_READ,
+        batlehub_core::ports::DocumentKind::Versions,
+        String::new(),
+    )
+    .await
 }
 
 /// Download a `.crate` file for a specific version.

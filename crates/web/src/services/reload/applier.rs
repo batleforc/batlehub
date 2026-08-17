@@ -159,6 +159,7 @@ impl ConfigReloadService {
             new_cargo_index_map: built.cargo_index_map,
             new_repo_signer_map: built.repo_signer_map,
             new_vuln_db_map: built.vuln_db_map,
+            new_sumdb_map: built.sumdb_map,
             new_registry_host_map: built.registry_host_map,
             new_proxy_trust: crate::middleware::ProxyTrust::from_config(
                 new_config.effective_trusted_proxies(),
@@ -237,6 +238,7 @@ impl ConfigReloadService {
             .replace_from(&pending.new_repo_signer_map);
         // Swap the Go vuln DB URL map; reuse the existing HTTP client.
         self.vuln_db_map.replace_from(&pending.new_vuln_db_map);
+        self.sumdb_map.replace_from(&pending.new_sumdb_map);
         // Proxy trust *before* the routing table it guards. These two swaps are not
         // atomic together (see this function's doc comment), and the order decides
         // which way the gap fails: trust first means a request landing mid-swap

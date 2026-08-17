@@ -1,19 +1,27 @@
 use async_trait::async_trait;
 use futures::TryStreamExt;
 
-use super::super::http_client::{cache_control, to_registry_error};
+use super::super::http_client::{
+    cache_control, fetch_json_document, fetch_text_document, to_registry_error,
+};
 use super::models::{PypiPackageJson, PypiSearchInfo, PypiVersionJson};
 use super::PypiRegistryClient;
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
+    ports::{DocumentKind, FetchedArtifact, RegistryClient, UpstreamPackage, VersionDocument},
 };
 
 // ── PEP 503 name normalisation ────────────────────────────────────────────────
 
 /// Normalise a PyPI package name per PEP 503: lower-case, collapse runs of
 /// `[-_.]` into a single `-`.
+/// The PEP 691 media type, sent as `Accept` and echoed as the response's
+/// `Content-Type`. Pinned to `v1` rather than the unversioned
+/// `application/vnd.pypi.simple+json`, which servers may answer with a newer
+/// schema this proxy has not been taught to filter.
+pub const SIMPLE_JSON_ACCEPT: &str = "application/vnd.pypi.simple.v1+json";
+
 pub fn normalize_name(name: &str) -> String {
     let lower = name.to_lowercase();
     let mut result = String::with_capacity(lower.len());
@@ -203,6 +211,43 @@ impl RegistryClient for PypiRegistryClient {
         "pypi"
     }
 
+    /// A simple-index page, in whichever of its two representations the caller
+    /// asked for.
+    ///
+    /// PEP 503 HTML and PEP 691 JSON are different bytes for the same URL, so
+    /// they are different `DocumentKind`s — keyed together in the metadata
+    /// cache, whichever one warmed the entry would be served to clients that
+    /// asked for the other. The `Accept` this sends upstream is derived from the
+    /// kind for the same reason.
+    async fn fetch_version_document(
+        &self,
+        package: &str,
+        kind: DocumentKind,
+    ) -> Result<VersionDocument, CoreError> {
+        let base = self.base_url.trim_end_matches('/');
+        let name = normalize_name(package);
+        let url = format!("{base}/simple/{name}/");
+        let what = format!("pypi simple page for '{package}'");
+
+        match kind {
+            DocumentKind::SIMPLE_JSON => {
+                let req = self
+                    .get(&url)
+                    .header(reqwest::header::ACCEPT, SIMPLE_JSON_ACCEPT);
+                let mut doc = fetch_json_document(req, &what).await?;
+                doc.content_type = SIMPLE_JSON_ACCEPT.to_owned();
+                Ok(doc)
+            }
+            DocumentKind::Versions => {
+                let req = self.get(&url).header(reqwest::header::ACCEPT, "text/html");
+                fetch_text_document(req, &what, "text/html; charset=utf-8").await
+            }
+            other => Err(CoreError::NotSupported(format!(
+                "pypi has no '{other}' listing document"
+            ))),
+        }
+    }
+
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
         let base = self.base_url.trim_end_matches('/');
         let name = normalize_name(&pkg.name);
@@ -301,22 +346,39 @@ impl RegistryClient for PypiRegistryClient {
         let version_json: PypiVersionJson = serde_json::from_slice(&body)
             .map_err(|e| CoreError::Registry(format!("pypi: parse version JSON: {e}")))?;
 
+        // PEP 658: pip and uv resolve from `{file}.metadata` rather than
+        // downloading the wheel, and the simple page we serve advertises it
+        // (`data-core-metadata` survives the href rewrite). Not answering it is
+        // not a slow path — pip **fails the install** on the 404 rather than
+        // falling back (RFC 0009 §12.7). So the sibling is resolved from the
+        // same file entry, with the suffix carried onto the CDN URL.
+        let (match_name, metadata_sibling) = match artifact_filename.strip_suffix(".metadata") {
+            Some(base) => (base, true),
+            None => (artifact_filename, false),
+        };
+
         let file = version_json
             .urls
             .into_iter()
-            .find(|f| f.filename == artifact_filename)
+            .find(|f| f.filename == match_name)
             .ok_or_else(|| {
                 CoreError::NotFound(format!(
                     "pypi: file '{}' not found in version {}",
-                    artifact_filename, version
+                    match_name, version
                 ))
             })?;
 
-        tracing::debug!(url = %file.url, "fetching PyPI artifact");
+        let download_url = if metadata_sibling {
+            format!("{}.metadata", file.url)
+        } else {
+            file.url.clone()
+        };
+
+        tracing::debug!(url = %download_url, "fetching PyPI artifact");
 
         // SSRF-guarded: validates the URL (and every redirect hop) against
         // private/reserved addresses and scopes credentials to the index origin.
-        let dl_resp = self.download(&file.url).await?;
+        let dl_resp = self.download(&download_url).await?;
 
         if !dl_resp.status().is_success() {
             return Err(CoreError::Registry(format!(

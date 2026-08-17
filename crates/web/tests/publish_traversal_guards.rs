@@ -118,6 +118,50 @@ async fn make_local_conda_app(
     .await
 }
 
+/// A publish must be visible in the compressed channel, not only the plain one.
+///
+/// `repodata.json.zst` is cached under a key built from the *blocked-set*
+/// fingerprint, which a publish does not change — so a client that had probed
+/// the channel once kept being served the pre-publish bytes indefinitely, while
+/// `repodata.json`, regenerated per request, showed the new package. The two
+/// encodings described different channels, and micromamba asks for this one
+/// first: measured with micromamba 2.9.0, a just-published package was
+/// unresolvable (RFC 0009 §12.13).
+///
+/// The warm-up read is the whole test. Without it there is nothing cached to be
+/// stale, and this passes against the bug.
+#[actix_web::test]
+async fn a_publish_is_visible_in_the_compressed_channel() {
+    let app = make_local_conda_app(RegistryMode::Local).await;
+
+    let warm = TestRequest::get()
+        .uri("/proxy/local-conda/linux-64/repodata.json.zst")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, warm).await.status(), 200);
+
+    let publish = TestRequest::post()
+        .uri("/proxy/local-conda/linux-64/")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(make_conda_tar_bz2("freshpkg", "1.0.0"))
+        .to_request();
+    assert_eq!(call_service(&app, publish).await.status(), 200);
+
+    let read = TestRequest::get()
+        .uri("/proxy/local-conda/linux-64/repodata.json.zst")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, read).await;
+    assert_eq!(resp.status(), 200);
+    let compressed = actix_web::test::read_body(resp).await.to_vec();
+    let raw = zstd::decode_all(compressed.as_slice()).expect("valid zstd");
+    let channel = String::from_utf8_lossy(&raw);
+    assert!(
+        channel.contains("freshpkg"),
+        "the compressed channel is serving pre-publish bytes: {channel}"
+    );
+}
+
 #[actix_web::test]
 async fn conda_publish_traversal_version_returns_400() {
     let app = make_local_conda_app(RegistryMode::Local).await;

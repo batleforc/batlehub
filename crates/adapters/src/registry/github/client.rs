@@ -3,14 +3,14 @@ use chrono::DateTime;
 use futures::TryStreamExt;
 
 use super::super::http_client::{
-    apply_upstream_tls, basic_auth_get, to_registry_error, upstream_auth_headers,
-    UpstreamHttpOptions,
+    apply_upstream_tls, basic_auth_get, fetch_release_listing, to_registry_error,
+    upstream_auth_headers, UpstreamHttpOptions,
 };
 use super::models::{GhAsset, GhRelease};
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient},
+    ports::{DocumentKind, FetchedArtifact, RegistryClient, VersionDocument},
 };
 
 /// GitHub REST API v3 registry client.
@@ -169,6 +169,15 @@ pub(super) fn next_link(headers: &reqwest::header::HeaderMap) -> Option<String> 
 impl RegistryClient for GithubRegistryClient {
     fn registry_type(&self) -> &str {
         "github"
+    }
+
+    async fn fetch_version_document(
+        &self,
+        package: &str,
+        kind: DocumentKind,
+    ) -> Result<VersionDocument, CoreError> {
+        let url = format!("{}/repos/{}/releases", self.base_url, package);
+        fetch_release_listing(self.get(&url), kind, "github", "GitHub", package).await
     }
 
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {

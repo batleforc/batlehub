@@ -12,8 +12,8 @@ use batlehub_core::{
 };
 
 use super::common::{
-    collect_payload, extract_signature_headers, registry_public_base, require_local_mode,
-    serve_local_or_proxy_artifact, LocalOrProxyArtifactOpts,
+    collect_payload, extract_signature_headers, proxy_document, registry_public_base,
+    require_local_mode, serve_local_or_proxy_artifact, LocalOrProxyArtifactOpts,
 };
 use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, CargoIndexMap,
@@ -40,5 +40,5 @@ pub mod publish;
 
 pub use helpers::CargoIndexProxy;
 pub use index::{cargo_registry_config, cargo_registry_index, download_crate};
-pub use ownership::cargo_owners;
+pub use ownership::{cargo_add_owners, cargo_owners, cargo_remove_owners};
 pub use publish::{cargo_publish, cargo_unyank, cargo_yank};

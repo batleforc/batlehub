@@ -170,6 +170,20 @@ pub struct RegistryConfig {
     /// `/v1/query` passthrough endpoints for this registry.
     #[serde(default)]
     pub vuln_db_url: Option<String>,
+    /// Base URL for the Go checksum database (`GOSUMDB`) proxy endpoint.
+    /// Only applies to `goproxy` registries.
+    /// Absent → default to `https://sum.golang.org`.
+    /// Set to `""` to disable `/sumdb/{path}` for this registry.
+    ///
+    /// Proxying the checksum database is the other half of `GOPROXY`
+    /// (RFC 0009 §7.4). Without it `go mod download` still opens a direct
+    /// connection to `sum.golang.org` for every module it has not seen, which
+    /// fails closed in an air-gapped estate — so the proxy has moved the egress
+    /// rather than removed it. A registry serving only private modules has no
+    /// sumdb and should set `""`, because a lookup there would leak private
+    /// module paths upstream.
+    #[serde(default)]
+    pub sumdb_url: Option<String>,
 }
 
 // ── Artifact integrity ──────────────────────────────────────────────────────────

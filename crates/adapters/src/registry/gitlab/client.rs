@@ -3,15 +3,15 @@ use chrono::DateTime;
 use futures::TryStreamExt;
 
 use super::super::http_client::{
-    apply_upstream_tls, basic_auth_get, ensure_same_origin, percent_encode, to_registry_error,
-    upstream_auth_headers, UpstreamHttpOptions,
+    apply_upstream_tls, basic_auth_get, ensure_same_origin, fetch_release_listing, percent_encode,
+    to_registry_error, upstream_auth_headers, UpstreamHttpOptions,
 };
 use super::super::ssrf;
 use super::models::{GlLink, GlRelease};
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient},
+    ports::{DocumentKind, FetchedArtifact, RegistryClient, VersionDocument},
 };
 
 /// GitLab REST API v4 registry client (releases).
@@ -214,6 +214,19 @@ pub(super) fn source_format(artifact: &str) -> Option<&str> {
 impl RegistryClient for GitlabRegistryClient {
     fn registry_type(&self) -> &str {
         "gitlab"
+    }
+
+    async fn fetch_version_document(
+        &self,
+        package: &str,
+        kind: DocumentKind,
+    ) -> Result<VersionDocument, CoreError> {
+        let url = format!(
+            "{}/projects/{}/releases?per_page=100",
+            self.api_base_url,
+            percent_encode(package)
+        );
+        fetch_release_listing(self.get(&url), kind, "gitlab", "GitLab", package).await
     }
 
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {

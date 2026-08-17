@@ -68,6 +68,22 @@ pub fn raw_auth_from_request(req: &HttpRequest) -> batlehub_core::ports::RawAuth
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
         .collect::<HashMap<_, _>>();
 
+    // `ovsx publish` sends its token as `?token=…` rather than a header
+    // (measured against ovsx 1.1.1 — RFC 0009 §12.6). Normalised here, beside
+    // the NuGet header above, so every `AuthProvider` still sees one shape.
+    //
+    // **Scoped to that one route on purpose.** A token in a query string is a
+    // token in access logs, proxy logs and shell history, so accepting one
+    // everywhere would widen that exposure across the whole API to satisfy a
+    // single client. `ovsx` gives no way to send a header instead, so the
+    // choice is this or no publish; confining it to the endpoint that requires
+    // it is the narrowest form of yes.
+    if !headers.contains_key("authorization") && req.path().ends_with("/api/-/publish") {
+        if let Some(token) = query_params.get("token") {
+            headers.insert("authorization".to_owned(), format!("Bearer {token}"));
+        }
+    }
+
     batlehub_core::ports::RawAuthRequest {
         headers,
         query_params,
@@ -78,6 +94,53 @@ pub fn raw_auth_from_request(req: &HttpRequest) -> batlehub_core::ports::RawAuth
 mod tests {
     use super::*;
     use actix_web::test::TestRequest;
+
+    #[test]
+    fn ovsx_publish_token_in_the_query_becomes_a_bearer_header() {
+        let req = TestRequest::post()
+            .uri("/proxy/vsx/api/-/publish?token=abc123")
+            .to_http_request();
+        let raw = raw_auth_from_request(&req);
+        assert_eq!(
+            raw.headers.get("authorization").map(String::as_str),
+            Some("Bearer abc123"),
+            "`ovsx publish` sends its token only this way"
+        );
+    }
+
+    /// The narrow scope is the point: a token in a query string ends up in
+    /// logs, so it is accepted for the one endpoint whose client gives no
+    /// alternative and nowhere else.
+    #[test]
+    fn a_query_token_is_ignored_on_every_other_route() {
+        for path in [
+            "/proxy/vsx/api/-/search?token=abc123",
+            "/api/v1/admin/packages?token=abc123",
+            "/proxy/npm/express?token=abc123",
+        ] {
+            let req = TestRequest::get().uri(path).to_http_request();
+            let raw = raw_auth_from_request(&req);
+            assert!(
+                !raw.headers.contains_key("authorization"),
+                "{path} must not authenticate from the query string"
+            );
+        }
+    }
+
+    /// An explicit header always wins, so a stale `?token=` in a scripted URL
+    /// cannot override the credential the caller actually sent.
+    #[test]
+    fn an_authorization_header_beats_a_query_token() {
+        let req = TestRequest::post()
+            .uri("/proxy/vsx/api/-/publish?token=from-query")
+            .insert_header(("authorization", "Bearer from-header"))
+            .to_http_request();
+        let raw = raw_auth_from_request(&req);
+        assert_eq!(
+            raw.headers.get("authorization").map(String::as_str),
+            Some("Bearer from-header")
+        );
+    }
 
     #[test]
     fn extracts_authorization_header() {

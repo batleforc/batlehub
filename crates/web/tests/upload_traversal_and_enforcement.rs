@@ -30,27 +30,6 @@ use batlehub_web::RegistryModeMap;
 
 // ── rubygems publish traversal ─────────────────────────────────────────────────
 
-/// Minimal RubyGems `.gem` (tar containing a gzip'd YAML `metadata.gz` entry).
-fn make_gem(name: &str, version: &str) -> Vec<u8> {
-    use flate2::{write::GzEncoder, Compression};
-    use std::io::Write as _;
-
-    let yaml = format!("name: {name}\nversion:\n  version: '{version}'\nplatform: ruby\n");
-    let mut gz = GzEncoder::new(Vec::new(), Compression::default());
-    gz.write_all(yaml.as_bytes()).unwrap();
-    let metadata_gz = gz.finish().unwrap();
-
-    let mut builder = tar::Builder::new(Vec::new());
-    let mut header = tar::Header::new_gnu();
-    header.set_size(metadata_gz.len() as u64);
-    header.set_mode(0o644);
-    header.set_cksum();
-    builder
-        .append_data(&mut header, "metadata.gz", metadata_gz.as_slice())
-        .unwrap();
-    builder.into_inner().unwrap()
-}
-
 #[actix_web::test]
 async fn rubygems_publish_traversal_version_returns_400() {
     let ns_store = InMemoryTeamNamespaceStore::new();

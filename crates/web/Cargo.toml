@@ -34,11 +34,19 @@ metrics-exporter-prometheus.workspace = true
 sha2.workspace = true
 hmac = "0.13"
 hex.workspace = true
+# The RubyGems compact index identifies a document by the MD5 of its bytes, and
+# Bundler sends that back as `If-None-Match`. A wire format, not a security use.
+md-5 = "0.11"
 lettre = { version = "0.11", features = ["tokio1", "tokio1-rustls-tls", "smtp-transport", "builder"], default-features = false }
 quick-xml = { workspace = true }
 base64.workspace = true
 zip.workspace = true
 form_urlencoded.workspace = true
+# conda and mamba request `repodata.json.zst` before any other encoding, and
+# fall back to `.bz2` (RFC 0009 §7.5). Without them every client pays the full
+# uncompressed transfer of a document fetched on every solve.
+zstd = "0.13"
+bzip2 = "0.6"
 
 [dev-dependencies]
 batlehub-adapters = { path = "../adapters" }

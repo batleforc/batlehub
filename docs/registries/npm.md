@@ -92,11 +92,24 @@ npm install @myorg/my-package
 
 ### Endpoint reference
 
+<!-- BEGIN endpoints: proxy/npm -->
 | Method | Path | Description |
 |--------|------|-------------|
-| `PUT` | `/proxy/{registry}/{package}` | `npm publish` |
-| `GET` | `/proxy/{registry}/{package}` | Packument (all versions) |
-| `GET` | `/proxy/{registry}/{package}/{version}/tarball` | Tarball download |
+| `POST` | `/proxy/{registry}/-/npm/v1/audit/bulk` | Deprecated alias of the bulk audit endpoint — npm sends `/-/npm/v1/security/advisories/bulk`. |
+| `POST` | `/proxy/{registry}/-/npm/v1/audit/quick` | Deprecated alias of the quick audit endpoint — npm sends `/-/npm/v1/security/audits/quick`. |
+| `POST` | `/proxy/{registry}/-/npm/v1/security/advisories/bulk` | `npm audit`, bulk mode — the default since npm 7, on the path npm sends. |
+| `POST` | `/proxy/{registry}/-/npm/v1/security/audits/quick` | `npm audit`, quick mode — on the path npm sends. |
+| `GET` | `/proxy/{registry}/-/package/{package}/dist-tags` | `npm dist-tag ls`. |
+| `PUT` | `/proxy/{registry}/-/package/{package}/dist-tags/{tag}` | `npm dist-tag add` — declined, with a reason the client prints. |
+| `DELETE` | `/proxy/{registry}/-/package/{package}/dist-tags/{tag}` | `npm dist-tag rm`. Declined for the same reason as `add`. |
+| `GET` | `/proxy/{registry}/-/ping` | `npm ping`. |
+| `GET` | `/proxy/{registry}/-/v1/search` | `npm search` / `npm search --json`. |
+| `GET` | `/proxy/{registry}/-/whoami` | `npm whoami`. |
+| `PUT` | `/proxy/{registry}/{name}` | Publish a new npm package version (`npm publish`). |
+| `GET` | `/proxy/{registry}/{package}` | Fetch package metadata (all versions / packument). |
+| `GET` | `/proxy/{registry}/{package}/{version}` | Fetch package version metadata. |
+| `GET` | `/proxy/{registry}/{package}/{version}/tarball` | Download npm package tarball for a specific version. |
+<!-- END endpoints -->
 
 The packument is BatleHub's own answer, not a copy of the upstream's. Two things
 are rewritten before it reaches the client:
@@ -120,12 +133,40 @@ Pass a BatleHub token as the npm auth token (`_authToken`). Anonymous access wor
 
 ## Notes
 
-`npm audit` works automatically once the registry is configured — both the quick and bulk audit modes are proxied through BatleHub to the upstream advisory database:
+`npm audit` works once the registry is configured — both the quick and bulk modes are
+proxied to the upstream advisory database, on the paths the npm CLI already sends:
 
 ```bash
 npm audit
 npm audit --fix
 ```
+
+Answers are cached, and an unreachable advisory database is served from cache rather
+than failed, so an outage upstream does not stop a pipeline running `npm audit`. See
+[the vulnerability proxy](/use/vulnerability-proxy#_2-npm-—-npm-audit) for the cache
+headers and the two deprecated aliases.
+
+## Search
+
+``npm search`` is answered in three steps: a cached result for that query, then the
+upstream, then — when the upstream is unreachable — **the packages this registry
+already holds**. An outage degrades search to what BatleHub can honestly answer
+for, rather than to an error or to an empty result list.
+
+Every response carries `X-BatleHub-Cache: hit | miss | stale`. `stale` means the
+upstream could not be reached and the answer came from the cache or from the held
+set, so a short result list is never silently presented as complete.
+
+::: warning Search queries reach the upstream
+Step two forwards the query string to the configured upstream. Search terms are a
+record of what your organisation is looking for. Set `serve_stale = false` and
+leave the registry without an upstream if you want the held-package answer and no
+egress at all.
+:::
+
+Blocked versions are removed from results, and the reported total is adjusted to
+match — clients paginate by offset, so a silently shortened page would make the
+next one skip a result.
 
 ## See also
 

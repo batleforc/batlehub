@@ -16,7 +16,7 @@ use batlehub_core::services::{
 use crate::builders::parse_role;
 use batlehub_web::{
     AccessConfig, CargoIndexMap, CargoIndexProxy, RegistryHostMap, RegistryMap, RegistryModeMap,
-    UpstreamMap, VulnDbMap,
+    SumDbMap, UpstreamMap, VulnDbMap,
 };
 
 /// Shared shape for the `build_*_map` functions below: an optional per-registry
@@ -185,6 +185,25 @@ fn build_vuln_db_map(registries: &[RegistryConfig]) -> VulnDbMap {
     VulnDbMap::new(urls)
 }
 
+/// Per-registry Go checksum database URLs (RFC 0009 §7.4).
+///
+/// Same absence-means-disabled contract as `build_vuln_db_map`, and the same
+/// three cases: unset defaults to the public log, `""` disables the route, and
+/// an explicit value points at a private mirror.
+fn build_sumdb_map(registries: &[RegistryConfig]) -> SumDbMap {
+    const DEFAULT: &str = "https://sum.golang.org";
+    let urls = registries
+        .iter()
+        .filter(|r| r.registry_type == RegistryKind::Goproxy.as_str())
+        .filter_map(|r| match r.sumdb_url.as_deref() {
+            Some("") => None,
+            Some(url) => Some((r.name.clone(), url.trim_end_matches('/').to_owned())),
+            None => Some((r.name.clone(), DEFAULT.to_owned())),
+        })
+        .collect();
+    SumDbMap::new(urls)
+}
+
 pub(super) fn build_hot_bundle(
     cfg: &AppConfig,
     beta_channel_store: &Arc<dyn BetaChannelPort>,
@@ -198,6 +217,7 @@ pub(super) fn build_hot_bundle(
     RegistryModeMap,
     UpstreamMap,
     VulnDbMap,
+    SumDbMap,
 )> {
     let mut reg_clients: HashMap<String, Arc<dyn batlehub_core::ports::RegistryClient>> =
         HashMap::new();
@@ -255,6 +275,7 @@ pub(super) fn build_hot_bundle(
         RegistryModeMap::from(reg_mode_map),
         UpstreamMap::from(upstream_map),
         build_vuln_db_map(&cfg.registries),
+        build_sumdb_map(&cfg.registries),
     ))
 }
 
@@ -323,7 +344,7 @@ pub(super) fn make_hot_builder(
     sbom_repo: Arc<dyn SbomRepository>,
 ) -> batlehub_web::services::HotConfigBuilder {
     Arc::new(move |cfg: &AppConfig| {
-        let (hot, access, rm, rmm, um, vuln_db) =
+        let (hot, access, rm, rmm, um, vuln_db, sumdb) =
             build_hot_bundle(cfg, &beta_channel_store, &repo, &vuln_repo, &sbom_repo)?;
         let mut cargo_map: HashMap<String, CargoIndexProxy> = HashMap::new();
         for reg in &cfg.registries {
@@ -345,6 +366,7 @@ pub(super) fn make_hot_builder(
             cargo_index_map: CargoIndexMap::new(cargo_map),
             repo_signer_map,
             vuln_db_map: vuln_db,
+            sumdb_map: sumdb,
             registry_host_map: RegistryHostMap::from_app_config(cfg),
         })
     })

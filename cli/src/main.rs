@@ -30,11 +30,22 @@ async fn main() -> Result<()> {
     let mut cfg = ConfigFile::load()?;
 
     if let Command::Setup { cmd } = cli.command {
-        let resolved_server = cli.server.clone().or_else(|| match cli.profile.as_deref() {
-            Some(n) => cfg.profiles.get(n).and_then(|p| p.server_url.clone()),
-            None => cfg.default.server_url.clone(),
-        });
-        return setup::run(cmd, resolved_server.as_deref());
+        let profile = match cli.profile.as_deref() {
+            Some(n) => cfg.profiles.get(n),
+            None => Some(&cfg.default),
+        };
+        let resolved_server = cli
+            .server
+            .clone()
+            .or_else(|| profile.and_then(|p| p.server_url.clone()));
+        // The stored token as-is, with no OIDC refresh: `setup` only reads the
+        // registry list, and must keep working with no server to refresh
+        // against. An expired token just means fewer registries are listed.
+        let resolved_token = cli
+            .token
+            .clone()
+            .or_else(|| profile.and_then(|p| p.token.clone()));
+        return setup::run(cmd, resolved_server.as_deref(), resolved_token.as_deref()).await;
     }
 
     // Determine base URL for potential OIDC auto-refresh (before building the client)

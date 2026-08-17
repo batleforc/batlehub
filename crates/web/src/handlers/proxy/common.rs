@@ -8,7 +8,7 @@ use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
     entities::{NotificationEvent, NotificationEventType, PackageId},
     error::CoreError,
-    ports::ByteStream,
+    ports::{ByteStream, DocumentBody, DocumentKind, VersionDocument},
     services::{LocalRegistryService, ProxyRequest, ProxyResponse, ProxyService, PublishRequest},
 };
 
@@ -289,6 +289,54 @@ pub async fn proxy_stream(
     }
 }
 
+/// [`proxy_stream`] for a *version listing* rather than an artifact.
+///
+/// The difference is not cosmetic. `proxy_stream` asks the registry client for
+/// an **artifact** and hands the bytes through untouched — so on a listing route
+/// it forwards the upstream's own document, blocked versions and all, and
+/// labels it `application/octet-stream`. This calls
+/// [`ProxyService::version_document`], which fetches the document, removes
+/// administratively blocked versions, repairs whatever that protocol calls
+/// "newest", and answers in the protocol's own content type.
+///
+/// For the routes that have already resolved their own local/hybrid branch;
+/// [`serve_local_or_proxy_document`] is the version that handles both.
+pub async fn proxy_document(
+    svc: web::Data<Arc<ProxyService>>,
+    pkg: PackageId,
+    identity: AuthIdentity,
+    resource_type: &str,
+    doc_kind: DocumentKind,
+    public_base: String,
+) -> Result<HttpResponse, AppError> {
+    Ok(document_response(
+        fetch_proxy_document(svc, pkg, identity, resource_type, doc_kind, public_base).await?,
+    ))
+}
+
+/// [`proxy_document`] without the HTTP response, for the handlers that have to
+/// compose two documents before answering — Go's `@latest` against its filtered
+/// `@v/list`, RubyGems' gem document against its versions API.
+pub async fn fetch_proxy_document(
+    svc: web::Data<Arc<ProxyService>>,
+    pkg: PackageId,
+    identity: AuthIdentity,
+    resource_type: &str,
+    doc_kind: DocumentKind,
+    public_base: String,
+) -> Result<VersionDocument, AppError> {
+    let req = ProxyRequest {
+        package_id: pkg,
+        identity: identity.0,
+        resource_type: resource_type.to_owned(),
+        ip_address: None,
+        user_agent: None,
+    };
+    svc.version_document(&req, doc_kind, &public_base)
+        .await
+        .map_err(AppError::from)
+}
+
 /// Options controlling [`serve_local_or_proxy_artifact`]'s behaviour.
 pub struct LocalOrProxyArtifactOpts<'a> {
     /// Suffix passed to `PackageId::with_artifact(...)` on the proxy fallback,
@@ -379,6 +427,43 @@ pub async fn serve_local_or_proxy_artifact(
 /// streaming it from the upstream registry (Proxy mode, or a Hybrid miss).
 ///
 /// This is the shared shape behind `get_packument`, `get_version`, `gem_info`,
+/// The local half of the mode ladder: `Ok(None)` means "fall through upstream".
+///
+/// Local and hybrid both try the local store first; what differs is what a miss
+/// means. In hybrid a miss is a fall-through, in local it is the answer — and
+/// getting that backwards either hides a published package or turns a proxy
+/// read into a `404`. Proxy mode never looks.
+///
+/// RBAC is enforced here rather than left to the local fetch: that fetch checks
+/// per-package `Visibility` only, not the registry rule chain the proxy
+/// fall-through would run.
+async fn local_first<T, F, Fut>(
+    svc: &ProxyService,
+    mode: RegistryMode,
+    identity: &AuthIdentity,
+    local_fetch: F,
+    not_found_msg: String,
+    pkg: &PackageId,
+    resource_type: &str,
+) -> Result<Option<T>, AppError>
+where
+    F: FnOnce(batlehub_core::entities::Identity) -> Fut,
+    Fut: std::future::Future<Output = Result<T, CoreError>>,
+{
+    if !matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        return Ok(None);
+    }
+    svc.authorize_read(pkg, &identity.0, resource_type)
+        .await
+        .map_err(AppError::from)?;
+    match local_fetch(identity.0.clone()).await {
+        Ok(x) => Ok(Some(x)),
+        Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => Ok(None),
+        Err(CoreError::NotFound(_)) => Err(AppError::not_found(not_found_msg)),
+        Err(e) => Err(AppError::from(e)),
+    }
+}
+
 /// `gem_versions`, `goproxy_latest`, and `composer_p2_metadata`: check the
 /// registry mode, try `local_fetch` in Local/Hybrid mode, fall through to
 /// `proxy_stream` on a Hybrid miss (or directly in Proxy mode).
@@ -399,21 +484,18 @@ where
     F: FnOnce(batlehub_core::entities::Identity) -> Fut,
     Fut: std::future::Future<Output = Result<T, CoreError>>,
 {
-    let mode = mode_map.get(registry);
-    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        // Enforce the registry's RBAC before serving metadata from local storage:
-        // the local fetch only checks per-package Visibility, not the registry
-        // rule chain (which the proxy fall-through would run). See the artifact
-        // helper above for the full rationale.
-        svc.authorize_read(&pkg, &identity.0, resource_type)
-            .await
-            .map_err(AppError::from)?;
-        match local_fetch(identity.0.clone()).await {
-            Ok(x) => return Ok(HttpResponse::Ok().content_type("application/json").json(x)),
-            Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}
-            Err(CoreError::NotFound(_)) => return Err(AppError::not_found(not_found_msg)),
-            Err(e) => return Err(AppError::from(e)),
-        }
+    let local = local_first(
+        &svc,
+        mode_map.get(registry),
+        &identity,
+        local_fetch,
+        not_found_msg,
+        &pkg,
+        resource_type,
+    )
+    .await?;
+    if let Some(x) = local {
+        return Ok(HttpResponse::Ok().content_type("application/json").json(x));
     }
     proxy_stream(svc, pkg, identity, resource_type, proxy_content_type).await
 }
@@ -438,6 +520,8 @@ pub async fn serve_local_or_proxy_document<T, F, Fut>(
     not_found_msg: String,
     pkg: PackageId,
     resource_type: &str,
+    doc_kind: DocumentKind,
+    local_content_type: &str,
     public_base: String,
 ) -> Result<HttpResponse, AppError>
 where
@@ -445,33 +529,102 @@ where
     F: FnOnce(batlehub_core::entities::Identity) -> Fut,
     Fut: std::future::Future<Output = Result<T, CoreError>>,
 {
-    let mode = mode_map.get(registry);
-    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        svc.authorize_read(&pkg, &identity.0, resource_type)
-            .await
-            .map_err(AppError::from)?;
-        match local_fetch(identity.0.clone()).await {
-            Ok(x) => return Ok(HttpResponse::Ok().content_type("application/json").json(x)),
-            Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}
-            Err(CoreError::NotFound(_)) => return Err(AppError::not_found(not_found_msg)),
-            Err(e) => return Err(AppError::from(e)),
-        }
+    let local = local_first(
+        &svc,
+        mode_map.get(registry),
+        &identity,
+        local_fetch,
+        not_found_msg,
+        &pkg,
+        resource_type,
+    )
+    .await?;
+    if let Some(x) = local {
+        return Ok(HttpResponse::Ok().content_type(local_content_type).json(x));
     }
 
-    let req = ProxyRequest {
-        package_id: pkg,
-        identity: identity.0,
-        resource_type: resource_type.to_owned(),
-        ip_address: None,
-        user_agent: None,
-    };
-    let doc = svc
-        .version_document(&req, &public_base)
-        .await
-        .map_err(AppError::from)?;
-    Ok(HttpResponse::Ok()
-        .content_type("application/json")
-        .json(doc))
+    let doc =
+        fetch_proxy_document(svc, pkg, identity, resource_type, doc_kind, public_base).await?;
+    Ok(document_response(doc))
+}
+
+/// [`serve_local_or_proxy_document`] for a handler that reads *from* the
+/// document instead of returning it.
+///
+/// `npm dist-tag ls` is the caller: it answers with one field of the packument,
+/// and the packument is the only place that field exists. Taking it from a
+/// second source would be a second rendering of the same facts, which is the
+/// drift `npm_dist_tags` is documented to avoid — but the first version of that
+/// handler avoided it by calling [`ProxyService::version_document`] directly,
+/// which skips the mode ladder entirely. On a local registry that asks upstream
+/// for a package upstream has never heard of, so `npm dist-tag ls` answered
+/// `404` for a package `npm view` had just described (the RFC 0009 §12.15
+/// failure, in another route; found by tests/heavy/npm.sh).
+///
+/// JSON only: the document must be one the caller can read fields out of, and a
+/// text document (a compact index, a simple page) is not that.
+#[allow(clippy::too_many_arguments)]
+pub async fn local_or_proxy_document_value<T, F, Fut>(
+    svc: &web::Data<Arc<ProxyService>>,
+    mode_map: &RegistryModeMap,
+    registry: &str,
+    identity: AuthIdentity,
+    local_fetch: F,
+    not_found_msg: String,
+    pkg: PackageId,
+    resource_type: &str,
+    doc_kind: DocumentKind,
+    public_base: String,
+) -> Result<serde_json::Value, AppError>
+where
+    T: serde::Serialize,
+    F: FnOnce(batlehub_core::entities::Identity) -> Fut,
+    Fut: std::future::Future<Output = Result<T, CoreError>>,
+{
+    let local = local_first(
+        svc,
+        mode_map.get(registry),
+        &identity,
+        local_fetch,
+        not_found_msg,
+        &pkg,
+        resource_type,
+    )
+    .await?;
+    if let Some(x) = local {
+        return serde_json::to_value(x)
+            .map_err(|e| AppError::internal(format!("could not render the local document: {e}")));
+    }
+
+    let doc = fetch_proxy_document(
+        svc.clone(),
+        pkg,
+        identity,
+        resource_type,
+        doc_kind,
+        public_base,
+    )
+    .await?;
+    doc.body.as_json().cloned().ok_or_else(|| {
+        AppError::internal("upstream document is not JSON and cannot be read as one".to_owned())
+    })
+}
+
+/// Turn a filtered [`VersionDocument`] into an HTTP response in its own
+/// encoding.
+///
+/// The content type comes from the document rather than being hard-coded: these
+/// routes carry XML (`maven-metadata.xml`), HTML (a PyPI simple page) and NDJSON
+/// (cargo's sparse index) as well as JSON, and serving any of them as
+/// `application/json` — or, as the pre-`serve_local_or_proxy_document` packument
+/// route did, as `application/octet-stream` — breaks the client that asked.
+pub fn document_response(doc: VersionDocument) -> HttpResponse {
+    let mut builder = HttpResponse::Ok();
+    builder.content_type(doc.content_type.clone());
+    match doc.body {
+        DocumentBody::Json(v) => builder.json(v),
+        DocumentBody::Text(s) => builder.body(s),
+    }
 }
 
 #[cfg(test)]

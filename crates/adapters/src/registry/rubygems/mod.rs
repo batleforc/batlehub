@@ -8,7 +8,7 @@ mod models;
 #[cfg(feature = "local-registry")]
 pub use client::parse_gem_bytes;
 pub use client::split_gem_stem;
-pub use models::GemMetadata;
+pub use models::{GemDependency, GemMetadata};
 
 /// RubyGems registry proxy client.
 ///

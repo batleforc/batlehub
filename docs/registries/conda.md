@@ -49,6 +49,23 @@ curl -X POST \
 
 Both `.tar.bz2` and `.conda` formats are accepted. The name, version, build, and dependencies are read from `info/index.json` inside the archive, and the channel's `repodata.json` is updated immediately.
 
+## Blocked versions
+
+`repodata.json` and `current_repodata.json` drop a blocked package from both
+generations — the `.tar.bz2` entry under `packages` and the `.conda` entry under
+`packages.conda` — since a channel serves both for the same release and leaving
+either would keep the version installable.
+
+::: tip A conda block can take up to 30 seconds
+`repodata.json` describes a whole channel and is fetched on every
+`conda install`, so its blocked set is read from a snapshot refreshed every
+**30 seconds** rather than queried per request. Conda is the only registry with
+this delay, and it applies to the *listing* only — the `403` on the download
+itself is immediate.
+:::
+
+See [blocking a package version](/guide/admin-policies#block-a-package-version) for the two halves of a block, and [which listings are filtered](/guide/admin-policies#which-listings-are-filtered) for the full table.
+
 ## Authentication
 
 Conda reads credentials from `~/.netrc` automatically:

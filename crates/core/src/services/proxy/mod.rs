@@ -1,6 +1,9 @@
 mod cache;
 mod handle;
+mod passthrough;
 mod resolve;
+
+pub use passthrough::{FetchOutcome, Freshness, Passthrough, UpstreamBytes};
 
 use std::sync::Arc;
 use std::time::Instant;

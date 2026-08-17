@@ -2,12 +2,13 @@
 
 | Field       | Value                                                        |
 | ----------- | ------------------------------------------------------------ |
-| Status      | Draft                                                         |
+| Status      | Draft — ready to schedule. The RFC 0009 dependency is discharged: the Go checksum database is proxied and cached (0009 §7.4, §13.12) and Terraform's checksum files are served locally (0009 §12.8), so the two ecosystems that reached upstream at their last step no longer do. §11's one blocking open question is measured and closed (mise 2026.8.6, 2026-08-17) |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                       |
 | Co-author   | —                                                             |
 | Created     | 2026-08-15                                                    |
+| Revised     | 2026-08-17 — re-verified against the tree after RFC 0009 landed: §2.1's settings survey, §2.7, §4.4's ordering question, §6.5's flag name, §10's layer-4 home |
 | Supersedes  | —                                                             |
-| Complements | RFC 0004-bis §13.2 (content-addressable dedup), RFC 0002 (what BatleHub knows about a CVE) |
+| Complements | RFC 0004-bis §13.2 (content-addressable dedup), RFC 0002 (what BatleHub knows about a CVE), RFC 0009 §7.4 (the cached sumdb this RFC's Go case rests on) and §12.16 (the real-client suites §10 reuses) |
 | Touches     | `crates/config`, `crates/core`, `crates/adapters`, `crates/web`, `server`, `cli`, `ui`, docs |
 
 ---
@@ -71,14 +72,16 @@ github  jdx/mise-tool@v1.2.0   4 requests   first 2026-08-14  last 2026-08-15
 1. **The rewrite table is hand-assembled, and its failure mode is a hang.**
    `ui/src/config/registryTypes.ts`'s `mise` entry rewrites eight patterns: the GitHub API,
    release-asset downloads, `github.com` archives, `codeload.github.com`, `raw.githubusercontent.com`,
-   `registry.npmjs.org` and `static.crates.io`. `mise settings --all` on 2026.8.0 lists 160 settings,
-   of which at least nine name a *different* host in their default value —
+   `registry.npmjs.org` and `static.crates.io`. `mise settings --all` on 2026.8.6 lists 164 settings
+   (re-counted 2026-08-17; it was 160 on 2026.8.0 when this was first written, and the point is that
+   the number moves), of which at least nine name a *different* host in their default value —
    `go.download_mirror` (`dl.google.com/go`), `go.repo` (`github.com/golang/go`),
    `dotnet.registry_url` (`api.nuget.org`), `pipx.registry_url` (`pypi.org/pypi/{}/json`),
-   `python.pyenv_repo`, `ruby.ruby_build_repo`, `ruby.ruby_install_repo`, `ruby.precompiled_url`,
-   and the two `github.oauth_*_url`s. A URL the table does not match is not an error; it is a direct
-   request, and on a disconnected network that is a connect timeout with no attribution. There is no
-   way to ask BatleHub whether a table is complete, and no way to make the gap fail loudly.
+   `python.pyenv_repo`, `ruby.ruby_build_repo`, `ruby.ruby_install_repo`, `ruby.precompiled_url`
+   (`jdx/ruby`, a repo shorthand that resolves to GitHub releases), and the two `github.oauth_*_url`s.
+   Every one of the nine still holds on 2026.8.6. A URL the table does not match is not an error; it
+   is a direct request, and on a disconnected network that is a connect timeout with no attribution.
+   There is no way to ask BatleHub whether a table is complete, and no way to make the gap fail loudly.
 
 2. **mise's verification is on by default and has no proxy path.**
    `github_attestations = true`, `github.slsa = true`, `aqua.cosign = true`, `aqua.slsa = true`,
@@ -116,6 +119,24 @@ github  jdx/mise-tool@v1.2.0   4 requests   first 2026-08-14  last 2026-08-15
    operator cannot tell "this was never in the bundle" from "the network is broken", and no record
    accumulates that would make the next bundle better. The feedback loop that would converge an
    air-gapped mirror on completeness does not exist.
+
+7. **What RFC 0009 has since closed, and what it leaves.** This RFC was written before 0009 shipped,
+   and three of 0009's outcomes change its scope rather than its argument:
+
+   - **The Go checksum database is proxied and cached** (0009 §7.4, §13.12). A `GONOSUMCHECK`-free
+     air-gapped Go build was impossible while a sumdb lookup needed `sum.golang.org`; it now works
+     off a cached record, and the signature the client verifies is still the upstream's own. This is
+     the one place in the estate where verification genuinely survives the gap without being moved,
+     because a transparency-log record is a signed artifact rather than a live service call — which
+     is exactly the distinction §3's Sigstore non-goal turns on.
+   - **Terraform provider installs no longer reach out at the last step** (0009 §12.8): `shasums`
+     and `shasums.sig` were still upstream URLs inside an otherwise-gated download document.
+   - **Search degrades to what the registry holds** instead of answering empty (0009 §7.7). An
+     air-gapped instance's search stops claiming a package does not exist when it simply cannot ask.
+
+   None of that seeds content, none of it makes a miss diagnosable, and none of it moves mise's
+   cosign/SLSA/attestation checks to a side of the gap where they can run. Items 1–6 stand
+   unchanged; the *artifact* path is what remains, which is what this RFC is about.
 
 ---
 
@@ -272,8 +293,27 @@ reading a single blob, then writes each blob and its metadata rows transactional
 - **The catch-all rewrite.** `mise plan --emit-mise-toml` appends a final rule mapping anything not
   already rewritten onto `{proxy}/_air-gap/unmirrored/…`, which returns `501` naming the host and
   records it alongside the misses. This turns "a host nobody predicted" from a connect timeout into a
-  line in the console. Whether mise applies `url_replacements` in declaration order with first-match
-  wins is the one behaviour this depends on, and it is open (§11).
+  line in the console.
+
+  The behaviour this depends on is **confirmed, measured on mise 2026.8.6 (2026-08-17)**:
+  `[settings.url_replacements]` is applied in declaration order, first match wins, and matching
+  *stops* at the first hit. A `http:` tool whose URL matches both a specific rule and a
+  `^https://(.+)` catch-all reached the specific rule's target when the specific rule was declared
+  first, and the catch-all's when the catch-all was — one request either way, never both. Two
+  consequences the design has to honour:
+
+  - **The catch-all must be emitted last**, after every typed rule, or it swallows them. `mise plan`
+    and `registry suggest` both append it, so the ordering is a property of the generator rather than
+    of the operator's editing.
+  - **There is no fallback on failure.** The rule that matched is the only URL tried; a `503` from a
+    matched registry does not fall through to the catch-all. That is the wanted behaviour — a miss on
+    a configured registry is a gap in the bundle (§4.4's `503`), not an unmirrored host (`501`) — but
+    it also means a *wrong* typed rule cannot be rescued by the catch-all, which is why
+    `unmirrored_hosts` is computed at plan time rather than left to be discovered at install time.
+
+  The catch-all's `$1` carries the host as the first path segment
+  (`…/_air-gap/unmirrored/binaries.sonarsource.com/…`), so the recorder sees the host without parsing
+  the tail as a URL — which is what keeps §7's "opaque string for logging" rule cheap to hold.
 - **RBAC is unchanged.** An air-gapped instance still evaluates `RbacRule` and the rest of the chain;
   offline is not a synonym for anonymous. The `releases:read` grants in the generic-mirror examples
   remain what a workstation needs.
@@ -452,7 +492,9 @@ mirror.
   against `GET /api/v1/registries`.
 - `batlehub-cli mise seed [--verify]`, `admin bundle export|import`, `admin air-gap missing`.
 - `registry suggest --mise` gains the catch-all rule in its emitted block, behind
-  `--catch-all` so an existing user's output does not change shape without asking.
+  `--mise-catch-all` (`requires = "mise"`, mirroring the existing `--mise-commented`) so an existing
+  user's output does not change shape without asking. `render_mise_toml` grows the flag as a third
+  parameter rather than a second renderer.
 
 ### 6.6 `ui`
 
@@ -568,10 +610,19 @@ mirror.
   under `unmirrored_hosts`; `bundle export` → `import` round-trips against the in-process server.
 - **External** (`crates/adapters/tests/pg_air_gap.rs`, via `task test:pg-*`): the `missing_content`
   upsert counter and `miss_retention_days` purge against real Postgres.
-- **Layer 4** (`crates/examples/tests/smoke.rs`): the existing suite already runs `mise install`
-  against real upstreams. Add the air-gapped counterpart — seed, export, import into a second
-  instance configured with `air_gap.enabled = true` and no network, then `mise install` — as the
-  end-to-end signal that the claim in §1 is true.
+- **Real client** (`tests/heavy/mise.sh`, joining the suites RFC 0009 §12.16 built, on
+  `tests/heavy/lib.sh` and the `http_tap.py` transcript): seed, export, import into a second instance
+  configured with `air_gap.enabled = true`, then `mise install` **with no route off the host**, and
+  assert on the wire that every request landed on BatleHub. This is the end-to-end signal that §1's
+  claim is true, and it belongs here rather than in `crates/examples/tests/smoke.rs` — that suite
+  provisions toolchains with `mise install` against real upstreams (its layers 2 and 3), which is the
+  opposite of the condition under test. 0009's own argument applies directly: a transcript run once by
+  hand is not a check, and the six bugs §12.16 found were found by scripting it.
+  `task test:heavy` runs it locally; CI's `heavy-client` matrix gets a `mise` entry.
+- **The negative half of that test is the assertion.** Egress is denied for the run (no route, not a
+  mocked upstream), so a rewrite rule this RFC's plan failed to emit fails the suite instead of
+  quietly succeeding through the workstation's real network — the failure mode that makes an
+  air-gapped claim untestable on a connected developer machine.
 - **Existing suites that must pass unchanged**: `crates/web/tests/blocked_versions_hidden.rs` and the
   local-registry suites (the `NotFound`/`AccessDenied` distinction must not shift under a third error
   variant), `crates/web/tests/openapi_contract.rs` (the new endpoints all declare bodies), and the
@@ -593,28 +644,24 @@ mirror.
 | 5 | Bundle signature algorithm | **ed25519.** The `rsa` ban (RUSTSEC-2023-0071, enforced by `deny.toml`) rules out PGP/x509, and the verification code already exists for `signing.trusted_keys`. |
 | 6 | Store the cosign signature or the verdict? | **The verdict.** BatleHub cannot verify ECDSA/x509 in-process, so storing the signature would imply a capability it does not have. |
 | 7 | Where the miss check sits relative to the rule chain | **After.** A blocked coordinate is not missing content, and must not be proposed for the next bundle. |
+| 8 | Does mise apply `[settings.url_replacements]` in declaration order, first match wins? | **Yes — declaration order, first match wins, and matching stops at the first hit.** Measured on **mise 2026.8.6 linux-x64 (2026-08-17)**: one `http:` tool whose URL matches both a specific rule and a `^https://(.+)` catch-all was fetched through whichever of the two was declared first, and only that one — one request per run, never a second attempt through the other rule. So the catch-all works, provided the generator emits it last (§4.4), and the deny-list-of-known-hosts fallback this question held in reserve is not needed. |
+| 9 | Is the RFC 0009 dependency real, and is it discharged? | **Real, and discharged.** The Go case was blocked on an uncacheable sumdb lookup and the Terraform case on upstream `shasums` URLs; 0009 §7.4/§13.12 and §12.8 closed both (§2.7). Nothing 0009 landed seeds content or diagnoses a miss, so the scope here is unchanged. |
 
 ### Still open
 
-1. **Does mise apply `[settings.url_replacements]` in declaration order, first match wins?** The
-   catch-all rule of §4.4 depends on it. If matching is unordered or last-match-wins, the catch-all
-   would swallow the specific rules and the mechanism needs another shape — most likely an explicit
-   deny-list of known hosts rather than a wildcard. This needs empirical confirmation against a
-   pinned mise version before the phase that ships it, and the answer should be recorded here with
-   the version it was checked on.
-2. **Per-platform plans.** `mise.lock` records URLs per platform. Does a bundle carry every platform
+1. **Per-platform plans.** `mise.lock` records URLs per platform. Does a bundle carry every platform
    in the lock, or only the ones the estate runs? Carrying all is simpler and larger; the recommended
    default is `--platform` explicit with no implicit "all", so the size is a choice the operator makes
    knowingly.
-3. **How the mise binary itself is upgraded across the gap.** The first install comes from the base
+2. **How the mise binary itself is upgraded across the gap.** The first install comes from the base
    image (§3, non-goals). `mise self-update` reaches GitHub, which the `github` registry can serve —
    but the version that performs the upgrade is the one whose `url_replacements` we control, so this
    is probably fine and probably needs a documented procedure rather than a feature. Confirm.
-4. **Miss-log granularity for metadata.** An artifact miss is one key. A metadata miss for a listing
+3. **Miss-log granularity for metadata.** An artifact miss is one key. A metadata miss for a listing
    is a package, and a `503` there fails a resolve rather than a download. Should the two be separate
    `kind`s in the console (as designed) or separate tables? Current answer: one table, one `kind`
    column; revisit if the console wants different columns for each.
-5. **Whether `mise seed --verify` should fail the run on an unsigned artifact.** Many GitHub releases
+4. **Whether `mise seed --verify` should fail the run on an unsigned artifact.** Many GitHub releases
    carry no attestation at all. Failing would make the feature unusable; not failing risks the verdict
    column reading as "fine". Proposed: exit non-zero only on a *failed* verification, report
    `unsigned` as its own count in the summary, and make `--require-signed` the strict opt-in.
@@ -626,8 +673,8 @@ mirror.
 | Phase | Content |
 | --- | --- |
 | 1 | `[air_gap]` config, validation, `ContentUnavailable` → `503`, miss recording, admin list/purge endpoints. **Useful alone**: it turns a disconnected instance from "hangs mysteriously" into "says what it lacks", with no bundle format at all. |
-| 2 | `batlehub-cli mise plan` — plan file, `unsupported` and `unmirrored_hosts` classification, `registry suggest --catch-all`, `/_air-gap/unmirrored/`. **Useful alone**: answers "is my rewrite table complete?" for connected estates too. |
+| 2 | `batlehub-cli mise plan` — plan file, `unsupported` and `unmirrored_hosts` classification, `registry suggest --mise-catch-all`, `/_air-gap/unmirrored/`. **Useful alone**: answers "is my rewrite table complete?" for connected estates too. |
 | 3 | `mise seed [--verify]` and the attestation store — connected side only, no bundle yet. |
 | 4 | Bundle format, export, import, signature verification, and the traversal/`path_allow` guards on import. |
 | 5 | The Air gap admin page and `docs/use/mise.md` + the operations runbook. |
-| 6 | Layer-4 smoke test: seed → export → import → `mise install` with no network, as the standing proof of §1. |
+| 6 | `tests/heavy/mise.sh`: seed → export → import → `mise install` with egress denied, on RFC 0009's harness and in the `heavy-client` matrix, as the standing proof of §1. |

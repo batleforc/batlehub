@@ -29,6 +29,7 @@ fn row_to_rollup(r: &sqlx::postgres::PgRow) -> StatsRollupRow {
         window_start: r.get("window_start"),
         hits: as_u64(r.get::<i64, _>("hits")),
         misses: as_u64(r.get::<i64, _>("misses")),
+        listing_reads: as_u64(r.get::<i64, _>("listing_reads")),
         cached_bytes: as_u64(r.get::<i64, _>("cached_bytes")),
     }
 }
@@ -56,20 +57,23 @@ impl StatsHistoryRepository for PgStatsHistoryRepository {
         let windows: Vec<DateTime<Utc>> = rows.iter().map(|r| r.window_start).collect();
         let hits: Vec<i64> = rows.iter().map(|r| r.hits as i64).collect();
         let misses: Vec<i64> = rows.iter().map(|r| r.misses as i64).collect();
+        let listings: Vec<i64> = rows.iter().map(|r| r.listing_reads as i64).collect();
         let cached: Vec<i64> = rows.iter().map(|r| r.cached_bytes as i64).collect();
 
         sqlx::query(
-            "INSERT INTO stats_history (registry, window_start, hits, misses, cached_bytes) \
-             SELECT * FROM unnest($1::text[], $2::timestamptz[], $3::bigint[], $4::bigint[], $5::bigint[]) \
+            "INSERT INTO stats_history (registry, window_start, hits, misses, listing_reads, cached_bytes) \
+             SELECT * FROM unnest($1::text[], $2::timestamptz[], $3::bigint[], $4::bigint[], $5::bigint[], $6::bigint[]) \
              ON CONFLICT (registry, window_start) DO UPDATE SET \
                hits = stats_history.hits + EXCLUDED.hits, \
                misses = stats_history.misses + EXCLUDED.misses, \
+               listing_reads = stats_history.listing_reads + EXCLUDED.listing_reads, \
                cached_bytes = EXCLUDED.cached_bytes",
         )
         .bind(&registries)
         .bind(&windows)
         .bind(&hits)
         .bind(&misses)
+        .bind(&listings)
         .bind(&cached)
         .execute(&self.pool)
         .await
@@ -83,7 +87,7 @@ impl StatsHistoryRepository for PgStatsHistoryRepository {
         to: DateTime<Utc>,
     ) -> Result<Vec<StatsRollupRow>, CoreError> {
         let rows = sqlx::query(
-            "SELECT registry, window_start, hits, misses, cached_bytes \
+            "SELECT registry, window_start, hits, misses, listing_reads, cached_bytes \
              FROM stats_history \
              WHERE window_start >= $1 AND window_start < $2 \
              ORDER BY window_start ASC, registry ASC",

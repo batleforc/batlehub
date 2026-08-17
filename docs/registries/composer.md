@@ -99,6 +99,13 @@ curl -X POST \
   "https://batlehub.example.com/proxy/internal-composer/api/upload?version=1.0.0"
 ```
 
+The upload records the archive's **SHA-1** alongside it and publishes that as
+`dist.shasum`, because that is the digest Composer recomputes over the file it
+downloads. A package uploaded before that digest was recorded has no
+stored SHA-1 and is served with no `shasum` at all — Composer installs it
+without verifying the digest rather than refusing it. Re-upload it (same
+version, after a yank, or as a new version) to get the checksum back.
+
 ### Client setup
 
 Composer supports two ways to supply credentials. Prefer `auth.json` over inline headers so credentials stay out of source control.
@@ -170,15 +177,37 @@ curl -X DELETE \
 
 ### Endpoint reference
 
+<!-- BEGIN endpoints: proxy/composer -->
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/proxy/{registry}/api/upload[?version=X.Y.Z]` | Upload package ZIP |
-| `DELETE` | `/proxy/{registry}/api/packages/{vendor}/{package}/versions/{version}` | Yank version |
-| `GET` | `/proxy/{registry}/packages.json` | Packagist v1 root |
-| `GET` | `/proxy/{registry}/p2/{vendor}/{package}.json` | Packagist v2 metadata |
-| `GET` | `/proxy/{registry}/dist/{vendor}/{package}/{version}` | Download artifact |
+| `DELETE` | `/proxy/{registry}/api/packages/{vendor}/{package}/versions/{version}` | Yank a Composer package version (local/hybrid registries only). |
+| `GET` | `/proxy/{registry}/api/security-advisories/` | Proxy Composer security advisory queries to the upstream Packagist server. |
+| `POST` | `/proxy/{registry}/api/upload` | Upload a Composer package ZIP (local/hybrid registries only). |
+| `GET` | `/proxy/{registry}/dist/{vendor}/{package}/{version}` | Download a Composer package ZIP artifact. |
+| `GET` | `/proxy/{registry}/list.json` | `composer` bulk package enumeration — `list.json`. |
+| `GET` | `/proxy/{registry}/p2/{path}` | Packagist v2 package metadata (all versions). |
+| `GET` | `/proxy/{registry}/packages.json` | Composer registry root index. |
+| `GET` | `/proxy/{registry}/search.json` | `composer search`. |
+<!-- END endpoints -->
 
 ---
+
+## Blocked versions
+
+p2 metadata drops the blocked version, and `dist.url` is repointed at BatleHub
+so downloads go through the proxy rather than straight to the upstream CDN.
+
+Packagist serves `"minified": "composer/2.0"`, in which each entry omits every
+key identical to the previous one. Deleting a middle entry from such a list
+silently changes what the entries *after* it inherit — a well-formed document
+describing the wrong packages. BatleHub expands the list, removes the version,
+and re-minifies, so an entry after the removed one still means what it meant.
+
+The upstream document is cached for the registry's `metadata_ttl`; blocks are
+applied on top of the cached copy on every request, so blocking a version takes
+effect immediately rather than when the cache expires.
+
+See [blocking a package version](/guide/admin-policies#block-a-package-version) for the two halves of a block, and [which listings are filtered](/guide/admin-policies#which-listings-are-filtered) for the full table.
 
 ## Authentication
 
@@ -201,6 +230,40 @@ When `auth.json` is present, no `Authorization` header is needed in `composer.js
 
 - `composer audit` works automatically — BatleHub proxies the Packagist security advisory API (`/api/security-advisories/`) transparently. See [Using BatleHub → security auditing](/use/#security-audit).
 - Yanked versions are hidden from version listings and return `404` on download.
+
+## Search
+
+``composer search`` is answered in three steps: a cached result for that query, then the
+upstream, then — when the upstream is unreachable — **the packages this registry
+already holds**. An outage degrades search to what BatleHub can honestly answer
+for, rather than to an error or to an empty result list.
+
+Every response carries `X-BatleHub-Cache: hit | miss | stale`. `stale` means the
+upstream could not be reached and the answer came from the cache or from the held
+set, so a short result list is never silently presented as complete.
+
+::: warning Search queries reach the upstream
+Step two forwards the query string to the configured upstream. Search terms are a
+record of what your organisation is looking for. Set `serve_stale = false` and
+leave the registry without an upstream if you want the held-package answer and no
+egress at all.
+:::
+
+Blocked versions are removed from results, and the reported total is adjusted to
+match — clients paginate by offset, so a silently shortened page would make the
+next one skip a result.
+
+## A plain-HTTP instance needs an explicit opt-in
+
+Composer refuses an `http:` repository by default. If BatleHub is not behind TLS,
+the project needs:
+
+```json
+{ "config": { "secure-http": false } }
+```
+
+Measured against Composer 2.10.2. Without it Composer stops before making any
+request, pointing at <https://getcomposer.org/doc/06-config.md#secure-http>.
 
 ## See also
 

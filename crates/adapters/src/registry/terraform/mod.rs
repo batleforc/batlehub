@@ -110,6 +110,17 @@ impl TerraformRegistryClient {
                     // Provider version metadata (not a standard endpoint; fall back to versions)
                     Ok(format!("{base}/v1/{}/versions", pkg.name))
                 }
+                // The checksum manifest and its signature are named *inside*
+                // the download document rather than addressed by a path, so the
+                // URL here is that document and `fetch_artifact` follows the
+                // field (RFC 0009 §12.8). Terraform verifies the archive
+                // against these, so an air-gapped install needs them proxied
+                // too — a gated archive whose checksums come from the internet
+                // is not an offline install.
+                Some("shasums") | Some("shasums.sig") => Ok(format!(
+                    "{base}/v1/{}/{}/download/linux/amd64",
+                    pkg.name, pkg.version
+                )),
                 Some(platform) => {
                     // platform = "linux/amd64"
                     let (os, arch) = platform.split_once('/').ok_or_else(|| {

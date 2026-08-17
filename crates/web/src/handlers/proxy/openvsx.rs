@@ -3,16 +3,22 @@ use std::sync::Arc;
 use actix_web::{get, put, web, HttpRequest, HttpResponse, Responder};
 use sha2::{Digest, Sha256};
 
-use batlehub_config::schema::RegistryMode;
-use batlehub_core::{
-    entities::PackageId,
-    error::CoreError,
-    services::{LocalRegistryService, ProxyService, PublishRequest},
-};
+use batlehub_core::services::{LocalRegistryService, ProxyService, PublishRequest};
 
-use super::common::{collect_payload, extract_signature_headers, proxy_stream, require_local_mode};
+use super::common::{
+    collect_payload, extract_signature_headers, require_local_mode, serve_local_or_proxy_artifact,
+    LocalOrProxyArtifactOpts,
+};
 use crate::handlers::schemas::{ArtifactBytes, OkResponse};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+
+/// The `PackageId::artifact` sub-coordinate a VSIX is stored and read under.
+///
+/// Must equal `RegistryKind::{Openvsx,VscodeMarketplace}.warm_artifact()`, or
+/// the warmer pre-fetches into a slot the download path never looks in. The
+/// unit test at the bottom of this file is the drift guard, matching the one
+/// `jetbrains_marketplace/mod.rs` keeps for `PLUGIN_ARTIFACT`.
+pub(crate) const VSIX_ARTIFACT: &str = "vsix";
 
 pub fn require_openvsx(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry).as_deref() {
@@ -57,54 +63,28 @@ pub async fn download_vsix(
     let (registry, extension_id, version) = path.into_inner();
     require_openvsx(&registry, &map)?;
 
-    let mode = mode_map.get(&registry);
-
-    if matches!(mode, RegistryMode::Local) {
-        local_svc
-            .check_prerelease_access(&registry, &version, &identity)
-            .await
-            .map_err(AppError::from)?;
-        let bytes = local_svc
-            .get_artifact(&registry, &extension_id, &version, &identity)
-            .await
-            .map_err(AppError::from)?;
-        return Ok(HttpResponse::Ok()
-            .content_type("application/octet-stream")
-            .body(bytes));
-    }
-
-    if matches!(mode, RegistryMode::Hybrid) {
-        if let Err(e) = local_svc
-            .check_prerelease_access(&registry, &version, &identity)
-            .await
-        {
-            if !matches!(e, CoreError::NotFound(_)) {
-                return Err(AppError::from(e));
-            }
-            // pre-release gated; fall through to proxy
-        } else {
-            match local_svc
-                .get_artifact(&registry, &extension_id, &version, &identity)
-                .await
-            {
-                Ok(bytes) => {
-                    return Ok(HttpResponse::Ok()
-                        .content_type("application/octet-stream")
-                        .body(bytes));
-                }
-                Err(CoreError::NotFound(_)) => {}
-                Err(e) => return Err(AppError::from(e)),
-            }
-        }
-    }
-
-    let pkg = PackageId::new(&registry, &extension_id, &version).with_artifact("vsix");
-    proxy_stream(
+    // Through the shared helper rather than a hand-rolled local/hybrid branch.
+    // The hand-rolled version read straight from local storage without calling
+    // `svc.authorize_read`, so a local or hybrid hit answered without ever
+    // consulting the registry's `[registries.rbac]` chain — the proxy
+    // fall-through ran it, the local path did not. Every other ecosystem goes
+    // through this helper precisely so that cannot happen.
+    serve_local_or_proxy_artifact(
         svc,
-        pkg,
+        local_svc,
+        &mode_map,
+        &registry,
+        &extension_id,
+        &version,
         identity,
-        batlehub_core::rules::resource_type::SOURCE_READ,
-        None,
+        LocalOrProxyArtifactOpts {
+            artifact_suffix: VSIX_ARTIFACT,
+            local_content_type: "application/octet-stream",
+            proxy_content_type: None,
+            resource_type: batlehub_core::rules::resource_type::SOURCE_READ,
+            check_prerelease: true,
+            append_signature: true,
+        },
     )
     .await
 }
@@ -153,11 +133,34 @@ pub async fn vsix_publish(
         .next()
         .unwrap_or(&extension_id)
         .to_owned();
-    let index_metadata = serde_json::json!({
-        "id": extension_id,
-        "version": version,
-        "publisher": publisher
-    });
+    // Record what the manifest says, so the gallery can render more than a bare
+    // coordinate. Best-effort on purpose: this endpoint takes raw bytes and
+    // makes no claim they are a VSIX, so an unreadable manifest degrades to the
+    // three keys below rather than refusing the publish. An extension that
+    // appears in the editor with no description is worse than one that renders
+    // fully, and far better than one that could not be published.
+    let index_metadata = match super::vsx::archive::parse_manifest(&vsix_bytes) {
+        Some(manifest) => {
+            // The URL is the coordinate every other route addresses by, so it
+            // wins over a manifest that disagrees — but a disagreement is worth
+            // saying out loud, since it usually means the wrong file was
+            // uploaded.
+            let manifest_id = manifest.extension_id();
+            if manifest_id != extension_id || manifest.version != version {
+                tracing::warn!(
+                    url_coordinate = %format!("{extension_id}@{version}"),
+                    manifest_coordinate = %format!("{manifest_id}@{}", manifest.version),
+                    "VSIX manifest disagrees with the publish URL; using the URL"
+                );
+            }
+            manifest.index_metadata(&extension_id, &version)
+        }
+        None => serde_json::json!({
+            "id": extension_id,
+            "version": version,
+            "publisher": publisher,
+        }),
+    };
 
     let (signature_bytes, signature_type) = extract_signature_headers(&req);
 
@@ -182,4 +185,27 @@ pub async fn vsix_publish(
         resp.insert_header((name, value));
     }
     Ok(resp.json(OkResponse::new()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VSIX_ARTIFACT;
+    use batlehub_core::entities::RegistryKind;
+
+    /// The warmer and the download path must agree on the cache slot.
+    ///
+    /// They did not: `warm_artifact()` returned `None` while `download_vsix`
+    /// read `.with_artifact("vsix")`, so pre-fetching an extension wrote a key
+    /// nothing looked in. This is the same drift guard
+    /// `jetbrains_marketplace/mod.rs` keeps for `PLUGIN_ARTIFACT`.
+    #[test]
+    fn vsix_artifact_matches_the_warmed_sub_coordinate() {
+        for kind in [RegistryKind::Openvsx, RegistryKind::VscodeMarketplace] {
+            assert_eq!(
+                kind.warm_artifact(),
+                Some(VSIX_ARTIFACT),
+                "{kind}: warming and downloading must use the same cache slot"
+            );
+        }
+    }
 }

@@ -478,13 +478,20 @@ user      = ["source:read"]
 admin     = ["*"]
 ```
 
-Configure VS Code to use the registry (`.vscode/settings.json` or user settings):
+Point the editor at the registry's gallery, in `product.json`:
 
-```json
+```jsonc
 {
-  "vscode-extension-marketplace.serviceUrl": "https://batlehub.example.com/proxy/internal-ext"
+  "extensionsGallery": {
+    "serviceUrl": "https://batlehub.example.com/proxy/internal-ext/vscode/gallery",
+    "itemUrl": "https://batlehub.example.com/proxy/internal-ext/vscode/item",
+    "resourceUrlTemplate": "https://batlehub.example.com/proxy/internal-ext/vscode/unpkg/{publisher}/{name}/{version}/{path}"
+  }
 }
 ```
+
+The editor sends no credentials to its gallery, so the `anonymous` grant above
+is what makes this work — see [OpenVSX](/registries/openvsx#use-batlehub-as-your-extension-gallery).
 
 Upload an extension (raw VSIX bytes):
 

@@ -3,14 +3,14 @@ use futures::TryStreamExt;
 use serde::Deserialize;
 
 use super::super::http_client::{
-    apply_upstream_options, cache_control, parse_http_date, percent_encode, to_registry_error,
-    UpstreamHttpOptions,
+    apply_upstream_options, cache_control, fetch_json_document, parse_http_date, percent_encode,
+    to_registry_error, UpstreamHttpOptions,
 };
 use super::models::normalize_id;
 use batlehub_core::{
     entities::{PackageId, PackageMetadata},
     error::CoreError,
-    ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
+    ports::{DocumentKind, FetchedArtifact, RegistryClient, UpstreamPackage, VersionDocument},
 };
 
 /// NuGet v3 protocol registry client.
@@ -183,6 +183,34 @@ impl NugetRegistryClient {
 impl RegistryClient for NugetRegistryClient {
     fn registry_type(&self) -> &str {
         "nuget"
+    }
+
+    /// NuGet has two listing documents for one package, and they are read by
+    /// different things: `dotnet restore` resolves a version range against the
+    /// **flat index**, while the registration pages carry the rich metadata a
+    /// UI shows. Both must hide a blocked version, so both are addressable here.
+    async fn fetch_version_document(
+        &self,
+        package: &str,
+        kind: DocumentKind,
+    ) -> Result<VersionDocument, CoreError> {
+        let id = normalize_id(package);
+        let (url, what) = match kind {
+            DocumentKind::Versions => (
+                format!("{}/{}/index.json", self.flat_url, id),
+                format!("NuGet flat index for '{id}'"),
+            ),
+            DocumentKind::REGISTRATION => (
+                format!("{}/{}/index.json", self.reg_url, id),
+                format!("NuGet registration for '{id}'"),
+            ),
+            other => {
+                return Err(CoreError::NotSupported(format!(
+                    "NuGet has no '{other}' listing document"
+                )))
+            }
+        };
+        fetch_json_document(self.get(&url), &what).await
     }
 
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {

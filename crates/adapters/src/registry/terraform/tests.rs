@@ -93,10 +93,16 @@ async fn fetch_artifact_provider_versions() {
     assert!(String::from_utf8(content).unwrap().contains("5.0.0"));
 }
 
+/// A download document that names no `download_url` has no archive to serve.
+///
+/// This test used to assert the opposite: it streamed the document and checked
+/// the bytes contained `"linux"` — which they did, because they were the
+/// document. It passed for exactly as long as provider installs were broken
+/// (RFC 0009 §12.12), and the success path is now
+/// `provider_archive_follows_download_url_rather_than_serving_the_document`.
 #[tokio::test]
-async fn fetch_artifact_provider_download_info() {
-    let body =
-        r#"{"os":"linux","arch":"amd64","download_url":"https://releases.hashicorp.com/..."}"#;
+async fn fetch_artifact_provider_without_a_download_url_is_not_found() {
+    let body = r#"{"os":"linux","arch":"amd64"}"#;
     let mut server = Server::new_async().await;
     let _mock = server
         .mock(
@@ -111,13 +117,10 @@ async fn fetch_artifact_provider_download_info() {
 
     let client = TerraformRegistryClient::new(server.url(), &Default::default()).unwrap();
     let pkg = provider_pkg("hashicorp", "aws", "5.0.0").with_artifact("linux/amd64");
-    let fetched = client.fetch_artifact(&pkg).await.unwrap();
-    let bytes: Vec<bytes::Bytes> = fetched.stream.try_collect().await.unwrap();
-    let content = bytes
-        .into_iter()
-        .flat_map(|b| b.to_vec())
-        .collect::<Vec<u8>>();
-    assert!(String::from_utf8(content).unwrap().contains("linux"));
+    assert!(matches!(
+        client.fetch_artifact(&pkg).await,
+        Err(CoreError::NotFound(_))
+    ));
 }
 
 #[tokio::test]
@@ -211,6 +214,102 @@ async fn provider_artifact_url_platform() {
         url,
         "https://registry.terraform.io/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64"
     );
+}
+
+/// The provider archive is named *inside* the download document, so fetching it
+/// means resolving that document and following `download_url`.
+///
+/// This streamed the download document itself as the provider zip: 8 KB of JSON
+/// served as `application/zip`, which Terraform 1.8.5 reported as *"archive has
+/// incorrect checksum"* after correctly verifying the signature over checksums
+/// we had proxied properly (RFC 0009 §12.12).
+#[tokio::test]
+async fn provider_archive_follows_download_url_rather_than_serving_the_document() {
+    let mut server = Server::new_async().await;
+    let doc = format!(
+        r#"{{"os":"linux","arch":"amd64","filename":"p.zip","download_url":"{}/real/p.zip"}}"#,
+        server.url()
+    );
+    let _doc_mock = server
+        .mock(
+            "GET",
+            "/v1/providers/hashicorp/null/3.2.2/download/linux/amd64",
+        )
+        .with_status(200)
+        .with_body(doc)
+        .create_async()
+        .await;
+    let _zip_mock = server
+        .mock("GET", "/real/p.zip")
+        .with_status(200)
+        .with_body(b"PK\x03\x04-the-actual-archive")
+        .create_async()
+        .await;
+
+    let client = TerraformRegistryClient::new(server.url(), &Default::default()).unwrap();
+    let pkg = provider_pkg("hashicorp", "null", "3.2.2").with_artifact("linux/amd64");
+    let fetched = client.fetch_artifact(&pkg).await.unwrap();
+
+    let mut body = Vec::new();
+    let mut stream = fetched.stream;
+    while let Some(chunk) = stream.try_next().await.unwrap() {
+        body.extend_from_slice(&chunk);
+    }
+    let body = String::from_utf8_lossy(&body);
+    assert!(
+        body.contains("the-actual-archive"),
+        "expected the archive bytes, got {body}"
+    );
+    assert!(
+        !body.contains("download_url"),
+        "served the download document as the archive: {body}"
+    );
+}
+
+/// The download document is addressed in full by the package name — appending
+/// `/versions` to it names the listing, which is a different document with none
+/// of the fields Terraform needs (RFC 0009 §12.12).
+#[tokio::test]
+async fn provider_download_document_is_fetched_at_its_own_url() {
+    let mut server = Server::new_async().await;
+    let _mock = server
+        .mock(
+            "GET",
+            "/v1/providers/hashicorp/null/3.2.2/download/linux/amd64",
+        )
+        .with_status(200)
+        .with_body(r#"{"os":"linux","arch":"amd64","filename":"p.zip"}"#)
+        .create_async()
+        .await;
+
+    let client = TerraformRegistryClient::new(server.url(), &Default::default()).unwrap();
+    let doc = client
+        .fetch_version_document(
+            "providers/hashicorp/null/3.2.2/download/linux/amd64",
+            batlehub_core::ports::DocumentKind::PROVIDER_DOWNLOAD,
+        )
+        .await
+        .unwrap();
+    let json = doc.body.as_json().expect("json document");
+    assert_eq!(json.get("os").and_then(|v| v.as_str()), Some("linux"));
+    assert_eq!(json.get("arch").and_then(|v| v.as_str()), Some("amd64"));
+}
+
+/// A name that does not address a download document is a bad request, not a
+/// request for the listing under a different name.
+#[tokio::test]
+async fn provider_download_document_rejects_a_name_without_a_platform() {
+    let client =
+        TerraformRegistryClient::new("https://registry.terraform.io", &Default::default()).unwrap();
+    assert!(matches!(
+        client
+            .fetch_version_document(
+                "providers/hashicorp/null",
+                batlehub_core::ports::DocumentKind::PROVIDER_DOWNLOAD,
+            )
+            .await,
+        Err(CoreError::Registry(_))
+    ));
 }
 
 // ── published_at / release age gate ──────────────────────────────────────

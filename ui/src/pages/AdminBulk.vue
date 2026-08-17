@@ -280,6 +280,14 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
           </Button>
         </div>
 
+        <!-- What a block does, stated once above the list rather than per row.
+             A CSV row with an `artifact` column blocks one file, and that
+             hides the whole version from listings — the one consequence an
+             operator is likely to be surprised by. -->
+        <p v-if="action === 'block'" class="text-sm text-muted-foreground max-w-2xl">
+          {{ t("adminBulk.blockEffect") }}
+        </p>
+
         <!-- Default reason (block only) -->
         <div v-if="action === 'block'" class="space-y-1 max-w-md">
           <Label for="default-reason"

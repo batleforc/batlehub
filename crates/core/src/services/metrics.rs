@@ -13,6 +13,12 @@ const EMA_SMOOTHING: u64 = 8; // new sample gets 1/8 weight
 pub struct RegistryCounters {
     artifact_hits: AtomicU64,
     artifact_misses: AtomicU64,
+    /// Allowed reads of a *version listing* — a packument, a flat index, a
+    /// `maven-metadata.xml`. Counted rather than filed as audit rows: a
+    /// `cargo build` over a 400-crate graph is 400 listing fetches, and one
+    /// `AccessEvent` per listing puts rows in the audit trail that transferred
+    /// no bytes. Denials keep their own rows; see `ProxyService::version_document`.
+    listing_reads: AtomicU64,
     /// EMA of upstream error occurrence, fixed-point 0-1000 (0 = never errors, 1000 = always errors).
     upstream_error_rate_permille: AtomicU64,
     /// EMA of upstream call latency in milliseconds.
@@ -32,6 +38,7 @@ impl RegistryCounters {
         Self {
             artifact_hits: AtomicU64::new(0),
             artifact_misses: AtomicU64::new(0),
+            listing_reads: AtomicU64::new(0),
             upstream_error_rate_permille: AtomicU64::new(0),
             upstream_latency_ms: AtomicU64::new(0),
             degraded: AtomicBool::new(false),
@@ -44,6 +51,10 @@ impl RegistryCounters {
 
     pub fn misses(&self) -> u64 {
         self.artifact_misses.load(Ordering::Relaxed)
+    }
+
+    pub fn listing_reads(&self) -> u64 {
+        self.listing_reads.load(Ordering::Relaxed)
     }
 
     fn record_outcome(&self, ok: bool) {
@@ -105,6 +116,18 @@ impl ProxyMetrics {
     pub fn record_artifact_miss(&self, registry: &str) {
         if let Some(c) = self.registries.get(registry) {
             c.artifact_misses.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Count one allowed version-listing read.
+    ///
+    /// The counter is the durable record: `StatsRollupService` writes the
+    /// *difference* since its last tick to `stats_history` once an hour, so this
+    /// costs one atomic increment on the hottest path in the system and no
+    /// per-request write at all.
+    pub fn record_listing_read(&self, registry: &str) {
+        if let Some(c) = self.registries.get(registry) {
+            c.listing_reads.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -183,6 +206,19 @@ mod tests {
         let c = m.all().get("npm").unwrap();
         assert_eq!(c.hits(), 0);
         assert_eq!(c.misses(), 1);
+    }
+
+    #[test]
+    fn listing_reads_are_counted_separately_from_artifact_traffic() {
+        let m = ProxyMetrics::new(&names(&["npm"]));
+        m.record_listing_read("npm");
+        m.record_listing_read("npm");
+        m.record_artifact_hit("npm");
+
+        let c = m.all().get("npm").unwrap();
+        assert_eq!(c.listing_reads(), 2);
+        assert_eq!(c.hits(), 1, "a listing is not a cache hit");
+        assert_eq!(c.misses(), 0);
     }
 
     #[test]

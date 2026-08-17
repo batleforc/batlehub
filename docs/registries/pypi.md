@@ -48,6 +48,25 @@ twine upload \
 
 Or configure `~/.pypirc` with a `repository = https://batlehub.example.com/proxy/<registry>/legacy/` entry and run `twine upload --repository batlehub dist/*`.
 
+## Blocked versions
+
+A blocked version disappears from the simple index in **both** of its
+representations — PEP 503 HTML and PEP 691 JSON — and every file of that
+version goes with it, the wheel and the sdist alike. PEP 700's `versions`
+summary is filtered alongside the file list so the two cannot disagree.
+
+The index lists files rather than versions, so the version is recovered from
+each distribution filename. A filename BatleHub does not recognise is **kept**:
+over-listing one file is the safe direction, where a mis-parse that dropped it
+would hide a package's whole file set. Versions are compared under PEP 440, so a
+block recorded as `1.0` hides a wheel listed as `1.0.0`.
+
+The upstream document is cached for the registry's `metadata_ttl`; blocks are
+applied on top of the cached copy on every request, so blocking a version takes
+effect immediately rather than when the cache expires.
+
+See [blocking a package version](/guide/admin-policies#block-a-package-version) for the two halves of a block, and [which listings are filtered](/guide/admin-policies#which-listings-are-filtered) for the full table.
+
 ## Authentication
 
 Twine sends the token as the password with the literal username `__token__`. For installs, pip/uv/Poetry read credentials from `~/.netrc` automatically:

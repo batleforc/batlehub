@@ -1,9 +1,10 @@
 use super::{
     collect_payload, content_type_for, get, maven_artifact_storage_key, maven_local_response,
-    parse_maven_path, parse_pom, proxy_stream, put, require_local_mode, require_registry_type, web,
-    AppError, Arc, AuthIdentity, Digest, HttpResponse, LocalRegistryService, MavenPathKind,
-    NotificationService, PackageId, ProxyService, PublishPolicyRequest, PublishRequest,
-    RegistryMap, RegistryMode, RegistryModeMap, Responder, Sha256, StorageMeta,
+    parse_maven_path, parse_pom, proxy_document, proxy_stream, put, require_local_mode,
+    require_registry_type, web, AppError, Arc, AuthIdentity, Digest, HttpResponse,
+    LocalRegistryService, MavenPathKind, NotificationService, PackageId, ProxyService,
+    PublishPolicyRequest, PublishRequest, RegistryMap, RegistryMode, RegistryModeMap, Responder,
+    Sha256, StorageMeta,
 };
 use crate::handlers::schemas::{ArtifactBytes, OkResponse};
 
@@ -68,30 +69,42 @@ pub async fn maven_get(
         }
     }
 
-    // Proxy fallback (Proxy mode or Hybrid miss)
-    let pkg = match &kind {
+    // Proxy fallback (Proxy mode or Hybrid miss).
+    //
+    // `maven-metadata.xml` is a *listing*, and every other path here is an
+    // artifact. The split matters: a listing goes through `proxy_document`,
+    // which parses the XML and removes administratively blocked versions before
+    // Maven resolves a range, `LATEST` or `RELEASE` against it. Streamed
+    // through `proxy_stream` it would arrive with the blocked version still in
+    // `<versions>`, and the build would pick it and fail at download.
+    match &kind {
         MavenPathKind::Metadata { name } => {
-            PackageId::new(&registry, name.clone(), "maven-metadata.xml")
+            proxy_document(
+                svc,
+                PackageId::new(&registry, name.clone(), "maven-metadata.xml"),
+                identity,
+                batlehub_core::rules::resource_type::RELEASES_READ,
+                batlehub_core::ports::DocumentKind::Versions,
+                String::new(),
+            )
+            .await
         }
         MavenPathKind::Artifact {
             name,
             version,
             filename,
-        } => PackageId::new(&registry, name.clone(), version.as_str())
-            .with_artifact(filename.as_str()),
-    };
-    let filename = match &kind {
-        MavenPathKind::Metadata { .. } => "maven-metadata.xml",
-        MavenPathKind::Artifact { filename, .. } => filename.as_str(),
-    };
-    proxy_stream(
-        svc,
-        pkg,
-        identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
-        Some(content_type_for(filename)),
-    )
-    .await
+        } => {
+            proxy_stream(
+                svc,
+                PackageId::new(&registry, name.clone(), version.as_str())
+                    .with_artifact(filename.as_str()),
+                identity,
+                batlehub_core::rules::resource_type::RELEASES_READ,
+                Some(content_type_for(filename)),
+            )
+            .await
+        }
+    }
 }
 
 /// Upload a Maven artifact to the local registry.

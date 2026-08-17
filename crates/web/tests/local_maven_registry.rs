@@ -5,77 +5,21 @@ mod common;
 #[allow(unused_imports)]
 use common::*;
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use actix_web::test::{call_service, read_body, TestRequest};
 
-use batlehub_adapters::cache::InMemoryCacheStore;
-use batlehub_adapters::in_memory::{
-    InMemoryPackageRepository as InMemoryRepo, InMemoryStorageBackend as InMemoryStorage,
-    NoopArtifactMetaRepository as NoopArtifactMeta, NullUserTokenRepository as NullTokenRepository,
-};
 use batlehub_config::schema::RegistryMode;
-use batlehub_core::{
-    ports::{CacheStore, PackageRepository, RegistryClient, StorageBackend},
-    services::{new_hot_lock, AdminService, HotConfig, ProxyMetrics, ProxyService, RegistryPolicy},
-};
-use batlehub_web::RegistryModeMap;
 
 // ══ Maven local registry tests ════════════════════════════════════════════════
 
-async fn make_local_maven_app(
-    mode: RegistryMode,
-) -> impl actix_web::dev::Service<
-    actix_http::Request,
-    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
-    Error = actix_web::Error,
-> {
-    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
-    let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
-    let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-
-    let mut registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
-    if matches!(mode, RegistryMode::Hybrid) {
-        registries.insert(
-            "local-maven".to_owned(),
-            FixedRegistry::new("maven") as Arc<dyn RegistryClient>,
-        );
-    }
-    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
-        "local-maven".to_owned(),
-        Arc::new(rbac_policy(repo_dyn.clone())),
-    )]
-    .into();
-
-    let local_svc = make_local_svc(storage.clone());
-    let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
-        storage,
-        cache,
-        repo: repo_dyn.clone(),
-        artifact_meta: NoopArtifactMeta::arc(),
-        metrics: Arc::new(ProxyMetrics::new(&[])),
-        sbom: None,
-    });
-    let admin_svc = Arc::new(AdminService::new(repo_dyn));
-    let mode_map = RegistryModeMap::default();
-    mode_map.insert("local-maven".to_owned(), mode);
-
-    let parts = LocalRegistryAppParts {
-        proxy_svc,
-        admin_svc,
-        token_repo: Arc::new(NullTokenRepository),
-        access_config: access_config(&[], &["local-maven"]),
-        registry_map: registry_map_for(&[("local-maven", "maven")]),
-        local_svc,
-        mode_map,
-    };
-    build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await
+async fn make_local_maven_app(mode: RegistryMode) -> impl TestService {
+    // Hybrid needs the upstream client, or the fall-through resolves nothing.
+    let upstream = matches!(mode, RegistryMode::Hybrid);
+    build_local_registry_app(
+        local_only_app_parts("local-maven", "maven", mode, upstream),
+        batlehub_web::CargoIndexMap::default(),
+        None,
+    )
+    .await
 }
 
 const SAMPLE_POM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>

@@ -171,6 +171,12 @@ echo "machine batlehub.example.com login user password $BATLEHUB_TOKEN" >> ~/.ne
 chmod 600 ~/.netrc
 ```
 
+`machine` is matched by hostname, so it must be the host in `GOVULNDB` above. On a
+deployment with [host-based routing](../rfc/0001-subdomain-routing.md) that is the
+registry's own subdomain (`go.batlehub.example.com`), not the main host — one
+`machine` line per host you fetch from. The Setup Guide's **.netrc** tab lists
+them all, already filled in.
+
 The govulndb URL can be changed per-registry with `vuln_db_url` in the server config (default: `https://vuln.go.dev`). Setting it to `""` disables the endpoints.
 
 ### .NET — vulnerable packages {#audit-dotnet}

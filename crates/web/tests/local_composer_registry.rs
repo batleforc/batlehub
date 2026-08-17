@@ -13,22 +13,86 @@ use batlehub_config::schema::RegistryMode;
 
 // ── packages.json ─────────────────────────────────────────────────────────────
 
+/// Upload a package as an ordinary user, and answer with the status.
+async fn upload<S: TestService>(app: &S, name: &str, version: &str) -> actix_web::http::StatusCode {
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(make_composer_zip(name, version))
+        .to_request();
+    call_service(app, req).await.status()
+}
+
+/// A read as an ordinary user, asserting `200`, returning the JSON body.
+async fn user_json<S: TestService>(app: &S, uri: &str) -> Value {
+    let req = TestRequest::get()
+        .uri(uri)
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(app, req).await;
+    assert_eq!(resp.status(), 200, "{uri} should be served");
+    read_body_json(resp).await
+}
+
+/// A read as an ordinary user, asserting `200`, returning the body as text.
+async fn user_text<S: TestService>(app: &S, uri: &str) -> String {
+    let req = TestRequest::get()
+        .uri(uri)
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(app, req).await;
+    assert_eq!(resp.status(), 200, "{uri} should be served");
+    String::from_utf8(read_body(resp).await.to_vec()).expect("body is valid UTF-8")
+}
+
 #[actix_web::test]
 async fn composer_packages_json_proxy_mode_returns_metadata_url() {
     let app = make_local_composer_app(RegistryMode::Proxy).await;
-    let req = TestRequest::get()
-        .uri("/proxy/local-composer/packages.json")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 200);
-    let body: Value = read_body_json(resp).await;
+    let body: Value = user_json(&app, "/proxy/local-composer/packages.json").await;
     let metadata_url = body["metadata-url"].as_str().unwrap();
     assert!(
         metadata_url.contains("/proxy/local-composer/p2/%package%.json"),
         "metadata-url must point to our p2 endpoint"
     );
-    assert_eq!(body["available-packages"], serde_json::json!([]));
+    // `available-packages` must be **absent**, not empty. Composer reads it as
+    // the complete contents of the repository, so `[]` says "there is nothing
+    // here" and it stops: it never requests `metadata-url` for any package and
+    // reports each one as "could not be found in any version".
+    //
+    // This assertion used to require `[]`, which is how the bug survived — the
+    // wire shape was pinned without asking what the client does with it.
+    // Measured with Composer 2.10.2 against a real server (RFC 0009 §12.10).
+    assert!(
+        body.get("available-packages").is_none(),
+        "proxy mode cannot enumerate upstream, so claiming a complete list \
+         makes Composer resolve nothing; got {:?}",
+        body.get("available-packages")
+    );
+}
+
+/// Hybrid knows its own packages and not upstream's, so it cannot make the
+/// completeness claim either — advertising the local list would hide every
+/// proxied package from resolution.
+#[actix_web::test]
+async fn composer_packages_json_hybrid_mode_omits_available_packages() {
+    let app = make_local_composer_app(RegistryMode::Hybrid).await;
+
+    assert_eq!(upload(&app, "acme/my-pkg", "1.0.0").await, 200);
+
+    let body: Value = user_json(&app, "/proxy/local-composer/packages.json").await;
+    assert!(
+        body.get("available-packages").is_none(),
+        "a hybrid registry that lists only its local packages tells Composer \
+         upstream's do not exist; got {:?}",
+        body.get("available-packages")
+    );
+    // The package is still resolvable — through `metadata-url`, which is the
+    // endpoint a proxy can actually answer for anything.
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/p2/acme/my-pkg.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
 }
 
 #[actix_web::test]
@@ -45,13 +109,7 @@ async fn composer_packages_json_local_mode_lists_published_packages() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-composer/packages.json")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 200);
-    let body: Value = read_body_json(resp).await;
+    let body: Value = user_json(&app, "/proxy/local-composer/packages.json").await;
     let available = body["available-packages"].as_array().unwrap();
     assert!(
         available.iter().any(|v| v.as_str() == Some("acme/my-pkg")),
@@ -75,15 +133,8 @@ async fn composer_packages_json_unknown_registry_returns_404() {
 #[actix_web::test]
 async fn composer_p2_proxy_mode_returns_artifact_body() {
     let app = make_local_composer_app(RegistryMode::Proxy).await;
-    let req = TestRequest::get()
-        .uri("/proxy/local-composer/p2/vendor/pkg.json")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 200);
-    let body = read_body(resp).await;
     // FixedRegistry returns "artifact:composer:…" — assert content originates from the registry call
-    let body_str = std::str::from_utf8(&body).expect("body is valid UTF-8");
+    let body_str = user_text(&app, "/proxy/local-composer/p2/vendor/pkg.json").await;
     assert!(
         body_str.contains("vendor/pkg"),
         "response body must reference the requested package name; got: {body_str:?}"
@@ -93,15 +144,8 @@ async fn composer_p2_proxy_mode_returns_artifact_body() {
 #[actix_web::test]
 async fn composer_p2_dev_variant_returns_200_and_body() {
     let app = make_local_composer_app(RegistryMode::Proxy).await;
-    let req = TestRequest::get()
-        .uri("/proxy/local-composer/p2/vendor/pkg~dev.json")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
     // ~dev.json is a valid variant — the parse helper strips the suffix.
-    assert_eq!(resp.status(), 200);
-    let body = read_body(resp).await;
-    let body_str = std::str::from_utf8(&body).expect("body is valid UTF-8");
+    let body_str = user_text(&app, "/proxy/local-composer/p2/vendor/pkg~dev.json").await;
     assert!(
         body_str.contains("vendor/pkg"),
         "response body must reference the requested package name; got: {body_str:?}"
@@ -112,21 +156,9 @@ async fn composer_p2_dev_variant_returns_200_and_body() {
 async fn composer_p2_local_mode_published_package_found() {
     let app = make_local_composer_app(RegistryMode::Local).await;
 
-    let zip = make_composer_zip("acme/my-lib", "2.0.0");
-    let req = TestRequest::post()
-        .uri("/proxy/local-composer/api/upload")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .set_payload(zip)
-        .to_request();
-    assert_eq!(call_service(&app, req).await.status(), 200);
+    assert_eq!(upload(&app, "acme/my-lib", "2.0.0").await, 200);
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-composer/p2/acme/my-lib.json")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 200);
-    let body: Value = read_body_json(resp).await;
+    let body: Value = user_json(&app, "/proxy/local-composer/p2/acme/my-lib.json").await;
     assert!(body["packages"]["acme/my-lib"].is_array());
 }
 
@@ -308,21 +340,9 @@ async fn composer_upload_invalid_zip_returns_422() {
 async fn composer_upload_then_p2_shows_package() {
     let app = make_local_composer_app(RegistryMode::Local).await;
 
-    let zip = make_composer_zip("acme/seq-pkg", "1.2.3");
-    let req = TestRequest::post()
-        .uri("/proxy/local-composer/api/upload")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .set_payload(zip)
-        .to_request();
-    assert_eq!(call_service(&app, req).await.status(), 200);
+    assert_eq!(upload(&app, "acme/seq-pkg", "1.2.3").await, 200);
 
-    let req = TestRequest::get()
-        .uri("/proxy/local-composer/p2/acme/seq-pkg.json")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 200);
-    let body: Value = read_body_json(resp).await;
+    let body: Value = user_json(&app, "/proxy/local-composer/p2/acme/seq-pkg.json").await;
     let versions = body["packages"]["acme/seq-pkg"].as_array().unwrap();
     assert!(!versions.is_empty());
     assert_eq!(versions[0]["version"], "1.2.3");
@@ -340,22 +360,10 @@ async fn composer_yank_excludes_version_from_p2() {
     // clients have no standard `yanked` field — they would otherwise install yanked releases.
     let app = make_local_composer_app(RegistryMode::Local).await;
 
-    let zip = make_composer_zip("acme/yankable", "4.0.0");
-    let req = TestRequest::post()
-        .uri("/proxy/local-composer/api/upload")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .set_payload(zip)
-        .to_request();
-    assert_eq!(call_service(&app, req).await.status(), 200);
+    assert_eq!(upload(&app, "acme/yankable", "4.0.0").await, 200);
 
     // Verify the version appears before yanking.
-    let req = TestRequest::get()
-        .uri("/proxy/local-composer/p2/acme/yankable.json")
-        .insert_header(("Authorization", bearer(USER_TOKEN)))
-        .to_request();
-    let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 200);
-    let body: Value = read_body_json(resp).await;
+    let body: Value = user_json(&app, "/proxy/local-composer/p2/acme/yankable.json").await;
     assert!(!body["packages"]["acme/yankable"]
         .as_array()
         .unwrap()
@@ -409,4 +417,51 @@ async fn composer_wrong_registry_type_returns_404() {
         .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 404);
+}
+
+/// Composer verifies `dist.shasum` with **SHA-1** — RFC 0009 §12.16.
+///
+/// The p2 document published the artifact's stored SHA-256 there, so
+/// `composer install` of a locally published package downloaded the zip,
+/// hashed it, disagreed with itself and stopped:
+/// *"The checksum verification of the file failed"*. Every route was right and
+/// no package could be installed. Found by `tests/heavy/composer.sh`.
+///
+/// The assertion is that the digest is the SHA-1 **of the bytes the dist URL
+/// serves** — not that it is 40 characters long, which a truncated SHA-256
+/// would also be.
+#[actix_web::test]
+async fn composer_p2_dist_shasum_is_the_sha1_of_the_artifact() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+
+    let zip = make_composer_zip("acme/shapkg", "1.0.0");
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip.clone())
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/p2/acme/shapkg.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let doc: Value = read_body_json(call_service(&app, req).await).await;
+    let shasum = doc["packages"]["acme/shapkg"][0]["dist"]["shasum"]
+        .as_str()
+        .expect("the dist entry must carry a shasum");
+
+    let expected = batlehub_core::services::sha1_hex(&zip);
+    assert_eq!(
+        shasum, expected,
+        "dist.shasum must be the SHA-1 Composer computes over the downloaded file"
+    );
+
+    // And the bookkeeping key it came from is not served to the client.
+    assert!(
+        doc["packages"]["acme/shapkg"][0]
+            .get(batlehub_core::services::COMPOSER_DIST_SHA1)
+            .is_none(),
+        "the internal sha1 field must be stripped from the published entry"
+    );
 }

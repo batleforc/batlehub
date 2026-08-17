@@ -1,0 +1,41 @@
+# Server configuration for the heavy NuGet integration test
+# (tests/heavy/nuget.sh). See tests/heavy/config.npm.toml for the env-var
+# conventions.
+
+[server]
+host = "127.0.0.1"
+port = 8086
+
+[database]
+type = "postgresql"
+url = "${DATABASE_URL}"
+max_connections = 5
+
+[[auth]]
+type = "token"
+
+[[auth.tokens]]
+# `dotnet nuget push -k` sends this as `X-NuGet-ApiKey`, normalised to a Bearer
+# token in `extractors::raw_auth_from_request`.
+value = "heavy-admin-token"
+role = "admin"
+user_id = "ci-admin"
+
+[storage]
+type = "filesystem"
+path = "./tmp/heavy-nuget-storage"
+
+# ── Local registry: the packages exist ONLY here ─────────────────────────────
+#
+# Search in local mode is rung 3b of RFC 0009 §7.7 — "the packages this
+# registry already holds" — so a local registry is enough to prove the client
+# can find them, and it removes nuget.org from the answer entirely.
+[[registries]]
+type = "nuget"
+name = "nuget-local-${HEAVY_RUN}"
+mode = "local"
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
