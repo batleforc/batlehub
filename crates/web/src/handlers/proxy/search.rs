@@ -84,6 +84,11 @@ pub struct NpmSearchQuery {
     pub text: String,
     #[serde(default = "default_size")]
     pub size: usize,
+    /// Offset into the result set. npm sends `from` on every search — measured
+    /// in RFC 0009 §12.1 — and reading only `text` and `size` makes every page
+    /// the first one, the same defect §12.4 found on the NuGet side.
+    #[serde(default)]
+    pub from: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,6 +126,7 @@ fn default_size() -> usize {
         ("registry" = String, Path, description = "Registry name"),
         ("text"     = Option<String>, Query, description = "Search text"),
         ("size"     = Option<usize>, Query, description = "Maximum results"),
+        ("from"     = Option<usize>, Query, description = "Offset into the result set"),
     ),
     responses(
         (status = 200, description = "npm search results", body = ProtocolDocument),
@@ -141,15 +147,19 @@ pub async fn npm_search(
     let registry = path.into_inner();
     require_registry_type(&registry, "npm", &map)?;
     let _ = &identity;
-    let (query_text, limit) = (query.text.clone(), query.size);
+    let query_text = query.text.clone();
+    // The window is offset + page, and the page is sliced out of it below: a
+    // search limited to `size` with the offset applied afterwards answers the
+    // second page with nothing.
+    let window = query.from.saturating_add(query.size);
 
     let results = svc
         .search(
             &registry,
             &query_text,
-            limit,
+            window,
             search_mode(mode_map.get(&registry)),
-            local_hits(&local_svc, &registry, &query_text, limit).await,
+            local_hits(&local_svc, &registry, &query_text, window).await,
         )
         .await
         .map_err(AppError::from)?;
@@ -157,12 +167,24 @@ pub async fn npm_search(
     let objects: Vec<serde_json::Value> = results
         .hits
         .iter()
+        .skip(query.from)
+        .take(query.size)
         .map(|h| {
             serde_json::json!({
                 "package": {
                     "name": h.name,
                     "version": h.version,
                     "description": h.description.clone().unwrap_or_default(),
+                    // npm dereferences `maintainers` without a guard —
+                    // `data.maintainers.map(m => m.username)` in
+                    // `lib/utils/format-search-stream.js` — so omitting it does
+                    // not degrade the output, it crashes the client with
+                    // "Cannot read properties of undefined (reading 'map')"
+                    // against a `200` carrying the right hits. Empty because
+                    // this layer has no maintainer list, not as a placeholder:
+                    // `keywords` and `date` are guarded there and are left out
+                    // rather than invented (RFC 0009 §12.16).
+                    "maintainers": [],
                 }
             })
         })

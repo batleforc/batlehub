@@ -522,6 +522,72 @@ where
     Ok(document_response(doc))
 }
 
+/// [`serve_local_or_proxy_document`] for a handler that reads *from* the
+/// document instead of returning it.
+///
+/// `npm dist-tag ls` is the caller: it answers with one field of the packument,
+/// and the packument is the only place that field exists. Taking it from a
+/// second source would be a second rendering of the same facts, which is the
+/// drift `npm_dist_tags` is documented to avoid — but the first version of that
+/// handler avoided it by calling [`ProxyService::version_document`] directly,
+/// which skips the mode ladder entirely. On a local registry that asks upstream
+/// for a package upstream has never heard of, so `npm dist-tag ls` answered
+/// `404` for a package `npm view` had just described (the RFC 0009 §12.15
+/// failure, in another route; found by tests/heavy/npm.sh).
+///
+/// JSON only: the document must be one the caller can read fields out of, and a
+/// text document (a compact index, a simple page) is not that.
+#[allow(clippy::too_many_arguments)]
+pub async fn local_or_proxy_document_value<T, F, Fut>(
+    svc: &web::Data<Arc<ProxyService>>,
+    mode_map: &RegistryModeMap,
+    registry: &str,
+    identity: AuthIdentity,
+    local_fetch: F,
+    not_found_msg: String,
+    pkg: PackageId,
+    resource_type: &str,
+    doc_kind: DocumentKind,
+    public_base: String,
+) -> Result<serde_json::Value, AppError>
+where
+    T: serde::Serialize,
+    F: FnOnce(batlehub_core::entities::Identity) -> Fut,
+    Fut: std::future::Future<Output = Result<T, CoreError>>,
+{
+    let mode = mode_map.get(registry);
+    if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
+        svc.authorize_read(&pkg, &identity.0, resource_type)
+            .await
+            .map_err(AppError::from)?;
+        match local_fetch(identity.0.clone()).await {
+            Ok(x) => {
+                return serde_json::to_value(x).map_err(|e| {
+                    AppError::internal(format!("could not render the local document: {e}"))
+                })
+            }
+            Err(CoreError::NotFound(_)) if matches!(mode, RegistryMode::Hybrid) => {}
+            Err(CoreError::NotFound(_)) => return Err(AppError::not_found(not_found_msg)),
+            Err(e) => return Err(AppError::from(e)),
+        }
+    }
+
+    let req = ProxyRequest {
+        package_id: pkg,
+        identity: identity.0,
+        resource_type: resource_type.to_owned(),
+        ip_address: None,
+        user_agent: None,
+    };
+    let doc = svc
+        .version_document(&req, doc_kind, &public_base)
+        .await
+        .map_err(AppError::from)?;
+    doc.body.as_json().cloned().ok_or_else(|| {
+        AppError::internal("upstream document is not JSON and cannot be read as one".to_owned())
+    })
+}
+
 /// Turn a filtered [`VersionDocument`] into an HTTP response in its own
 /// encoding.
 ///

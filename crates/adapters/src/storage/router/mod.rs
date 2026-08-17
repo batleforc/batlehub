@@ -230,7 +230,21 @@ impl StorageRouter {
         // Write the physical blob while the transaction is still open.  Doing
         // this before commit ensures a backend failure causes a full rollback
         // rather than leaving orphaned dedup rows that point to a missing blob.
-        if count == 1 {
+        // First reference, or a later one whose blob is not actually there. The
+        // second case is the one that bites: `ref_count > 1` is a claim the
+        // *index* makes about the backend, and when storage has been cleared
+        // without resetting the database the claim is false. Trusting it makes
+        // `store_streaming` return success having written nothing, so the
+        // caller's `retrieve` — the proxy's promote step — finds the staged
+        // artifact "vanished" and answers 502. Every subsequent fetch of those
+        // bytes dedup-hits the same dangling row, so the artifact can never be
+        // cached again: the failure is permanent and repairs itself only if the
+        // *same logical key* is re-stored (`reuse_identical_blob`, which does
+        // check). Found by tests/heavy/npm.sh, whose per-run storage directory
+        // is thrown away while the dedup index in Postgres is not — which is
+        // also what an operator does when they recreate a cache bucket.
+        let blob_present = count > 1 && backend.exists(target.content_key).await.unwrap_or(false);
+        if !blob_present {
             if let Err(e) = source.materialize(backend, target.content_key).await {
                 let _ = tx.rollback().await;
                 source.discard_staged(backend).await;

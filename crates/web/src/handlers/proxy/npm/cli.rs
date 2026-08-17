@@ -22,14 +22,15 @@
 
 use std::sync::Arc;
 
-use actix_web::{delete, get, put, web, HttpResponse, Responder};
+use actix_web::{delete, get, put, web, HttpRequest, HttpResponse, Responder};
 
 use batlehub_core::entities::PackageId;
-use batlehub_core::services::ProxyService;
+use batlehub_core::services::{LocalRegistryService, ProxyService};
 
 use super::require_npm;
+use crate::handlers::proxy::common::{local_or_proxy_document_value, registry_public_base};
 use crate::handlers::schemas::{MessageResponse, ProtocolDocument};
-use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
+use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
 
 /// `npm ping`.
 ///
@@ -116,10 +117,13 @@ pub async fn npm_whoami(
 )]
 #[get("/proxy/{registry}/-/package/{package}/dist-tags")]
 pub async fn npm_dist_tags(
+    req: HttpRequest,
     path: web::Path<(String, String)>,
     identity: AuthIdentity,
     svc: web::Data<Arc<ProxyService>>,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let (registry, package) = path.into_inner();
     require_npm(&registry, &map)?;
@@ -130,22 +134,37 @@ pub async fn npm_dist_tags(
     // call: the packument's `dist-tags` is already repaired against the blocked
     // set, so taking it from there is what makes the two documents agree by
     // construction instead of by a second filter that could drift.
-    let req = batlehub_core::services::ProxyRequest {
-        package_id: PackageId::new(&registry, &package, "latest"),
-        identity: identity.0,
-        resource_type: batlehub_core::rules::resource_type::RELEASES_READ.to_owned(),
-        ip_address: None,
-        user_agent: None,
-    };
-    let doc = svc
-        .version_document(&req, batlehub_core::ports::DocumentKind::Versions, "")
-        .await
-        .map_err(AppError::from)?;
+    //
+    // Through the same mode ladder `get_packument` uses, and for the same
+    // reason: a local registry's packages exist in the database, not upstream.
+    // Reading the document straight off `ProxyService` — which is what this
+    // handler used to do — asked npmjs.org about a package published here, so
+    // `npm dist-tag ls` answered `404` for a package `npm view` had described a
+    // second earlier (RFC 0009 §12.16).
+    let public_base = registry_public_base(&req, &registry);
+    let pkg = PackageId::new(&registry, &package, "latest");
+    let (fetch_registry, fetch_package, base) =
+        (registry.clone(), package.clone(), public_base.clone());
+    let doc = local_or_proxy_document_value(
+        &svc,
+        &mode_map,
+        &registry,
+        identity,
+        move |identity: batlehub_core::entities::Identity| async move {
+            local_svc
+                .get_npm_packument(&fetch_registry, &fetch_package, &base, &identity)
+                .await
+        },
+        format!("package '{package}' not found"),
+        pkg,
+        batlehub_core::rules::resource_type::RELEASES_READ,
+        batlehub_core::ports::DocumentKind::Versions,
+        public_base,
+    )
+    .await?;
 
     let tags = doc
-        .body
-        .as_json()
-        .and_then(|j| j.get("dist-tags"))
+        .get("dist-tags")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
 

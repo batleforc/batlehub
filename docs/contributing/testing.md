@@ -21,7 +21,7 @@ BatleHub's tests fall into six layers, in increasing order of infrastructure cos
 | **In-process integration** | `crates/web/tests/*.rs`, `crates/examples/tests/*.rs` | none — full actix app on in-memory backends | `cargo test -p batlehub-web --test '*'` |
 | **CLI subprocess integration** | `cli/tests/integration.rs` | none — CLI binary vs. in-memory actix server | `cargo test -p batlehub-cli --test integration` |
 | **External integration** | `crates/adapters/tests/*.rs` | real Postgres / MinIO(S3) / Redis via Podman | `task test:pg-*`, `task test:s3` |
-| **Heavy client** | `tests/heavy/*.sh` | real Postgres **and a real client** — VS Code, IntelliJ, Bundler | `task test:marketplace-heavy`, `task test:bundler-heavy` |
+| **Heavy client** | `tests/heavy/*.sh` | real Postgres **and a real client** — VS Code, IntelliJ, Bundler, npm, pip, ovsx, micromamba, dotnet, composer, terraform | `task test:heavy`, or one `task test:<ecosystem>-heavy` |
 | **Fuzz** | `fuzz/fuzz_targets/*.rs` | nightly toolchain | `task fuzz` |
 
 The in-process layer is the workhorse: every test there spins up a real
@@ -58,8 +58,16 @@ task test:s3                  # MinIO    — S3StorageBackend (feature storage-s
 task test:repo-interop
 
 # Heavy client integration (needs DATABASE_URL; each drives a real client)
+task test:heavy               # every suite below except the marketplaces
 task test:marketplace-heavy   # headless VS Code + IntelliJ install an extension
 task test:bundler-heavy       # `bundle install` resolves through the compact index
+task test:npm-heavy           # publish/install/whoami/dist-tags/search + `npm audit`
+task test:pypi-heavy          # `twine upload`, `pip install`, PEP 658 metadata
+task test:openvsx-heavy       # `ovsx publish` (query-parameter token) + `ovsx get`
+task test:conda-heavy         # micromamba: the HEAD probe and a post-warm publish
+task test:nuget-heavy         # `dotnet nuget push` / `package search` / `add package`
+task test:composer-heavy      # local + proxy resolution with Packagist disabled
+task test:terraform-heavy     # `terraform init` over TLS, host-routed discovery
 
 # Coverage (starts Postgres + MinIO + Redis; HTML report in coverage/html/)
 task coverage
@@ -205,6 +213,50 @@ end-to-end proof that the OS-package output is standards-compliant.
 
 ---
 
+## 7-bis. Heavy client tests (a real package manager)
+
+`tests/heavy/*.sh` — each one starts a real BatleHub against a real Postgres,
+puts a transparent logging proxy (`http_tap.py`) in front of it, drives that
+ecosystem's **real client**, and asserts on the wire transcript. Shared
+machinery is in `tests/heavy/lib.sh`.
+
+They exist because the layers above them cannot fail on the defect that matters
+most here: a route that is present, tested, and answering `200` with something
+no client can use. RFC 0009 §5.2 lists the ways — a resource the client cannot
+select, a method the route does not accept, an auth boundary the client does not
+cross, a field whose digest is the wrong algorithm — and every one of them was
+found by running the client, by nothing else, twice over.
+
+| Suite | Client | What only this layer can prove |
+|-------|--------|-------------------------------|
+| `marketplace.sh` | VS Code, IntelliJ | an extension that exists **only** here installs by id through the gallery |
+| `bundler.sh` | Bundler 4.0.17 | the compact index's `206`/`304` are answers Bundler *accepts* — the assertion is the **absence** of a re-fetch |
+| `npm.sh` | npm | publish → install → `whoami`/`ping`/`dist-tag`/`search`, and `npm audit` on the path npm really sends |
+| `pypi.sh` | twine, pip | the documented `twine upload` (HTTP Basic) works, and pip's PEP 658 `.metadata` sibling answers |
+| `openvsx.sh` | ovsx | `ovsx publish` with its token in a query parameter, and `ovsx get` following the rewritten download URL |
+| `conda.sh` | micromamba | the `HEAD` probe for `repodata.json.zst` reaches a handler, and a publish is visible in the *compressed* channel |
+| `nuget.sh` | dotnet | the client can *select* the search resource, `skip` advances the page, and `push` hits the path it appends a slash to |
+| `composer.sh` | composer | proxy-mode resolution with Packagist disabled, `dist.shasum` the client accepts, and `search.json` reached through the advertised template |
+| `terraform.sh` | terraform | `init` over TLS: host-routed discovery, download document, shasums, signature and archive, all through the proxy |
+
+Conventions worth knowing before adding one:
+
+- **A fresh registry name per run** (`$HEAVY_RUN`). The database persists, and a
+  package left by an earlier run changes what the client sees.
+- **Never rewrite `Host`.** The server builds its absolute URL templates from
+  it, so a rewriting proxy sees only the first request and the transcript looks
+  clean because nothing was observed.
+- **Give each client phase its own cache.** `npm publish` seeds the tarball into
+  cacache, micromamba caches repodata, NuGet has a global package folder: reuse
+  one and the test measures the client's cache, not the server.
+- **A missing client is a failure, not a skip** (`heavy_need`). A heavy test that
+  skips itself reports success for having done nothing.
+- Assertions scope to a phase with `heavy_mark` / `heavy_wire_after`: the
+  transcript accumulates, and an unscoped match can be satisfied by an earlier
+  phase.
+
+---
+
 ## 8. CLI integration tests
 
 `cli/tests/integration.rs` — a single file with **~83 test functions**. It:
@@ -299,15 +351,23 @@ detection with depth / monorepo / hidden-dir handling), `setup ide`, and
   - `heavy-marketplace`: `bash tests/heavy/marketplace.sh` (headless VS Code +
     IntelliJ).
   - `heavy-bundler`: `bash tests/heavy/bundler.sh` (a real `bundle install`
-    against a local rubygems registry). Both heavy jobs run the server under
-    `cargo llvm-cov`, so what the *client* exercised counts toward the merged
-    coverage table — the compact-index paths in particular are reached by no
-    other job.
+    against a local rubygems registry).
+  - `heavy-client` (matrix): one job per ecosystem — `npm`, `pypi`, `openvsx`,
+    `conda`, `nuget`, `composer`, `terraform` — each running
+    `tests/heavy/<suite>.sh`. A matrix rather than seven jobs because only the
+    toolchain setup differs; `fail-fast: false`, because one unhappy client says
+    nothing about the other six.
+
+  Every heavy job runs the server under `cargo llvm-cov`, so what the *client*
+  exercised counts toward the merged coverage table — the compact-index paths,
+  the Terraform provider chain and the conda `HEAD` probe are reached by no
+  other job.
 
   `test.yaml` also runs nightly (`50 23 * * *`). The heavy jobs are why: they
-  drive clients fetched from outside this repository — Bundler from
-  rubygems.org, pinned VS Code and IntelliJ builds — so a new client release can
-  break a tree that no commit touched, and only a scheduled run finds it.
+  drive clients fetched from outside this repository — Bundler and npm from
+  their own registries, pinned VS Code, IntelliJ, Terraform, .NET and
+  micromamba builds — so a new client release can break a tree that no commit
+  touched, and only a scheduled run finds it.
 - **`front-test.yaml`** — frontend (`ui/`): install, regenerate the OpenAPI spec
   + TS client, `pnpm run coverage`.
 - **`repo-interop.yaml`** — `bash tests/interop/verify.sh` (apt + dnf + pacman

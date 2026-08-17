@@ -79,6 +79,19 @@ async fn npm_search_renders_the_npm_shape() {
         .collect();
     assert!(names.contains(&"fixed-alpha"), "got {names:?}");
     assert_eq!(doc["total"].as_u64().unwrap_or(0) as usize, names.len());
+
+    // "the npm shape" was, until `tests/heavy/npm.sh` ran a real client against
+    // it, the shape this test asserted rather than the one npm reads. npm maps
+    // over `maintainers` without a guard, so a hit without the field ends
+    // `npm search` in "Cannot read properties of undefined (reading 'map')" —
+    // a crash, from a `200` whose names this test was checking and finding
+    // right (RFC 0009 §12.16).
+    for hit in doc["objects"].as_array().unwrap() {
+        assert!(
+            hit["package"]["maintainers"].is_array(),
+            "every hit needs a maintainers array — npm dereferences it: {hit}"
+        );
+    }
 }
 
 #[actix_web::test]
@@ -168,5 +181,63 @@ async fn composer_packages_json_advertises_the_endpoints_it_serves() {
     assert!(
         doc["search"].as_str().unwrap().contains("%query%"),
         "the search template must carry Composer's %query% placeholder"
+    );
+}
+
+/// Paging is into the result set, not into a page already truncated to the page
+/// size — RFC 0009 §12.16.
+///
+/// §12.4 measured `dotnet package search` sending `skip=0&take=20` then
+/// `skip=20`, and the fix parsed `skip` and applied it *after* the search had
+/// been limited to `take` hits. So the second page was always empty: the client
+/// asks for hits 20-39 of a registry that was only asked for its first 20.
+/// The same shape on the npm side, where `from` was not read at all.
+#[actix_web::test]
+async fn nuget_search_second_page_is_not_empty() {
+    let app = make_app(InMemoryRepo::new()).await;
+
+    let (all, _) = get_json(&app, "/proxy/nuget/nuget/v3/query?q=fixed&take=10").await;
+    let total = all["data"].as_array().unwrap().len();
+    assert!(
+        total >= 2,
+        "this test needs at least two matches, got {total}"
+    );
+
+    let (first, _) = get_json(&app, "/proxy/nuget/nuget/v3/query?q=fixed&take=1&skip=0").await;
+    let (second, _) = get_json(&app, "/proxy/nuget/nuget/v3/query?q=fixed&take=1&skip=1").await;
+
+    let id = |doc: &serde_json::Value| doc["data"][0]["id"].as_str().unwrap_or_default().to_owned();
+    assert!(!id(&first).is_empty(), "page 1 is empty: {first}");
+    assert!(
+        !id(&second).is_empty(),
+        "page 2 is empty — skip is being applied to a page that was already cut to `take`: {second}"
+    );
+    assert_ne!(id(&first), id(&second), "both pages returned the same hit");
+}
+
+#[actix_web::test]
+async fn npm_search_honours_from() {
+    let app = make_app(InMemoryRepo::new()).await;
+
+    let (all, _) = get_json(&app, "/proxy/npm/-/v1/search?text=fixed&size=10").await;
+    assert!(
+        all["objects"].as_array().unwrap().len() >= 2,
+        "this test needs at least two matches"
+    );
+
+    let (first, _) = get_json(&app, "/proxy/npm/-/v1/search?text=fixed&size=1&from=0").await;
+    let (second, _) = get_json(&app, "/proxy/npm/-/v1/search?text=fixed&size=1&from=1").await;
+
+    let name = |doc: &serde_json::Value| {
+        doc["objects"][0]["package"]["name"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    assert!(!name(&second).is_empty(), "page 2 is empty: {second}");
+    assert_ne!(
+        name(&first),
+        name(&second),
+        "both pages returned the same hit"
     );
 }

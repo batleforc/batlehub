@@ -99,6 +99,13 @@ curl -X POST \
   "https://batlehub.example.com/proxy/internal-composer/api/upload?version=1.0.0"
 ```
 
+The upload records the archive's **SHA-1** alongside it and publishes that as
+`dist.shasum`, because that is the digest Composer recomputes over the file it
+downloads. A package uploaded before that digest was recorded has no
+stored SHA-1 and is served with no `shasum` at all — Composer installs it
+without verifying the digest rather than refusing it. Re-upload it (same
+version, after a yank, or as a new version) to get the checksum back.
+
 ### Client setup
 
 Composer supports two ways to supply credentials. Prefer `auth.json` over inline headers so credentials stay out of source control.

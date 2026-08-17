@@ -387,3 +387,69 @@ async fn nuget_flat_download_missing_returns_404() {
         .to_request();
     assert_eq!(call_service(&app, req).await.status(), 404);
 }
+
+/// `dotnet nuget push` sends the publish URL with a trailing slash — RFC 0009 §12.16.
+///
+/// The client reads `PackagePublish/2.0.0` out of the service index and appends
+/// `/` before PUTting, so what arrives is `…/api/v2/package/`. Every test above
+/// uses the unslashed path, the service index advertises the unslashed path,
+/// and the route was registered only for that — so `dotnet nuget push` got a
+/// `404` from a registry whose publish endpoint works perfectly when curl'd.
+/// Found by `tests/heavy/nuget.sh`.
+#[actix_web::test]
+async fn nuget_publish_accepts_the_trailing_slash_dotnet_sends() {
+    let app = make_local_nuget_app(RegistryMode::Local).await;
+    let nupkg = make_sample_nupkg("SlashLib", "1.0.0", "A test library");
+    let (body, ct) = make_nuget_publish_body(&nupkg);
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-nuget/nuget/api/v2/package/")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .insert_header(("Content-Type", ct))
+        .set_payload(body)
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 201);
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-nuget/nuget/v3/flat/slashlib/index.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let doc: Value = read_body_json(resp).await;
+    assert!(doc["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v == "1.0.0"));
+}
+
+/// The same for symbol packages: `dotnet nuget push` of a `.snupkg` appends the
+/// same slash to `SymbolPackagePublish/4.9.0`.
+#[actix_web::test]
+async fn nuget_symbol_publish_accepts_the_trailing_slash() {
+    let app = make_local_nuget_app(RegistryMode::Local).await;
+    let nupkg = make_sample_nupkg("SymLib", "1.0.0", "A test library");
+    let (body, ct) = make_nuget_publish_body(&nupkg);
+    let req = TestRequest::put()
+        .uri("/proxy/local-nuget/nuget/api/v2/package")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .insert_header(("Content-Type", ct))
+        .set_payload(body)
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 201);
+
+    let snupkg = make_sample_nupkg("SymLib", "1.0.0", "Symbols");
+    let (body, ct) = make_nuget_publish_body(&snupkg);
+    let req = TestRequest::put()
+        .uri("/proxy/local-nuget/nuget/api/v2/symbolpackage/")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .insert_header(("Content-Type", ct))
+        .set_payload(body)
+        .to_request();
+    let status = call_service(&app, req).await.status();
+    assert_ne!(
+        status, 404,
+        "the slashed symbol-publish path must reach the handler, not the route table"
+    );
+}

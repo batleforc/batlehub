@@ -1,0 +1,58 @@
+# Server configuration for the heavy Terraform integration test
+# (tests/heavy/terraform.sh). See tests/heavy/config.npm.toml for the env-var
+# conventions.
+
+[server]
+host = "127.0.0.1"
+port = 8087
+# The TLS tap in front of this server is the only peer, and it sets
+# `X-Forwarded-Proto: https`. Naming it explicitly both silences the
+# unconfigured-trust warning and makes the test's own topology the thing that
+# decides the advertised scheme, rather than "anyone may claim https".
+trusted_proxies = ["127.0.0.1/32"]
+
+[database]
+type = "postgresql"
+url = "${DATABASE_URL}"
+max_connections = 5
+
+[[auth]]
+type = "token"
+
+[[auth.tokens]]
+value = "heavy-admin-token"
+role = "admin"
+user_id = "ci-admin"
+
+[storage]
+type = "filesystem"
+path = "./tmp/heavy-terraform-storage"
+
+# ── Provider registry, host-routed ───────────────────────────────────────────
+#
+# `/.well-known/terraform.json` is rooted at a host, not under
+# `/proxy/{registry}/`, so the registry protocol only answers on a host bound to
+# exactly one registry (RFC 0009 §7.2). That is also the condition under which
+# the route was unreachable: the host-routing middleware rewrites the request to
+# `/proxy/{registry}/.well-known/terraform.json` *before* routing, and nothing
+# was registered at the rewritten path — the npm/cargo catch-all answered it
+# instead (§12.11).
+#
+# `hosts` is matched on the hostname with the port stripped, so this one entry
+# covers `localhost:8443`, which is where the tap listens.
+[[registries]]
+type = "terraform"
+name = "tf-${HEAVY_RUN}"
+mode = "proxy"
+upstreams = ["https://registry.terraform.io"]
+hosts = ["localhost"]
+
+[registries.rbac]
+# Terraform sends its `credentials` token to the two metadata documents and
+# then fetches the provider archive with **no** Authorization header (§12.3), so
+# a registry that does not grant anonymous read fails at the last step. Stated
+# on the registry page as a limitation; encoded here as the configuration that
+# makes an install work.
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]

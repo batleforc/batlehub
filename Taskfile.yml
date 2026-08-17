@@ -243,6 +243,53 @@ tasks:
     cmds:
       - bash tests/heavy/bundler.sh
 
+  test:npm-heavy:
+    desc: "Heavy npm integration: publish/install/whoami/ping/dist-tags/search against a local registry, and `npm audit` on the path npm really sends (needs DATABASE_URL + network)"
+    cmds:
+      - bash tests/heavy/npm.sh
+
+  test:pypi-heavy:
+    desc: "Heavy PyPI integration: `twine upload` then `pip install`, and the PEP 658 `.metadata` sibling pip refuses to do without (needs DATABASE_URL + network)"
+    cmds:
+      - bash tests/heavy/pypi.sh
+
+  test:openvsx-heavy:
+    desc: "Heavy Open VSX integration: `ovsx publish` (token in a query parameter) and `ovsx get` following the rewritten download URL (needs DATABASE_URL + network)"
+    cmds:
+      - bash tests/heavy/openvsx.sh
+
+  test:conda-heavy:
+    desc: "Heavy conda integration: micromamba's `HEAD` probe for repodata.json.zst, and a package published after the compressed channel was warmed (needs DATABASE_URL; downloads micromamba on first run)"
+    cmds:
+      - bash tests/heavy/conda.sh
+
+  test:nuget-heavy:
+    desc: "Heavy NuGet integration: `dotnet nuget push`, `dotnet package search` (service discovery + skip pagination) and `dotnet add package` (needs DATABASE_URL + the .NET SDK)"
+    cmds:
+      - bash tests/heavy/nuget.sh
+
+  test:composer-heavy:
+    desc: "Heavy Composer integration: resolve from local and proxy repositories with Packagist disabled, and reach search.json through the advertised URL template (needs DATABASE_URL + network)"
+    cmds:
+      - bash tests/heavy/composer.sh
+
+  test:terraform-heavy:
+    desc: "Heavy Terraform integration: `terraform init` over TLS through host-routed discovery — versions, download document, shasums, signature and archive all through the proxy (needs DATABASE_URL + network)"
+    cmds:
+      - bash tests/heavy/terraform.sh
+
+  test:heavy:
+    desc: "Every heavy client suite except the marketplaces (which download two IDEs). Sequential: each one binds its own ports but they all share one Postgres."
+    cmds:
+      - bash tests/heavy/bundler.sh
+      - bash tests/heavy/npm.sh
+      - bash tests/heavy/pypi.sh
+      - bash tests/heavy/openvsx.sh
+      - bash tests/heavy/conda.sh
+      - bash tests/heavy/nuget.sh
+      - bash tests/heavy/composer.sh
+      - bash tests/heavy/terraform.sh
+
   coverage:
     desc: Generate an HTML coverage report and an lcov report for SonarQube — starts Postgres, MinIO and Redis to include all integration tests
     vars:

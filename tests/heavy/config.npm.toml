@@ -1,0 +1,70 @@
+# Server configuration for the heavy npm integration test (tests/heavy/npm.sh).
+#
+# `${DATABASE_URL}` and `${HEAVY_RUN}` are interpolated from the environment
+# before TOML parsing (crates/config); the port and the storage path are
+# overridden by `PROXY_CACHE__SERVER__PORT` / `PROXY_CACHE__STORAGE__PATH`,
+# which lib.sh exports — a placeholder in a scalar position would leave this
+# file unparseable by every TOML tool, and the loader already has an override
+# path for exactly this.
+#
+# The registry names carry `${HEAVY_RUN}` because the database persists between
+# runs: a package left behind by an earlier one is a package the client can see,
+# and an assertion that something is findable then passes without this run
+# having published anything. See tests/heavy/lib.sh.
+
+[server]
+host = "127.0.0.1"
+port = 8082
+
+[database]
+type = "postgresql"
+url = "${DATABASE_URL}"
+max_connections = 5
+
+[[auth]]
+type = "token"
+
+[[auth.tokens]]
+# CI-only credential. `npm whoami` prints `user_id`, and the test asserts it.
+value = "heavy-admin-token"
+role = "admin"
+user_id = "ci-admin"
+
+[storage]
+type = "filesystem"
+# Overridden per run by PROXY_CACHE__STORAGE__PATH (lib.sh) — this value is the
+# fallback for someone running the server against this file by hand.
+path = "./tmp/heavy-npm-storage"
+
+# ── Local registry: the package exists ONLY here ─────────────────────────────
+#
+# Everything a developer does with their own packages — publish, view, install,
+# dist-tag, search — is measured against this one. Nothing it answers can have
+# come from npmjs.org, which is what makes a green result mean something.
+[[registries]]
+type = "npm"
+name = "npm-local-${HEAVY_RUN}"
+mode = "local"
+
+[registries.rbac]
+# npm sends no credentials for reads unless the project's `.npmrc` sets an
+# auth token for the host; publish and whoami do, and get the admin role.
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
+
+# ── Proxy registry: npm audit needs a real advisory database ─────────────────
+#
+# `POST /-/npm/v1/security/advisories/bulk` forwards to the registry's upstream
+# (RFC 0009 §7.1), so there is no way to exercise the path npm actually sends
+# without one. It is also the mode a real `npm install` runs in.
+[[registries]]
+type = "npm"
+name = "npm-proxy-${HEAVY_RUN}"
+mode = "proxy"
+upstreams = ["https://registry.npmjs.org"]
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]

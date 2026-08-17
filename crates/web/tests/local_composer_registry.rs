@@ -460,3 +460,50 @@ async fn composer_wrong_registry_type_returns_404() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 404);
 }
+
+/// Composer verifies `dist.shasum` with **SHA-1** — RFC 0009 §12.16.
+///
+/// The p2 document published the artifact's stored SHA-256 there, so
+/// `composer install` of a locally published package downloaded the zip,
+/// hashed it, disagreed with itself and stopped:
+/// *"The checksum verification of the file failed"*. Every route was right and
+/// no package could be installed. Found by `tests/heavy/composer.sh`.
+///
+/// The assertion is that the digest is the SHA-1 **of the bytes the dist URL
+/// serves** — not that it is 40 characters long, which a truncated SHA-256
+/// would also be.
+#[actix_web::test]
+async fn composer_p2_dist_shasum_is_the_sha1_of_the_artifact() {
+    let app = make_local_composer_app(RegistryMode::Local).await;
+
+    let zip = make_composer_zip("acme/shapkg", "1.0.0");
+    let req = TestRequest::post()
+        .uri("/proxy/local-composer/api/upload")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(zip.clone())
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/p2/acme/shapkg.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let doc: Value = read_body_json(call_service(&app, req).await).await;
+    let shasum = doc["packages"]["acme/shapkg"][0]["dist"]["shasum"]
+        .as_str()
+        .expect("the dist entry must carry a shasum");
+
+    let expected = batlehub_core::services::sha1_hex(&zip);
+    assert_eq!(
+        shasum, expected,
+        "dist.shasum must be the SHA-1 Composer computes over the downloaded file"
+    );
+
+    // And the bookkeeping key it came from is not served to the client.
+    assert!(
+        doc["packages"]["acme/shapkg"][0]
+            .get(batlehub_core::services::COMPOSER_DIST_SHA1)
+            .is_none(),
+        "the internal sha1 field must be stripped from the published entry"
+    );
+}

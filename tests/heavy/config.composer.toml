@@ -1,0 +1,58 @@
+# Server configuration for the heavy Composer integration test
+# (tests/heavy/composer.sh). See tests/heavy/config.npm.toml for the env-var
+# conventions.
+
+[server]
+host = "127.0.0.1"
+port = 8088
+
+[database]
+type = "postgresql"
+url = "${DATABASE_URL}"
+max_connections = 5
+
+[[auth]]
+type = "token"
+
+[[auth.tokens]]
+value = "heavy-admin-token"
+role = "admin"
+user_id = "ci-admin"
+
+[storage]
+type = "filesystem"
+path = "./tmp/heavy-composer-storage"
+
+# ── Local repository: the package exists ONLY here ───────────────────────────
+#
+# Local mode is the one mode that may honestly send `available-packages` — it
+# is a claim of completeness, and Composer treats it as authoritative (RFC 0009
+# §12.10). So this registry proves the claim is *usable*, and the proxy one
+# below proves it is no longer made where it would be false.
+[[registries]]
+type = "composer"
+name = "composer-local-${HEAVY_RUN}"
+mode = "local"
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]
+
+# ── Proxy repository: the mode that could not resolve anything ───────────────
+#
+# `available-packages: []` meant "this repository is empty", and Composer
+# believed it: `composer update` fetched packages.json, stopped, and reported
+# the package "could not be found in any version" without ever requesting
+# `p2/`. A proxy-mode Composer registry was unusable for its entire existence,
+# and one test was pinning the field that did it.
+[[registries]]
+type = "composer"
+name = "composer-proxy-${HEAVY_RUN}"
+mode = "proxy"
+upstreams = ["https://repo.packagist.org"]
+
+[registries.rbac]
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]

@@ -338,6 +338,62 @@ async fn restore_after_physical_blob_deleted() {
     assert_eq!(collect(artifact).await, data.as_ref());
 }
 
+// Regression: a *different* logical key storing bytes whose hash is already in
+// the dedup index, after the physical blob went missing. `reuse_identical_blob`
+// covers the same-key case; this is the other one, and it was not covered — the
+// dedup hit skipped materialisation on the strength of `ref_count > 1`, so
+// `store_streaming` reported success having written nothing and the caller's
+// `retrieve` came back empty. The proxy turns that into
+// "staged artifact '…' vanished before promotion" → 502, permanently, because
+// every later fetch hits the same dangling row.
+//
+// Found by tests/heavy/npm.sh: its storage directory is per-run and the dedup
+// index in Postgres is not, which is the same shape as an operator recreating
+// a cache bucket.
+#[tokio::test]
+async fn dedup_hit_restores_a_missing_blob_for_a_new_key() {
+    let Some(url) = db_url() else { return };
+    let fs = make_fs("dedup-restore").await;
+    let router = single_backend_router(fs.clone(), pool(&url).await);
+
+    let data = upayload("shared-bytes");
+    let blob = content_key(&data);
+    let first = ukey("npm", "first");
+    let second = ukey("npm", "second");
+
+    router
+        .store(&first, data.clone(), StorageMeta::default())
+        .await
+        .unwrap();
+    assert!(fs.exists(&blob).await.unwrap());
+
+    // The bucket is recreated / the cache directory is wiped; the DB is not.
+    fs.delete(&blob).await.unwrap();
+
+    // A second key now stores the same bytes. This is a dedup *hit*: the index
+    // says the blob exists. It does not.
+    router
+        .store(&second, data.clone(), StorageMeta::default())
+        .await
+        .unwrap();
+
+    let artifact = router
+        .retrieve(&second)
+        .await
+        .unwrap()
+        .expect("a dedup hit must not report success for bytes it did not write");
+    assert_eq!(collect(artifact).await, data.as_ref());
+
+    // ...and the key that was there first is readable again too, because there
+    // is only ever one physical blob behind both of them.
+    let artifact = router
+        .retrieve(&first)
+        .await
+        .unwrap()
+        .expect("blob restored");
+    assert_eq!(collect(artifact).await, data.as_ref());
+}
+
 // A literal `%` in a prefix must be treated as a literal character, not a SQL
 // wildcard. Without escaping, `LIKE 'base-50%%'` (prefix's own `%` plus the
 // trailing wildcard the router appends) degrades to "starts with base-50",

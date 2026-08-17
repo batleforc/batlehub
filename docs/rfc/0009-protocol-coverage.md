@@ -2,7 +2,7 @@
 
 | Field       | Value                                                        |
 | ----------- | ------------------------------------------------------------ |
-| Status      | **Implemented** — all nine phases landed, residue closed (§13.23); seven ecosystems verified against real clients end to end, seventeen corrections applied (§12); the compact index is incremental and measured (§13.24); the VS Code gallery is covered by `tests/heavy/marketplace.sh` rather than here |
+| Status      | **Implemented** — all nine phases landed, residue closed (§13.23); every ecosystem is verified against its real client by a script in CI rather than a transcript (§12.16), which found six further shipped bugs; the compact index is incremental and measured (§13.24) |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                       |
 | Co-author   | Claude Opus 5 (1M context) <noreply@anthropic.com>            |
 | Created     | 2026-08-16                                                    |
@@ -411,6 +411,11 @@ A fixture table cannot find these, because a fixture is a path. What found them
 was running the client. §12 is therefore not a one-off discharge but the only
 check that covers this class, and the honest conclusion is that it belongs in CI
 against real clients rather than in a table of strings.
+
+**It now is.** Nine `tests/heavy/*.sh` suites drive the real client for every
+ecosystem this RFC touches, in CI and nightly (§12.16). Writing them found six
+more shipped bugs of exactly this class — including two the *fixtures added by
+this RFC* had passed over, and one introduced by a fix in §12.4.
 
 ---
 
@@ -859,6 +864,9 @@ before phase 1 lands". Phase 1 landed, and so did phases 2 through 9, without
 it — which is worth leaving on the page rather than quietly editing, because
 that is the same drift between a document and its project that the rest of this
 RFC is about.
+
+The subsections below are the transcripts, kept as written. §12.16 is what
+happened when they were turned into scripts that run on every push.
 
 ### 12.1 npm — discharged
 
@@ -1477,6 +1485,93 @@ document is a legal answer and Bundler handles it by replacing its cache, which
 is how that run completed. Serving `206` makes the compact index incremental,
 which is what the format is for; that is a performance property, it was named
 here rather than left to be discovered, and it is now implemented — §13.24.
+
+### 12.16 The transcripts became scripts, and found six more
+
+§12 was a set of transcripts: seven clients run by hand, once, against a server
+that was then changed to match. §5.2 concluded that this — not the fixture
+table — is the check that finds this class of defect, and that it "belongs in
+CI against real clients rather than in a table of strings". It did not, for as
+long as it took someone to write the scripts.
+
+Now it does. `tests/heavy/{npm,pypi,openvsx,conda,nuget,composer,terraform}.sh`
+join `bundler.sh` and `marketplace.sh`: each starts a real server against a real
+Postgres behind the logging tap, drives the real client, and asserts on the wire
+(`task test:heavy`; in CI, the `heavy-client` matrix). Shared machinery moved to
+`tests/heavy/lib.sh`.
+
+**Writing them found six more shipped bugs, in one pass.** Not one is a wrong
+path, so not one is reachable by the mechanism §5 built:
+
+| # | Shipped bug | Found by |
+| --- | --- | --- |
+| 13 | `npm dist-tag ls` answered `404` on a local registry | `npm.sh` |
+| 14 | `npm search` crashed the client: no `maintainers` in the hit | `npm.sh` |
+| 15 | A dedup hit with a missing blob failed the download **permanently** | `npm.sh` |
+| 16 | `dotnet nuget push` `404`d: it appends a trailing slash | `nuget.sh` |
+| 17 | Search paged into the page, so page 2 was always empty | `nuget.sh` |
+| 18 | Composer's `dist.shasum` was a SHA-256, and Composer hashes SHA-1 | `composer.sh` |
+
+Each is worth a sentence, because each is a *different* way to be correct about
+the path:
+
+- **A route that skips the mode ladder.** `npm_dist_tags` read the packument
+  straight off `ProxyService`, so on a local registry it asked npmjs.org about a
+  package published here. `npm view` described the package; `npm dist-tag ls`,
+  one command later, said it did not exist. Exactly §12.15's defect — the
+  RubyGems compact index proxying upstream from a local registry — in a route
+  nobody thought to re-check.
+- **A field the client dereferences without a guard.** npm's search output does
+  `data.maintainers.map(…)`, so a hit without the array is not a degraded
+  listing, it is `Cannot read properties of undefined (reading 'map')`. And
+  `npm_search_renders_the_npm_shape` passed throughout — it asserted the shape
+  *we* had decided was npm's.
+- **An index that outlives the bytes it indexes.** The storage router keeps a
+  dedup index in Postgres and blobs in the backend. On a dedup hit it skipped
+  materialising, trusting `ref_count > 1` — a claim about the backend that is
+  false once storage has been cleared. `store_streaming` then reported success
+  having written nothing, `promote_staged` found the staged artifact "vanished",
+  and the 502 was **permanent**: every later fetch hit the same dangling row.
+  The same-key path (`reuse_identical_blob`) checked; the new-key path did not.
+  Found because the heavy suites use a per-run storage directory and a shared
+  database — which is also what an operator does when they recreate a bucket.
+- **A trailing slash.** The service index advertises `…/api/v2/package`;
+  `dotnet nuget push` appends `/`. Every test in the repository PUT to the
+  unslashed path. Publishing had never worked from the client.
+- **An offset applied to the wrong set.** §12.4 measured `skip` being ignored,
+  and the fix parsed it and applied it *after* the search had been limited to
+  `take` hits — so `take=20&skip=20`, the second page `dotnet package search`
+  asks for, was empty on every registry however many packages it held. A bug fix
+  that reproduces the bug one layer down. npm's `from` had the same shape and
+  was never read at all.
+- **The right digest, the wrong algorithm.** Composer's `dist.shasum` is a
+  SHA-1 and its client verifies against it; we published the SHA-256 we store as
+  the artifact's checksum. Not a weaker check — a failed download, every time:
+  *"The checksum verification of the file failed"*, after a resolve that worked
+  perfectly. Locally published Composer packages had never been installable.
+
+Three of the six (13, 15, 18) make a *published* package unusable, and all three
+were introduced by work this RFC did. That is the honest reading of what the
+heavy layer is worth: the ratchet in §5 catches endpoints at the wrong address,
+and this catches everything else, because it is the only check whose oracle is
+the program the user runs.
+
+Two things the scripts had to get right, both of which produced a green run
+measuring nothing before they were fixed:
+
+- **The client's own cache.** `npm publish` seeds the tarball it packed into
+  cacache, so the install that followed fetched no tarball and the transcript
+  assertion had nothing to match; micromamba reuses repodata for the whole TTL,
+  so the second resolve — the one §12.13 is about — never asked the server. Each
+  phase now gets its own cache, which is the second developer on the second
+  machine rather than the same one twice.
+- **The tap.** `ovsx publish` streams the VSIX with `Transfer-Encoding:
+  chunked`, and the tap read `Content-Length` only — so it forwarded an empty
+  body and the server answered `400 could not read extension/package.json`. A
+  broken *measurement* that looks exactly like a broken publish endpoint, which
+  is the failure mode this whole section is about, arriving in the instrument.
+
+---
 
 ## 13. Implementation notes
 

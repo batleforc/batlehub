@@ -1,0 +1,43 @@
+# Server configuration for the heavy conda integration test
+# (tests/heavy/conda.sh). See tests/heavy/config.npm.toml for the env-var
+# conventions.
+
+[server]
+host = "127.0.0.1"
+port = 8085
+
+[database]
+type = "postgresql"
+url = "${DATABASE_URL}"
+max_connections = 5
+
+[[auth]]
+type = "token"
+
+[[auth.tokens]]
+value = "heavy-admin-token"
+role = "admin"
+user_id = "ci-admin"
+
+[storage]
+type = "filesystem"
+path = "./tmp/heavy-conda-storage"
+
+# ── Local channel: the packages exist ONLY here ──────────────────────────────
+#
+# Local mode is where both defects this suite covers live. The `.zst` probe is
+# a `HEAD`, which never reached a `GET`-only handler (RFC 0009 §12.4); and the
+# compressed channel was cached under a key that a publish does not move, so it
+# was pinned to whatever the channel looked like the first time anyone asked
+# (§12.13). Neither is visible without a client that probes with `HEAD` and a
+# publish in between two of them.
+[[registries]]
+type = "conda"
+name = "conda-local-${HEAVY_RUN}"
+mode = "local"
+
+[registries.rbac]
+# micromamba sends no credentials.
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]

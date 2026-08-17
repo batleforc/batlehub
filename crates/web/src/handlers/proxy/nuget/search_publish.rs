@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use actix_multipart::Multipart;
-use actix_web::{delete, get, put, web, HttpRequest, HttpResponse, Responder};
+use actix_web::{delete, get, routes, web, HttpRequest, HttpResponse, Responder};
 use bytes::BytesMut;
 use futures::StreamExt;
 use sha2::{Digest, Sha256};
@@ -54,6 +54,7 @@ fn default_take() -> usize {
         ("registry"   = String, Path,  description = "Registry name"),
         ("q"          = String, Query, description = "Search query"),
         ("take"       = u32,   Query, description = "Max results"),
+        ("skip"       = u32,   Query, description = "Offset into the result set"),
         ("prerelease" = bool,  Query, description = "Include pre-release"),
     ),
     responses(
@@ -86,13 +87,20 @@ pub async fn nuget_search(
     // the service index can go on advertising this endpoint — there is now no
     // state in which it has nothing to say.
     let _ = &identity;
+    // Ask for the whole window the client is paging through, not just one
+    // page's worth. `skip` was added when §12.4 measured it being ignored, and
+    // added in the wrong place: the search was limited to `take` hits and the
+    // offset then applied to *that*, so `take=1&skip=1` returned nothing and
+    // `take=20&skip=20` — the second page `dotnet package search` asks for —
+    // was empty on every registry, however many packages it held (§12.16).
+    let window = query.skip.saturating_add(query.take);
     let results = svc
         .search(
             &registry,
             &query.q,
-            query.take,
+            window,
             crate::handlers::proxy::search::search_mode(mode_map.get(&registry)),
-            crate::handlers::proxy::search::local_hits(&local_svc, &registry, &query.q, query.take)
+            crate::handlers::proxy::search::local_hits(&local_svc, &registry, &query.q, window)
                 .await,
         )
         .await
@@ -102,6 +110,7 @@ pub async fn nuget_search(
         .hits
         .iter()
         .skip(query.skip)
+        .take(query.take)
         .map(|h| {
             serde_json::json!({
                 "id": h.name,
@@ -135,6 +144,7 @@ pub async fn nuget_search(
         ("registry" = String, Path, description = "Registry name"),
         ("q"        = Option<String>, Query, description = "Partial package id"),
         ("take"     = Option<usize>, Query, description = "Maximum results"),
+        ("skip"     = Option<usize>, Query, description = "Offset into the result set"),
     ),
     responses(
         (status = 200, description = "Package id completions", body = ProtocolDocument),
@@ -156,13 +166,16 @@ pub async fn nuget_autocomplete(
     require_registry_type(&registry, "nuget", &map)?;
     let _ = &identity;
 
+    // Same window as `nuget_search`: the offset is into the result set, not
+    // into a page that was already truncated to `take`.
+    let window = query.skip.saturating_add(query.take);
     let results = svc
         .search(
             &registry,
             &query.q,
-            query.take,
+            window,
             crate::handlers::proxy::search::search_mode(mode_map.get(&registry)),
-            crate::handlers::proxy::search::local_hits(&local_svc, &registry, &query.q, query.take)
+            crate::handlers::proxy::search::local_hits(&local_svc, &registry, &query.q, window)
                 .await,
         )
         .await
@@ -173,6 +186,7 @@ pub async fn nuget_autocomplete(
         .hits
         .iter()
         .skip(query.skip)
+        .take(query.take)
         .map(|h| h.name.clone())
         .collect();
 
@@ -204,7 +218,16 @@ pub async fn nuget_autocomplete(
     security(("bearer_token" = [])),
 )]
 #[allow(clippy::too_many_arguments)]
+// Two paths, one handler. `dotnet nuget push` reads `PackagePublish/2.0.0` out
+// of the service index and appends a `/` to it, so what arrives is
+// `…/api/v2/package/` — and a route registered without the slash answers `404`.
+// Every test in this repository PUT to the unslashed path, the service index
+// advertises the unslashed path, and the client has never been able to publish
+// (RFC 0009 §12.16). Registering both is narrower than a global
+// `NormalizePath`, which would change the matching of ~249 other routes.
+#[routes]
 #[put("/proxy/{registry}/nuget/api/v2/package")]
+#[put("/proxy/{registry}/nuget/api/v2/package/")]
 pub async fn nuget_publish(
     req: HttpRequest,
     path: web::Path<String>,
@@ -328,7 +351,11 @@ pub async fn nuget_publish(
     security(("bearer_token" = [])),
 )]
 #[allow(clippy::too_many_arguments)]
+// Both spellings, for the same reason as `nuget_publish` above: `dotnet nuget
+// push` of a `.snupkg` appends the same trailing slash.
+#[routes]
 #[put("/proxy/{registry}/nuget/api/v2/symbolpackage")]
+#[put("/proxy/{registry}/nuget/api/v2/symbolpackage/")]
 pub async fn nuget_symbol_publish(
     req: HttpRequest,
     path: web::Path<String>,

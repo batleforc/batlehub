@@ -229,3 +229,52 @@ async fn npm_tarball_unknown_version_returns_404() {
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 404);
 }
+
+/// `npm dist-tag ls` against a local registry — RFC 0009 §12.16.
+///
+/// The handler read the packument straight off `ProxyService`, skipping the
+/// mode ladder every other npm read goes through, so on a local registry it
+/// asked upstream about a package that only exists here and answered `404`.
+/// Found by `tests/heavy/npm.sh`: `npm view` described the package and
+/// `npm dist-tag ls`, one command later, said it did not exist.
+///
+/// The assertion is that the tag names the published version, not merely that
+/// the status is `200`: an empty tag map is a `200` too, and that is the shape
+/// this route would take if the packument arrived from the wrong place.
+#[actix_web::test]
+async fn npm_dist_tags_local_mode_names_the_published_version() {
+    let app = make_local_npm_app(RegistryMode::Local).await;
+
+    for version in ["1.0.0", "2.0.0"] {
+        let req = TestRequest::put()
+            .uri("/proxy/local-npm/tagged-pkg")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .set_json(make_npm_publish_payload("tagged-pkg", version))
+            .to_request();
+        assert_eq!(call_service(&app, req).await.status(), 200);
+    }
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-npm/-/package/tagged-pkg/dist-tags")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200, "dist-tags must be served in local mode");
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(
+        body["latest"], "2.0.0",
+        "latest is derived from the published version set, so it must name the newest one"
+    );
+}
+
+/// The same route for a package no registry has: still a `404`, so the fix
+/// above did not turn "not found" into an empty tag map.
+#[actix_web::test]
+async fn npm_dist_tags_local_mode_unknown_package_returns_404() {
+    let app = make_local_npm_app(RegistryMode::Local).await;
+    let req = TestRequest::get()
+        .uri("/proxy/local-npm/-/package/never-published/dist-tags")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 404);
+}

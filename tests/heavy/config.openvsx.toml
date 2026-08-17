@@ -1,0 +1,40 @@
+# Server configuration for the heavy Open VSX integration test
+# (tests/heavy/openvsx.sh). See tests/heavy/config.npm.toml for the env-var
+# conventions.
+
+[server]
+host = "127.0.0.1"
+port = 8084
+
+[database]
+type = "postgresql"
+url = "${DATABASE_URL}"
+max_connections = 5
+
+[[auth]]
+type = "token"
+
+[[auth.tokens]]
+# `ovsx publish` sends its token as `?token=` — there is no header option in
+# the client — so this is the credential the query-parameter normalisation
+# scoped to `api/-/publish` has to resolve (RFC 0009 §12.6, §13.23).
+value = "heavy-admin-token"
+role = "admin"
+user_id = "ci-admin"
+
+[storage]
+type = "filesystem"
+path = "./tmp/heavy-openvsx-storage"
+
+# ── Local registry: the extension exists ONLY here ───────────────────────────
+[[registries]]
+type = "openvsx"
+name = "vsx-local-${HEAVY_RUN}"
+mode = "local"
+
+[registries.rbac]
+# `ovsx get` sends no credentials, the same boundary the VS Code gallery and
+# Terraform's archive fetch sit on.
+anonymous = ["releases:read", "source:read"]
+user = ["releases:read", "source:read"]
+admin = ["*"]

@@ -1,5 +1,18 @@
 use super::{CoreError, Identity, LocalRegistryService};
 
+/// Where the publish path stores the artifact's SHA-1, inside the package's
+/// stored `index_metadata`.
+///
+/// Composer's `dist.shasum` is a SHA-1 and its client verifies against it, so
+/// the SHA-256 this repository stores as *the* checksum cannot go in that
+/// field. It is computed once at publish rather than per read: a p2 document
+/// lists every version, and hashing each artifact to render it would make a
+/// metadata request cost one storage read per version.
+///
+/// Underscore-prefixed and stripped before the entry is served — it is our
+/// bookkeeping, not part of the package's `composer.json`.
+pub const COMPOSER_DIST_SHA1: &str = "_batlehub_dist_sha1";
+
 impl LocalRegistryService {
     /// Build a Packagist v2-compatible p2 JSON response for a locally published package.
     ///
@@ -39,18 +52,27 @@ impl LocalRegistryService {
             .filter_map(|pkg| {
                 let mut entry = pkg.index_metadata.clone();
                 let obj = entry.as_object_mut()?;
+                // The SHA-1 stored at publish. Absent for anything published
+                // before this field existed, and then the `shasum` is omitted
+                // rather than filled with the SHA-256 `pkg.checksum` holds:
+                // Composer hashes the downloaded file with SHA-1 and compares,
+                // so a SHA-256 there is not a weaker check, it is a failed
+                // download every time.
+                let dist_sha1 = obj
+                    .remove(COMPOSER_DIST_SHA1)
+                    .and_then(|v| v.as_str().map(str::to_owned));
+                let mut dist = serde_json::json!({
+                    "type": "zip",
+                    "url": format!(
+                        "{base}/dist/{vendor}/{pkg_name}/{version}",
+                        version = pkg.version
+                    ),
+                });
+                if let (Some(sha1), Some(dist_obj)) = (dist_sha1, dist.as_object_mut()) {
+                    dist_obj.insert("shasum".to_owned(), serde_json::Value::String(sha1));
+                }
                 // Inject/overwrite dist so downloads go through our proxy.
-                obj.insert(
-                    "dist".to_owned(),
-                    serde_json::json!({
-                        "type": "zip",
-                        "url": format!(
-                            "{base}/dist/{vendor}/{pkg_name}/{version}",
-                            version = pkg.version
-                        ),
-                        "shasum": pkg.checksum,
-                    }),
-                );
+                obj.insert("dist".to_owned(), dist);
                 obj.insert("name".to_owned(), serde_json::json!(name));
                 obj.insert("version".to_owned(), serde_json::json!(pkg.version));
                 obj.insert(

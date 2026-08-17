@@ -413,6 +413,18 @@ const NUGET: &[Conformance] = &[
         "/proxy/{registry}/nuget/v3/autocomplete",
         "dotnet 10.0.400: selected only via the `/3.0.0-beta` resource type",
     ),
+    // The trailing slash is the client's. `dotnet nuget push` reads
+    // `PackagePublish/2.0.0` out of the service index — which advertises the
+    // path *without* it — and appends one; the route registered only for the
+    // unslashed spelling answered `404` to every real push while every test in
+    // this repository PUT to the other one (RFC 0009 §12.16, found by
+    // `tests/heavy/nuget.sh`). Both spellings are registered, and this fixture
+    // is what keeps the client's one from being dropped as redundant.
+    Conformance::put(
+        "/proxy/nuget/nuget/api/v2/package/",
+        "/proxy/{registry}/nuget/api/v2/package/",
+        "dotnet 10.0.400, observed: PUT with a trailing slash",
+    ),
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
