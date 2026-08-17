@@ -19,7 +19,7 @@ BatleHub's tests fall into six layers, in increasing order of infrastructure cos
 |-------|-------|-------|--------|
 | **Unit** | `#[cfg(test)] mod tests` inline in each source file | none (HTTP upstreams mocked with `mockito`) | `cargo test --workspace --lib --bins` |
 | **In-process integration** | `crates/web/tests/*.rs`, `crates/examples/tests/*.rs` | none — full actix app on in-memory backends | `cargo test -p batlehub-web --test '*'` |
-| **CLI subprocess integration** | `cli/tests/integration.rs` | none — CLI binary vs. in-memory actix server | `cargo test -p batlehub-cli --test integration` |
+| **CLI subprocess integration** | `cli/tests/integration.rs` | none — CLI binary vs. in-memory actix server | `task test:cli:integration` |
 | **External integration** | `crates/adapters/tests/*.rs` | real Postgres / MinIO(S3) / Redis via Podman | `task test:pg-*`, `task test:s3` |
 | **Heavy client** | `tests/heavy/*.sh` | real Postgres **and a real client** — VS Code, IntelliJ, Bundler, npm, pip, ovsx, micromamba, dotnet, composer, terraform | `task test:heavy`, or one `task test:<ecosystem>-heavy` |
 | **Fuzz** | `fuzz/fuzz_targets/*.rs` | nightly toolchain | `task fuzz` |
@@ -45,6 +45,13 @@ cargo test -p batlehub-adapters --lib rbac
 # In-process integration only
 cargo test -p batlehub-web --test '*'
 cargo test -p batlehub-cli --test integration
+
+# batlehub-cli (`--bins`, not `--lib`: the crate is binary-only)
+task test:cli                 # unit + subprocess integration
+task test:cli:unit            # inline unit tests only, seconds
+task test:cli:integration     # the built binary vs. an in-memory server
+task test:cli:lint            # clippy -D warnings + fmt --check
+task test:cli -- setup_detect # any of the above take a filter after `--`
 
 # External integration (each starts its own container via Podman)
 task test:pg-cache            # Postgres — PgCacheStore

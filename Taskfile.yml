@@ -42,6 +42,29 @@ tasks:
       - task: test
       - task: ui:test
 
+  test:cli:
+    desc: "Run every batlehub-cli test (unit + subprocess integration). Filter: task test:cli -- setup_detect"
+    cmds:
+      - cargo test -p batlehub-cli {{.CLI_ARGS}}
+
+  test:cli:unit:
+    desc: "Run batlehub-cli's inline unit tests only (seconds, no server started)"
+    cmds:
+      # `--bins`, not `--lib`: batlehub-cli is a binary-only crate, so `--lib`
+      # fails with "no library targets found in package".
+      - cargo test -p batlehub-cli --bins {{.CLI_ARGS}}
+
+  test:cli:integration:
+    desc: "Run the batlehub-cli integration suite (the built binary, as a subprocess, against an in-memory server)"
+    cmds:
+      - cargo test -p batlehub-cli --test integration {{.CLI_ARGS}}
+
+  test:cli:lint:
+    desc: "clippy + rustfmt over batlehub-cli, with the same -D warnings gate as CI"
+    cmds:
+      - cargo clippy -p batlehub-cli --all-targets -- -D warnings
+      - cargo fmt --all --check
+
   test:pg-cache:
     desc: Run PgCacheStore integration tests (starts a temporary Postgres container via Podman)
     vars:
