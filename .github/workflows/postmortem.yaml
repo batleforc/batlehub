@@ -67,7 +67,7 @@ jobs:
       security-events: write # upload SARIF to the Security tab
       actions: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Pinned to the v2.0.1 commit. `version` (the scanner binary the composite
       # action downloads from the release assets) is pinned separately and must
       # stay at a tag that actually publishes binaries — v2.0.1 ships none, so
@@ -93,7 +93,7 @@ jobs:
       # need a real baseline, not a guess. The scores still reach SARIF.
       - name: postmortem supply-chain scan (Rust)
         id: scan
-        uses: mlab-sh/postmortem@1ef19477f79b71738f53fe38b3b6b1d1325e9028 # v2.0.1
+        uses: mlab-sh/postmortem@41e43789e0b2b1f9339df7758953b734cf5b3ff3 # v2.1.2
         with:
           path: "."
           version: v2.0.0
@@ -129,10 +129,10 @@ jobs:
       security-events: write
       actions: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: postmortem supply-chain scan (UI)
         id: scan
-        uses: mlab-sh/postmortem@1ef19477f79b71738f53fe38b3b6b1d1325e9028 # v2.0.1
+        uses: mlab-sh/postmortem@41e43789e0b2b1f9339df7758953b734cf5b3ff3 # v2.1.2
         with:
           path: ui
           version: v2.0.0
@@ -157,10 +157,10 @@ jobs:
       security-events: write
       actions: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: postmortem supply-chain scan (Website)
         id: scan
-        uses: mlab-sh/postmortem@1ef19477f79b71738f53fe38b3b6b1d1325e9028 # v2.0.1
+        uses: mlab-sh/postmortem@41e43789e0b2b1f9339df7758953b734cf5b3ff3 # v2.1.2
         with:
           path: docs
           version: v2.0.0
