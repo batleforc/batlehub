@@ -2,7 +2,7 @@
 
 | Field       | Value                                                        |
 | ----------- | ------------------------------------------------------------ |
-| Status      | In review — every open question resolved, and two of them against the recommendation this RFC was drafted with. The evidence is §13 |
+| Status      | Implemented. Every open question was resolved by measurement first (§13), two of them against the recommendation this RFC was drafted with; §14 records where the built thing differs from what §1–§12 proposed |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                       |
 | Co-author   | —                                                             |
 | Created     | 2026-08-18                                                    |
@@ -664,7 +664,7 @@ every one of these holds, and this design's answer to each:
 | A redirect goes somewhere internal | `ssrf::fetch_following_redirects` validates **every hop**, not just the first. |
 | The response is a huge file | Read incrementally to `image_max_bytes`, never buffered then truncated. |
 | The response is not an image | A decode-safe content-type allow-list, echoed rather than passed through, with `nosniff` already global. |
-| The response is an SVG | Not on the allow-list. An SVG is a document that can carry script, and this serves from the console's own origin. |
+| The response is an SVG | **On the allow-list, sanitised and sandboxed.** Two-thirds of README images are SVG (§13.2), so excluding them refuses the case that motivated the feature. §7.2 has the two controls, either sufficient alone. |
 | The endpoint becomes a general-purpose proxy | It cannot fetch anything that is not an image in a README this instance holds, for a package the caller can already see. |
 
 A residual worth naming rather than hiding: a package author still chooses *which
@@ -909,12 +909,16 @@ the measurements; this is what they decided.
    beside `readme/sanitize.rs`. Recommendation: leave it where its caller is
    until there are two, and resist the urge to generalise a security boundary
    that has never been asked to serve two masters.
-2. **Should `text_config` be validated against the server's installed
-   configurations?** Postgres will reject an unknown one at migration time with a
-   clear error, which is late but not obscure. Checking at config-load would need
-   a database round trip during validation, which nothing else in `validate()`
-   does. Recommendation: leave it to the migration, and name the failure mode in
-   the config documentation.
+2. ~~**Should `text_config` be validated against the server's installed
+   configurations?**~~ **Answered in the building: yes, and it had to be.** The
+   recommendation was to leave it to the migration, on the grounds that a
+   database round trip during `validate()` is something nothing else does. It
+   still is — the check runs at *startup* rather than in `validate()`, in
+   `ensure_readme_text_config`, because the generated column has to be rebuilt
+   there anyway when the setting changes. And it is not optional: the
+   configuration reaches SQL as a literal, so `SELECT cfgname FROM pg_ts_config
+   WHERE cfgname = $1` is simultaneously the validation and the reason
+   interpolating it is safe. §14.1.
 3. **Does the fetch button belong on the *listing* page as well?** The search
    result for a package this instance holds nothing of has the same wall the
    detail page had. Against: the listing has no version, and fetching "the
@@ -942,6 +946,9 @@ already landed.
 Phases 1 and 2 are separated for the same reason RFC 0007 separated its renderer
 from its endpoint: the guards are the whole feature, and they deserve a diff that
 contains nothing else.
+
+**All seven landed.** What each one turned into, and the five places the built
+thing differs from what is proposed above, is §14.
 
 ---
 
@@ -1056,3 +1063,134 @@ Stated so the numbers above are not read as more than they are:
 - **No measurement of how often a README changes**, which is what would justify
   or refute RFC 0007's decision to keep no history (its open question 4). Out of
   scope here; noted because it is the obvious next thing to ask.
+
+---
+
+## 14. Implementation notes
+
+What was built, and the places it differs from what §1–§12 proposed. Recorded
+for the reason RFC 0007 §13 gives: an RFC published under a label saying it
+shipped, describing something the code does not do, is a claim about the product
+that is not true.
+
+### 14.1 The phases, as landed
+
+| Phase | Landed as |
+| --- | --- |
+| 0 | `render::chip_html_images` — shipped ahead of this RFC under [RFC 0007 §13.10](/rfc/0007-package-readmes#_13-10-an-image-written-as-html-rendered-to-nothing), because a broken promise should not wait on a feature |
+| 1 | `sanitize::sanitize_capturing_images` and the index rewrite, `render::{render_capturing_images, image_urls, proxy_prefix}`, `readme/image.rs` (the allow-list, `FetchedImage`, `IMAGE_CSP`), `readme/svg.rs` + its corpus, `ports::ReadmeImageFetcher`, `http_client::fetch_image`, `registry/readme_image.rs`, `fuzz_svg_sanitize`, `RENDERER_VERSION` → `3` |
+| 2 | `explore/image.rs`, `ReadmeService::{image_at, ReadmeImageConfig}` with the positive and negative cache, `image_max_bytes` in config and `HotConfig` with its two refusals, `ReadmePanel.vue`'s image styling, removal of `readme.image-proxy-unimplemented`, `crates/web/tests/readme_images.rs` |
+| 3 | migration `035`, `ReadmeRepository::search` + `ReadmeSearchHit`, the Postgres query, the in-memory substring double, `ensure_readme_text_config`, `[search]` in config with its refusals and its warning, six new tests in `pg_readmes.rs` |
+| 4 | `SearchScope`, `matched_in`/`snippet`/`readme_search_enabled`/`searched_in`/`truncated` on the listing, `ExploreFilter::name_in` in both backends, `SearchConfigLock` through `configure_app` **and the reload path**, `crates/web/tests/readme_search.rs` |
+| 5 | `RegistryKind::fetchable_by_version()` + `FetchSupport`, `explore/fetch.rs`, `console_fetch` in config and `HotConfig`, `proxy::proxy_artifact_key`, the *Fetchable* column in the generated support table, `crates/web/tests/explore_fetch.rs` |
+| 6 | This section, `docs/guide/admin-config.md` §§ image proxy / console fetch / prose search, `docs/use/package-explorer-search.md`, `docs/operations/egress.md`'s two new sections |
+
+### 14.2 The image proxy prefix has to be absolute, and nothing said so
+
+§4.2 describes the rewritten `src` as a path. It cannot be one.
+
+`ammonia`'s `url_relative(Deny)` — which exists so a package's own relative
+`href` is dropped rather than resolved against the console — is applied to the
+attribute filter's **output**, not only to what the author wrote. A relative
+prefix therefore produces `<img>` with no `src` at all: every image invisible, no
+error, no warning. That is RFC 0007 §4.1's `"allow"` trap arriving through a
+different door.
+
+So the prefix is built from `trusted_origin(req)` — the same function that
+decides whether a forwarded header may influence any generated URL — and
+`render::proxy_prefix` refuses a relative one, charting the images instead. Two
+tests pin it: one on the sanitiser, asserting the ammonia behaviour that makes
+the refusal necessary, and one on the renderer, asserting the refusal.
+
+### 14.3 The index is captured, not walked twice
+
+§5.1 says `image_urls` shares `strip_images`' walk. It does not, and the reason
+is stronger than the plan.
+
+`strip_images` only runs under `"strip"`. Under `"proxy"` the markdown events
+pass through untouched and the *sanitiser* rewrites each `src` — and it also
+rewrites raw-HTML `<img>`, which `strip_images` never sees. Two walks would have
+numbered two different sets.
+
+So the numbering happens exactly once, inside the attribute filter that does the
+rewriting: `sanitize_capturing_images` returns the URLs it rewrote, in the order
+it rewrote them. `image_urls` is the same pipeline run for its second half alone.
+There is no second walk to drift from the first, which is what makes an index a
+safe thing to accept from a browser.
+
+### 14.4 The fuzz target found a real bypass, and two bugs in itself
+
+`fuzz_svg_sanitize` reported three failures. The first two were the check
+confusing markup with text — a badge label reading `xlink:href=`, then a `d`
+attribute whose *value* contained `href=`. Both harmless; both fixed in the
+target, which now tests for an attribute-**name** position rather than "inside a
+tag". `fuzz_readme_render` needed the same lesson twice before it.
+
+The third was real, and it was **idempotence** that caught it rather than any of
+the named vectors. A value reading `url\u{1}(http://evil.example/x)` passed
+`safe_value` — the control character broke up the `url(` token it looks for — and
+then `strip_forbidden_chars` removed the character and wrote a working external
+reference into the output. Sanitising twice gave a different answer from
+sanitising once, which is precisely the shape that says a decision was taken
+about bytes other than the ones emitted.
+
+The fix is one line of ordering — normalise, then validate — and the rule it
+states is worth more than the line: **validate the bytes you are going to emit,
+never the ones that arrived.** 3.4 million runs clean afterwards.
+
+### 14.5 `ts_headline`'s empty delimiters need quoting
+
+`StartSel=,StopSel=` does not mean "no delimiters". Postgres reads the next
+option's *name* as StartSel's value and leaves StopSel at its default, so every
+snippet came back wrapped in `,StopSel=…</b>` — markup, on the one surface §7.4
+exists to keep markup off. `StartSel="",StopSel=""` is the correct spelling.
+
+Caught by an assertion that the snippet contains no `</b>`, which is exactly the
+assertion a looser test would not have made.
+
+### 14.6 The "already held" check asked the wrong store
+
+The first version of the fetch endpoint checked `artifact_storage_key`, which is
+the `local:` key a **published** artifact goes to. A proxied artifact is cached
+under `artifact:` plus the coordinate. The two describe different halves of the
+same catalogue, so the check was a question always answered "no": every fetch
+looked new, and pressing the button twice downloaded twice.
+
+`proxy::proxy_artifact_key` now builds it in one place, used by the download path
+that writes it and the button that reads it.
+
+### 14.7 Prose search scopes explicitly, and the listing does not
+
+`ExploreFilter::registries` documents an empty vector as "all accessible
+registries". `ReadmeRepository::search` treats an empty scope as **nothing**,
+which is the safe direction for a query that reads package text.
+
+The two are not the same rule, and the difference is visible in one place: an
+instance whose `[registries.rbac.explore]` grants nothing lists everything and
+searches no prose. That is a pre-existing inconsistency in the listing rather
+than something this RFC introduced, and it is left alone here — narrowing the
+search to match the safer of the two is the right side to be on, and widening the
+*listing* is a separate change with its own argument.
+
+The web suite's shared `access_config` helper leaves the explore sets empty, so
+the prose-search tests build their app with `access_config_with_explore`. The
+helper now says why.
+
+### 14.8 What the tests cover
+
+- **Images**: `sanitize.rs` (document-order indices, skipped `src`s, the relative
+  prefix trap), `render.rs` (`image_urls` agreeing with the emitted indices, in
+  both dialects), `svg/tests.rs` (the standard vectors, the control-character
+  bypass, idempotence, and a real shields.io badge still reading),
+  `readme_image.rs` (the SSRF refusal against a server that really is listening),
+  `crates/web/tests/readme_images.rs` (the endpoint, the CSP, and — through a
+  call-counting fake — every request that was *not* made).
+- **Search**: `pg_readmes.rs` against real Postgres for stemming, ranking,
+  one-row-per-package, scoping and query robustness; `readme_search.rs` for the
+  endpoint's shape, the scope semantics, name-over-prose, and the feature-off
+  answer.
+- **Fetch**: `explore_fetch.rs`, including the two assertions that would pass
+  against a warming-service implementation and therefore have to exist — the
+  refusal with the rule's own reason, and the audit event naming the caller.
+- **Fuzz**: `fuzz_svg_sanitize` over arbitrary bytes, asserting well-formedness,
+  no script, no handler, no external reference, and idempotence.

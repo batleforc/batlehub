@@ -2463,6 +2463,14 @@ mod readme_capture {
         async fn delete_for_package(&self, _registry: &str, _name: &str) -> Result<(), CoreError> {
             Ok(())
         }
+        async fn search(
+            &self,
+            _registries: &[String],
+            _query: &str,
+            _limit: u64,
+        ) -> Result<Vec<crate::ports::ReadmeSearchHit>, CoreError> {
+            Ok(vec![])
+        }
     }
 
     fn proxy_with_readme(

@@ -1,3 +1,11 @@
+//! `GET /api/v1/explore/packages` — the catalogue's listing and its search.
+//!
+//! Two searches, deliberately not blended into one relevance score. A **name**
+//! match is what a reader means when they type a name, and it always outranks a
+//! prose match however densely the prose repeats the word (RFC 0007-bis §4.3).
+//! Every row says which it was, because a result that matches nothing the reader
+//! can see reads as a bug.
+
 use std::collections::HashMap;
 
 use batlehub_core::entities::{resolve_state, ResolutionPolicy};
@@ -6,15 +14,66 @@ use chrono::Utc;
 
 use super::{
     default_per_page, format_dt, get, web, AdminService, AppError, Arc, AuthIdentity, Deserialize,
-    ExploreFilter, ExploreSortBy, IntoParams, PackageSource, Responder, Serialize, ToSchema,
+    ExploreFilter, ExploreSortBy, IntoParams, PackageSource, ProxyService, Responder, Serialize,
+    ToSchema,
 };
 
 // ── List packages (collapsed) ─────────────────────────────────────────────────
+
+/// Where a search looks.
+///
+/// `name` is today's behaviour byte for byte, and it is the default: a
+/// parameter's absence must not change what the endpoint already did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchScope {
+    #[default]
+    Name,
+    Readme,
+    Both,
+}
+
+impl SearchScope {
+    fn searches_prose(self) -> bool {
+        matches!(self, Self::Readme | Self::Both)
+    }
+    fn searches_names(self) -> bool {
+        matches!(self, Self::Name | Self::Both)
+    }
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Readme => "readme",
+            Self::Both => "both",
+        }
+    }
+}
+
+/// How many prose candidates one search reads.
+///
+/// A cap rather than full pagination through the index: prose search is a
+/// discovery tool, and a reader who is on page eleven of a phrase search has
+/// been failed by the query rather than by the limit. The response says when it
+/// applied, because a silently truncated list reads as "that is all there is".
+const PROSE_SEARCH_CAP: u64 = 200;
 
 #[derive(Deserialize, IntoParams)]
 pub struct ExploreQuery {
     pub registry: Option<String>,
     pub name: Option<String>,
+    /// What to search for. `name` is the older parameter and still works; `q` is
+    /// what the console sends, and the only one `in` applies to.
+    #[serde(default)]
+    pub q: Option<String>,
+    /// `name` (default) | `readme` | `both`.
+    ///
+    /// Inlined into the parameter rather than referenced, for the reason
+    /// `ReadmeQuery::format` gives: nothing returns this enum in a body, so
+    /// utoipa emits no component and a `$ref` would reach the console as
+    /// `unknown`.
+    #[serde(rename = "in", default)]
+    #[param(inline)]
+    pub search_in: SearchScope,
     /// Sort order: `downloads` (default), `name`, `recent`, or `fetched`.
     ///
     /// `recent` is when a client last downloaded a package *from* this
@@ -37,9 +96,25 @@ pub struct ExplorePackageListResponse {
     /// `true` when the upstream database was unreachable and no cached data was available.
     /// The result set will be empty; the UI should surface a warning to the user.
     pub upstream_unavailable: bool,
+    /// Whether `[search] readmes` is on for this instance.
+    ///
+    /// So a client can tell "no package here says that" from "this instance does
+    /// not search prose". `in=readme` with the feature off is accepted and
+    /// answers as `in=name` does — a parameter that silently means something
+    /// else is the failure this RFC family keeps finding — and this field is how
+    /// the console says which happened (RFC 0007-bis §4.3).
+    pub readme_search_enabled: bool,
+    /// The scope actually applied, which is `name` when prose search is off
+    /// however the request asked.
+    pub searched_in: String,
+    /// The prose search hit [`PROSE_SEARCH_CAP`] and there may be more.
+    ///
+    /// Reported rather than swallowed: a silently shortened list reads as "that
+    /// is all there is", which is a lie about the catalogue.
+    pub truncated: bool,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, ToSchema, Clone)]
 pub struct ExploreEntryDto {
     pub registry: String,
     pub name: String,
@@ -75,6 +150,20 @@ pub struct ExploreEntryDto {
     /// The version most recently obtained, by `cached_at` for a proxied
     /// artifact or `published_at` for a local one. `null` when nothing is held.
     pub newest_version: Option<String>,
+    /// `name` | `readme` | `both` — why this row is here.
+    ///
+    /// A row whose name has nothing to do with the query and whose README
+    /// mentions it in passing is a *correct* result and an inexplicable one
+    /// without the label (RFC 0007-bis §4.3).
+    pub matched_in: String,
+    /// The matched fragment of the README, as **plain text**, or `null`.
+    ///
+    /// Plain, and rendered as text. It never reaches `v-html`: the README
+    /// panel's is a deliberate, tested, single-component boundary
+    /// (RFC 0007 §6.5), and a search snippet is a second surface for
+    /// package-authored content reached by a much cheaper path — no navigation,
+    /// just a query (RFC 0007-bis §7.4).
+    pub snippet: Option<String>,
 }
 
 /// Explore available packages (one entry per unique package name).
@@ -98,27 +187,67 @@ pub async fn explore_packages(
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
+    proxy_svc: web::Data<Arc<ProxyService>>,
     access: web::Data<crate::AccessConfigLock>,
+    search_cfg: web::Data<crate::SearchConfigLock>,
 ) -> Result<impl Responder, AppError> {
     let accessible = access
         .read()
         .await
         .explore_accessible_registries_for(&identity);
 
+    // See `clamp_pagination`'s doc comment for why page/per_page are clamped;
+    // an unclamped per_page=0 here would also collapse `filter`'s cache key
+    // onto `count_filter`'s (both would be limit=0,offset=0).
+    let (page, per_page) = crate::handlers::clamp_pagination(query.page, query.per_page);
+
+    let readme_search_enabled = *search_cfg.read().await;
+    // With the feature off, `in=readme` answers exactly as `in=name` does, and
+    // the response says so. Accepting the parameter and quietly meaning
+    // something else is the failure this RFC family keeps finding.
+    // `q` is what the console sends; `name` is the older parameter and still
+    // filters names, so a client that has not been updated keeps working.
+    let term = query
+        .q
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_owned);
+    // Prose search needs two things: the feature on, and something to search
+    // for. Without a query there is nothing to match, so `in=readme` is a
+    // *listing* — not an empty result, which would read as "no package here says
+    // that" about a question nobody asked.
+    let scope = if readme_search_enabled && term.is_some() {
+        query.search_in
+    } else {
+        SearchScope::Name
+    };
+    let name_filter = if scope.searches_names() {
+        term.clone().or_else(|| query.name.clone())
+    } else {
+        // `in=readme` means prose *only*, so the name filter is not applied —
+        // otherwise the two would AND and the scope would be a narrowing rather
+        // than a choice.
+        None
+    };
+
     if let Some(ref reg) = query.registry {
         if !accessible.contains(reg) {
             return Ok(web::Json(ExplorePackageListResponse {
                 items: vec![],
                 total: 0,
-                page: query.page.min(10_000),
-                per_page: query.per_page.clamp(1, 100),
+                page,
+                per_page,
                 upstream_unavailable: false,
+                readme_search_enabled,
+                searched_in: scope.as_str().to_owned(),
+                truncated: false,
             }));
         }
     }
 
     let registries: Vec<String> = if query.registry.is_none() {
-        accessible.into_iter().collect()
+        accessible.iter().cloned().collect()
     } else {
         vec![]
     };
@@ -137,21 +266,32 @@ pub async fn explore_packages(
     let resolution: HashMap<String, ResolutionPolicy> =
         local_svc.hot.read().await.resolution.clone();
 
-    // See `clamp_pagination`'s doc comment for why page/per_page are clamped;
-    // an unclamped per_page=0 here would also collapse `filter`'s cache key
-    // onto `count_filter`'s (both would be limit=0,offset=0).
-    let (page, per_page) = crate::handlers::clamp_pagination(query.page, query.per_page);
-
     // Registry-level access (above) is the coarse gate; this is the per-package
     // one. Without it an `internal`/`team` package's name and version count are
     // listed to anyone who can explore the registry, even though the same caller
     // gets a 403 trying to download it.
     let viewer = crate::handlers::explore_viewer_for(&identity);
 
+    // The prose half, when there is one. Run first because it decides how the
+    // rest of the request is shaped: with prose hits the two result sets are
+    // merged in memory, and without them this is byte for byte the old path.
+    let prose = match (scope.searches_prose(), term.as_deref()) {
+        (true, Some(term)) => {
+            let searched: Vec<String> = match query.registry.clone() {
+                Some(one) => vec![one],
+                None => accessible.iter().cloned().collect(),
+            };
+            prose_hits(&proxy_svc, &searched, term).await
+        }
+        _ => Vec::new(),
+    };
+    let truncated = prose.len() as u64 >= PROSE_SEARCH_CAP;
+
     let filter = ExploreFilter {
         registry: query.registry.clone(),
         registries: registries.clone(),
-        name_contains: query.name.clone(),
+        name_contains: name_filter.clone(),
+        name_in: vec![],
         sort_by: sort_by.clone(),
         limit: per_page,
         offset: page * per_page,
@@ -159,59 +299,211 @@ pub async fn explore_packages(
     };
     let count_filter = ExploreFilter {
         registry: query.registry.clone(),
-        registries,
-        name_contains: query.name.clone(),
-        sort_by,
+        registries: registries.clone(),
+        name_contains: name_filter.clone(),
+        name_in: vec![],
+        sort_by: sort_by.clone(),
         limit: 0,
         offset: 0,
-        viewer,
+        viewer: viewer.clone(),
     };
-
-    let ((packages, pkg_unavailable), (total, count_unavailable)) = tokio::try_join!(
-        admin_svc.explore_packages(filter),
-        admin_svc.count_explore_packages(count_filter),
-    )
-    .map_err(AppError::from)?;
 
     // One instant for the whole page, not one per row: `Utc::now()` inside the
     // loop can straddle a TTL or a quarantine boundary, so two packages fetched
     // in the same second could be graded against different "now"s.
     let now = Utc::now();
-    let items: Vec<ExploreEntryDto> = packages
-        .into_iter()
-        .map(|e| {
-            // A registry with no entry gets the default policy: no TTL, no age
-            // gate. That is the same answer as a registry configured with
-            // neither, which is what an unknown registry effectively is here.
-            let policy = resolution.get(&e.registry).cloned().unwrap_or_default();
-            let state = resolve_state(&e, &policy, &identity.0.role, now);
-            ExploreEntryDto {
-                registry: e.registry,
-                name: e.name,
-                version_count: e.version_count,
-                total_downloads: e.total_downloads,
-                last_accessed: e.last_accessed.map(format_dt),
-                source: match e.source {
-                    PackageSource::Proxied => "proxied".to_string(),
-                    PackageSource::Local => "local".to_string(),
-                    PackageSource::Both => "both".to_string(),
-                },
-                has_blocked: e.has_blocked,
-                has_yanked: e.has_yanked,
-                state: state.as_str().to_string(),
-                cached_versions: e.cached_versions,
-                cached_bytes: e.cached_bytes,
-                last_fetched_at: e.last_fetched_at.map(format_dt),
-                newest_version: e.newest_version,
-            }
-        })
+
+    if prose.is_empty() && !scope.searches_prose() {
+        // The path that has always existed: SQL paginates, nothing is merged.
+        let ((packages, pkg_unavailable), (total, count_unavailable)) = tokio::try_join!(
+            admin_svc.explore_packages(filter),
+            admin_svc.count_explore_packages(count_filter),
+        )
+        .map_err(AppError::from)?;
+
+        let items: Vec<ExploreEntryDto> = packages
+            .into_iter()
+            .map(|e| to_dto(e, &resolution, &identity, now, "name", None))
+            .collect();
+
+        return Ok(web::Json(ExplorePackageListResponse {
+            total: total as usize,
+            items,
+            page,
+            per_page,
+            upstream_unavailable: pkg_unavailable || count_unavailable,
+            readme_search_enabled,
+            searched_in: scope.as_str().to_owned(),
+            truncated: false,
+        }));
+    }
+
+    // The merged path. Both halves are read whole, up to the cap, because
+    // "name first, then prose" cannot be expressed as one SQL ordering without
+    // a weight — and a weight is exactly what lets a sufficiently dense README
+    // out-score a package that *is* called the thing (RFC 0007-bis §4.3).
+    let (name_rows, name_unavailable) = if scope.searches_names() {
+        admin_svc
+            .explore_packages(ExploreFilter {
+                limit: PROSE_SEARCH_CAP,
+                offset: 0,
+                ..filter
+            })
+            .await
+            .map_err(AppError::from)?
+    } else {
+        (Vec::new(), false)
+    };
+
+    let mut merged: Vec<ExploreEntryDto> = Vec::new();
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    for entry in name_rows {
+        let key = (entry.registry.clone(), entry.name.clone());
+        // A row that matched both ways says so, and keeps the snippet — the
+        // reader gets the label *and* the reason.
+        let also = prose
+            .iter()
+            .find(|h| h.registry == key.0 && h.name == key.1);
+        let matched_in = if also.is_some() { "both" } else { "name" };
+        let snippet = also.map(|h| h.snippet.clone());
+        seen.insert(key);
+        merged.push(to_dto(
+            entry,
+            &resolution,
+            &identity,
+            now,
+            matched_in,
+            snippet,
+        ));
+    }
+
+    // Prose-only hits, in rank order, after every name match.
+    let prose_only: Vec<&batlehub_core::ports::ReadmeSearchHit> = prose
+        .iter()
+        .filter(|h| !seen.contains(&(h.registry.clone(), h.name.clone())))
         .collect();
+    if !prose_only.is_empty() {
+        // The catalogue rows for those coordinates, through the same visibility
+        // gate the listing applies — a package hidden from the listing must not
+        // become visible by quoting a phrase from its README (RFC 0007-bis §7.3).
+        let names: Vec<(String, String)> = prose_only
+            .iter()
+            .map(|h| (h.registry.clone(), h.name.clone()))
+            .collect();
+        let (rows, _) = admin_svc
+            .explore_packages(ExploreFilter {
+                registry: query.registry.clone(),
+                registries,
+                name_contains: None,
+                name_in: names,
+                sort_by,
+                limit: PROSE_SEARCH_CAP,
+                offset: 0,
+                viewer,
+            })
+            .await
+            .map_err(AppError::from)?;
+        // Ordered by the search's ranking, not by the catalogue's sort: the
+        // reader asked a question and these are the answers in order of how well
+        // they answer it.
+        for hit in prose_only {
+            let Some(entry) = rows
+                .iter()
+                .find(|e| e.registry == hit.registry && e.name == hit.name)
+            else {
+                // No row: the package's README is stored but the catalogue does
+                // not show it to this caller. Dropped silently, which is the
+                // point — a `404` would confirm it exists.
+                continue;
+            };
+            merged.push(to_dto(
+                entry.clone(),
+                &resolution,
+                &identity,
+                now,
+                "readme",
+                Some(hit.snippet.clone()),
+            ));
+        }
+    }
+
+    let total = merged.len();
+    let start = (page * per_page).min(total as u64) as usize;
+    let end = (start + per_page as usize).min(total);
+    let items = merged[start..end].to_vec();
 
     Ok(web::Json(ExplorePackageListResponse {
-        total: total as usize,
+        total,
         items,
         page,
         per_page,
-        upstream_unavailable: pkg_unavailable || count_unavailable,
+        upstream_unavailable: name_unavailable,
+        readme_search_enabled,
+        searched_in: scope.as_str().to_owned(),
+        truncated,
     }))
+}
+
+/// The prose search, or nothing when this instance cannot run one.
+///
+/// A search failure is not an error the reader should see: the name half of the
+/// answer is still correct and still useful, and a `500` on the catalogue's
+/// front page because the FTS index is mid-rebuild would be a worse outcome than
+/// a shorter list.
+async fn prose_hits(
+    proxy_svc: &ProxyService,
+    registries: &[String],
+    term: &str,
+) -> Vec<batlehub_core::ports::ReadmeSearchHit> {
+    let Some(readme_svc) = proxy_svc.readme.as_ref() else {
+        return Vec::new();
+    };
+    match readme_svc
+        .repo
+        .search(registries, term, PROSE_SEARCH_CAP)
+        .await
+    {
+        Ok(hits) => hits,
+        Err(e) => {
+            tracing::warn!(error = %e, "explore: README search failed; answering on names alone");
+            Vec::new()
+        }
+    }
+}
+
+/// One catalogue row as the console sees it.
+fn to_dto(
+    e: batlehub_core::entities::ExploreEntry,
+    resolution: &HashMap<String, ResolutionPolicy>,
+    identity: &AuthIdentity,
+    now: chrono::DateTime<Utc>,
+    matched_in: &str,
+    snippet: Option<String>,
+) -> ExploreEntryDto {
+    // A registry with no entry gets the default policy: no TTL, no age gate.
+    // That is the same answer as a registry configured with neither, which is
+    // what an unknown registry effectively is here.
+    let policy = resolution.get(&e.registry).cloned().unwrap_or_default();
+    let state = resolve_state(&e, &policy, &identity.0.role, now);
+    ExploreEntryDto {
+        registry: e.registry,
+        name: e.name,
+        version_count: e.version_count,
+        total_downloads: e.total_downloads,
+        last_accessed: e.last_accessed.map(format_dt),
+        source: match e.source {
+            PackageSource::Proxied => "proxied".to_string(),
+            PackageSource::Local => "local".to_string(),
+            PackageSource::Both => "both".to_string(),
+        },
+        has_blocked: e.has_blocked,
+        has_yanked: e.has_yanked,
+        state: state.as_str().to_string(),
+        cached_versions: e.cached_versions,
+        cached_bytes: e.cached_bytes,
+        last_fetched_at: e.last_fetched_at.map(format_dt),
+        newest_version: e.newest_version,
+        matched_in: matched_in.to_owned(),
+        snippet,
+    }
 }

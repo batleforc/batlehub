@@ -1,9 +1,11 @@
 pub mod http_client;
+pub mod readme_image;
 pub mod ssrf;
 pub use http_client::{
     apply_upstream_options, apply_upstream_tls, basic_auth_get, cache_control, parse_http_date,
     percent_encode, to_registry_error, upstream_auth_headers, UpstreamHttpOptions,
 };
+pub use readme_image::HttpReadmeImageFetcher;
 
 pub mod fanout;
 pub use fanout::FanoutRegistryClient;

@@ -105,6 +105,75 @@ pub struct AppConfig {
     /// behaviour: `/metrics` served, history recorded, 30 days retained.
     #[serde(default)]
     pub stats: StatsConfig,
+    /// What the catalogue's search box can see. Absent means names only, which
+    /// is what it has always matched.
+    #[serde(default)]
+    pub search: SearchConfig,
+}
+
+// ── Search ────────────────────────────────────────────────────────────────────
+
+fn default_text_config() -> String {
+    batlehub_adapters_text_config().to_owned()
+}
+
+/// The default Postgres text search configuration, named in one place.
+///
+/// `english`, and RFC 0007-bis was drafted arguing for `simple`. The draft's
+/// reasoning was that stemming mangles identifiers — `axios` becomes `axio` —
+/// which is true and does not follow: the *query* is stemmed by the same
+/// configuration, so it still matches. Measured, `english` answered all seven
+/// test queries and `simple` failed two, including `retry` against a README that
+/// says `retrying` (RFC 0007-bis §13.3).
+fn batlehub_adapters_text_config() -> &'static str {
+    "english"
+}
+
+/// What the catalogue's search matches (RFC 0007-bis §4.1).
+///
+/// ```toml
+/// [search]
+/// readmes     = true        # match README prose as well as package names
+/// text_config = "english"   # the Postgres text search configuration
+/// ```
+///
+/// **Off by default**, unlike README *capture*, which RFC 0007 defaulted on
+/// because it costs one already-parsed field. This builds an index over prose,
+/// and the cost is storage plus write amplification on every capture. An
+/// operator should choose it.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SearchConfig {
+    /// Match README prose as well as package names.
+    ///
+    /// With this off, `?in=readme` and `?in=both` are accepted and answer
+    /// exactly as `?in=name` does, plus a response field saying so. A parameter
+    /// that silently means something else is the failure this whole RFC family
+    /// keeps finding; one that says *"prose search is not enabled on this
+    /// instance"* is one an operator can act on.
+    #[serde(default)]
+    pub readmes: bool,
+
+    /// The Postgres text search configuration the index is built with.
+    ///
+    /// Settable because an estate whose internal packages are documented in
+    /// another language is precisely the kind of deployment that self-hosts.
+    /// Changing it **rebuilds the generated column** — `to_tsvector` in one must
+    /// be IMMUTABLE, so the configuration has to be a literal — which makes this
+    /// a decision to take at install rather than to tune later. The server does
+    /// the rebuild on startup and says so in the log rather than leaving an
+    /// operator to find out during a migration.
+    #[serde(default = "default_text_config")]
+    pub text_config: String,
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            readmes: false,
+            text_config: default_text_config(),
+        }
+    }
 }
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
@@ -368,7 +437,33 @@ impl AppConfig {
         self.license_gate_warnings(&mut out);
         self.readme_warnings(&mut out);
         self.upstream_detail_warnings(&mut out);
+        self.search_warnings(&mut out);
         out
+    }
+
+    /// Prose search enabled over a store nothing writes to.
+    ///
+    /// Only raised when **every** registry has README capture explicitly off: a
+    /// single such registry is an ordinary choice, and warning about it would put
+    /// a notice on the admin panel for a configuration that works.
+    fn search_warnings(&self, out: &mut Vec<ConfigWarning>) {
+        if !self.search.readmes || self.registries.is_empty() {
+            return;
+        }
+        let any_capture = self
+            .registries
+            .iter()
+            .any(|r| r.readme.as_ref().is_none_or(|c| c.enabled));
+        if any_capture {
+            return;
+        }
+        out.push(ConfigWarning::new(
+            warnings::SEARCH_READMES_NOTHING_STORED,
+            "search.readmes",
+            "[search] readmes = true, but every registry has [registries.readme] enabled = false. \
+             The index will be built and stay empty: nothing is ever stored to put in it, so the \
+             search box gains an option that can only answer 'no package here says that'.",
+        ));
     }
 
     /// A `[registries.upstream_detail]` block that cannot do what it says.
@@ -481,21 +576,6 @@ impl AppConfig {
                     ),
                 ));
                 continue;
-            }
-
-            if readme.remote_images == "proxy" {
-                out.push(ConfigWarning::new(
-                    warnings::README_IMAGE_PROXY_UNIMPLEMENTED,
-                    path.clone(),
-                    format!(
-                        "registry '{}' sets readme.remote_images = \"proxy\", but this build has \
-                         no image-proxy endpoint to rewrite an image's src to, so images are \
-                         charted exactly as \"strip\" charts them — an inline chip carrying the \
-                         alt text and the host. The setting is accepted and carried; nothing \
-                         about the configuration changes when the endpoint lands.",
-                        registry.name,
-                    ),
-                ));
             }
 
             if !readme.from_archive {
@@ -867,6 +947,33 @@ impl AppConfig {
         // `PROXY_TRUST_INVALID_DEPRECATED_ENTRY` instead.
         self.validate_host_routing()?;
 
+        // The index is a Postgres generated column with a GIN index. There is no
+        // other backend to put it in, and failing at startup beats a search that
+        // quietly matches nothing (RFC 0007-bis §4.5).
+        // Both spellings, because `[database] type` is documented as
+        // `postgresql` and written as `postgres` about as often. Nothing else
+        // reads this field — the adapter layer is Postgres-only — so the check
+        // exists to give an operator who wrote something else an answer here
+        // rather than a search that quietly matches nothing.
+        let postgres = matches!(
+            self.database.db_type.to_ascii_lowercase().as_str(),
+            "postgres" | "postgresql"
+        );
+        if self.search.readmes && !postgres {
+            bail!(
+                "[search] readmes = true needs a Postgres database — the README index is a \
+                 generated tsvector column with a GIN index, and [database] type = '{}' has \
+                 nowhere to put it",
+                self.database.db_type
+            );
+        }
+        if self.search.text_config.trim().is_empty() {
+            bail!(
+                "[search] text_config must name a Postgres text search configuration (e.g. \
+                 \"english\", \"simple\", \"french\"); an empty value is not one"
+            );
+        }
+
         // The set of storage backend names a registry's `storage` field may
         // reference. In single-backend mode only the implicit "default" exists;
         // in multi mode it is the declared `[[storage.backends]]` names. A
@@ -1006,6 +1113,30 @@ impl AppConfig {
                          byte ceiling; a README is a database row read on every page load",
                         registry.name,
                         readme.max_bytes
+                    );
+                }
+                // The image cap is a separate number from `max_bytes` because
+                // the two bound different things, and it gets the same two
+                // guards for the same reasons (RFC 0007-bis §4.5).
+                if readme.remote_images == "proxy" && readme.image_max_bytes == 0 {
+                    bail!(
+                        "registry '{}': readme.image_max_bytes = 0 with remote_images = \"proxy\" \
+                         serves no image while claiming to render them; set remote_images = \
+                         \"strip\" to chart them instead",
+                        registry.name
+                    );
+                }
+                // The bytes are buffered in memory to check the type and the cap
+                // before anything is stored, so a ceiling makes that bound a
+                // statement rather than a hope.
+                const IMAGE_MAX_BYTES_CEILING: usize = 16 * 1024 * 1024;
+                if readme.image_max_bytes > IMAGE_MAX_BYTES_CEILING {
+                    bail!(
+                        "registry '{}': readme.image_max_bytes = {} exceeds the \
+                         {IMAGE_MAX_BYTES_CEILING} byte ceiling; an image is held in memory while \
+                         its type and size are checked",
+                        registry.name,
+                        readme.image_max_bytes
                     );
                 }
             }

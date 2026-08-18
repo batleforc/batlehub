@@ -154,6 +154,10 @@ pub struct ReadmeConfig {
     /// extraction. Truncation is recorded and surfaced, never silent.
     pub max_bytes: usize,
     pub remote_images: RemoteImagePolicy,
+    /// Cap on **one proxied image**, separate from `max_bytes` above, which caps
+    /// the stored text. Inert under [`RemoteImagePolicy::Strip`], where nothing
+    /// is fetched (RFC 0007-bis §4.1).
+    pub image_max_bytes: usize,
     /// The registry adapter type (e.g. "cargo", "npm") — used to pick the
     /// extraction family, exactly as [`SbomConfig::registry_type`] is.
     pub registry_type: String,
@@ -166,6 +170,7 @@ impl Default for ReadmeConfig {
             from_archive: true,
             max_bytes: DEFAULT_README_MAX_BYTES,
             remote_images: RemoteImagePolicy::Strip,
+            image_max_bytes: DEFAULT_README_IMAGE_MAX_BYTES,
             registry_type: String::new(),
         }
     }
@@ -174,6 +179,14 @@ impl Default for ReadmeConfig {
 /// 256 KiB. Large enough for essentially every real README, small enough that
 /// the row stays cheap to read on a page load.
 pub const DEFAULT_README_MAX_BYTES: usize = 262_144;
+
+/// 2 MiB per proxied image.
+///
+/// Generous rather than restrictive, and deliberately so: the largest image in a
+/// survey of 150 real README image URLs was 1.6 MB, with a median of 4 kB
+/// (RFC 0007-bis §13.2). A cap that refused the real maximum would present as
+/// "this proxy breaks images" rather than as a limit somebody chose.
+pub const DEFAULT_README_IMAGE_MAX_BYTES: usize = 2_097_152;
 
 /// The console's discovery read, per registry (mirrors config-layer
 /// `UpstreamDetailConfig`).
@@ -210,6 +223,11 @@ impl Default for UpstreamDetailConfig {
         }
     }
 }
+
+/// **On.** The button admits nothing a caller could not already do, and an
+/// instance that upgrades and changes nothing gets one new capability that
+/// changes no permission (RFC 0007-bis §9).
+pub const DEFAULT_CONSOLE_FETCH: bool = true;
 
 /// 300 versions. Long enough for essentially every real package's table, short
 /// enough that one page's JSON stays a page's worth.
@@ -264,6 +282,13 @@ pub struct HotConfig {
     /// Populated for every registry for the same reason `readme` is: the absence
     /// of a `[registries.upstream_detail]` block means **on**.
     pub upstream_detail: HashMap<String, UpstreamDetailConfig>,
+    /// Whether the console's **Fetch this version** button is offered, per
+    /// registry (RFC 0007-bis §4.4).
+    ///
+    /// A bare `bool` rather than a config struct because there is one question
+    /// to answer. An absent entry means [`DEFAULT_CONSOLE_FETCH`], which is what
+    /// a registry that never wrote the setting down gets.
+    pub console_fetch: HashMap<String, bool>,
     /// Per-registry feature flags (Clone, cheap).
     pub feature_flags: HashMap<String, FeatureFlags>,
     /// Per-registry artifact integrity policies (Clone, cheap).
@@ -299,6 +324,7 @@ impl Default for HotConfig {
             sbom: HashMap::new(),
             readme: HashMap::new(),
             upstream_detail: HashMap::new(),
+            console_fetch: HashMap::new(),
             feature_flags: HashMap::new(),
             integrity: HashMap::new(),
             beta_channel: HashMap::new(),

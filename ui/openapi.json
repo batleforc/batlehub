@@ -3490,6 +3490,33 @@
             }
           },
           {
+            "name": "q",
+            "in": "query",
+            "description": "What to search for. `name` is the older parameter and still works; `q` is\nwhat the console sends, and the only one `in` applies to.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "in",
+            "in": "query",
+            "description": "`name` (default) | `readme` | `both`.\n\nInlined into the parameter rather than referenced, for the reason\n`ReadmeQuery::format` gives: nothing returns this enum in a body, so\nutoipa emits no component and a `$ref` would reach the console as\n`unknown`.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Where a search looks.\n\n`name` is today's behaviour byte for byte, and it is the default: a\nparameter's absence must not change what the endpoint already did.",
+              "enum": [
+                "name",
+                "readme",
+                "both"
+              ]
+            }
+          },
+          {
             "name": "sort",
             "in": "query",
             "description": "Sort order: `downloads` (default), `name`, `recent`, or `fetched`.\n\n`recent` is when a client last downloaded a package *from* this\ninstance; `fetched` is when this instance last pulled one *from\nupstream*. The catalog is ordered on the latter.",
@@ -3666,6 +3693,135 @@
           },
           "404": {
             "description": "No README, or the package is not visible to this caller"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/explore/packages/{registry}/{name}/{version}/fetch": {
+      "post": {
+        "tags": [
+          "explore"
+        ],
+        "summary": "Fetch one version from upstream, as the caller.",
+        "operationId": "explore_fetch_version",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The version was fetched and is now held",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FetchResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A rule refused it; the body carries the rule's own reason"
+          },
+          "404": {
+            "description": "No such registry, package or version upstream"
+          },
+          "409": {
+            "description": "This instance already holds the version"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/explore/packages/{registry}/{name}/{version}/readme-image/{index}": {
+      "get": {
+        "tags": [
+          "explore"
+        ],
+        "summary": "One image from a version's README, fetched by this server.",
+        "operationId": "explore_readme_image",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "index",
+            "in": "path",
+            "description": "The image's position in this version's README, counted the way the\nrenderer counts.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The image bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The version is blocked; the body carries the reason"
+          },
+          "404": {
+            "description": "No such image, or the package is not visible to this caller"
           }
         },
         "security": [
@@ -14617,7 +14773,8 @@
           "has_blocked",
           "has_yanked",
           "state",
-          "cached_versions"
+          "cached_versions",
+          "matched_in"
         ],
         "properties": {
           "cached_bytes": {
@@ -14657,6 +14814,10 @@
             ],
             "description": "When this instance last fetched any version from upstream (RFC 3339)."
           },
+          "matched_in": {
+            "type": "string",
+            "description": "`name` | `readme` | `both` — why this row is here.\n\nA row whose name has nothing to do with the query and whose README\nmentions it in passing is a *correct* result and an inexplicable one\nwithout the label (RFC 0007-bis §4.3)."
+          },
           "name": {
             "type": "string"
           },
@@ -14669,6 +14830,13 @@
           },
           "registry": {
             "type": "string"
+          },
+          "snippet": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The matched fragment of the README, as **plain text**, or `null`.\n\nPlain, and rendered as text. It never reaches `v-html`: the README\npanel's is a deliberate, tested, single-component boundary\n(RFC 0007 §6.5), and a search snippet is a second surface for\npackage-authored content reached by a much cheaper path — no navigation,\njust a query (RFC 0007-bis §7.4)."
           },
           "source": {
             "type": "string",
@@ -14710,9 +14878,14 @@
           "gate",
           "versions",
           "upstream_unavailable",
-          "upstream"
+          "upstream",
+          "fetch"
         ],
         "properties": {
+          "fetch": {
+            "$ref": "#/components/schemas/FetchOfferDto",
+            "description": "Whether the console may offer **Fetch this version** on an\nupstream-only row (RFC 0007-bis §4.4)."
+          },
           "gate": {
             "$ref": "#/components/schemas/GateDto"
           },
@@ -14745,7 +14918,10 @@
           "total",
           "page",
           "per_page",
-          "upstream_unavailable"
+          "upstream_unavailable",
+          "readme_search_enabled",
+          "searched_in",
+          "truncated"
         ],
         "properties": {
           "items": {
@@ -14764,9 +14940,21 @@
             "format": "int64",
             "minimum": 0
           },
+          "readme_search_enabled": {
+            "type": "boolean",
+            "description": "Whether `[search] readmes` is on for this instance.\n\nSo a client can tell \"no package here says that\" from \"this instance does\nnot search prose\". `in=readme` with the feature off is accepted and\nanswers as `in=name` does — a parameter that silently means something\nelse is the failure this RFC family keeps finding — and this field is how\nthe console says which happened (RFC 0007-bis §4.3)."
+          },
+          "searched_in": {
+            "type": "string",
+            "description": "The scope actually applied, which is `name` when prose search is off\nhowever the request asked."
+          },
           "total": {
             "type": "integer",
             "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "The prose search hit [`PROSE_SEARCH_CAP`] and there may be more.\n\nReported rather than swallowed: a silently shortened list reads as \"that\nis all there is\", which is a lie about the catalogue."
           },
           "upstream_unavailable": {
             "type": "boolean",
@@ -14910,6 +15098,62 @@
             "format": "int32",
             "default": 0,
             "minimum": 0
+          }
+        }
+      },
+      "FetchOfferDto": {
+        "type": "object",
+        "description": "Whether the fetch button is offered here, and why not when it is not.\n\nAnswered by the server because both halves are the server's to know: whether\nthe operator turned `console_fetch` off, and whether \"fetch this version\" has\na single meaning for this registry kind. A console that guessed would offer a\nbutton that always fails on Maven, which is the \"disabled control with no\nexplanation\" §4.4 refuses.",
+        "required": [
+          "offered"
+        ],
+        "properties": {
+          "offered": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The kind's own reason, verbatim, when `offered` is `false` and the reason\nis about the registry type rather than about the switch. `null` when the\noperator simply turned it off — that is not a fact about the package and\nthe page says nothing rather than explaining the operator to themselves."
+          }
+        }
+      },
+      "FetchResponse": {
+        "type": "object",
+        "required": [
+          "fetched",
+          "size_bytes",
+          "duration_ms",
+          "registry",
+          "name",
+          "version"
+        ],
+        "properties": {
+          "duration_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "fetched": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "registry": {
+            "type": "string",
+            "description": "The coordinate that was fetched, echoed so a client that fired several\ncan match responses to rows."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What arrived, so the row can say what the wait bought.\n\nMeasured against real upstreams, the median version is 0.57 MB and the\nlargest in the sample was 41.7 MB (RFC 0007-bis §13.4) — a range wide\nenough that \"done\" on its own tells a reader nothing.",
+            "minimum": 0
+          },
+          "version": {
+            "type": "string"
           }
         }
       },

@@ -1,7 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
 
 const { explorePackageReadmeMock } = vi.hoisted(() => ({
   explorePackageReadmeMock: vi.fn(),
@@ -112,9 +110,7 @@ describe("ReadmePanel", () => {
    * cache and no more.
    */
   it("marks a derived README as not held here", async () => {
-    explorePackageReadmeMock.mockResolvedValue(
-      ok({ stored: false, freshness: "cached" }),
-    );
+    explorePackageReadmeMock.mockResolvedValue(ok({ stored: false, freshness: "cached" }));
     const wrapper = await mountPanel();
     expect(wrapper.text().toLowerCase()).toContain("not stored");
   });
@@ -149,9 +145,7 @@ describe("ReadmePanel", () => {
   /** With no version selected, the panel asks for the newest that has one. */
   it("asks for no particular version when none is selected", async () => {
     await mountPanel(null);
-    expect(explorePackageReadmeMock).toHaveBeenCalledWith(
-      expect.objectContaining({ query: {} }),
-    );
+    expect(explorePackageReadmeMock).toHaveBeenCalledWith(expect.objectContaining({ query: {} }));
   });
 });
 
@@ -173,18 +167,21 @@ describe("the v-html boundary", () => {
    */
   const ALLOWED = ["ReadmePanel.vue", "CodeBlock.vue"];
 
-  function vueFiles(dir: string): string[] {
-    return readdirSync(dir).flatMap((entry) => {
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) return vueFiles(full);
-      return full.endsWith(".vue") ? [full] : [];
-    });
-  }
-
   it("is only crossed by the components that document why", () => {
-    const offenders = vueFiles(join(__dirname, "..", ".."))
-      .filter((file) => /\sv-html\s*=/.test(readFileSync(file, "utf8")))
-      .map((file) => file.split("/").pop()!)
+    /* `import.meta.glob` rather than `node:fs`, for the reason
+       `locales/catalogues.test.ts` gives: this file type-checks under the app's
+       tsconfig, which has no node types, and Vite resolves the pattern at
+       transform time so the walk cannot drift from what the bundle contains.
+       Walking with `readdirSync` left this test out of `vue-tsc` entirely. */
+    const modules = import.meta.glob("../../**/*.vue", {
+      query: "?raw",
+      import: "default",
+      eager: true,
+    }) as Record<string, string>;
+
+    const offenders = Object.entries(modules)
+      .filter(([, source]) => /\sv-html\s*=/.test(source))
+      .map(([path]) => path.split("/").pop()!)
       .filter((base) => !ALLOWED.includes(base));
 
     expect(offenders).toEqual([]);

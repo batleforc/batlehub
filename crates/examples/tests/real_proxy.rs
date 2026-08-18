@@ -443,7 +443,9 @@ impl RealProxy {
             None,                                       // notification_svc
             Arc::new(InMemoryNotificationStore::new()), // notification_store
             None,                                       // notifications_config
-            None,                                       // storage_admin_repo
+            None,                                       // storage_admin_repo,
+            // Prose search off, matching the shipped default.
+            batlehub_web::new_search_lock(false),
         );
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -589,7 +591,9 @@ impl RealProxy {
             None,                                       // notification_svc
             Arc::new(InMemoryNotificationStore::new()), // notification_store
             None,                                       // notifications_config
-            None,                                       // storage_admin_repo
+            None,                                       // storage_admin_repo,
+            // Prose search off, matching the shipped default.
+            batlehub_web::new_search_lock(false),
         );
 
         let rt = tokio::runtime::Runtime::new().unwrap();

@@ -11,6 +11,18 @@ pub fn new_access_lock(cfg: AccessConfig) -> AccessConfigLock {
     Arc::new(tokio::sync::RwLock::new(cfg))
 }
 
+/// Whether `[search] readmes` is on, hot-reloadable like everything else.
+///
+/// A lock around a `bool` rather than a startup constant because config reload
+/// has to be able to turn it off: it governs an index read on the catalogue's
+/// busiest endpoint, and "restart the server to stop searching prose" is not an
+/// answer an operator should have to accept (RFC 0007-bis §4.1).
+pub type SearchConfigLock = Arc<tokio::sync::RwLock<bool>>;
+
+pub fn new_search_lock(readmes_enabled: bool) -> SearchConfigLock {
+    Arc::new(tokio::sync::RwLock::new(readmes_enabled))
+}
+
 /// Maps each role (and each dynamic group) to the set of registry names it can access.
 ///
 /// Role inheritance: user inherits anonymous, admin inherits both.

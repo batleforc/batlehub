@@ -492,7 +492,14 @@ describe("PackageCatalog browsing", () => {
       .trigger("click");
     await flushPromises();
     expect(explorePackagesMock).toHaveBeenLastCalledWith({
-      query: { page: 0, per_page: 20, sort: "fetched", registry: "pypi", name: undefined },
+      query: {
+        page: 0,
+        per_page: 20,
+        sort: "fetched",
+        registry: "pypi",
+        q: undefined,
+        in: "name",
+      },
     });
 
     // Going back to "all" reads the entry the initial load filled — the facet is
@@ -533,7 +540,7 @@ describe("PackageCatalog browsing", () => {
     await typeSearch(wrapper, "lo");
 
     expect(explorePackagesMock).toHaveBeenLastCalledWith({
-      query: { page: 0, per_page: 20, sort: "fetched", registry: undefined, name: "lo" },
+      query: { page: 0, per_page: 20, sort: "fetched", registry: undefined, q: "lo", in: "name" },
     });
     expect(exploreUpstreamSearchMock).toHaveBeenCalledWith({
       query: { name: "lo", limit: 10, registry: undefined },
@@ -599,7 +606,14 @@ describe("PackageCatalog browsing", () => {
     await flushPromises();
 
     expect(explorePackagesMock).toHaveBeenLastCalledWith({
-      query: { page: 1, per_page: 20, sort: "fetched", registry: undefined, name: undefined },
+      query: {
+        page: 1,
+        per_page: 20,
+        sort: "fetched",
+        registry: undefined,
+        q: undefined,
+        in: "name",
+      },
     });
   });
 
@@ -640,5 +654,152 @@ describe("PackageCatalog browsing", () => {
 
     await rows.find((r) => r.text().includes("lodash"))!.trigger("click");
     expect(pushMock).toHaveBeenCalledWith({ path: "/packages/npm/lodash" });
+  });
+});
+
+/**
+ * Searching what a package *says* (RFC 0007-bis §4.3).
+ *
+ * The ranking is Postgres's and is tested where it lives. What the page owes the
+ * reader is narrower and entirely its own: a control that only appears when the
+ * instance can honour it, a label on the row that needs explaining and not on
+ * the ones that do not, a snippet rendered as **text**, and an empty state that
+ * says what was actually searched.
+ */
+describe("PackageCatalog prose search", () => {
+  const proseListing = (over: Record<string, unknown> = {}) => ({
+    data: {
+      items: [
+        entry("retry", { matched_in: "name", snippet: null }),
+        entry("resilience-toolkit", {
+          matched_in: "readme",
+          snippet: "…exponential backoff for flaky upstreams…",
+        }),
+      ],
+      total: 2,
+      page: 0,
+      per_page: 20,
+      readme_search_enabled: true,
+      searched_in: "both",
+      truncated: false,
+      ...over,
+    },
+  });
+
+  beforeEach(() => {
+    vi.useRealTimers();
+    exploreUpstreamSearchMock.mockReset().mockResolvedValue({ data: { items: [] } });
+    listRegistriesMock.mockReset().mockResolvedValue({ data: [{ name: "npm", type: "npm" }] });
+    statsMock.mockReset().mockResolvedValue({ data: { registries: [] } });
+    scopeExploreCacheTo(`test-${Math.random()}`);
+  });
+
+  const scopeSelect = (w: ReturnType<typeof mount>) =>
+    w.findAll("select").find((sel) => sel.find('option[value="readme"]').exists());
+
+  /**
+   * A control whose other options do nothing is worse than no control. The
+   * server says whether prose search is on; the page does not guess.
+   */
+  it("offers the scope control only when the instance searches prose", async () => {
+    explorePackagesMock.mockReset().mockResolvedValue({
+      data: { ...listing(["lodash"]).data, readme_search_enabled: false },
+    });
+    let wrapper = await mountPage();
+    expect(scopeSelect(wrapper)).toBeUndefined();
+
+    explorePackagesMock.mockReset().mockResolvedValue(proseListing());
+    scopeExploreCacheTo(`test-${Math.random()}`);
+    wrapper = await mountPage();
+    expect(scopeSelect(wrapper)).toBeDefined();
+  });
+
+  it("sends the chosen scope, and re-runs at once rather than on a debounce", async () => {
+    explorePackagesMock.mockReset().mockResolvedValue(proseListing());
+    const wrapper = await mountPage();
+
+    await scopeSelect(wrapper)!.setValue("readme");
+    await flushPromises();
+
+    expect(explorePackagesMock).toHaveBeenLastCalledWith({
+      query: {
+        page: 0,
+        per_page: 20,
+        sort: "fetched",
+        registry: undefined,
+        q: undefined,
+        in: "readme",
+      },
+    });
+  });
+
+  /**
+   * Only the row that needs explaining is labelled. A row that matched on its
+   * name is self-explanatory, and labelling every row would make the one that
+   * matters invisible.
+   */
+  it("labels a prose match and leaves a name match unlabelled", async () => {
+    explorePackagesMock.mockReset().mockResolvedValue(proseListing());
+    const wrapper = await mountPage();
+
+    const rows = wrapper.findAll("tbody tr");
+    const named = rows.find((r) => r.text().includes("retry"))!;
+    const prose = rows.find((r) => r.text().includes("resilience-toolkit"))!;
+
+    expect(prose.text().toLowerCase()).toContain("readme");
+    expect(named.text().toLowerCase()).not.toContain("readme");
+  });
+
+  /**
+   * The snippet is package-authored content on a second surface. It is
+   * interpolated, never `v-html` (RFC 0007-bis §7.4) — so markup in it appears
+   * as characters, which is what this asserts.
+   */
+  it("renders a snippet as text and never as markup", async () => {
+    explorePackagesMock.mockReset().mockResolvedValue(
+      proseListing({
+        items: [
+          entry("hostile", {
+            matched_in: "readme",
+            snippet: "<img src=x onerror=alert(1)> and <b>bold</b>",
+          }),
+        ],
+        total: 1,
+      }),
+    );
+    const wrapper = await mountPage();
+
+    expect(wrapper.text()).toContain("<img src=x onerror=alert(1)>");
+    expect(wrapper.find("tbody img").exists()).toBe(false);
+    expect(wrapper.find("tbody b").exists()).toBe(false);
+  });
+
+  /**
+   * "Nothing matches that search" would imply the query was checked against
+   * every package here. It was checked against the READMEs of the versions this
+   * instance holds, which is a narrower claim and the honest one.
+   */
+  it("says what was searched when a prose search finds nothing", async () => {
+    explorePackagesMock
+      .mockReset()
+      .mockResolvedValue(proseListing({ items: [], total: 0, searched_in: "readme" }));
+    const wrapper = await mountPage();
+
+    await scopeSelect(wrapper)!.setValue("readme");
+    // Typed and debounced locally: `typeSearch` belongs to the browsing suite.
+    await wrapper.find("input").setValue("backoff");
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("READMEs of versions held on this instance");
+  });
+
+  /** A cap that applied, said out loud rather than read as "that is all". */
+  it("says when the prose search was truncated", async () => {
+    explorePackagesMock
+      .mockReset()
+      .mockResolvedValue(proseListing({ truncated: true, total: 200 }));
+    const wrapper = await mountPage();
+    expect(wrapper.text()).toContain("Narrow the query");
   });
 });

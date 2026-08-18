@@ -27,7 +27,7 @@ pub use ops::{
     BlockedIpInfo, IpBlockStore, NoopWarmCoordinator, QuotaOutcome, QuotaRepository, QuotaUsage,
     RateLimitStore, WarmCoordinator,
 };
-pub use readme::ReadmeRepository;
+pub use readme::{ReadmeImageFetcher, ReadmeRepository, ReadmeSearchHit};
 pub use registry::{
     ArtifactCacheMeta, ArtifactInventory, ArtifactMeta, ArtifactMetaRecord, ArtifactMetaRepository,
     ArtifactStream, BulkResult, DocumentBody, DocumentKind, FetchedArtifact, LocalRegistryBackend,

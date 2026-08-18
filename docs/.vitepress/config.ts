@@ -524,6 +524,10 @@ export default defineConfig({
               text: "0009 — Every endpoint the client actually calls",
               link: "/rfc/0009-protocol-coverage",
             },
+            {
+              text: "0010 — The toolchain layer",
+              link: "/rfc/0010-toolchain-managers",
+            },
           ],
         },
       ],

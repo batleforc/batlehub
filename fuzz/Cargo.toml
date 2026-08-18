@@ -46,3 +46,9 @@ name = "fuzz_readme_render"
 path = "fuzz_targets/fuzz_readme_render.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "fuzz_svg_sanitize"
+path = "fuzz_targets/fuzz_svg_sanitize.rs"
+test = false
+doc = false

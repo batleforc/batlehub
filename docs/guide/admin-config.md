@@ -216,10 +216,11 @@ from, is in the [README support table](/registries/#readmes).
 
 ```toml
 [registries.readme]
-enabled       = true      # store and serve READMEs for this registry
-from_archive  = true      # extract from the cached artifact when the metadata carries none
-max_bytes     = 262144    # cap on stored source (256 KiB); larger is truncated and flagged
-remote_images = "strip"   # "strip" | "proxy"
+enabled         = true      # store and serve READMEs for this registry
+from_archive    = true      # extract from the cached artifact when the metadata carries none
+max_bytes       = 262144    # cap on stored source (256 KiB); larger is truncated and flagged
+remote_images   = "strip"   # "strip" | "proxy"
+image_max_bytes = 2097152   # cap on one proxied image (2 MiB); larger is not served
 ```
 
 - **`from_archive`** is the one part of the default that is not free. It rides
@@ -239,10 +240,41 @@ remote_images = "strip"   # "strip" | "proxy"
   announcing that someone inside your network is reading about this package
   right now. There is deliberately **no `"allow"`**: the console's CSP is baked
   into the document at build time, so the setting could only ever produce broken
-  images with no error anywhere. `"proxy"` is accepted and carried, but no
-  image-proxy endpoint is built yet, so images are charted exactly as `"strip"`
-  charts them — you get the `readme.image-proxy-unimplemented`
-  [config warning](#config-warnings) rather than silence.
+  images with no error anywhere.
+
+  `"proxy"` renders the images, fetched by **this server** and served from this
+  origin, so the reader's browser still never talks to a host the package author
+  chose. What the panel receives is an `<img>` whose `src` points back here,
+  carrying the image's *index* in that version's README rather than its URL:
+
+  ```
+  GET /api/v1/explore/packages/{registry}/{name}/{version}/readme-image/{n}
+  ```
+
+  **No caller ever supplies a URL.** The server resolves the index against the
+  stored README, which is what keeps this from being an open image proxy for
+  whatever a package author writes — there is no signing key to rotate and no
+  list of CDNs to maintain. The fetch goes through the same SSRF guard artifact
+  downloads use, validating every redirect hop, and the response type must be on
+  a short allow-list. An image that cannot be got — a dead URL, a wrong type, one
+  over the cap — falls back to the chip `"strip"` would have shown, which is a
+  better answer than a broken-image icon.
+
+  SVG is served, and it is the case worth stating: two-thirds of the images in
+  real READMEs are SVG, so refusing them would make this setting render a third
+  of a badge row. Each one goes through an XML allow-list that drops `<script>`,
+  `<foreignObject>`, every `on*` handler and every external reference, **and**
+  the response carries `Content-Security-Policy: default-src 'none'; …; sandbox`,
+  which stops script even for a reader who opens the image in a new tab. Either
+  control is sufficient on its own.
+- **`image_max_bytes`** caps **one proxied image**, separate from `max_bytes`,
+  which caps the stored *text*. They are not the same number for the same
+  reason, and sharing one would make raising either a decision about the other.
+  The largest image in a survey of 150 real README image URLs was 1.6 MB against
+  this 2 MiB default, so it is generous rather than restrictive. `0` with
+  `remote_images = "proxy"` is refused — it serves nothing while claiming to
+  render images — and anything over 16 MiB is refused too, because the bytes are
+  held in memory while their type and size are checked.
 
 Rendering is server-side, allow-listed and fuzzed. Blocked versions serve no
 README (`403`, with the same reason the download path gives); yanked, deprecated
@@ -288,6 +320,109 @@ count, no `last_accessed`, no quota, no storage entry — and the package does n
 appear in the catalogue because somebody looked at it. What leaves the instance,
 and how to turn it off, is in [what leaves this
 instance](/operations/egress#the-console-s-discovery-read).
+
+---
+
+### Fetching a version from the console {#console-fetch}
+
+Whether a reader may ask this instance to fetch a version from the page that
+told them it exists.
+
+The discovery read above makes the package page honest about what it holds: it
+lists every version upstream knows about and marks each one **not held here**.
+That is a wall. This is the door — a **Fetch this version** button on those rows.
+
+```toml
+[[registries]]
+console_fetch = true   # default
+```
+
+**It admits nothing.** The button runs the same download a package manager would
+run, under the caller's own identity, through every gate that download would
+pass:
+
+- the rules run — RBAC, the block list, the release-age gate, the licence gate,
+  `require_signed_release`, the version gate. A refusal shows the rule's own
+  reason, the same string the download would have given, so the console's RBAC
+  simulator (`POST /api/v1/admin/access-check`) explains the same verdict;
+- integrity verification runs, including `block_on_mismatch`. Bytes that fail
+  their advertised checksum are not stored;
+- quota is consumed where quota applies;
+- **the access event is recorded, with the caller as the actor.** That is the
+  difference from a page view in one line: a page view has no actor because
+  nobody decided anything. A fetch has one, and the audit log names them;
+- SBOM and README extraction run, because the artifact lands in storage through
+  the ordinary path. A version fetched from the page therefore gains its licence,
+  its dependency manifest and its archive-borne README — and `not scanned`
+  becomes a real answer once the scanner next runs.
+
+The switch exists for the operator who wants the console strictly read-only,
+which is a legitimate posture and not one the software should have to guess at.
+It is inert on a `local`-mode registry: there is no upstream to fetch from.
+
+The button is **not shown** where "fetch this version" has no single meaning —
+Maven's artifact is a set of files, a Terraform provider needs an OS and an
+architecture — and the page says why rather than showing a disabled button with
+no explanation. Which kinds those are is the *Fetchable* column of the
+[README support table](/registries/#readmes).
+
+See [what leaves this instance](/operations/egress#someone-presses-fetch).
+
+---
+
+### Searching README prose {#search-readmes}
+
+Whether the catalogue's search can match what a package **says** as well as what
+it is called.
+
+The search box matches names. That answers *"do we have something called
+`retry`"* and cannot answer *"which of our internal libraries does exponential
+backoff"* — which is the question a developer actually arrives with, and the one
+an internal package page is the only place in the world that could answer.
+
+```toml
+[search]
+readmes     = false     # default: names only
+text_config = "english" # the Postgres text search configuration
+```
+
+- **Off by default.** Unlike README *capture*, which defaults on because it costs
+  one already-parsed field, this builds an index over prose: a generated
+  `tsvector` column and a GIN index over `package_readmes`. The cost is storage
+  plus write amplification on every capture. You should choose it.
+- **`text_config`** is the Postgres text search configuration the index is built
+  with. `english` is the default because it is measurably better at the question
+  this feature exists to answer: a reader who types `retry` finds a README that
+  says `retrying`, and one who types `cache` finds `caching`. `simple` finds
+  neither. Stemming does mangle identifiers — `axios` is stored as `axio` — and
+  it does so *symmetrically*, because the query is stemmed too, so it still
+  matches.
+- **Changing it rebuilds the column.** `to_tsvector` in a generated column must
+  be immutable, so the configuration is a literal: changing it drops and re-adds
+  the column, rewriting every row's index. The server does this on startup and
+  says so in the log. Take the decision at install rather than tuning it later.
+- **`readmes = true` needs Postgres**, and the server refuses to start without
+  it. Failing at startup beats a search that quietly matches nothing.
+
+With it on, the listing endpoint accepts `?q=…&in=name|readme|both`:
+
+- `in` defaults to `name`, which is today's behaviour byte for byte;
+- **a name match always outranks a prose match.** A package literally called
+  `retry` comes before one that mentions retrying, however densely. That is what
+  a reader means when they type a name, and it is not a tuning parameter;
+- every result says `matched_in` — `name`, `readme` or `both` — because a row
+  whose name has nothing to do with the query and whose README mentions it in
+  passing is a *correct* result and an inexplicable one without the label;
+- the `snippet` is **plain text** and is rendered as text. It never reaches the
+  markup path the README panel uses.
+
+With it off, `in=readme` is accepted and answers exactly as `in=name` does, and
+the response says `readme_search_enabled: false` so a client can tell "no package
+here says that" from "this instance does not search prose".
+
+**Only stored READMEs are searchable**, which is to say only versions this
+instance holds or hosts. A README derived on the fly for an upstream-only version
+has no row, and writing one is what the discovery read refuses to do.
 
 ---
 

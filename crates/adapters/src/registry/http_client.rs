@@ -1,4 +1,5 @@
 use batlehub_core::error::CoreError;
+use batlehub_core::services::readme::image::{image_content_type, FetchedImage};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION};
 
 /// Options that control how a registry client's upstream HTTP client is built.
@@ -351,6 +352,99 @@ pub async fn fetch_linked_text(
             Ok(None)
         }
     }
+}
+
+/// Fetch one image a README pointed at, for `remote_images = "proxy"`.
+///
+/// The guards RFC 0007-bis §7.1 requires, in the order they matter:
+///
+/// - **the caller named no URL.** This one came out of a README this instance
+///   stored, resolved by index. That is the property that stops the endpoint
+///   being an open proxy, and it is established before this is reached;
+/// - [`super::ssrf::fetch_following_redirects`] validates **every hop**, not
+///   only the first — an image URL that `302`s to `169.254.169.254` is the
+///   attack this exists to stop — and never attaches the operator's
+///   credentials, because an image host is by definition not the upstream they
+///   were configured for;
+/// - the body is read **incrementally** to `max_bytes` and refused if it would
+///   exceed it, rather than buffered then truncated: half a PNG is a broken
+///   image, and an upstream must not be able to make this hold a gigabyte in
+///   order to discard most of it;
+/// - the `Content-Type` is checked against
+///   [`batlehub_core::services::readme::image::IMAGE_TYPES`] and echoed **from
+///   the list**, never passed through.
+///
+/// `Ok(None)` for anything that is simply not there. The caller turns that into
+/// the chip the `strip` policy would have shown, which is a better answer than a
+/// broken-image icon and the reason none of these is an error.
+pub async fn fetch_image(
+    plain: &reqwest::Client,
+    url: &str,
+    max_bytes: usize,
+) -> Result<Option<FetchedImage>, CoreError> {
+    use futures::StreamExt;
+
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| CoreError::Registry(format!("invalid image URL '{url}': {e}")))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Ok(None);
+    }
+
+    // No instance origin and no credentials: an image host is a third party by
+    // construction, so there is no case in which the operator's token should
+    // travel with this request. Passing `plain` for both clients makes that a
+    // property of the call rather than of where the redirect chain happens to
+    // end, and the empty origin makes the SSRF check apply to every hop.
+    let resp = super::ssrf::fetch_following_redirects(plain, plain, &None, "", parsed).await?;
+
+    if !resp.status().is_success() {
+        tracing::debug!(url, status = %resp.status(), "readme image: upstream refused");
+        return Ok(None);
+    }
+
+    let Some(content_type) = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(image_content_type)
+    else {
+        tracing::debug!(
+            url,
+            "readme image: content type is not an allow-listed image"
+        );
+        return Ok(None);
+    };
+
+    // Refuse on the declared length before reading a byte, when there is one.
+    // The incremental read below is what actually enforces the cap — a
+    // `Content-Length` is a claim, not a fact — but believing an honest one
+    // saves the transfer.
+    if resp
+        .content_length()
+        .is_some_and(|len| len > max_bytes as u64)
+    {
+        tracing::debug!(url, "readme image: over the cap by its own Content-Length");
+        return Ok(None);
+    }
+
+    let mut bytes = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| CoreError::Registry(format!("reading image: {e}")))?;
+        if bytes.len() + chunk.len() > max_bytes {
+            // Refused, not truncated. Half an image is a broken image, and
+            // serving one would look like a bug in this proxy rather than a
+            // limit the operator set.
+            tracing::debug!(url, max_bytes, "readme image: over the cap");
+            return Ok(None);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+
+    Ok(Some(FetchedImage {
+        content_type,
+        bytes,
+    }))
 }
 
 /// True when `a` and `b` share scheme, host, and (explicit-or-default) port.

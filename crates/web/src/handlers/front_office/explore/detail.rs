@@ -93,6 +93,26 @@ pub struct ExplorePackageDetailResponse {
     pub upstream_unavailable: bool,
     /// What the discovery read did (RFC 0007 §4.2).
     pub upstream: UpstreamReadDto,
+    /// Whether the console may offer **Fetch this version** on an
+    /// upstream-only row (RFC 0007-bis §4.4).
+    pub fetch: FetchOfferDto,
+}
+
+/// Whether the fetch button is offered here, and why not when it is not.
+///
+/// Answered by the server because both halves are the server's to know: whether
+/// the operator turned `console_fetch` off, and whether "fetch this version" has
+/// a single meaning for this registry kind. A console that guessed would offer a
+/// button that always fails on Maven, which is the "disabled control with no
+/// explanation" §4.4 refuses.
+#[derive(Serialize, ToSchema)]
+pub struct FetchOfferDto {
+    pub offered: bool,
+    /// The kind's own reason, verbatim, when `offered` is `false` and the reason
+    /// is about the registry type rather than about the switch. `null` when the
+    /// operator simply turned it off — that is not a fact about the package and
+    /// the page says nothing rather than explaining the operator to themselves.
+    pub reason: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -534,7 +554,57 @@ pub async fn explore_package_detail(
         versions,
         upstream_unavailable,
         upstream: upstream.dto,
+        fetch: fetch_offer(&local_svc, &registry_map, registry.as_str()).await,
     }))
+}
+
+/// Whether the console may offer **Fetch this version**, and why not.
+///
+/// Both halves are the server's to know — the operator's switch and whether the
+/// registry kind has one artifact per version — so the page is told rather than
+/// left to guess. A console that guessed would draw a button that always fails
+/// on Maven (RFC 0007-bis §4.4).
+async fn fetch_offer(
+    local_svc: &LocalRegistryService,
+    registry_map: &RegistryMap,
+    registry: &str,
+) -> FetchOfferDto {
+    let enabled = local_svc
+        .hot
+        .read()
+        .await
+        .console_fetch
+        .get(registry)
+        .copied()
+        .unwrap_or(batlehub_core::services::DEFAULT_CONSOLE_FETCH);
+    if !enabled {
+        // No reason given: the operator turned it off, and explaining an
+        // operator's own configuration back to them on a package page is noise.
+        return FetchOfferDto {
+            offered: false,
+            reason: None,
+        };
+    }
+    match registry_map
+        .type_of(registry)
+        .and_then(|t| t.parse::<RegistryKind>().ok())
+        .map(|kind| kind.fetchable_by_version())
+    {
+        Some(support) if support.is_supported() => FetchOfferDto {
+            offered: true,
+            reason: None,
+        },
+        // The kind's own reason, verbatim — so the published support table, the
+        // endpoint's refusal and this page cannot disagree.
+        Some(support) => FetchOfferDto {
+            offered: false,
+            reason: support.reason().map(str::to_owned),
+        },
+        None => FetchOfferDto {
+            offered: false,
+            reason: None,
+        },
+    }
 }
 
 /// The discovery read, and everything that decides not to do it.

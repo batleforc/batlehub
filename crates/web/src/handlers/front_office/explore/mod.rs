@@ -13,14 +13,18 @@ use batlehub_core::{
 use crate::{error::AppError, extractors::AuthIdentity};
 
 pub mod detail;
+pub mod fetch;
+pub mod image;
 pub mod list;
 pub mod readme;
 pub mod stats;
 
 pub use detail::{
-    explore_package_detail, ExplorePackageDetailResponse, ExploreVersionDto, FirewallDto, GateDto,
-    PackageDetailPath,
+    explore_package_detail, ExplorePackageDetailResponse, ExploreVersionDto, FetchOfferDto,
+    FirewallDto, GateDto, PackageDetailPath,
 };
+pub use fetch::{explore_fetch_version, FetchPath, FetchResponse};
+pub use image::{explore_readme_image, ReadmeImagePath};
 pub use list::{explore_packages, ExploreEntryDto, ExplorePackageListResponse, ExploreQuery};
 pub use readme::{explore_package_readme, ReadmePath, ReadmeQuery, ReadmeResponse};
 pub use stats::{

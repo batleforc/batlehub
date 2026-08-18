@@ -27,8 +27,8 @@ pub use hot_config::{
     new_hot_lock, FeatureFlags, HotConfig, HotConfigLock, IntegrityPolicy,
     ReadmeConfig as HotReadmeConfig, RegistryPolicy, RemoteImagePolicy,
     SbomConfig as HotSbomConfig, SigningConfig, UpstreamDetailConfig as HotUpstreamDetailConfig,
-    VersioningPolicy, DEFAULT_README_MAX_BYTES, DEFAULT_UPSTREAM_MAX_VERSIONS,
-    DEFAULT_UPSTREAM_NEGATIVE_TTL_SECS,
+    VersioningPolicy, DEFAULT_CONSOLE_FETCH, DEFAULT_README_IMAGE_MAX_BYTES,
+    DEFAULT_README_MAX_BYTES, DEFAULT_UPSTREAM_MAX_VERSIONS, DEFAULT_UPSTREAM_NEGATIVE_TTL_SECS,
 };
 pub use integrity::{sha1_hex, verify as verify_checksum, ChecksumAlgo, IntegrityOutcome};
 pub use local_registry::{

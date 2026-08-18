@@ -13,7 +13,7 @@ is not that a project has never been wrong; it is what it does when it finds
 out.
 
 **Every page here opens with a status banner, and the status is not uniform.**
-Six of the twelve below are implemented and six are not. The banner is
+Six of the thirteen below are implemented and seven are not. The banner is
 generated from each document's own `Status` field rather than written on the
 page, so it cannot drift from the table it is quoting — an RFC that describes a
 proposal, published under a label saying it shipped, would be a claim about the
@@ -33,6 +33,7 @@ product that is not true.
 | [0007-bis — The three 0007 deferred](/rfc/0007-bis-images-search-and-fetch) | Rendering a README's images without telling their host who is reading, searching what a package says rather than what it is called, and asking for a version the page has told you exists |
 | [0008 — mise in an air-gapped estate](/rfc/0008-mise-in-an-air-gapped-estate) | Making `mise install` work with no route off the site: `mise.lock` as the bill of materials, a server that will not dial out, and verification moved to the connected side |
 | [0009 — Every endpoint the client actually calls](/rfc/0009-protocol-coverage) | Serving the paths each package manager really requests, and two mechanisms so the next invented endpoint fails the build |
+| [0010 — The toolchain layer](/rfc/0010-toolchain-managers) | Proxying the JDK and the Node runtime themselves, not only what they build: SDKMAN and the `nodejs.org/dist` tree as registry kinds, and making a blocked toolchain a refusal rather than a claim |
 
 0007 and 0008 were deferred behind 0009, and the reason was worth stating plainly:
 0009 found six protocol defects that had all shipped green, and the common cause
@@ -44,7 +45,11 @@ floor we know does not hold. 0008's air-gapped case also depended directly on
 0007-bis picks up the three open questions 0007 recommended a decision on and did
 not take — the image proxy, prose search, and a way to fetch a version the page
 has just told you exists. All three are the same shape: the page knows something
-it cannot act on.
+it cannot act on. It has since landed, and it is the one in this set whose open
+questions were settled by **measuring** rather than by argument: two of the five
+were resolved against the recommendation it was drafted with, because 67 % of the
+images in real READMEs turned out to be SVG and because `simple` full-text search
+cannot find a README that says `retrying` when a reader types `retry`.
 
 0009 has since landed, and with it that dependency: the Go checksum database is
 proxied *and cached*, so a second build resolves with no route off the site, and
@@ -53,6 +58,19 @@ install to the internet at its last step. 0007 has since landed on that
 foundation — reusing 0009's three rungs for its discovery read rather than
 inventing a second cache policy — and 0008 is waiting on scheduling rather than
 on 0009; see its own §2.7 for what that leaves.
+
+0010 is the first to argue with what the *other* RFCs assumed rather than with
+what they built. 0006 made a block visible in every ecosystem's listings, and
+0009 made every endpoint the one the client really calls — for the dependency
+layer. The layer underneath it, the JDK and the Node runtime a project builds
+*on*, is a row in the console that nothing enforces. Its two halves fail
+differently, which is why they are argued together: SDKMAN has never reached a
+BatleHub instance at all, while `nodejs.org/dist` has been mirrored as a
+`generic` registry all along — caching every byte and enforcing nothing, because
+a path-addressed mirror has no version to block. The cache working is what made
+that one invisible. It is also the rest of the estate 0008 described: `mise`
+covers some toolchains, SDKMAN and nvm cover the others, and an air gap has to
+hold for all of them.
 
 They read in order: each one argues with the state the previous one left.
 

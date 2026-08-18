@@ -75,6 +75,9 @@ pub(super) struct ServerParams {
     pub admin_svc: Arc<AdminService>,
     pub token_repo: Arc<dyn UserTokenRepository>,
     pub access_config: AccessConfigLock,
+    /// `[search] readmes`, shared with the reload path so turning prose search
+    /// off takes effect without a restart (RFC 0007-bis §4.1).
+    pub search_config: batlehub_web::SearchConfigLock,
     pub registry_map: RegistryMap,
     pub upstream_map: UpstreamMap,
     pub oidc_sso_flows: Vec<OidcSsoFlow>,
@@ -159,6 +162,7 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
         reload_svc,
         banner_svc,
         storage_admin_repo,
+        search_config,
     } = p;
 
     let notification_svc_for_shutdown = notification_svc.clone();
@@ -182,6 +186,7 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
             Arc::clone(&notification_store),
             notifications_config.clone(),
             Some(Arc::clone(&storage_admin_repo)),
+            search_config.clone(),
         );
         let static_dir_inner = static_dir.clone();
         let cli_binary_path_inner = cli_binary_path.clone();

@@ -161,6 +161,7 @@ impl Fixture {
                 registry: Some(self.registry.clone()),
                 registries: vec![],
                 name_contains: None,
+                name_in: vec![],
                 sort_by: ExploreSortBy::Name,
                 limit: 100,
                 offset: 0,

@@ -145,6 +145,7 @@ fn build_readme_map(registries: &[RegistryConfig]) -> HashMap<String, HotReadmeC
                     // this cannot silently become the default on a running
                     // server — the process would not have started.
                     remote_images: RemoteImagePolicy::parse(&r.remote_images).unwrap_or_default(),
+                    image_max_bytes: r.image_max_bytes,
                     registry_type: reg.registry_type.clone(),
                 },
             );
@@ -316,6 +317,11 @@ pub(super) fn build_hot_bundle(
         sbom: build_sbom_map(&cfg.registries),
         readme: build_readme_map(&cfg.registries),
         upstream_detail: build_upstream_detail_map(&cfg.registries),
+        console_fetch: cfg
+            .registries
+            .iter()
+            .map(|r| (r.name.clone(), r.console_fetch))
+            .collect(),
         feature_flags: build_feature_flags_map(&cfg.registries),
         integrity: build_integrity_map(&cfg.registries),
         beta_channel: build_beta_channel_map(Arc::clone(beta_channel_store), &cfg.registries),
@@ -415,6 +421,7 @@ pub(super) fn make_hot_builder(
         Ok(batlehub_web::services::BuiltHotState {
             hot,
             access,
+            search_readmes: cfg.search.readmes,
             registry_map: rm,
             registry_mode_map: rmm,
             upstream_map: um,

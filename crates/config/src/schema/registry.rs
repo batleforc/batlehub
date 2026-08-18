@@ -170,6 +170,19 @@ pub struct RegistryConfig {
     /// without the other. **Absent means enabled** (RFC 0007 §4.1).
     #[serde(default)]
     pub upstream_detail: Option<UpstreamDetailConfig>,
+    /// Whether the console may ask this instance to fetch a version from
+    /// upstream — the **Fetch this version** button (RFC 0007-bis §4.1, §4.4).
+    ///
+    /// **On by default**, and it admits nothing: the fetch runs the same
+    /// download the caller could already run with `curl`, through every gate
+    /// that download would pass, attributed to them in the audit log. The switch
+    /// exists for the operator who wants the console strictly read-only, which
+    /// is a legitimate posture and not one the software should have to guess at.
+    ///
+    /// Inert on a `local`-mode registry: there is no upstream to fetch from, and
+    /// every version the page lists is already held.
+    #[serde(default = "default_true")]
+    pub console_fetch: bool,
     /// Optional per-registry feature flags (opt-in/out toggles for cross-cutting
     /// UI/integration features). When absent, every flag takes its default.
     #[serde(default)]
@@ -400,14 +413,19 @@ fn default_remote_images() -> String {
     "strip".to_owned()
 }
 
+fn default_image_max_bytes() -> usize {
+    batlehub_core::services::DEFAULT_README_IMAGE_MAX_BYTES
+}
+
 /// Per-registry README capture configuration.
 ///
 /// ```toml
 /// [registries.readme]
 /// enabled       = true      # store and serve READMEs for this registry
 /// from_archive  = true      # extract from the cached artifact when the metadata carries none
-/// max_bytes     = 262144    # cap on stored source (256 KiB); larger is truncated and flagged
-/// remote_images = "strip"   # "strip" | "proxy"
+/// max_bytes       = 262144    # cap on stored source (256 KiB); larger is truncated and flagged
+/// remote_images   = "strip"   # "strip" | "proxy"
+/// image_max_bytes = 2097152   # cap on one proxied image (2 MiB); larger is not served
 /// ```
 ///
 /// The whole block is optional and its absence means **on**, which is why every
@@ -434,6 +452,14 @@ pub struct ReadmeConfig {
     /// baked into the document at build time, so it would silently do nothing.
     #[serde(default = "default_remote_images")]
     pub remote_images: String,
+    /// Cap on **one proxied image**, in bytes. Separate from `max_bytes`, which
+    /// caps the stored *text*: a 256 KiB text cap and a 2 MiB image cap are not
+    /// the same number for the same reason, and sharing one would make raising
+    /// either a decision about the other (RFC 0007-bis §4.1).
+    ///
+    /// Inert under `remote_images = "strip"`, where nothing is fetched.
+    #[serde(default = "default_image_max_bytes")]
+    pub image_max_bytes: usize,
 }
 
 impl Default for ReadmeConfig {
@@ -443,6 +469,7 @@ impl Default for ReadmeConfig {
             from_archive: true,
             max_bytes: default_readme_max_bytes(),
             remote_images: default_remote_images(),
+            image_max_bytes: default_image_max_bytes(),
         }
     }
 }

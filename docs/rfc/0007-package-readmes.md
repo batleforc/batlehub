@@ -1308,7 +1308,15 @@ a version we hold no bytes for — so §4.3's table reads the same to an operato
 This is the drift test doing its job on its first day: the table and the code
 disagreed, and the test refused to let the table be the one that was believed.
 
-### 13.3 `remote_images = "proxy"` is accepted, warned about, and inert
+### 13.3 `remote_images = "proxy"` was accepted, warned about, and inert
+
+> **Superseded by [RFC 0007-bis](/rfc/0007-bis-images-search-and-fetch) §4.2.**
+> `proxy` now fetches, sanitises and serves the image, and the
+> `readme.image-proxy-unimplemented` warning described below **no longer
+> exists** — an operator who set `proxy` on the strength of this section would
+> today get the images it says they will not get. What follows records why the
+> setting shipped inert in the version this RFC describes; it is not a statement
+> about the current build.
 
 Open question 1 recommended the image proxy for "phase 5, or never", and it is
 not built. §4.1 refuses an `"allow"` value precisely because a setting that

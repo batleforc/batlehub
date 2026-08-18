@@ -1,11 +1,15 @@
 //! Integration tests for `PgReadmeRepository` (RFC 0007 §10).
 //!
-//! Worth a real database for three things an in-memory double agreeing with
+//! Worth a real database for four things an in-memory double agreeing with
 //! itself proves nothing about: the `ON CONFLICT` that makes a re-resolve
 //! *replace* a version's README rather than duplicate it, the `= ANY($3)`
-//! exclusion the fallback rule depends on to skip blocked versions, and that
+//! exclusion the fallback rule depends on to skip blocked versions, that
 //! deletion is scoped to what it names — the table has no foreign key, so
-//! nothing else will clean up after a `DELETE` that is too wide.
+//! nothing else will clean up after a `DELETE` that is too wide — and the
+//! **full-text search**, whose stemming and ranking exist only in Postgres.
+//! The in-memory double does a substring match and deliberately does not
+//! imitate them, so a test asserting `retry` finds `retrying` can only run
+//! here (RFC 0007-bis §5.2, §13.3).
 //!
 //!   task test:pg-readmes
 //!   DATABASE_URL=postgresql://postgres:pass@localhost/postgres \
@@ -291,4 +295,257 @@ async fn deletion_is_scoped_to_what_it_names() {
         .delete_for_package(&t.registry, "never")
         .await
         .unwrap();
+}
+
+// ── Full-text search (RFC 0007-bis §5.2) ─────────────────────────────────────
+
+/// The measurement that reversed this RFC's own recommendation, as a test.
+///
+/// It was drafted specifying `simple`, on the argument that stemming mangles
+/// identifiers. It does — the stored vector holds `axio`, not `axios` — and it
+/// does so **symmetrically**, because the query is stemmed by the same
+/// configuration. What `simple` cannot do is find a README that says `retrying`
+/// when a reader types `retry`, which is the exact shape of question §2.2 says
+/// this feature exists to answer (§13.3).
+#[tokio::test]
+async fn english_stemming_finds_the_word_a_reader_would_type() {
+    let Some(url) = db_url() else {
+        eprintln!("DATABASE_URL not set; skipping");
+        return;
+    };
+    let t = make_repo(&url).await;
+    t.repo
+        .upsert(t.readme(
+            "backoff",
+            "1.0.0",
+            "A tiny helper for retrying failed requests with exponential backoff. \
+             It handles caching of the last successful response, and serialisation \
+             of the retry state. Built on axios.",
+        ))
+        .await
+        .unwrap();
+
+    let regs = vec![t.registry.clone()];
+    for query in [
+        "retry",
+        "retrying",
+        "cache",
+        "caching",
+        "exponential backoff",
+    ] {
+        let hits = t.repo.search(&regs, query, 10).await.unwrap();
+        assert_eq!(hits.len(), 1, "'{query}' should match");
+        assert_eq!(hits[0].name, "backoff", "'{query}'");
+    }
+
+    // An identifier is stemmed too, and still matches — which is the half of the
+    // draft's reasoning that was right about the mechanism and wrong about the
+    // consequence.
+    let hits = t.repo.search(&regs, "axios", 10).await.unwrap();
+    assert_eq!(hits.len(), 1, "an identifier still matches after stemming");
+
+    // A word that is not there is not found. Without this the test above would
+    // pass against a `search` that ignored its query.
+    assert!(t
+        .repo
+        .search(&regs, "kubernetes", 10)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+/// The snippet is **plain text**, because it is a second surface for
+/// package-authored content and it is not going to be a second place where
+/// markup is interpreted (§7.4). `ts_headline` is asked for empty delimiters, so
+/// nothing downstream has to strip anything.
+#[tokio::test]
+async fn the_snippet_comes_back_as_text_and_never_as_markup() {
+    let Some(url) = db_url() else {
+        eprintln!("DATABASE_URL not set; skipping");
+        return;
+    };
+    let t = make_repo(&url).await;
+    t.repo
+        .upsert(t.readme(
+            "markup",
+            "1.0.0",
+            "# Heading\n\n<script>alert(1)</script>\n\nThis library performs \
+             deduplication of concurrent requests, which is the interesting part.",
+        ))
+        .await
+        .unwrap();
+
+    let hits = t
+        .repo
+        .search(std::slice::from_ref(&t.registry), "deduplication", 10)
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    let snippet = &hits[0].snippet;
+    assert!(snippet.contains("deduplication"), "{snippet}");
+    // Whatever `ts_headline` returns, it adds no markup of its own — the
+    // highlight delimiters are empty. This is the assertion that caught them
+    // being written bare (`StartSel=`), which made Postgres read the next
+    // option's name as the value and leave `StopSel` at its default.
+    assert!(!snippet.contains("<b>"), "{snippet}");
+    assert!(!snippet.contains("</b>"), "{snippet}");
+    assert!(!snippet.contains("StopSel"), "{snippet}");
+    assert!(!snippet.contains("StartSel"), "{snippet}");
+    // And nothing the package wrote survives as markup either.
+    assert!(!snippet.contains("<script"), "{snippet}");
+}
+
+/// One row per **package**, not per version: a README repeated across forty
+/// patch releases would otherwise fill the page by itself.
+#[tokio::test]
+async fn a_package_appears_once_however_many_versions_share_its_readme() {
+    let Some(url) = db_url() else {
+        eprintln!("DATABASE_URL not set; skipping");
+        return;
+    };
+    let t = make_repo(&url).await;
+    for version in ["1.0.0", "1.0.1", "1.0.2", "1.1.0"] {
+        t.repo
+            .upsert(t.readme("repeated", version, "Handles websocket reconnection."))
+            .await
+            .unwrap();
+    }
+
+    let hits = t
+        .repo
+        .search(std::slice::from_ref(&t.registry), "reconnection", 10)
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), 1, "one row for the package, not four");
+    assert_eq!(hits[0].name, "repeated");
+}
+
+/// The accessible set is applied **in the query**, not after it. A search that
+/// read rows it then discarded would make `limit` mean something different for
+/// different callers — and would be reading a package an `internal` visibility
+/// gate exists to hide (§7.3).
+#[tokio::test]
+async fn a_registry_outside_the_accessible_set_is_not_searched() {
+    let Some(url) = db_url() else {
+        eprintln!("DATABASE_URL not set; skipping");
+        return;
+    };
+    let t = make_repo(&url).await;
+    t.repo
+        .upsert(t.readme("secret", "1.0.0", "Internal telemetry ingestion pipeline."))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        t.repo
+            .search(std::slice::from_ref(&t.registry), "telemetry", 10)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    // Not in the caller's set: no row, whatever it says.
+    assert!(t
+        .repo
+        .search(&["some-other-registry".to_owned()], "telemetry", 10)
+        .await
+        .unwrap()
+        .is_empty());
+    // An empty set is not "everything".
+    assert!(t
+        .repo
+        .search(&[], "telemetry", 10)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+/// `websearch_to_tsquery` accepts what a person types. A search box that 500s on
+/// an apostrophe is not a search box (§5.2).
+#[tokio::test]
+async fn a_query_a_person_would_type_does_not_error() {
+    let Some(url) = db_url() else {
+        eprintln!("DATABASE_URL not set; skipping");
+        return;
+    };
+    let t = make_repo(&url).await;
+    t.repo
+        .upsert(t.readme(
+            "parser",
+            "1.0.0",
+            "A fast JSON parser that doesn't allocate.",
+        ))
+        .await
+        .unwrap();
+    let regs = vec![t.registry.clone()];
+
+    for query in [
+        "doesn't",
+        "\"json parser\"",
+        "json or yaml",
+        "parser -yaml",
+        "&&&",
+        "((((",
+        "   ",
+        "",
+    ] {
+        t.repo
+            .search(&regs, query, 10)
+            .await
+            .unwrap_or_else(|e| panic!("{query:?} should not error: {e}"));
+    }
+
+    // The phrase query is not merely non-erroring — it matches.
+    assert_eq!(
+        t.repo
+            .search(&regs, "\"json parser\"", 10)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+/// Changing `[search] text_config` rebuilds the generated column, and the
+/// rebuild is idempotent: running it again with the same value is two catalogue
+/// queries and no DDL.
+#[tokio::test]
+async fn the_text_configuration_can_be_changed_and_settling_on_one_is_idempotent() {
+    let Some(url) = db_url() else {
+        eprintln!("DATABASE_URL not set; skipping");
+        return;
+    };
+    let t = make_repo(&url).await;
+    let pool = PgPool::connect(&url).await.unwrap();
+
+    // An unknown configuration is refused rather than interpolated.
+    let err = batlehub_adapters::db::ensure_readme_text_config(
+        &pool,
+        "not_a_configuration; DROP TABLE package_readmes",
+    )
+    .await
+    .expect_err("an unknown configuration must be refused");
+    assert!(err.to_string().contains("text_config"), "{err}");
+    // And the table is still there.
+    t.repo
+        .upsert(t.readme("still-here", "1.0.0", "Intact."))
+        .await
+        .unwrap();
+
+    // Settling on the default is a no-op.
+    for _ in 0..2 {
+        let chosen = batlehub_adapters::db::ensure_readme_text_config(&pool, "english")
+            .await
+            .expect("english exists on every Postgres");
+        assert_eq!(chosen, "english");
+    }
+    // And the search still works afterwards.
+    assert_eq!(
+        t.repo
+            .search(std::slice::from_ref(&t.registry), "intact", 10)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
 }

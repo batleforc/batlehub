@@ -43,6 +43,13 @@ deny = [
     # rustls-aws-lc / hyper 1.x path instead (see aws-sdk notes in Cargo.toml).
     { name = "rustls", version = "=0.21" },
     { name = "rustls-webpki", version = "=0.101" },
+    # RUSTSEC-2026-0258 (unbounded empty DATA frames) — fixed in h2 0.4.16, which
+    # the hyper/reqwest path already uses, with no backport to the 0.3 line.
+    # `actix-http` is the only thing that wanted 0.3, through actix-web's default
+    # `http2` feature, and that feature is off (see the actix-web notes in
+    # Cargo.toml). This entry is what stops a future `default-features = true`
+    # from quietly reintroducing the advisory.
+    { name = "h2", version = "<0.4" },
 ]
 
 # ── Licenses ──────────────────────────────────────────────────────────────────

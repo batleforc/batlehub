@@ -51,7 +51,7 @@ fuzz_target!(|data: &[u8]| {
     let opts = if proxy_images {
         RenderOptions {
             remote_images: RemoteImagePolicy::Proxy,
-            image_proxy_prefix: Some("https://hub.invalid/api/v1/readme-image?url=".to_owned()),
+            image_proxy_prefix: Some("https://hub.invalid/api/v1/readme-image/".to_owned()),
         }
     } else {
         RenderOptions::default()

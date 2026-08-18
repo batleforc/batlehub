@@ -13,11 +13,11 @@
 //! Run through `task docs:readme-coverage`; `task docs:readme-coverage:check`
 //! fails the build if the committed page has drifted.
 
-use batlehub_core::entities::{ReadmeSupport, RegistryKind, UpstreamDetailSupport};
+use batlehub_core::entities::{FetchSupport, ReadmeSupport, RegistryKind, UpstreamDetailSupport};
 
 fn main() {
-    println!("| Registry | README source | Per version | Held nowhere here |");
-    println!("| --- | --- | --- | --- |");
+    println!("| Registry | README source | Per version | Held nowhere here | Fetchable |");
+    println!("| --- | --- | --- | --- | --- |");
 
     for kind in RegistryKind::ALL {
         let (source, per_version) = match kind.readme_support() {
@@ -39,8 +39,18 @@ fn main() {
             _ => "versions only",
         };
 
+        // Whether the console's **Fetch this version** button is offered
+        // (RFC 0007-bis §4.4). Generated from the same kind of exhaustive match
+        // as the columns beside it, so a kind cannot be added without deciding —
+        // and the published table cannot claim a button dispatch will not draw.
+        let fetchable = match kind.fetchable_by_version() {
+            FetchSupport::ByVersion => "yes",
+            FetchSupport::ByVersionWithArtifact(_) => "yes",
+            FetchSupport::None(_) => "no",
+        };
+
         println!(
-            "| {} | {source} | {per_version} | {unheld} |",
+            "| {} | {source} | {per_version} | {unheld} | {fetchable} |",
             kind.as_str()
         );
     }

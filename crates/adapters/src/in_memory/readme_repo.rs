@@ -2,7 +2,11 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
-use batlehub_core::{entities::PackageReadme, error::CoreError, ports::ReadmeRepository};
+use batlehub_core::{
+    entities::PackageReadme,
+    error::CoreError,
+    ports::{ReadmeRepository, ReadmeSearchHit},
+};
 
 /// No-op README repository — used where READMEs are not wanted at all.
 pub struct NoopReadmeRepository;
@@ -57,6 +61,15 @@ impl ReadmeRepository for NoopReadmeRepository {
     async fn delete_for_package(&self, _registry: &str, _name: &str) -> Result<(), CoreError> {
         Ok(())
     }
+
+    async fn search(
+        &self,
+        _registries: &[String],
+        _query: &str,
+        _limit: u64,
+    ) -> Result<Vec<ReadmeSearchHit>, CoreError> {
+        Ok(vec![])
+    }
 }
 
 /// In-memory README repository for tests.
@@ -82,6 +95,36 @@ impl InMemoryReadmeRepository {
     pub fn all(&self) -> Vec<PackageReadme> {
         self.items.lock().unwrap().clone()
     }
+}
+
+/// A window of `content` around the first match, on character boundaries.
+///
+/// Plain text out, like `ts_headline` with empty delimiters: the snippet is
+/// rendered as text and never reaches `v-html` (RFC 0007-bis §7.4).
+fn snippet_around(content: &str, lowered: &str, needle: &str) -> String {
+    const WINDOW: usize = 80;
+    let Some(at) = lowered.find(needle) else {
+        return String::new();
+    };
+    let mut start = at.saturating_sub(WINDOW);
+    while start > 0 && !content.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = (at + needle.len() + WINDOW).min(content.len());
+    while end < content.len() && !content.is_char_boundary(end) {
+        end += 1;
+    }
+    let mut out = String::new();
+    if start > 0 {
+        out.push('…');
+    }
+    out.push_str(content[start..end].trim());
+    if end < content.len() {
+        out.push('…');
+    }
+    // Newlines would break a one-line result row; the real one's `ts_headline`
+    // returns a fragment for the same reason.
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[async_trait]
@@ -161,6 +204,66 @@ impl ReadmeRepository for InMemoryReadmeRepository {
             .unwrap()
             .retain(|r| !(r.registry == registry && r.name == name));
         Ok(())
+    }
+
+    /// The honest double: a case-insensitive substring match over the stored
+    /// text, ranked by how many times the query appears.
+    ///
+    /// Deliberately **not** an imitation of Postgres FTS. It stems nothing and
+    /// understands no operator, so a test written against this that asserted
+    /// `retry` finds `retrying` would pass here and fail in production — which is
+    /// exactly backwards. Ranking and stemming are tested against real Postgres
+    /// (`crates/adapters/tests/pg_readmes.rs`); this exists so the web suite can
+    /// exercise the endpoint's *shape* without a database.
+    async fn search(
+        &self,
+        registries: &[String],
+        query: &str,
+        limit: u64,
+    ) -> Result<Vec<ReadmeSearchHit>, CoreError> {
+        let needle = query.trim().to_lowercase();
+        if needle.is_empty() || registries.is_empty() {
+            return Ok(Vec::new());
+        }
+        let items = self.items.lock().unwrap();
+
+        let mut hits: Vec<ReadmeSearchHit> = Vec::new();
+        for row in items.iter() {
+            if !registries.contains(&row.registry) {
+                continue;
+            }
+            let haystack = row.content.to_lowercase();
+            let count = haystack.matches(&needle).count();
+            if count == 0 {
+                continue;
+            }
+            let hit = ReadmeSearchHit {
+                registry: row.registry.clone(),
+                name: row.name.clone(),
+                version: row.version.clone(),
+                snippet: snippet_around(&row.content, &haystack, &needle),
+                rank: count as f32,
+            };
+            // One row per package, as the real one's `DISTINCT ON` gives:
+            // keep the best-ranked version rather than listing forty patch
+            // releases of the same text.
+            match hits
+                .iter_mut()
+                .find(|h| h.registry == hit.registry && h.name == hit.name)
+            {
+                Some(existing) if existing.rank < hit.rank => *existing = hit,
+                Some(_) => {}
+                None => hits.push(hit),
+            }
+        }
+        hits.sort_by(|a, b| {
+            b.rank
+                .partial_cmp(&a.rank)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        hits.truncate(limit as usize);
+        Ok(hits)
     }
 }
 

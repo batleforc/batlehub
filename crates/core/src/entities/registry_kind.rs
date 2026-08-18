@@ -538,6 +538,59 @@ impl RegistryKind {
         }
     }
 
+    /// Whether "fetch this version" has a single meaning for this kind
+    /// (RFC 0007-bis §4.4).
+    ///
+    /// The button on an upstream-only row runs the ordinary download path for
+    /// one coordinate. That needs the coordinate to *name* one thing: Maven's
+    /// artifact is a set of files, and a Terraform provider needs an OS and an
+    /// architecture, so for those the console renders the reason rather than a
+    /// disabled button with no explanation.
+    ///
+    /// Exhaustive with no wildcard arm, for the same reason
+    /// [`Self::readme_support`] and [`Self::upstream_detail`] are: a new kind
+    /// does not compile until somebody decides.
+    pub fn fetchable_by_version(&self) -> FetchSupport {
+        match self {
+            Self::Npm
+            | Self::Cargo
+            | Self::Pypi
+            | Self::Nuget
+            | Self::Goproxy
+            | Self::Composer
+            | Self::Rubygems
+            | Self::Conda => FetchSupport::ByVersion,
+            // The extension and plugin galleries address their artifact with a
+            // sub-coordinate. `warm_artifact` already names it, and this reuses
+            // that answer rather than restating it — two lists of the same fact
+            // is one list that goes stale.
+            Self::Openvsx | Self::VscodeMarketplace | Self::JetbrainsMarketplace => {
+                match self.warm_artifact() {
+                    Some(artifact) => FetchSupport::ByVersionWithArtifact(artifact),
+                    // Unreachable while `warm_artifact` answers for these three,
+                    // and a refusal rather than a panic if it ever stops: the
+                    // console shows a reason and nothing is fetched.
+                    None => FetchSupport::None("this kind's artifact has no addressable name"),
+                }
+            }
+            Self::Maven => FetchSupport::None(
+                "a Maven version is a set of files — a jar, a pom, sources, javadoc — so \
+                 \"fetch this version\" has no single meaning",
+            ),
+            Self::Terraform => FetchSupport::None(
+                "a Terraform provider binary is addressed by OS and architecture as well as \
+                 version, and a module is fetched by the client from a URL this instance \
+                 rewrites rather than as one artifact",
+            ),
+            Self::Deb | Self::Rpm | Self::Pacman | Self::Jetbrains | Self::Generic => {
+                FetchSupport::None("path-addressed: there is no version to fetch by")
+            }
+            Self::Github | Self::Gitlab | Self::Forgejo => FetchSupport::None(
+                "a release asset is addressed by its filename, which the page does not know",
+            ),
+        }
+    }
+
     /// The `PackageId::artifact` sub-coordinate this kind's primary downloadable
     /// artifact is cached under, when it uses one.
     ///
@@ -561,6 +614,41 @@ impl RegistryKind {
             // filled a slot nothing ever read and the first real request still
             // went upstream.
             Self::Openvsx | Self::VscodeMarketplace => Some("vsix"),
+            _ => None,
+        }
+    }
+}
+
+/// Whether a version can be fetched by coordinate alone
+/// ([`RegistryKind::fetchable_by_version`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchSupport {
+    /// `{registry}/{name}/{version}` names one artifact.
+    ByVersion,
+    /// It names one artifact under this sub-coordinate — `vsix`, `plugin`.
+    ByVersionWithArtifact(&'static str),
+    /// It does not, and this is why. Quoted verbatim by the endpoint and by the
+    /// console, so the published support table, the refusal and the button's
+    /// tooltip cannot disagree.
+    None(&'static str),
+}
+
+impl FetchSupport {
+    pub fn is_supported(&self) -> bool {
+        !matches!(self, Self::None(_))
+    }
+
+    /// The `PackageId::artifact` this fetch should use, if any.
+    pub fn artifact(&self) -> Option<&'static str> {
+        match self {
+            Self::ByVersionWithArtifact(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    pub fn reason(&self) -> Option<&'static str> {
+        match self {
+            Self::None(reason) => Some(reason),
             _ => None,
         }
     }

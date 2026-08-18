@@ -153,6 +153,7 @@ impl ConfigReloadService {
             content: None, // set by load_pending_from_content when originating from the editor
             new_hot: built.hot,
             new_access: built.access,
+            new_search_readmes: built.search_readmes,
             new_registry_map: built.registry_map,
             new_registry_mode_map: built.registry_mode_map,
             new_upstream_map: built.upstream_map,
@@ -217,6 +218,13 @@ impl ConfigReloadService {
         {
             let mut access = self.access.write().await;
             *access = pending.new_access;
+        }
+        {
+            // The **index** is deliberately not torn down when this goes off:
+            // nothing reads it, and rebuilding it on the next flip would be a
+            // surprise measured in minutes (RFC 0007-bis §9).
+            let mut search = self.search.write().await;
+            *search = pending.new_search_readmes;
         }
         // Swap the shared registry/mode/upstream maps in-place so all actix workers
         // immediately see the new registries without a process restart.

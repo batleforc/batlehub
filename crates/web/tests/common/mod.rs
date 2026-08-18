@@ -631,6 +631,13 @@ pub fn access_config_for(names: &[&str]) -> batlehub_web::AccessConfigLock {
 }
 
 /// Like [`access_config_for`], but also grants explore access to `names` for every role.
+///
+/// Needed by anything that scopes on the accessible set *explicitly*. The
+/// catalogue listing reads `ExploreFilter::registries`, where an empty vector
+/// means "no restriction", so most suites never notice that [`access_config`]
+/// leaves the explore sets empty. The README search does notice: an empty scope
+/// there means "search nothing", which is the safe direction and the reason a
+/// prose-search test must name its registry.
 pub fn access_config_with_explore(names: &[&str]) -> batlehub_web::AccessConfigLock {
     let set: std::collections::HashSet<String> = names.iter().map(|s| s.to_string()).collect();
     new_access_lock(batlehub_web::AccessConfig {
@@ -770,6 +777,10 @@ pub struct ConfigureAppDefaults {
     /// and so a test can seed one and assert the simulator changes its answer.
     pub user_block_repo: Arc<dyn UserBlockRepository>,
     pub ip_block_store: Arc<dyn IpBlockStore>,
+    /// `[search] readmes`. **Off**, matching the shipped default, so every
+    /// existing explore assertion keeps meaning what it meant; a file that is
+    /// about prose search turns it on for its own app.
+    pub readme_search: bool,
 }
 
 impl Default for ConfigureAppDefaults {
@@ -785,6 +796,7 @@ impl Default for ConfigureAppDefaults {
             eviction_map: EvictionServiceMap::default(),
             user_block_repo: Arc::new(InMemoryUserBlockRepository::new()),
             ip_block_store: Arc::new(InMemoryIpBlockStore::new()),
+            readme_search: false,
         }
     }
 }
@@ -814,6 +826,10 @@ pub fn configure_test_app(
         defaults.notification_store,
         defaults.notifications_config,
         None, // storage_admin_repo
+        // Prose search off, matching the shipped default. A file that wants it
+        // on builds its own app — leaving it on here would change what every
+        // other explore test is asserting about.
+        batlehub_web::new_search_lock(defaults.readme_search),
     )
 }
 #[allow(clippy::too_many_arguments)]
@@ -1255,6 +1271,24 @@ pub async fn build_local_registry_app(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
+    build_local_registry_app_with(parts, cargo_indexes, sbom_svc, false).await
+}
+
+/// [`build_local_registry_app`], with `[search] readmes` set explicitly.
+///
+/// A separate entry point rather than a parameter on the common one: prose
+/// search is off in every existing suite and should stay off there, so a file
+/// that is about it opts in rather than every other file opting out.
+pub async fn build_local_registry_app_with(
+    parts: LocalRegistryAppParts,
+    cargo_indexes: batlehub_web::CargoIndexMap,
+    sbom_svc: Option<Arc<SbomService>>,
+    readme_search: bool,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
     let LocalRegistryAppParts {
         proxy_svc,
         admin_svc,
@@ -1276,6 +1310,7 @@ pub async fn build_local_registry_app(
         cargo_indexes,
         ConfigureAppDefaults {
             sbom_svc,
+            readme_search,
             ..Default::default()
         },
         test_auth_providers(),

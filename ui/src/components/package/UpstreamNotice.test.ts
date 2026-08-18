@@ -65,9 +65,7 @@ describe("UpstreamNotice", () => {
    * presenting an old answer as a current one.
    */
   it("says when the answer came from a stale document", () => {
-    expect(notice({ freshness: "stale" }, 2).text().toLowerCase()).toContain(
-      "older cached",
-    );
+    expect(notice({ freshness: "stale" }, 2).text().toLowerCase()).toContain("older cached");
   });
 
   /**
@@ -76,10 +74,7 @@ describe("UpstreamNotice", () => {
    * unreachable has been told two contradictory things.
    */
   it("reports an unreachable upstream, and that reading wins", () => {
-    const wrapper = notice(
-      { error: "connection refused", freshness: "stale" },
-      2,
-    );
+    const wrapper = notice({ error: "connection refused", freshness: "stale" }, 2);
     expect(wrapper.text().toLowerCase()).toContain("could not be reached");
     expect(wrapper.text()).not.toContain("2 version");
   });

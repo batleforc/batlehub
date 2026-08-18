@@ -49,6 +49,19 @@ const router = useRouter();
 
 const selectedRegistry = ref<string | null>(null);
 const search = ref("");
+/**
+ * Where the search looks: names, README prose, or both (RFC 0007-bis §4.3).
+ *
+ * `name` is what this page has always done, and it stays the default — the
+ * control is an opt-in to a *wider* search, never a narrowing of the one people
+ * already know.
+ */
+type SearchScope = "name" | "readme" | "both";
+const searchIn = ref<SearchScope>("name");
+/** `[search] readmes` on this instance, as the last response reported it. */
+const readmeSearchEnabled = ref(false);
+/** The prose search hit its cap; there may be more than is shown. */
+const searchTruncated = ref(false);
 
 type SortKey = "fetched" | "downloads" | "name" | "recent";
 
@@ -276,6 +289,38 @@ function noteKey(row: ExploreRow): string | undefined {
   return NOTE_KEYS[rowState(row)];
 }
 
+/**
+ * Why this row is here, or `undefined` when it needs no saying.
+ *
+ * Only a prose match is labelled. A row that matched on its name is
+ * self-explanatory, and labelling every row would make the one that actually
+ * needs the label invisible (RFC 0007-bis §4.3).
+ */
+function matchLabel(row: ExploreRow): string | undefined {
+  if (row.kind !== "cached") return undefined;
+  const matched = (row as ExploreEntryDto).matched_in;
+  if (matched === "readme") return t("packageCatalog.matchedReadme");
+  if (matched === "both") return t("packageCatalog.matchedBoth");
+  return undefined;
+}
+
+/** The matched fragment of a README, as plain text. Never markup. */
+function rowSnippet(row: ExploreRow): string | undefined {
+  if (row.kind !== "cached") return undefined;
+  return (row as ExploreEntryDto).snippet ?? undefined;
+}
+
+/**
+ * A prose search actually ran and came back with nothing.
+ *
+ * Distinct from "the filter matched nothing": the empty state has to say what
+ * was searched, and `in=readme` with the feature *off* answers as a name search
+ * — so the scope alone is not enough to decide which words to show.
+ */
+const searchedProse = computed(
+  () => readmeSearchEnabled.value && searchIn.value !== "name" && search.value.trim().length > 0,
+);
+
 /** Stable across re-renders because it is derived from the row's identity, not
     from its index: `aria-describedby` pointing at a recycled id is worse than
     pointing at nothing. */
@@ -349,9 +394,10 @@ async function fetchPackages() {
   const q = search.value.trim();
   const s = sort.value;
   const p = page.value;
+  const scope = searchIn.value;
   const seq = ++packagesSeq;
 
-  const cached = exploreCache.get(reg, p, s, q);
+  const cached = exploreCache.get(reg, p, s, q, scope);
   if (cached) {
     error.value = null;
     packages.value = cached.items;
@@ -374,17 +420,25 @@ async function fetchPackages() {
         per_page: perPage,
         sort: s,
         registry: reg || undefined,
-        name: q || undefined,
+        // `q` is the parameter `in` applies to; `name` is the older one and
+        // still filters names, which is why the scope is sent with `q` alone.
+        q: q || undefined,
+        in: scope,
       },
     });
     if (apiErr) throw new Error(t("packageCatalog.loadFailed"));
     const body = res as ExplorePackageListResponse;
     // Written under the coordinates captured at call time, not the current
     // refs, so a late response cannot land under the wrong key.
-    exploreCache.set(reg, p, s, q, { items: body.items, total: body.total });
+    exploreCache.set(reg, p, s, q, { items: body.items, total: body.total }, scope);
     if (seq !== packagesSeq) return; // superseded — cached, not displayed
     packages.value = body.items;
     total.value = body.total;
+    // Reported by the server rather than inferred: a client cannot tell "no
+    // package here says that" from "this instance does not search prose", and
+    // guessing would put the wrong empty state on screen.
+    readmeSearchEnabled.value = body.readme_search_enabled === true;
+    searchTruncated.value = body.truncated === true;
   } catch (e) {
     if (seq === packagesSeq) error.value = extractMessage(e);
   } finally {
@@ -444,6 +498,20 @@ function onSearchInput(val: string) {
     if (val.trim().length >= 2) void fetchUpstream();
     else upstreamResults.value = [];
   }, 300);
+}
+
+/**
+ * Changing the scope re-runs the search at once, undebounced.
+ *
+ * The query has not changed — only what it is asked of — so there is nothing to
+ * wait for, and a delay after a select would read as the control not working.
+ */
+function onSearchInChange(val: string) {
+  searchIn.value = (["name", "readme", "both"] as const).includes(val as SearchScope)
+    ? (val as SearchScope)
+    : "name";
+  page.value = 0;
+  void fetchPackages();
 }
 
 function selectRegistry(reg: string | null) {
@@ -581,6 +649,22 @@ onMounted(() => {
               @input="onSearchInput(($event.target as HTMLInputElement).value)"
             />
           </div>
+          <!-- Where the search looks. Beside the box it modifies rather than in
+             a settings panel, because it changes what the *next keystroke*
+             means. Hidden entirely when the instance searches names only: a
+             control whose other options do nothing is worse than no control
+             (RFC 0007-bis §4.3). -->
+          <select
+            v-if="readmeSearchEnabled"
+            :aria-label="t('packageCatalog.searchIn')"
+            class="h-9 rounded-sm border border-input bg-background px-3 font-mono text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            :value="searchIn"
+            @change="onSearchInChange(($event.target as HTMLSelectElement).value)"
+          >
+            <option value="name">{{ t("packageCatalog.searchInName") }}</option>
+            <option value="readme">{{ t("packageCatalog.searchInReadme") }}</option>
+            <option value="both">{{ t("packageCatalog.searchInBoth") }}</option>
+          </select>
           <!-- The page's one action, in the toolbar beside search — where
              `design-proof/index.html` puts its own (RFC 0004-bis §14.9). It
              used to sit in `PageHeader`, which the specimen replaced. -->
@@ -719,6 +803,15 @@ onMounted(() => {
                     class="ml-2 text-xs uppercase tracking-[0.1em] text-muted-foreground"
                     >{{ row.registry }}</span
                   >
+                  <!-- Why this row is here. Shown only for a prose match: a row
+                     that matched on its name needs no explanation, and labelling
+                     every row would make the one that needs it invisible. -->
+                  <span
+                    v-if="matchLabel(row)"
+                    class="ml-2 text-xs uppercase tracking-[0.1em] text-muted-foreground"
+                    :title="t('packageCatalog.matchedInLabel', { where: matchLabel(row) })"
+                    >{{ matchLabel(row) }}</span
+                  >
                 </TableCell>
                 <TableCell class="pl-0 pr-3 py-3 align-baseline text-muted-foreground tabular-nums">
                   <template v-if="row.kind === 'cached'">{{ row.newest_version ?? "—" }}</template>
@@ -746,6 +839,24 @@ onMounted(() => {
                  package by `aria-describedby` — not one note floating above the
                  table. The rule is indented under the package rather than under
                  the state, so the eye reads it as belonging to the name. -->
+              <!-- The matched fragment, as **text**. It is interpolated, never
+                 `v-html`: the README panel's markup boundary is a deliberate,
+                 tested, single-component one, and a search snippet is a second
+                 surface for package-authored content reached by a much cheaper
+                 path — no navigation, just a query (RFC 0007-bis §7.4). -->
+              <TableRow
+                v-if="rowSnippet(row)"
+                class="border-dashed border-rule-soft hover:bg-transparent"
+              >
+                <TableCell class="pl-0 pr-3 pb-3 pt-0" />
+                <TableCell colspan="4" class="pl-0 pr-3 pb-3 pt-0">
+                  <p class="flex items-stretch gap-3 text-sm text-muted-foreground">
+                    <span class="w-px flex-none bg-border" aria-hidden="true" />
+                    <span class="min-w-0 [overflow-wrap:anywhere]">{{ rowSnippet(row) }}</span>
+                  </p>
+                </TableCell>
+              </TableRow>
+
               <TableRow
                 v-if="noteKey(row)"
                 class="border-dashed border-rule-soft hover:bg-transparent"
@@ -789,6 +900,12 @@ onMounted(() => {
             </TableRow>
           </TableBody>
         </Table>
+        <!-- A cap that applied, said out loud. A silently shortened list reads
+             as "that is all there is", which is a lie about the catalogue. -->
+        <p v-if="searchTruncated" class="mt-2 text-xs text-muted-foreground">
+          {{ t("packageCatalog.readmeSearchTruncated", { count: total }) }}
+        </p>
+
         <!-- Empty is two states, and telling them apart is the point: a user
            shown "no packages" while a filter is applied concludes the registry
            is broken.
@@ -798,10 +915,27 @@ onMounted(() => {
            behind a horizontal scroll — the one thing DESIGN.md's Own-Container
            Overflow Rule forbids the body to do. -->
         <div v-if="tableRows.length === 0 && !loadingUpstream && !loading" class="mt-4">
+          <!-- A prose search that found nothing gets its own words. "Nothing
+             matches that search" would imply the query was checked against every
+             package here, and it was checked against the READMEs of the versions
+             this instance holds — which is a narrower claim and the honest one
+             (RFC 0007-bis §4.3). -->
           <EmptyState
             :filtered="Boolean(search.trim())"
-            :title="search.trim() ? t('catalog.emptyFilteredTitle') : t('catalog.emptyTitle')"
-            :description="search.trim() ? t('catalog.emptyFilteredBody') : t('catalog.emptyBody')"
+            :title="
+              searchedProse
+                ? t('packageCatalog.readmeSearchEmptyTitle')
+                : search.trim()
+                  ? t('catalog.emptyFilteredTitle')
+                  : t('catalog.emptyTitle')
+            "
+            :description="
+              searchedProse
+                ? t('packageCatalog.readmeSearchEmptyBody')
+                : search.trim()
+                  ? t('catalog.emptyFilteredBody')
+                  : t('catalog.emptyBody')
+            "
           >
             <template v-if="search.trim()" #action>
               <Button size="sm" variant="outline" @click="search = ''">{{

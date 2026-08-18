@@ -37,7 +37,32 @@ async-trait = "0.1"
 futures = "0.3"
 
 # HTTP server
-actix-web = "4"
+#
+# `default-features = false` for one reason: to drop `http2`, which is the only
+# thing pulling `h2 0.3` into the tree (RUSTSEC-2026-0258 — unbounded empty DATA
+# frames). The advisory is fixed in h2 0.4.16, which is already here for
+# hyper/reqwest, but `actix-http 3.13.3` — the latest published — still requires
+# the 0.3 line, and there is no 0.3 backport (0.3.27 is the newest). So the
+# choice is the feature or the advisory, and the feature costs nothing: this
+# server never terminates TLS (`server_factory.rs` calls plain `.bind()`, and the
+# only TLS in the config is `[registries.tls]` for *outbound* upstream clients).
+# Without TLS, actix's HTTP/2 is reachable only as h2c, which no package manager
+# speaks to a registry — real deployments terminate HTTP/2 at the ingress and
+# talk HTTP/1.1 to this process, which is unaffected.
+#
+# The features below are actix-web 4.14's own `default` set with `http2` removed;
+# re-add it here if this process ever gains `bind_rustls`/`bind_openssl`, and take
+# the advisory up with actix at that point.
+actix-web = { version = "4", default-features = false, features = [
+    "macros",
+    "compress-brotli",
+    "compress-gzip",
+    "compress-zstd",
+    "cookies",
+    "unicode",
+    "compat",
+    "ws",
+] }
 actix-files = "0.6"
 actix-cors = "0.7"
 

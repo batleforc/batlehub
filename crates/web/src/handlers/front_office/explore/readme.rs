@@ -128,6 +128,7 @@ pub struct ReadmeResponse {
 #[allow(clippy::too_many_arguments)]
 #[get("/api/v1/explore/packages/{registry}/{name}/readme")]
 pub async fn explore_package_readme(
+    req: actix_web::HttpRequest,
     path: web::Path<ReadmePath>,
     query: web::Query<ReadmeQuery>,
     identity: AuthIdentity,
@@ -139,108 +140,29 @@ pub async fn explore_package_readme(
 ) -> Result<impl Responder, AppError> {
     let registry = &path.registry;
     let name = &path.name;
-
-    // `404` rather than `403` on a visibility refusal, exactly as `detail.rs`
-    // does and for the reason stated there: a `403` confirms the package
-    // exists, which is the fact a non-public package is trying not to disclose.
-    // A README must not be a side channel around the gate that hides its name.
-    if let Err(e) = local_svc.check_visibility(registry, name, &identity).await {
-        tracing::debug!(
-            registry = %registry, package = %name, error = %e,
-            "explore readme: hidden by package visibility"
-        );
-        return Err(not_found(registry, name));
-    }
-
-    // A registry type with no README says so as a statement, before anything is
-    // looked up: there is nothing to find, and "not found" would read as a gap
-    // rather than as a decision.
-    let kind = registry_map
-        .type_of(registry)
-        .and_then(|t| t.parse::<RegistryKind>().ok());
-    if let Some(kind) = kind {
-        if let batlehub_core::entities::ReadmeSupport::None(reason) = kind.readme_support() {
-            return Err(
-                AppError::not_found(format!("{kind} packages carry no README — {reason}"))
-                    .coded(README_UNSUPPORTED_TYPE),
-            );
-        }
-    }
-
-    let Some(readme_svc) = proxy_svc.readme.as_ref() else {
-        return Err(not_found(registry, name));
-    };
-
-    // Blocked and unlisted versions may not be substituted in as a fallback: a
-    // blocked version serves no README at all, and silently showing its text
-    // under another version's heading would route round the block (§4.4).
-    let blocked = blocked_versions(&admin_svc, registry, name).await;
-    let unlisted = unlisted_versions(&local_svc, registry, name).await;
-    let ineligible: Vec<String> = blocked
-        .iter()
-        .map(|(v, _)| v.clone())
-        .chain(unlisted.iter().cloned())
-        .collect();
-
     let requested = query.version.clone();
-    // A blocked version is refused with its reason before anything is read —
-    // the same answer the download path gives, so the operator sees that it
-    // exists and why it is refused rather than being told it has no README.
-    if let Some(version) = requested.as_deref() {
-        if let Some((_, reason)) = blocked.iter().find(|(v, _)| v == version) {
-            return Err(AppError::forbidden(format!(
-                "version '{version}' of '{name}' is blocked: {reason}"
-            ))
-            .coded(README_BLOCKED));
-        }
-    }
 
-    let answer = match requested.as_deref() {
-        Some(version) => readme_svc
-            .get_for_version(registry, name, version, &ineligible)
-            .await
-            .map_err(AppError::from)?,
-        // No version named: the newest that has one, which is not a fallback
-        // because nothing specific was asked for.
-        None => readme_svc
-            .repo
-            .get_latest_with_readme(registry, name, &ineligible)
-            .await
-            .map_err(AppError::from)?
-            .map(|readme| ReadmeAnswer {
-                readme,
-                is_fallback: false,
-            }),
-    };
+    let Resolved { answer, derived } = resolve_readme(ResolveInput {
+        registry,
+        name,
+        version: requested.as_deref(),
+        identity: &identity,
+        admin_svc: &admin_svc,
+        local_svc: &local_svc,
+        proxy_svc: &proxy_svc,
+        registry_map: &registry_map,
+        mode_map: &mode_map,
+    })
+    .await?;
 
-    // A miss in the store is not the end of the path. For a version this
-    // instance holds no bytes for there was never a row to find, so the answer
-    // is *derived* from the cached upstream document — same renderer, same
-    // digest key, same cache entry. The only difference the caller sees is
-    // `stored: false` and a `freshness` (RFC 0007 §5.6).
-    let (answer, derived) = match answer {
-        Some(answer) => (answer, None),
-        None => match derived_readme(
-            &proxy_svc,
-            &local_svc,
-            &mode_map,
-            registry,
-            name,
-            requested.as_deref(),
-            &identity,
-        )
-        .await
-        {
-            Some((answer, freshness)) => (answer, Some(freshness)),
-            None => {
-                return Err(
-                    AppError::not_found(missing_message(kind, name)).coded(README_NONE_STORED)
-                )
-            }
-        },
-    };
+    // `resolve_readme` already refused a request this service cannot answer, so
+    // by here there is one.
+    let readme_svc = proxy_svc
+        .readme
+        .as_ref()
+        .ok_or_else(|| not_found(registry, name))?;
 
-    let opts = render_options(&local_svc, registry).await;
+    let opts = render_options(&req, &local_svc, registry, name, &answer.readme.version).await;
     let rendered_html = match query.format {
         ReadmeFormatParam::Source => None,
         _ => Some(readme_svc.render_cached(&answer.readme, &opts).await),
@@ -271,6 +193,147 @@ pub async fn explore_package_readme(
         source_text,
         extracted_at: answer.readme.extracted_at.to_rfc3339(),
     }))
+}
+
+/// Everything [`resolve_readme`] has to consult.
+///
+/// A struct rather than nine positional parameters: the two callers pass the
+/// same nine things, and a positional list of that length is how a `registry`
+/// ends up in the `name` slot.
+pub(super) struct ResolveInput<'a> {
+    pub registry: &'a str,
+    pub name: &'a str,
+    pub version: Option<&'a str>,
+    pub identity: &'a AuthIdentity,
+    pub admin_svc: &'a AdminService,
+    pub local_svc: &'a LocalRegistryService,
+    pub proxy_svc: &'a ProxyService,
+    pub registry_map: &'a RegistryMap,
+    pub mode_map: &'a RegistryModeMap,
+}
+
+/// The README to show, and whether it was derived rather than stored.
+pub(super) struct Resolved {
+    pub answer: ReadmeAnswer,
+    /// `Some` when the text came from a cached upstream document rather than
+    /// from a row, carrying which rung answered.
+    pub derived: Option<Freshness>,
+}
+
+/// Which README a coordinate resolves to, through every gate.
+///
+/// Shared by this endpoint and the image one, which is the point: an image is
+/// *part of* a README, so it must be reachable exactly when the README is and
+/// never otherwise. A second implementation of the visibility check, the block
+/// check and the fallback rule would be a second set of answers to drift apart —
+/// and the one that drifted would be the side channel (RFC 0007-bis §5.1).
+pub(super) async fn resolve_readme(input: ResolveInput<'_>) -> Result<Resolved, AppError> {
+    let ResolveInput {
+        registry,
+        name,
+        version,
+        identity,
+        admin_svc,
+        local_svc,
+        proxy_svc,
+        registry_map,
+        mode_map,
+    } = input;
+
+    // `404` rather than `403` on a visibility refusal, exactly as `detail.rs`
+    // does and for the reason stated there: a `403` confirms the package
+    // exists, which is the fact a non-public package is trying not to disclose.
+    // A README must not be a side channel around the gate that hides its name.
+    if let Err(e) = local_svc.check_visibility(registry, name, identity).await {
+        tracing::debug!(
+            registry = %registry, package = %name, error = %e,
+            "explore readme: hidden by package visibility"
+        );
+        return Err(not_found(registry, name));
+    }
+
+    // A registry type with no README says so as a statement, before anything is
+    // looked up: there is nothing to find, and "not found" would read as a gap
+    // rather than as a decision.
+    let kind = registry_map
+        .type_of(registry)
+        .and_then(|t| t.parse::<RegistryKind>().ok());
+    if let Some(kind) = kind {
+        if let batlehub_core::entities::ReadmeSupport::None(reason) = kind.readme_support() {
+            return Err(
+                AppError::not_found(format!("{kind} packages carry no README — {reason}"))
+                    .coded(README_UNSUPPORTED_TYPE),
+            );
+        }
+    }
+
+    let Some(readme_svc) = proxy_svc.readme.as_ref() else {
+        return Err(not_found(registry, name));
+    };
+
+    // Blocked and unlisted versions may not be substituted in as a fallback: a
+    // blocked version serves no README at all, and silently showing its text
+    // under another version's heading would route round the block (§4.4).
+    let blocked = blocked_versions(admin_svc, registry, name).await;
+    let unlisted = unlisted_versions(local_svc, registry, name).await;
+    let ineligible: Vec<String> = blocked
+        .iter()
+        .map(|(v, _)| v.clone())
+        .chain(unlisted.iter().cloned())
+        .collect();
+
+    // A blocked version is refused with its reason before anything is read —
+    // the same answer the download path gives, so the operator sees that it
+    // exists and why it is refused rather than being told it has no README.
+    if let Some(version) = version {
+        if let Some((_, reason)) = blocked.iter().find(|(v, _)| v == version) {
+            return Err(AppError::forbidden(format!(
+                "version '{version}' of '{name}' is blocked: {reason}"
+            ))
+            .coded(README_BLOCKED));
+        }
+    }
+
+    let answer = match version {
+        Some(version) => readme_svc
+            .get_for_version(registry, name, version, &ineligible)
+            .await
+            .map_err(AppError::from)?,
+        // No version named: the newest that has one, which is not a fallback
+        // because nothing specific was asked for.
+        None => readme_svc
+            .repo
+            .get_latest_with_readme(registry, name, &ineligible)
+            .await
+            .map_err(AppError::from)?
+            .map(|readme| ReadmeAnswer {
+                readme,
+                is_fallback: false,
+            }),
+    };
+
+    // A miss in the store is not the end of the path. For a version this
+    // instance holds no bytes for there was never a row to find, so the answer
+    // is *derived* from the cached upstream document — same renderer, same
+    // digest key, same cache entry. The only difference the caller sees is
+    // `stored: false` and a `freshness` (RFC 0007 §5.6).
+    match answer {
+        Some(answer) => Ok(Resolved {
+            answer,
+            derived: None,
+        }),
+        None => match derived_readme(
+            proxy_svc, local_svc, mode_map, registry, name, version, identity,
+        )
+        .await
+        {
+            Some((answer, freshness)) => Ok(Resolved {
+                answer,
+                derived: Some(freshness),
+            }),
+            None => Err(AppError::not_found(missing_message(kind, name)).coded(README_NONE_STORED)),
+        },
+    }
 }
 
 /// The same `404` a hidden package gets, so denied and absent look identical
@@ -352,12 +415,30 @@ async fn unlisted_versions(
         .collect()
 }
 
-/// The registry's image policy, read out of hot config.
+/// The registry's image policy, read out of hot config, with the prefix a
+/// proxied image's `src` is rewritten to.
 ///
 /// Snapshotted out of the lock before the render, per the hot-reload convention.
 /// An absent entry means enabled with the default policy — the README block's
 /// absence means *on* (§4.1).
-async fn render_options(local_svc: &LocalRegistryService, registry: &str) -> RenderOptions {
+///
+/// The prefix is **absolute**, built from the origin this very request arrived
+/// on, because the sanitiser's `url_relative(Deny)` applies to the attribute
+/// filter's output and would drop a relative one — leaving every image with no
+/// `src` and nothing said about it. `trusted_origin` is what decides whether a
+/// forwarded header may influence a generated URL, so the same rule that governs
+/// every other URL this server emits governs this one.
+///
+/// The coordinate in the prefix is the **answering** README's, not the requested
+/// version's: under the fallback rule the panel may be showing 1.4.2's text for
+/// 2.0.0-rc1, and the images belong to the document actually rendered.
+async fn render_options(
+    req: &actix_web::HttpRequest,
+    local_svc: &LocalRegistryService,
+    registry: &str,
+    name: &str,
+    version: &str,
+) -> RenderOptions {
     let cfg = local_svc
         .hot
         .read()
@@ -368,14 +449,29 @@ async fn render_options(local_svc: &LocalRegistryService, registry: &str) -> Ren
         .unwrap_or_default();
     RenderOptions {
         remote_images: cfg.remote_images,
-        // There is no image-proxy endpoint yet (RFC 0007 open question 1), so
-        // there is nowhere to rewrite an image's `src` to and `proxy` charts
-        // images exactly as `strip` does. Not silent: an operator who writes
-        // `remote_images = "proxy"` gets the `readme.image-proxy-unimplemented`
-        // config warning on the admin panel and in the startup log. The day the
-        // endpoint lands, this is the one line that changes.
-        image_proxy_prefix: None,
+        image_proxy_prefix: Some(image_prefix(req, registry, name, version)),
     }
+}
+
+/// Where `…/readme-image/{n}` lives for one coordinate.
+///
+/// Every segment is percent-encoded: a scoped npm name carries a `/` and an `@`,
+/// and an unencoded one would produce a URL pointing at a different route
+/// entirely.
+pub(super) fn image_prefix(
+    req: &actix_web::HttpRequest,
+    registry: &str,
+    name: &str,
+    version: &str,
+) -> String {
+    use batlehub_adapters::registry::percent_encode;
+    let (scheme, host) = crate::middleware::proxy_trust::trusted_origin(req);
+    format!(
+        "{scheme}://{host}/api/v1/explore/packages/{}/{}/{}/readme-image/",
+        percent_encode(registry),
+        percent_encode(name),
+        percent_encode(version)
+    )
 }
 
 /// The README for a version this instance holds no bytes for, from the cached

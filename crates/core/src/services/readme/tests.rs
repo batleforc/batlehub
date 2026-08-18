@@ -109,6 +109,15 @@ impl ReadmeRepository for FakeRepo {
             .retain(|r| !(r.registry == registry && r.name == name));
         Ok(())
     }
+
+    async fn search(
+        &self,
+        _registries: &[String],
+        _query: &str,
+        _limit: u64,
+    ) -> Result<Vec<crate::ports::ReadmeSearchHit>, CoreError> {
+        Ok(vec![])
+    }
 }
 
 fn cfg() -> ReadmeConfig {

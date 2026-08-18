@@ -5,17 +5,128 @@ use crate::db::DbResultExt;
 use batlehub_core::{
     entities::{PackageReadme, ReadmeFormat, ReadmeSource},
     error::CoreError,
-    ports::ReadmeRepository,
+    ports::{ReadmeRepository, ReadmeSearchHit},
 };
 
 pub struct PgReadmeRepository {
     pool: PgPool,
+    /// The Postgres text search configuration the FTS column was built with.
+    ///
+    /// Held here rather than read per query because it has to match the
+    /// generated column's own literal exactly: searching with `french` against a
+    /// column built with `english` silently matches almost nothing, which is the
+    /// worst kind of wrong answer — a `200` with an empty list.
+    ///
+    /// Always a name that exists in `pg_ts_config`, because
+    /// [`ensure_readme_text_config`] is what puts it here.
+    text_config: String,
 }
 
 impl PgReadmeRepository {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            text_config: DEFAULT_TEXT_CONFIG.to_owned(),
+        }
     }
+
+    /// The same repository searching with `config`.
+    ///
+    /// Call [`ensure_readme_text_config`] first: this trusts the value, and the
+    /// value reaches SQL as a literal.
+    pub fn with_text_config(mut self, config: impl Into<String>) -> Self {
+        self.text_config = config.into();
+        self
+    }
+}
+
+/// What migration `035` builds the generated column with.
+///
+/// `english` rather than `simple`, against the recommendation RFC 0007-bis was
+/// drafted with: stemming does mangle identifiers, and it does so *symmetrically*
+/// — the query is stemmed too, so `axios` still matches — while `simple` fails
+/// `retry` against a README that says `retrying` (§13.3).
+pub const DEFAULT_TEXT_CONFIG: &str = "english";
+
+/// Make the FTS column match the configured text search configuration.
+///
+/// Two things have to hold and neither is free:
+///
+/// - the name must exist on **this** server. Checked against `pg_ts_config` with
+///   a bound parameter, which both validates it and — because what comes back is
+///   the catalogue's own `cfgname` — makes it safe to interpolate into the DDL
+///   below. `to_tsvector` in a generated column must be IMMUTABLE, so there is no
+///   way to parameterise it;
+/// - the column must actually have been built with it. A `GENERATED … STORED`
+///   column cannot be altered in place, so a change means dropping and re-adding
+///   it, which **rebuilds every row**. That is why `text_config` is a decision to
+///   take at install rather than to tune later, and why this says so in the log
+///   rather than doing it quietly.
+///
+/// Idempotent: the common case is that the column already matches and this runs
+/// two catalogue queries and returns.
+pub async fn ensure_readme_text_config(pool: &PgPool, config: &str) -> Result<String, CoreError> {
+    let known: Option<String> =
+        sqlx::query_scalar("SELECT cfgname::text FROM pg_ts_config WHERE cfgname = $1")
+            .bind(config)
+            .fetch_optional(pool)
+            .await
+            .db_err()?;
+    let Some(config) = known else {
+        return Err(CoreError::Config(format!(
+            "[search] text_config = '{config}' is not a text search configuration on this \
+             Postgres server; `SELECT cfgname FROM pg_ts_config` lists the available ones"
+        )));
+    };
+
+    // The generated column's own expression, which names the configuration it
+    // was built with. Asking the catalogue rather than remembering: an instance
+    // that has been through two different settings is exactly the case where a
+    // remembered value would be wrong.
+    let current: Option<String> = sqlx::query_scalar(
+        "SELECT pg_get_expr(d.adbin, d.adrelid) \
+         FROM pg_attrdef d \
+         JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum \
+         WHERE d.adrelid = 'package_readmes'::regclass AND a.attname = 'content_tsv'",
+    )
+    .fetch_optional(pool)
+    .await
+    .db_err()?
+    .flatten();
+
+    let matches = current
+        .as_deref()
+        .is_some_and(|expr| expr.contains(&format!("'{config}'")));
+    if matches {
+        return Ok(config);
+    }
+
+    tracing::warn!(
+        text_config = %config,
+        "search: rebuilding the README full-text column for a changed [search] text_config — \
+         this rewrites every stored README's index and holds a lock while it runs"
+    );
+    sqlx::query("ALTER TABLE package_readmes DROP COLUMN IF EXISTS content_tsv")
+        .execute(pool)
+        .await
+        .db_err()?;
+    // `AssertSqlSafe` because `config` came back from `pg_ts_config` as that
+    // catalogue's own `cfgname` — it is an identifier this server already has,
+    // not a string a caller supplied — and a generated column's expression
+    // cannot be parameterised.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "ALTER TABLE package_readmes ADD COLUMN content_tsv tsvector \
+         GENERATED ALWAYS AS (to_tsvector('{config}', content)) STORED"
+    )))
+    .execute(pool)
+    .await
+    .db_err()?;
+    // Dropping the column dropped its index with it.
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_package_readmes_fts ON package_readmes USING GIN (content_tsv)")
+        .execute(pool)
+        .await
+        .db_err()?;
+    Ok(config)
 }
 
 fn row_to_readme(r: &sqlx::postgres::PgRow) -> PackageReadme {
@@ -167,6 +278,79 @@ impl ReadmeRepository for PgReadmeRepository {
             .await
             .db_err()?;
         Ok(())
+    }
+
+    async fn search(
+        &self,
+        registries: &[String],
+        query: &str,
+        limit: u64,
+    ) -> Result<Vec<ReadmeSearchHit>, CoreError> {
+        if registries.is_empty() || query.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // `websearch_to_tsquery`, not `to_tsquery`: it accepts what a person
+        // actually types — quoted phrases, `or`, `-excluded` — and does not
+        // error on syntax. A search box that 500s on an apostrophe is not a
+        // search box.
+        //
+        // `DISTINCT ON` collapses to one row per package, keeping the
+        // best-ranked version: a package whose README repeats across forty patch
+        // releases would otherwise fill the page by itself. The outer query
+        // re-sorts, because `DISTINCT ON` dictates the inner ordering.
+        //
+        // `ts_headline` with **empty delimiters**: what comes back is text and
+        // nothing downstream has to strip markup out of it. That is the whole of
+        // §7.4 — the snippet is a second surface for package-authored content,
+        // and it is not going to be a second place where markup is interpreted.
+        //
+        // The quotes around the empty values are load-bearing. Written bare as
+        // `StartSel=,StopSel=`, Postgres reads the *next option's name* as
+        // StartSel's value and leaves StopSel at its default `</b>` — so every
+        // snippet came back wrapped in `,StopSel=…</b>`. Caught by the assertion
+        // that the snippet contains no `</b>`, which is exactly the assertion a
+        // looser test would not have made.
+        let cfg = &self.text_config;
+        let sql = format!(
+            "SELECT registry, package_name, version, snippet, rank FROM ( \
+               SELECT DISTINCT ON (registry, package_name) \
+                 registry, package_name, version, \
+                 ts_headline('{cfg}', content, websearch_to_tsquery('{cfg}', $2), \
+                   'StartSel=\"\",StopSel=\"\",MaxWords=32,MinWords=12,MaxFragments=1') \
+                   AS snippet, \
+                 ts_rank_cd(content_tsv, websearch_to_tsquery('{cfg}', $2)) AS rank \
+               FROM package_readmes \
+               WHERE registry = ANY($1) \
+                 AND content_tsv @@ websearch_to_tsquery('{cfg}', $2) \
+               ORDER BY registry, package_name, rank DESC \
+             ) best \
+             ORDER BY rank DESC, package_name ASC \
+             LIMIT $3"
+        );
+
+        // `AssertSqlSafe` for the same reason as above, and only for that
+        // reason: `self.text_config` is a `pg_ts_config` name validated at
+        // startup. The **query** is a bound parameter, as it must be — that is
+        // the string a caller controls.
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(registries)
+            .bind(query)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await
+            .db_err()?;
+
+        Ok(rows
+            .iter()
+            .map(|r| ReadmeSearchHit {
+                registry: r.get("registry"),
+                name: r.get("package_name"),
+                version: r.get("version"),
+                snippet: r.get::<Option<String>, _>("snippet").unwrap_or_default(),
+                rank: r.get::<f32, _>("rank"),
+            })
+            .collect())
     }
 }
 

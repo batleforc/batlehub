@@ -165,3 +165,13 @@ requirements and checklist when integrating another CVE database alongside OSV.
 The stance is **no suppressions**: `.cargo/audit.toml` and `deny.toml` (`advisories.ignore = []`)
 both keep the ignore list empty. If an advisory is genuinely non-actionable, prefer upgrading or
 patching the dependency; only add an ignore with an inline justification and a tracking issue.
+
+The hard case is a transitive advisory with no version to upgrade *to*, and there is a worked
+example in the tree. RUSTSEC-2026-0258 (`h2`, unbounded empty DATA frames) is fixed in h2 0.4.16 —
+already present for the hyper/reqwest path — but `actix-http` still requires the 0.3 line and no
+0.3 backport exists, so no `cargo update` could resolve it. It was closed by removing the
+*feature* that wanted the crate: `actix-web` is declared `default-features = false` without
+`http2`, which drops `h2 0.3` from the tree entirely. Two things make that safe to rely on rather
+than rediscover — the reasoning lives next to the declaration in `Cargo.toml`, and `h2 <0.4` is in
+`deny.toml`'s `[bans].deny`, so re-enabling the feature fails CI instead of silently restoring the
+advisory. Check whether a feature can be dropped before concluding an advisory is unfixable.

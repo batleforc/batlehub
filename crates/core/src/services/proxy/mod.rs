@@ -35,6 +35,22 @@ pub struct ProxyRequest {
     pub user_agent: Option<String>,
 }
 
+/// The storage key a **proxied** artifact is cached under.
+///
+/// `artifact:` plus the coordinate, including the `PackageId::artifact`
+/// sub-coordinate when the kind uses one — a `vsix`, a `plugin`. Distinct from
+/// [`crate::services::artifact_storage_key`], which is the `local:` key a
+/// *published* artifact goes to: the two describe different halves of the same
+/// catalogue, and using one where the other belongs asks a question that is
+/// always answered "no".
+///
+/// A function rather than a `format!` at each site because there are now two
+/// sites — the download path writes it, and the console's fetch button reads it
+/// to decide whether a version is already held (RFC 0007-bis §4.4).
+pub fn proxy_artifact_key(package_id: &crate::entities::PackageId) -> String {
+    format!("artifact:{}", package_id.cache_key())
+}
+
 /// Output of `ProxyService::handle`.
 pub enum ProxyResponse {
     /// Artifact stream to forward to the HTTP client.

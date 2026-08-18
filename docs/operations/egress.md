@@ -89,14 +89,47 @@ permanent state of the world.
 
 ## A README's images
 
-None. A README's images are **not** loaded: they normally live on third-party
-hosts, and rendering them would mean every console page view sending a request —
-with a `Referer` — to a host the *package author* chose, announcing that someone
-inside your network is reading about this package at this moment.
+**None by default.** A README's images are not loaded: they normally live on
+third-party hosts, and rendering them would mean every console page view sending
+a request — with a `Referer` — to a host the *package author* chose, announcing
+that someone inside your network is reading about this package at this moment.
 
 Each image is replaced with an inline chip carrying its alt text and its host, so
-a reader can see that an image was there and where it pointed. See
+a reader can see that an image was there and where it pointed.
+
+With `remote_images = "proxy"`, **this server** fetches them instead, once, and
+serves them from its own origin. The reader's browser still never talks to a host
+the package author chose; what changes is that this instance does, on the first
+render of each image. The requests are this server's, coalesced and cached under
+the registry's `metadata_ttl_secs`, and a URL that fails is remembered so a dead
+badge is not re-dialled on every page view.
+
+The residual is worth naming rather than hiding: a package author still chooses
+*which host this server talks to*, and can therefore learn that **somebody** on
+this instance rendered their README, plus this instance's egress IP. What they
+cannot learn is who, when repeatedly, or from which internal address. That is a
+real reduction and not an elimination; an operator for whom even that is
+unacceptable keeps `"strip"`, which remains the default. See
 [`remote_images`](/guide/admin-config#readme-capture).
+
+## Someone presses Fetch {#someone-presses-fetch}
+
+The package page lists versions this instance holds nothing of and marks each one
+**not held here**. On those rows there is a **Fetch this version** button, and
+pressing it downloads the artifact from upstream.
+
+This is the only thing on the list that is **a decision rather than a side
+effect**. Everything else here happens because a page was opened or a build ran;
+this happens because a person pressed a button, and the audit log names them.
+
+It is the ordinary download path — the same request a package manager would make,
+under the caller's own identity, through the rules, the integrity check, quota
+and the audit. It is not a warming task and does not use the warming service,
+which bypasses all of those because its only caller is an administrator.
+
+On by default, per registry, and inert on a `local`-mode registry. Turn it off
+with `console_fetch = false` if you want the console strictly read-only. See
+[fetching a version from the console](/guide/admin-config#console-fetch).
 
 ## A linked README
 

@@ -29,7 +29,8 @@ pub use readme::{
     ReadmeSource, ReadmeState,
 };
 pub use registry_kind::{
-    ListingDocument, ListingSupport, ReadmeSupport, RegistryKind, UpstreamDetailSupport,
+    FetchSupport, ListingDocument, ListingSupport, ReadmeSupport, RegistryKind,
+    UpstreamDetailSupport,
 };
 pub use sbom::{ArtifactSbom, SbomFormat, SbomSource};
 pub use team_namespace::{NamespacePackage, TeamNamespace};

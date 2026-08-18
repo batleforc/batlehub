@@ -6,7 +6,9 @@ pub mod handlers;
 pub mod middleware;
 pub mod services;
 
-pub use access::{new_access_lock, AccessConfig, AccessConfigLock};
+pub use access::{
+    new_access_lock, new_search_lock, AccessConfig, AccessConfigLock, SearchConfigLock,
+};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -563,8 +565,9 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             banner::get_banner,
             cli_download::download_cli,
             explore::{
-                explore_package_detail, explore_package_readme, explore_packages,
-                explore_registry_stats, explore_upstream_search,
+                explore_fetch_version, explore_package_detail, explore_package_readme,
+                explore_packages, explore_readme_image, explore_registry_stats,
+                explore_upstream_search,
             },
             me::{me, my_advisories, my_downloads, my_quota},
             packages::{check_access, list_packages},
@@ -942,6 +945,12 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     // detail path with `name = "{name}/readme"` on the registries whose names
     // contain a slash.
     cfg.service(explore_package_readme);
+    // Likewise more specific than the detail route, and than the README route:
+    // it carries the version and the index as their own segments.
+    cfg.service(explore_readme_image);
+    // Same shape, same reason: version and action as their own segments, so it
+    // must not be shadowed by the detail route.
+    cfg.service(explore_fetch_version);
     cfg.service(explore_package_detail);
     cfg.service(explore_upstream_search);
     cfg.service(explore_packages);
@@ -1083,6 +1092,9 @@ pub fn configure_app(
     notification_store: Arc<dyn batlehub_core::ports::NotificationPort + 'static>,
     notifications_config: Option<batlehub_config::schema::NotificationsConfig>,
     storage_admin_repo: Option<Arc<dyn StorageAdminRepository>>,
+    // `[search] readmes`. Hot-reloadable, so an operator can turn prose search
+    // off without restarting (RFC 0007-bis §4.1).
+    search_config: SearchConfigLock,
 ) -> impl Fn(&mut UtoipaServiceConfig) + Clone + 'static {
     let audit_client = reqwest::Client::builder()
         .user_agent("batlehub/0.1")
@@ -1093,6 +1105,7 @@ pub fn configure_app(
         cfg.app_data(web::Data::new(admin_svc.clone()));
         cfg.app_data(web::Data::new(token_repo.clone()));
         cfg.app_data(web::Data::new(Arc::clone(&access_config)));
+        cfg.app_data(web::Data::new(Arc::clone(&search_config)));
         cfg.app_data(web::Data::new(registry_map.clone()));
         cfg.app_data(web::Data::new(upstream_map.clone()));
         cfg.app_data(web::Data::new(audit_client.clone()));

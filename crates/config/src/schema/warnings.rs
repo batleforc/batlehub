@@ -111,19 +111,6 @@ pub const README_UNSUPPORTED_TYPE: &str = "readme.unsupported-type";
 /// an operator who set this to control cost should know it was already free.
 pub const README_FROM_ARCHIVE_INERT: &str = "readme.from-archive-inert";
 
-/// `remote_images = "proxy"` on a build that has no image-proxy endpoint.
-///
-/// Accepted, validated and carried all the way to the renderer — the setting is
-/// real and the day the endpoint lands nothing about the configuration changes —
-/// but with nowhere to rewrite an image's `src` to, images are charted exactly
-/// as `"strip"` charts them.
-///
-/// Warned rather than silently degraded, because a setting that appears to do
-/// something and does not is the trap RFC 0007 §4.1 refuses for the *other*
-/// image value: an operator who set this and saw chips would reasonably conclude
-/// the feature was broken. It is not built (open question 1).
-pub const README_IMAGE_PROXY_UNIMPLEMENTED: &str = "readme.image-proxy-unimplemented";
-
 /// `from_archive = true` on a `firewall_only` registry.
 ///
 /// `firewall_only` streams without buffering, so no artifact is ever cached to
@@ -160,3 +147,10 @@ pub const UPSTREAM_DETAIL_NO_UPSTREAM: &str = "upstream-detail.no-upstream";
 /// consequence is the opposite one and an operator triaging an outage needs to
 /// find this by name.
 pub const LICENSE_GATE_DENIES_EVERYTHING: &str = "license-gate.denies-everything";
+
+/// `[search] readmes = true` while every registry has README capture off.
+///
+/// Accepted. The index will exist and stay empty, because nothing is ever stored
+/// to put in it — so the search box grows an option that can only ever answer
+/// "no package here says that" (RFC 0007-bis §4.5).
+pub const SEARCH_READMES_NOTHING_STORED: &str = "search.readmes-nothing-stored";

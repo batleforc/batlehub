@@ -13,12 +13,8 @@ import {
   FileCode,
   Download,
 } from "@lucide/vue";
-import { explorePackageDetail, listRegistries } from "@/client/sdk.gen";
-import type {
-  ExplorePackageDetailResponse,
-  FirewallDto,
-  RegistryInfo,
-} from "@/client/types.gen";
+import { explorePackageDetail, exploreFetchVersion, listRegistries } from "@/client/sdk.gen";
+import type { ExplorePackageDetailResponse, FirewallDto, RegistryInfo } from "@/client/types.gen";
 import { useAuth } from "@/composables/useAuth";
 import { packageDetail } from "@/client/sdk.gen";
 import type { PackageDetailResponse } from "@/client/types.gen";
@@ -32,7 +28,7 @@ import { Separator } from "@/components/ui/separator";
 import { useAuthFetch } from "@/composables/useAuthFetch";
 import { useApi, extractMessage } from "@/composables/useApi";
 import { API_BASE_URL } from "@/config";
-import { formatCount } from "@/lib/format";
+import { formatBytes, formatCount } from "@/lib/format";
 import { severityVariant } from "@/lib/badge-variants";
 import { Badge } from "@/components/ui/badge";
 import { Resolution, type ResolutionState } from "@/components/ui/resolution";
@@ -63,8 +59,7 @@ const { data: registriesList } = useApi<RegistryInfo[]>(
   [token],
 );
 const registryType = computed(
-  () =>
-    registriesList.value?.find((r) => r.name === registry.value)?.type ?? null,
+  () => registriesList.value?.find((r) => r.name === registry.value)?.type ?? null,
 );
 
 const data = ref<ExplorePackageDetailResponse | null>(null);
@@ -130,6 +125,60 @@ async function downloadSbom(version: string, fmt: "spdx" | "cyclonedx") {
     // silently ignore download errors
   } finally {
     sbomLoading.value = null;
+  }
+}
+
+/**
+ * Which version is being fetched, and what came of the last attempt
+ * (RFC 0007-bis §4.4).
+ *
+ * Keyed by version rather than a single flag: a reader may press one row while
+ * reading another, and a shared spinner would put the wrong row in motion.
+ */
+const fetching = ref<string | null>(null);
+const fetchResult = ref<Record<string, string>>({});
+
+/**
+ * Ask this instance to fetch one version from upstream.
+ *
+ * Synchronous, with a spinner. Measured against real upstreams the median
+ * version is 0.57 MB in 66 ms and the largest sampled was 41.7 MB in 417 ms
+ * (RFC 0007-bis §13.4), which a spinner holds comfortably — and the response
+ * reports the size, so the row can say what the wait bought rather than just
+ * "done".
+ */
+async function onFetchVersion(version: string) {
+  if (fetching.value) return;
+  fetching.value = version;
+  delete fetchResult.value[version];
+  try {
+    const { data: res, error: apiErr } = await exploreFetchVersion({
+      path: { registry: registry.value, name: name.value, version },
+    });
+    if (apiErr) {
+      // The rule's own reason, shown verbatim. It is the same string the
+      // download would have given, so the operator can take it to the RBAC
+      // simulator and get the same verdict explained.
+      const body = apiErr as { code?: string; message?: string };
+      fetchResult.value[version] =
+        body.code === "fetch.already-held"
+          ? t("packageDetailPage.fetchAlreadyHeld")
+          : body.message
+            ? t("packageDetailPage.fetchDenied", { reason: body.message })
+            : t("packageDetailPage.fetchFailed");
+      return;
+    }
+    const size = (res as { size_bytes?: number }).size_bytes ?? 0;
+    fetchResult.value[version] = t("packageDetailPage.fetched", {
+      size: formatBytes(size),
+    });
+    // Refresh so the row says `proxied` rather than leaving the reader to
+    // reload and wonder whether it worked.
+    await fetchDetail();
+  } catch (e) {
+    fetchResult.value[version] = extractMessage(e);
+  } finally {
+    fetching.value = null;
   }
 }
 
@@ -302,9 +351,7 @@ const {
       <!-- Gate summary card -->
       <Card>
         <CardHeader class="pb-2">
-          <CardTitle class="text-base">{{
-            t("packageDetailPage.accessGate")
-          }}</CardTitle>
+          <CardTitle class="text-base">{{ t("packageDetailPage.accessGate") }}</CardTitle>
         </CardHeader>
         <CardContent>
           <div class="space-y-2">
@@ -312,16 +359,10 @@ const {
             <div class="flex items-center gap-2 text-sm">
               <component
                 :is="data.gate.registry_accessible ? ShieldCheck : ShieldAlert"
-                :class="
-                  data.gate.registry_accessible
-                    ? 'text-primary'
-                    : 'text-destructive'
-                "
+                :class="data.gate.registry_accessible ? 'text-primary' : 'text-destructive'"
                 class="h-4 w-4 shrink-0"
               />
-              <span class="text-muted-foreground">{{
-                t("packageDetailPage.registryAccess")
-              }}</span>
+              <span class="text-muted-foreground">{{ t("packageDetailPage.registryAccess") }}</span>
               <span
                 :class="
                   data.gate.registry_accessible
@@ -330,9 +371,7 @@ const {
                 "
               >
                 {{
-                  data.gate.registry_accessible
-                    ? t("accessCheck.allowed")
-                    : t("accessCheck.denied")
+                  data.gate.registry_accessible ? t("accessCheck.allowed") : t("accessCheck.denied")
                 }}
               </span>
             </div>
@@ -341,21 +380,13 @@ const {
             <div class="flex items-center gap-2 text-sm">
               <component
                 :is="data.gate.beta_member ? Unlock : Lock"
-                :class="
-                  data.gate.beta_member
-                    ? 'text-primary'
-                    : 'text-muted-foreground'
-                "
+                :class="data.gate.beta_member ? 'text-primary' : 'text-muted-foreground'"
                 class="h-4 w-4 shrink-0"
               />
-              <span class="text-muted-foreground">{{
-                t("packageDetailPage.betaChannel")
-              }}</span>
+              <span class="text-muted-foreground">{{ t("packageDetailPage.betaChannel") }}</span>
               <span
                 :class="
-                  data.gate.beta_member
-                    ? 'text-primary font-medium'
-                    : 'text-muted-foreground'
+                  data.gate.beta_member ? 'text-primary font-medium' : 'text-muted-foreground'
                 "
               >
                 {{
@@ -373,11 +404,7 @@ const {
            selected version. Fetched separately from the detail response so the
            catalogue cache's TTL never holds a stale document and the detail
            payload does not grow by a megabyte per package (RFC 0007 §5.4). -->
-      <ReadmePanel
-        :registry="registry"
-        :name="name"
-        :version="selectedVersion"
-      />
+      <ReadmePanel :registry="registry" :name="name" :version="selectedVersion" />
 
       <!-- Versions table -->
       <Card>
@@ -397,9 +424,7 @@ const {
                 <TableHead>{{ t("common.version") }}</TableHead>
                 <TableHead>{{ t("common.source") }}</TableHead>
                 <TableHead>{{ t("common.firewall") }}</TableHead>
-                <TableHead class="text-right">{{
-                  t("common.downloads")
-                }}</TableHead>
+                <TableHead class="text-right">{{ t("common.downloads") }}</TableHead>
                 <TableHead>{{ t("packageDetailPage.lastAccessed") }}</TableHead>
                 <TableHead>{{ t("common.published") }}</TableHead>
                 <TableHead>{{ t("common.security") }}</TableHead>
@@ -420,29 +445,18 @@ const {
               >
                 <TableCell class="font-mono text-sm">
                   {{ ver.version }}
-                  <Badge
-                    v-if="ver.is_prerelease"
-                    variant="outline"
-                    class="ml-1 text-xs"
-                  >
+                  <Badge v-if="ver.is_prerelease" variant="outline" class="ml-1 text-xs">
                     pre-release
                   </Badge>
                   <Badge
                     v-if="ver.deprecated"
                     variant="destructive"
                     class="ml-1 text-xs cursor-help"
-                    :title="
-                      ver.deprecation_message ??
-                      t('packageDetailPage.deprecated')
-                    "
+                    :title="ver.deprecation_message ?? t('packageDetailPage.deprecated')"
                   >
                     deprecated
                   </Badge>
-                  <Badge
-                    v-if="ver.unlisted"
-                    variant="secondary"
-                    class="ml-1 text-xs"
-                  >
+                  <Badge v-if="ver.unlisted" variant="secondary" class="ml-1 text-xs">
                     unlisted
                   </Badge>
                   <!-- Under the version rather than in a column of its own: the
@@ -455,9 +469,7 @@ const {
                        licence" (RFC 0004-bis §13.1). -->
                   <p
                     class="text-xs text-muted-foreground truncate max-w-[200px]"
-                    :title="
-                      ver.license ?? t('packageDetailPage.licenseUnknownHelp')
-                    "
+                    :title="ver.license ?? t('packageDetailPage.licenseUnknownHelp')"
                   >
                     {{ ver.license ?? t("packageDetailPage.licenseUnknown") }}
                   </p>
@@ -491,6 +503,45 @@ const {
                           : t("common.proxied")
                     }}
                   </Badge>
+                  <!-- The door beside the wall. RFC 0007 made this row honest
+                       about not holding the version; this is what a reader can
+                       do about it, and it sits next to the mark that told them
+                       (RFC 0007-bis §2.3, §4.4). -->
+                  <template v-if="isUpstreamOnly(ver.source)">
+                    <Button
+                      v-if="data?.fetch.offered"
+                      size="sm"
+                      variant="outline"
+                      class="ml-2 h-6 px-2 text-xs"
+                      :disabled="fetching !== null"
+                      :title="t('packageDetailPage.fetchVersionTitle')"
+                      @click="onFetchVersion(ver.version)"
+                    >
+                      {{
+                        fetching === ver.version
+                          ? t("packageDetailPage.fetching")
+                          : t("packageDetailPage.fetchVersion")
+                      }}
+                    </Button>
+                    <!-- Not a disabled button with no explanation: where "fetch
+                         this version" has no single meaning, the kind's own
+                         reason is shown instead — the same string the endpoint
+                         and the support table use. -->
+                    <span
+                      v-else-if="data?.fetch.reason"
+                      class="ml-2 text-xs text-muted-foreground"
+                      >{{
+                        t("packageDetailPage.fetchUnavailable", {
+                          reason: data.fetch.reason,
+                        })
+                      }}</span
+                    >
+                    <span
+                      v-if="fetchResult[ver.version]"
+                      class="ml-2 text-xs text-muted-foreground"
+                      >{{ fetchResult[ver.version] }}</span
+                    >
+                  </template>
                 </TableCell>
                 <TableCell>
                   <RouterLink
@@ -502,10 +553,7 @@ const {
                     class="mr-2 font-mono text-xs underline underline-offset-4 text-muted-foreground hover:text-foreground"
                     >{{ t("packageDetailPage.why") }}</RouterLink
                   >
-                  <span
-                    v-if="ver.firewall.status === 'blocked'"
-                    class="group relative"
-                  >
+                  <span v-if="ver.firewall.status === 'blocked'" class="group relative">
                     <Badge variant="destructive" class="text-xs cursor-help">{{
                       t("common.blocked")
                     }}</Badge>
@@ -514,8 +562,7 @@ const {
                     >
                       <strong>{{ t("common.reasonLabel") }}</strong>
                       {{ (ver.firewall as any).reason }}<br />
-                      <strong>By:</strong> {{ (ver.firewall as any).blocked_by
-                      }}<br />
+                      <strong>By:</strong> {{ (ver.firewall as any).blocked_by }}<br />
                       <strong>At:</strong>
                       {{ formatDate((ver.firewall as any).blocked_at) }}
                     </span>
@@ -535,8 +582,7 @@ const {
                      cannot support (RFC 0007 §4.2). -->
                 <TableCell class="text-right text-sm text-muted-foreground">
                   {{
-                    ver.download_count === null ||
-                    ver.download_count === undefined
+                    ver.download_count === null || ver.download_count === undefined
                       ? t("common.unknown")
                       : formatCount(ver.download_count)
                   }}
@@ -558,10 +604,7 @@ const {
                       :key="vuln.osv_id"
                       class="group relative"
                     >
-                      <Badge
-                        :variant="severityVariant(vuln.severity)"
-                        class="text-xs cursor-help"
-                      >
+                      <Badge :variant="severityVariant(vuln.severity)" class="text-xs cursor-help">
                         {{ vuln.severity }}
                       </Badge>
                       <span
@@ -571,9 +614,7 @@ const {
                         ><br />
                         {{ vuln.summary }}
                         <template v-if="vuln.fixed_version">
-                          <br /><strong>{{
-                            t("packageDetailPage.fixedIn")
-                          }}</strong>
+                          <br /><strong>{{ t("packageDetailPage.fixedIn") }}</strong>
                           {{ vuln.fixed_version }}
                         </template>
                       </span>
@@ -585,11 +626,7 @@ const {
                       rel="noopener noreferrer"
                       :title="t('packageDetailPage.supplyChainReportOn')"
                     >
-                      <img
-                        :src="ver.socket_badge_url"
-                        alt="socket.dev"
-                        class="h-4"
-                      />
+                      <img :src="ver.socket_badge_url" alt="socket.dev" class="h-4" />
                     </a>
                     <!-- An empty list means *scanned and clear* only when
                          something has scanned it. On a version nothing has ever
@@ -603,10 +640,7 @@ const {
                       {{ t("packageDetailPage.notScanned") }}
                     </span>
                     <span
-                      v-else-if="
-                        ver.vulnerabilities.length === 0 &&
-                        !ver.socket_badge_url
-                      "
+                      v-else-if="ver.vulnerabilities.length === 0 && !ver.socket_badge_url"
                       class="text-muted-foreground text-xs"
                     >
                       —
@@ -621,10 +655,7 @@ const {
                   >
                   <div v-else class="flex gap-1">
                     <button
-                      :disabled="
-                        sbomLoading ===
-                        `${registry}/${name}/${ver.version}:spdx`
-                      "
+                      :disabled="sbomLoading === `${registry}/${name}/${ver.version}:spdx`"
                       class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs hover:bg-accent disabled:opacity-50"
                       :title="t('packageDetailPage.downloadSpdx23')"
                       @click="downloadSbom(ver.version, 'spdx')"
@@ -633,10 +664,7 @@ const {
                       SPDX
                     </button>
                     <button
-                      :disabled="
-                        sbomLoading ===
-                        `${registry}/${name}/${ver.version}:cyclonedx`
-                      "
+                      :disabled="sbomLoading === `${registry}/${name}/${ver.version}:cyclonedx`"
                       class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs hover:bg-accent disabled:opacity-50"
                       :title="t('packageDetailPage.downloadCyclonedx14')"
                       @click="downloadSbom(ver.version, 'cyclonedx')"
@@ -667,10 +695,7 @@ const {
                 </TableCell>
               </TableRow>
               <TableRow v-if="data.versions.length === 0">
-                <TableCell
-                  :colspan="token ? 9 : 8"
-                  class="text-center text-muted-foreground py-6"
-                >
+                <TableCell :colspan="token ? 9 : 8" class="text-center text-muted-foreground py-6">
                   <!-- Two different absences, and the reader needs to know
                        which: "nothing has been pulled through, and the upstream
                        does not have it either" is an answer; "the upstream

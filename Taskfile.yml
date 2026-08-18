@@ -418,7 +418,7 @@ tasks:
       - cargo llvm-cov report --fail-under-lines 80 --ignore-filename-regex "{{.COVERAGE_EXCLUDE}}"
 
   fuzz:
-    desc: "Run a fuzz target for up to MAX_TIME seconds (default: 30). Set TARGET to pick one: fuzz_rbac_evaluate | fuzz_package_id_cache_key | fuzz_deny_latest | fuzz_release_age"
+    desc: "Run a fuzz target for up to MAX_TIME seconds (default: 30). Set TARGET to pick one: fuzz_rbac_evaluate | fuzz_package_id_cache_key | fuzz_deny_latest | fuzz_release_age | fuzz_readme_render | fuzz_svg_sanitize"
     dir: fuzz
     vars:
       TARGET: '{{.TARGET | default "fuzz_deny_latest"}}'

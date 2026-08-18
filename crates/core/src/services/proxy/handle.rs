@@ -216,7 +216,7 @@ impl ProxyService {
         }
 
         // ── 4. Check artifact cache ────────────────────────────────────────────
-        let artifact_key = format!("artifact:{}", req.package_id.cache_key());
+        let artifact_key = super::proxy_artifact_key(&req.package_id);
         let artifact_ttl = policy.as_ref().and_then(|p| p.artifact_ttl);
         let cached_artifact_is_fresh = self
             .artifact_is_fresh(&artifact_key, artifact_ttl, registry_name)

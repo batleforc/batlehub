@@ -79,6 +79,7 @@ async fn make_banner_app_seeded(
     let reload_svc = Arc::new(ConfigReloadService::new(ConfigReloadParams {
         hot,
         access: access_config.clone(),
+        search: batlehub_web::new_search_lock(false),
         registry_map: batlehub_web::RegistryMap::new(HashMap::new()),
         registry_mode_map: batlehub_web::RegistryModeMap::new(HashMap::new()),
         upstream_map: batlehub_web::UpstreamMap::new(HashMap::new()),
@@ -229,6 +230,7 @@ async fn reload_config_returns_503_when_disabled() {
     let reload_svc = Arc::new(ConfigReloadService::new(ConfigReloadParams {
         hot,
         access: access_config.clone(),
+        search: batlehub_web::new_search_lock(false),
         registry_map: batlehub_web::RegistryMap::new(HashMap::new()),
         registry_mode_map: batlehub_web::RegistryModeMap::new(HashMap::new()),
         upstream_map: batlehub_web::UpstreamMap::new(HashMap::new()),

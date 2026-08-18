@@ -20,16 +20,23 @@ use pulldown_cmark::{html, CowStr, Event, Options, Parser, Tag, TagEnd};
 use crate::entities::ReadmeFormat;
 use crate::services::hot_config::RemoteImagePolicy;
 
-use super::sanitize::{sanitize, STRIPPED_IMAGE_CLASS};
+use super::sanitize::{sanitize_capturing_images, STRIPPED_IMAGE_CLASS};
 
 /// What the renderer needs to know that is not in the source.
 #[derive(Debug, Clone)]
 pub struct RenderOptions {
     pub remote_images: RemoteImagePolicy,
     /// Where a proxied image's `src` is rewritten to, built by the caller from
-    /// the request's own base URL. `None` means images are stripped whatever the
-    /// policy says — there is no configuration in which a README's image reaches
-    /// out from the reader's browser.
+    /// the request's own origin. What gets appended is the image's **index**, so
+    /// this ends in a `/` and the result is
+    /// `…/{registry}/{name}/{version}/readme-image/{n}` (RFC 0007-bis §5.1).
+    ///
+    /// `None` means images are stripped whatever the policy says — there is no
+    /// configuration in which a README's image reaches out from the reader's
+    /// browser. So does a **relative** prefix, which the sanitiser's
+    /// `url_relative(Deny)` would otherwise turn into an `<img>` with no `src`
+    /// at all: every image invisible and nothing said about it. See
+    /// [`proxy_prefix`].
     pub image_proxy_prefix: Option<String>,
 }
 
@@ -44,15 +51,78 @@ impl Default for RenderOptions {
 
 /// Render `source` to sanitised HTML.
 pub fn render(source: &str, format: ReadmeFormat, opts: &RenderOptions) -> String {
+    render_capturing_images(source, format, opts).0
+}
+
+/// [`render`], plus the URLs of the images the proxied rendering rewrote.
+///
+/// The indices of the returned vector are the indices in the output's `src`
+/// attributes, because both come out of one pass. [`image_urls`] is this run for
+/// its second half alone, and it is the only way the image endpoint learns what
+/// URL an index means (RFC 0007-bis §5.1).
+pub fn render_capturing_images(
+    source: &str,
+    format: ReadmeFormat,
+    opts: &RenderOptions,
+) -> (String, Vec<String>) {
     let raw = match format {
         ReadmeFormat::Markdown => markdown_to_html(source, opts),
         // Not re-rendered, only filtered — except that its images become chips
         // like a markdown document's do, for the reason in `chip_html_images`.
         ReadmeFormat::Html if strips_images(opts) => chip_html_images(source),
         ReadmeFormat::Html => source.to_owned(),
-        ReadmeFormat::Rst | ReadmeFormat::Plain => return preformatted(source),
+        // No markup means no images, and an early return keeps that a fact about
+        // the format rather than something the sanitiser happens to arrive at.
+        ReadmeFormat::Rst | ReadmeFormat::Plain => return (preformatted(source), Vec::new()),
     };
-    sanitize(&raw, opts.remote_images, opts.image_proxy_prefix.as_deref())
+    sanitize_capturing_images(&raw, opts.remote_images, proxy_prefix(opts).as_deref())
+}
+
+/// The URLs of the images in `source`, in the order the renderer numbers them.
+///
+/// Runs the **same** pipeline `render` runs, under the proxy policy, and keeps
+/// only what the sanitiser captured. Not a second walk: a second walk is exactly
+/// the thing that could disagree with the first, and the index in an incoming
+/// request is only meaningful because it cannot (RFC 0007-bis §5.1).
+///
+/// The prefix here is a placeholder — the caller wants the list, not the HTML —
+/// and it is absolute because a relative one would make the sanitiser drop every
+/// `src` and capture nothing.
+pub fn image_urls(source: &str, format: ReadmeFormat) -> Vec<String> {
+    render_capturing_images(
+        source,
+        format,
+        &RenderOptions {
+            remote_images: RemoteImagePolicy::Proxy,
+            image_proxy_prefix: Some(INDEX_PROBE_PREFIX.to_owned()),
+        },
+    )
+    .1
+}
+
+/// A syntactically valid absolute prefix for the render whose HTML is discarded.
+///
+/// `.invalid` is reserved by RFC 2606 and resolves nowhere, so if this ever
+/// escaped into a document it would fail visibly rather than reach a host.
+const INDEX_PROBE_PREFIX: &str = "https://readme-image.invalid/";
+
+/// The proxy prefix, or `None` if it is one the sanitiser would silently eat.
+///
+/// `url_relative(Deny)` applies to the attribute filter's output, so a relative
+/// prefix yields `<img>` with no `src`: every image invisible, no error, no
+/// warning — the trap RFC 0007 §4.1 refuses `remote_images = "allow"` over.
+/// Falling back to `None` charts the images instead, which is the same answer
+/// `strip` gives and is a great deal easier to notice.
+fn proxy_prefix(opts: &RenderOptions) -> Option<String> {
+    let prefix = opts.image_proxy_prefix.as_deref()?;
+    if prefix.starts_with("http://") || prefix.starts_with("https://") {
+        return Some(prefix.to_owned());
+    }
+    tracing::warn!(
+        prefix,
+        "readme: image proxy prefix is not absolute; charting images instead"
+    );
+    None
 }
 
 /// The escaped-source rendering, for the formats this deliberately does not
@@ -106,7 +176,7 @@ fn markdown_to_html(source: &str, opts: &RenderOptions) -> String {
 }
 
 fn strips_images(opts: &RenderOptions) -> bool {
-    opts.remote_images == RemoteImagePolicy::Strip || opts.image_proxy_prefix.is_none()
+    opts.remote_images == RemoteImagePolicy::Strip || proxy_prefix(opts).is_none()
 }
 
 /// Replace every image with a chip carrying its alt text and its host.
@@ -614,6 +684,98 @@ mod tests {
         );
         assert!(out.contains("<img"), "{out}");
         assert!(out.contains("hub.example.com"), "{out}");
+    }
+
+    // ── The index the image endpoint is addressed by ──────────────────────────
+
+    /// The contract the whole no-URL design rests on: the `n` in a `src` is the
+    /// `n` in `image_urls`. Asserted over a document mixing both dialects,
+    /// because the two used to be numbered by different code.
+    #[test]
+    fn image_urls_agree_with_the_indices_the_rendering_emitted() {
+        let source = r#"# T
+
+![one](https://a.example/1.png)
+
+<img src="https://b.example/2.png" alt="two">
+
+[![three](https://c.example/3.png)](https://ci.example/job)
+"#;
+        let (html, urls) = render_capturing_images(
+            source,
+            ReadmeFormat::Markdown,
+            &RenderOptions {
+                remote_images: RemoteImagePolicy::Proxy,
+                // `.invalid` rather than a host sharing a suffix with the image
+                // ones: `hub.example.com` *contains* `b.example`, which made the
+                // "no third-party host survives" assertion below fail on output
+                // that was perfectly correct.
+                image_proxy_prefix: Some("https://hub.invalid/i/".into()),
+            },
+        );
+        assert_eq!(
+            urls,
+            vec![
+                "https://a.example/1.png",
+                "https://b.example/2.png",
+                "https://c.example/3.png",
+            ]
+        );
+        assert_eq!(urls, image_urls(source, ReadmeFormat::Markdown));
+        for (n, _) in urls.iter().enumerate() {
+            assert!(
+                html.contains(&format!(r#"src="https://hub.invalid/i/{n}""#)),
+                "index {n}: {html}"
+            );
+        }
+        // No third-party host reaches the reader's browser.
+        for host in ["a.example", "b.example", "c.example"] {
+            assert!(!html.contains(host), "{host}: {html}");
+        }
+    }
+
+    /// `image_urls` answers the same list whatever the registry's own policy is,
+    /// because the endpoint has to resolve an index for a page that was rendered
+    /// under `proxy` regardless of what the config says now.
+    #[test]
+    fn image_urls_answers_for_a_stripped_document_too() {
+        let source = "![a](https://a.example/1.png) ![b](https://b.example/2.png)";
+        // Rendering under the default policy charts them…
+        let charted = md(source);
+        assert!(!charted.contains("<img"), "{charted}");
+        // …and the list is the same one the proxied rendering would number.
+        assert_eq!(
+            image_urls(source, ReadmeFormat::Markdown),
+            vec!["https://a.example/1.png", "https://b.example/2.png"]
+        );
+    }
+
+    #[test]
+    fn a_format_with_no_markup_has_no_images() {
+        for format in [ReadmeFormat::Rst, ReadmeFormat::Plain] {
+            assert!(image_urls("<img src=\"https://a.example/1.png\">", format).is_empty());
+        }
+    }
+
+    /// A relative prefix is refused rather than passed to the sanitiser, which
+    /// would apply `url_relative(Deny)` to it and leave every `<img>` with no
+    /// `src`: images invisible, nothing said, no error. Charting them instead is
+    /// the same answer `strip` gives and a great deal easier to notice.
+    #[test]
+    fn a_relative_proxy_prefix_charts_rather_than_producing_invisible_images() {
+        for prefix in ["/api/v1/i/", "i/", "./i/", ""] {
+            let out = render(
+                "![badge](https://img.shields.io/x.svg)",
+                ReadmeFormat::Markdown,
+                &RenderOptions {
+                    remote_images: RemoteImagePolicy::Proxy,
+                    image_proxy_prefix: Some(prefix.into()),
+                },
+            );
+            assert!(out.contains(STRIPPED_IMAGE_CLASS), "{prefix:?} → {out}");
+            assert!(out.contains("img.shields.io"), "{prefix:?} → {out}");
+            assert!(!out.contains("<img"), "{prefix:?} → {out}");
+        }
     }
 
     // ── The formats that are shown rather than parsed ─────────────────────────

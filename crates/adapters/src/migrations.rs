@@ -136,6 +136,11 @@ pub fn embedded_migrator() -> Migrator {
             "package readmes",
             "../migrations/034_package_readmes.sql"
         ),
+        mig!(
+            35,
+            "package readme full-text search",
+            "../migrations/035_package_readmes_fts.sql"
+        ),
     ])
 }
 

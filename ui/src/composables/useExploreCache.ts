@@ -35,8 +35,11 @@ const _store = new Map<string, CacheEntry<unknown>>();
  */
 const _upstream = new Map<string, CacheEntry<unknown>>();
 
-function key(registry: string, page: number, sort: string, query: string): string {
-  return `${registry}::${page}::${sort}::${query}`;
+// `scope` is part of the key, not an afterthought: the same term searched over
+// names and over READMEs are two different questions with two different answers,
+// and a key that ignored it would serve whichever ran first to the other.
+function key(registry: string, page: number, sort: string, query: string, scope: string): string {
+  return `${registry}::${page}::${sort}::${query}::${scope}`;
 }
 
 /**
@@ -102,12 +105,25 @@ function invalidate(registry?: string): void {
 }
 
 export function useExploreCache<T>() {
-  function get(registry: string, page: number, sort: string, query: string): T | undefined {
-    return read<T>(_store, key(registry, page, sort, query));
+  function get(
+    registry: string,
+    page: number,
+    sort: string,
+    query: string,
+    scope = "name",
+  ): T | undefined {
+    return read<T>(_store, key(registry, page, sort, query, scope));
   }
 
-  function set(registry: string, page: number, sort: string, query: string, data: T): void {
-    _store.set(key(registry, page, sort, query), {
+  function set(
+    registry: string,
+    page: number,
+    sort: string,
+    query: string,
+    data: T,
+    scope = "name",
+  ): void {
+    _store.set(key(registry, page, sort, query, scope), {
       data,
       expiresAt: Date.now() + TTL_MS,
     });

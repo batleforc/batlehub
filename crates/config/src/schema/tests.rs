@@ -1229,23 +1229,171 @@ fn a_correctly_configured_discovery_read_is_quiet() {
         .any(|c| c.starts_with("upstream-detail")));
 }
 
-/// `remote_images = "proxy"` is carried and validated, but this build has no
-/// image-proxy endpoint — so it is warned about rather than silently behaving
-/// as `"strip"`, which is the trap §4.1 refuses for the other image value.
+/// `remote_images = "proxy"` renders images now, so it is accepted in silence.
+///
+/// It used to raise `readme.image-proxy-unimplemented`, because the endpoint it
+/// rewrote to did not exist. The endpoint exists (RFC 0007-bis §4.2), and a
+/// warning that outlives its subject is worse than no warning — it teaches
+/// operators the channel is noise.
 #[test]
-fn remote_images_proxy_warns_that_the_endpoint_is_not_built() {
-    let cfg = config_with_readme("npm", "", r#"        remote_images = "proxy""#);
+fn remote_images_proxy_is_accepted_without_a_warning() {
+    for value in ["proxy", "strip"] {
+        let cfg = config_with_readme("npm", "", &format!("        remote_images = \"{value}\""));
+        cfg.validate().expect("accepted");
+        assert!(
+            !warning_codes(&cfg)
+                .iter()
+                .any(|c| c.contains("image-proxy")),
+            "{value} warned about an unimplemented endpoint"
+        );
+    }
+}
+
+/// The image cap gets the same two guards `max_bytes` has, for the same
+/// reasons: a zero serves nothing while claiming to render, and a ceiling makes
+/// "held in memory while its type is checked" a bound rather than a hope
+/// (RFC 0007-bis §4.5).
+#[test]
+fn the_image_cap_refuses_zero_under_proxy_and_refuses_an_unbounded_ceiling() {
+    let zero = config_with_readme(
+        "npm",
+        "",
+        "        remote_images = \"proxy\"\n        image_max_bytes = 0",
+    );
+    let err = zero.validate().expect_err("must be refused").to_string();
+    assert!(err.contains("image_max_bytes"), "{err}");
+    assert!(err.contains("serves no image"), "{err}");
+
+    // Zero is fine under `strip`, where nothing is ever fetched.
+    let stripped = config_with_readme(
+        "npm",
+        "",
+        "        remote_images = \"strip\"\n        image_max_bytes = 0",
+    );
+    stripped.validate().expect("inert under strip");
+
+    let huge = config_with_readme("npm", "", "        image_max_bytes = 33554432");
+    let err = huge.validate().expect_err("must be refused").to_string();
+    assert!(err.contains("ceiling"), "{err}");
+}
+
+// ── Prose search ──────────────────────────────────────────────────────────────
+
+/// Off by default, and it stays off unless an operator writes it down. Unlike
+/// README *capture*, which defaults on because it costs one already-parsed
+/// field, this builds an index over prose (RFC 0007-bis §4.1).
+#[test]
+fn prose_search_is_off_unless_asked_for() {
+    let cfg = parse_config("");
+    assert!(!cfg.search.readmes);
+    assert_eq!(cfg.search.text_config, "english");
+    cfg.validate().expect("the default config is valid");
+}
+
+/// `english`, against the recommendation this RFC was drafted with. The draft
+/// said stemming mangles identifiers; it does, symmetrically, and `simple` fails
+/// `retry` against a README that says `retrying` (RFC 0007-bis §13.3).
+#[test]
+fn the_text_configuration_defaults_to_english_and_is_settable() {
+    let cfg = parse_config(
+        r#"
+        [search]
+        readmes = true
+        text_config = "french""#,
+    );
+    cfg.validate().expect("accepted");
+    assert!(cfg.search.readmes);
+    assert_eq!(cfg.search.text_config, "french");
+}
+
+#[test]
+fn an_empty_text_configuration_is_refused() {
+    let cfg = parse_config(
+        r#"
+        [search]
+        text_config = """#,
+    );
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("text_config"), "{err}");
+}
+
+/// The index is a Postgres generated column with a GIN index. There is nowhere
+/// else to put it, and failing at startup beats a search that quietly matches
+/// nothing (RFC 0007-bis §4.5).
+#[test]
+fn prose_search_without_postgres_refuses_to_start() {
+    let raw = r#"
+        [database]
+        type = "sqlite"
+        url = "sqlite://test.db"
+
+        [storage]
+        type = "filesystem"
+        path = "/tmp/batlehub-test"
+
+        [server]
+        host = "127.0.0.1"
+        port = 8080
+
+        [search]
+        readmes = true
+        "#;
+    let cfg: AppConfig = toml::from_str(raw).expect("parses");
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("Postgres"), "{err}");
+
+    // Both spellings of the one backend that does work are accepted.
+    for spelling in ["postgres", "postgresql", "PostgreSQL"] {
+        let raw = raw.replace(r#"type = "sqlite""#, &format!(r#"type = "{spelling}""#));
+        let cfg: AppConfig = toml::from_str(&raw).expect("parses");
+        cfg.validate().unwrap_or_else(|e| panic!("{spelling}: {e}"));
+    }
+}
+
+/// Accepted, and said out loud: the index will exist and stay empty, because
+/// nothing is ever stored to put in it.
+#[test]
+fn prose_search_over_registries_that_store_nothing_is_warned_about() {
+    let cfg = parse_config(
+        r#"
+        [search]
+        readmes = true
+
+        [[registries]]
+        type = "npm"
+        name = "reg"
+        upstreams = ["https://example.invalid"]
+        [registries.readme]
+        enabled = false"#,
+    );
     cfg.validate().expect("accepted");
     let w = cfg
         .warnings()
         .into_iter()
-        .find(|w| w.code == warnings::README_IMAGE_PROXY_UNIMPLEMENTED)
+        .find(|w| w.code == warnings::SEARCH_READMES_NOTHING_STORED)
         .expect("warning emitted");
-    assert!(w.message.contains("charted"), "{}", w.message);
+    assert!(w.message.contains("stay empty"), "{}", w.message);
 
-    // `"strip"` is the default and says nothing.
-    let quiet = config_with_readme("npm", "", r#"        remote_images = "strip""#);
+    // One registry that does capture is enough to make the setting useful, so
+    // nothing is said.
+    let quiet = parse_config(
+        r#"
+        [search]
+        readmes = true
+
+        [[registries]]
+        type = "npm"
+        name = "reg"
+        upstreams = ["https://example.invalid"]
+        [registries.readme]
+        enabled = false
+
+        [[registries]]
+        type = "cargo"
+        name = "reg2"
+        upstreams = ["https://example.invalid"]"#,
+    );
     assert!(!warning_codes(&quiet)
         .iter()
-        .any(|c| c == warnings::README_IMAGE_PROXY_UNIMPLEMENTED));
+        .any(|c| c == warnings::SEARCH_READMES_NOTHING_STORED));
 }

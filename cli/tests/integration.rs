@@ -219,6 +219,7 @@ impl TestServer {
         let reload_svc = Arc::new(ConfigReloadService::new(ConfigReloadParams {
             hot: proxy_svc.hot.clone(),
             access: access_config.clone(),
+            search: batlehub_web::new_search_lock(false),
             registry_map: registry_map.clone(),
             registry_mode_map: mode_map.clone(),
             upstream_map: UpstreamMap::default(),
@@ -252,7 +253,9 @@ impl TestServer {
             None,
             Arc::new(InMemoryNotificationStore::new()),
             None,
-            None, // storage_admin_repo
+            None, // storage_admin_repo,
+            // Prose search off, matching the shipped default.
+            batlehub_web::new_search_lock(false),
         );
 
         let rt = tokio::runtime::Runtime::new().unwrap();

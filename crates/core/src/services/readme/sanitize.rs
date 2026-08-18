@@ -15,6 +15,7 @@
 //! *markup in an operator's authenticated session* (RFC 0007 §7.2).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 use crate::services::hot_config::RemoteImagePolicy;
 
@@ -28,9 +29,12 @@ use crate::services::hot_config::RemoteImagePolicy;
 /// the markdown extension set changes.** A sanitiser fix that did not bump it
 /// would leave every already-rendered README serving the vulnerable output until
 /// its cache entry expired on its own.
+///
 /// History: `2` chips raw-HTML `<img>` — and therefore `<picture>` — instead of
-/// letting it render to nothing (RFC 0007-bis §13.1).
-pub const RENDERER_VERSION: u32 = 2;
+/// letting it render to nothing (RFC 0007-bis §13.1). `3` rewrites a proxied
+/// image's `src` to `{prefix}{index}` rather than to a query-encoded URL, which
+/// is what lets the image endpoint take no URL at all (RFC 0007-bis §5.1).
+pub const RENDERER_VERSION: u32 = 3;
 
 /// The class the renderer puts on the chip that replaces a stripped image.
 ///
@@ -91,9 +95,15 @@ const ALLOWED_TAGS: &[&str] = &[
 /// configuration differs per registry (`remote_images`), the render cache means
 /// this runs once per distinct document rather than once per page view, and a
 /// shared mutable builder is a footgun in a hot-reloadable server.
+///
+/// `captured` receives the original URL of every image whose `src` this rewrote,
+/// in the order it rewrote them. That order **is** the numbering the browser asks
+/// back with, which is why the recording lives inside the filter rather than in a
+/// second walk that could drift from it (RFC 0007-bis §5.1).
 fn builder(
     policy: RemoteImagePolicy,
     image_proxy_prefix: Option<&str>,
+    captured: &ImageSink,
 ) -> ammonia::Builder<'static> {
     let mut b = ammonia::Builder::default();
 
@@ -167,18 +177,24 @@ fn builder(
         // pointing straight at the third-party host — the beacon this exists to
         // remove.
         let prefix = prefix.to_owned();
+        let sink = Arc::clone(captured);
         b.attribute_filter(move |element, attribute, value| {
             if element != "img" || attribute != "src" {
                 return Some(std::borrow::Cow::Borrowed(value));
             }
             if value.starts_with("http://") || value.starts_with("https://") {
-                return Some(std::borrow::Cow::Owned(format!(
-                    "{prefix}{}",
-                    encode_query_value(value)
-                )));
+                let index = {
+                    let mut urls = sink.lock().unwrap_or_else(|e| e.into_inner());
+                    urls.push(value.to_owned());
+                    urls.len() - 1
+                };
+                return Some(std::borrow::Cow::Owned(format!("{prefix}{index}")));
             }
             // A relative or `data:` src has nothing to proxy: dropped, which
-            // leaves an `img` with no `src` for the panel to hide.
+            // leaves an `img` with no `src` for the panel to hide. Deliberately
+            // *not* counted — the rendering emitted no index for it, so the
+            // endpoint will never be asked for one, and reserving a number here
+            // would shift every later image by one.
             None
         });
     }
@@ -186,24 +202,12 @@ fn builder(
     b
 }
 
-/// Percent-encode a URL so it can travel as a query-string value.
+/// Where [`builder`] records the URLs it rewrote.
 ///
-/// Written out rather than pulled in: `core` has no URL crate, this is the one
-/// place that needs it, and the rule is short enough to read — everything
-/// outside the RFC 3986 unreserved set is escaped, which is strictly more than
-/// a query value needs and therefore always correct.
-fn encode_query_value(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len() * 3 / 2);
-    for byte in raw.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(byte as char)
-            }
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
-}
+/// A mutex because `ammonia`'s attribute filter is `Fn + Send + Sync`, not
+/// `FnMut`. There is no contention to speak of: one sanitise pass owns the sink
+/// and the lock is held for a push.
+type ImageSink = Arc<Mutex<Vec<String>>>;
 
 /// Sanitise `html` for display on the console origin.
 ///
@@ -211,7 +215,29 @@ fn encode_query_value(raw: &str) -> String {
 /// `pulldown-cmark` passes it through, and it goes to the same allow-list as an
 /// `Html`-format document.
 pub fn sanitize(html: &str, policy: RemoteImagePolicy, image_proxy_prefix: Option<&str>) -> String {
-    builder(policy, image_proxy_prefix).clean(html).to_string()
+    sanitize_capturing_images(html, policy, image_proxy_prefix).0
+}
+
+/// [`sanitize`], plus the original URLs of the images it rewrote, in order.
+///
+/// The vector's indices are exactly the ones that appear in the output's `src`
+/// attributes, because both come out of the same pass over the same document.
+/// That is the entire safety argument for an image endpoint addressed by index
+/// rather than by URL: there is no second walk to disagree with the first
+/// (RFC 0007-bis §5.1).
+///
+/// Empty under `strip`, where nothing is rewritten because no `img` survives.
+pub fn sanitize_capturing_images(
+    html: &str,
+    policy: RemoteImagePolicy,
+    image_proxy_prefix: Option<&str>,
+) -> (String, Vec<String>) {
+    let captured: ImageSink = Arc::new(Mutex::new(Vec::new()));
+    let cleaned = builder(policy, image_proxy_prefix, &captured)
+        .clean(html)
+        .to_string();
+    let urls = std::mem::take(&mut *captured.lock().unwrap_or_else(|e| e.into_inner()));
+    (cleaned, urls)
 }
 
 #[cfg(test)]
@@ -384,19 +410,92 @@ mod tests {
     /// author chose.
     #[test]
     fn proxied_images_are_rewritten_through_this_server() {
-        let out = sanitize(
+        let (out, urls) = sanitize_capturing_images(
             r#"<img src="https://img.shields.io/badge/x.svg" alt="badge">"#,
             RemoteImagePolicy::Proxy,
             Some("https://hub.example.com/api/v1/readme-image/"),
         );
         assert!(out.contains("<img"), "{out}");
-        assert!(out.contains("hub.example.com"), "{out}");
         assert!(out.contains(r#"alt="badge""#), "{out}");
-        // The original URL travels percent-encoded as a query value, so the
-        // third-party host appears only inside the parameter — never as a host
-        // the browser resolves.
-        assert!(out.contains("img.shields.io"), "{out}");
-        assert!(!out.contains("https://img.shields.io"), "{out}");
+        // The rewritten `src` is the prefix and an *index*. The third-party host
+        // does not appear in the document at all — not as a host the browser
+        // resolves, and not as a parameter a caller could edit into another one.
+        assert!(
+            out.contains(r#"src="https://hub.example.com/api/v1/readme-image/0""#),
+            "{out}"
+        );
+        assert!(!out.contains("shields.io"), "{out}");
+        // It comes back to the caller instead, which is what the endpoint
+        // resolves index `0` against.
+        assert_eq!(urls, vec!["https://img.shields.io/badge/x.svg"]);
+    }
+
+    /// Indices are document order, and they count only the images that were
+    /// actually rewritten. A `src` the filter dropped must not consume a number,
+    /// or every image after it would resolve to the wrong URL.
+    #[test]
+    fn image_indices_are_document_order_and_skip_what_was_not_rewritten() {
+        let (out, urls) = sanitize_capturing_images(
+            r#"<img src="https://a.example/1.png">
+               <p><img src="./relative.png"><img src="https://b.example/2.png"></p>
+               <img src="data:image/png;base64,AAAA">
+               <img src="https://c.example/3.png">"#,
+            RemoteImagePolicy::Proxy,
+            Some("https://hub.invalid/i/"),
+        );
+        assert_eq!(
+            urls,
+            vec![
+                "https://a.example/1.png",
+                "https://b.example/2.png",
+                "https://c.example/3.png",
+            ]
+        );
+        for n in 0..3 {
+            assert!(
+                out.contains(&format!(r#"src="https://hub.invalid/i/{n}""#)),
+                "index {n}: {out}"
+            );
+        }
+        // The two that were not rewritten kept no `src` at all.
+        assert_eq!(out.matches("src=").count(), 3, "{out}");
+    }
+
+    /// The prefix has to be **absolute**, and this is why the caller builds it
+    /// from the request's own origin rather than writing a path.
+    ///
+    /// `url_relative(Deny)` is applied to the attribute filter's *output*, not
+    /// only to what the author wrote — so a relative prefix produces an `<img>`
+    /// with no `src` at all: every image silently invisible, no error anywhere.
+    /// `render.rs` refuses a relative prefix before it can happen; this pins the
+    /// ammonia behaviour that makes the refusal necessary, so a version bump
+    /// that changed it would not go unnoticed.
+    #[test]
+    fn a_relative_proxy_prefix_would_lose_the_src_entirely() {
+        for prefix in ["/api/v1/i/", "i/", "./i/"] {
+            let (out, urls) = sanitize_capturing_images(
+                r#"<img src="https://a.example/1.png">"#,
+                RemoteImagePolicy::Proxy,
+                Some(prefix),
+            );
+            assert!(!out.contains("src="), "{prefix} → {out}");
+            // And the URL was still captured, which is the trap: the caller
+            // would see one image and the reader would see none.
+            assert_eq!(urls.len(), 1, "{prefix} → {urls:?}");
+        }
+    }
+
+    /// Under `strip` there is nothing to capture, because no `img` survives for
+    /// the filter to visit.
+    #[test]
+    fn stripping_captures_no_images() {
+        let (out, urls) = sanitize_capturing_images(
+            r#"<img src="https://a.example/1.png">"#,
+            RemoteImagePolicy::Strip,
+            None,
+        );
+        assert!(urls.is_empty(), "{urls:?}");
+        assert!(!out.contains("<img"), "{out}");
     }
 
     /// A relative or `data:` src has nothing to proxy, so it is dropped —
@@ -404,25 +503,14 @@ mod tests {
     #[test]
     fn a_non_http_src_is_dropped_even_under_proxy() {
         for src in ["./local.png", "data:image/png;base64,AAAA", "/x.png"] {
-            let out = sanitize(
+            let (out, urls) = sanitize_capturing_images(
                 &format!(r#"<img src="{src}" alt="x">"#),
                 RemoteImagePolicy::Proxy,
-                Some("https://hub.example.com/api/v1/readme-image?url="),
+                Some("https://hub.example.com/api/v1/readme-image/"),
             );
             assert!(!out.contains("src="), "{src} → {out}");
+            assert!(urls.is_empty(), "{src} → {urls:?}");
         }
-    }
-
-    #[test]
-    fn query_encoding_escapes_everything_outside_the_unreserved_set() {
-        assert_eq!(
-            encode_query_value("https://a.example/x?y=1&z=2"),
-            "https%3A%2F%2Fa.example%2Fx%3Fy%3D1%26z%3D2"
-        );
-        assert_eq!(encode_query_value("aZ0-_.~"), "aZ0-_.~");
-        // Multi-byte characters are escaped byte by byte, which is what a query
-        // value has to be.
-        assert_eq!(encode_query_value("é"), "%C3%A9");
     }
 
     /// `proxy` with no prefix to rewrite to is not "load it directly": there is
@@ -496,7 +584,7 @@ mod tests {
 
         for input in CORPUS.iter().copied().chain(std::iter::once(deep.as_str())) {
             for policy in [RemoteImagePolicy::Strip, RemoteImagePolicy::Proxy] {
-                let out = sanitize(input, policy, Some("https://hub.invalid/i?url="));
+                let out = sanitize(input, policy, Some("https://hub.invalid/i/"));
                 let lower = out.to_ascii_lowercase();
                 assert!(!lower.contains("<script"), "{input:?} → {out:?}");
                 assert!(!lower.contains("onerror"), "{input:?} → {out:?}");

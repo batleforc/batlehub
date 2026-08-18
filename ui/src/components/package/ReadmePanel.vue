@@ -78,8 +78,7 @@ watch(() => [props.registry, props.name, props.version], load, {
  * one thing a README panel must never present silently (§4.4).
  */
 const fallbackNotice = computed(() => {
-  if (!readme.value?.is_fallback || !readme.value.requested_version)
-    return null;
+  if (!readme.value?.is_fallback || !readme.value.requested_version) return null;
   return t("readmePanel.fallbackFrom", {
     shown: readme.value.version,
     requested: readme.value.requested_version,
@@ -258,5 +257,25 @@ const absenceMessage = computed(() => {
   padding: 0 var(--s1);
   font-size: var(--t-meta);
   color: var(--ink-dim);
+}
+
+/* Under `remote_images = "proxy"` the panel receives real `<img>` tags, pointing
+   at this server. It does not know or care which policy produced them — that is
+   the point of doing the rewriting server-side (RFC 0007-bis §6.4).
+
+   The styling is written for the failure case, because the endpoint answers 404
+   for every image it could not get: a dead URL, a type that is not an image, one
+   over the cap, an SVG the sanitiser refused. A broken-image icon would be a
+   worse answer than the one `strip` gives, so a broken image is styled to read
+   like the chip — dashed, dim, and showing its alt text. */
+.readme-body :deep(img) {
+  max-width: 100%;
+  height: auto;
+  vertical-align: middle;
+  font-size: var(--t-meta);
+  color: var(--ink-dim);
+}
+.readme-body :deep(img:not([src])) {
+  display: none;
 }
 </style>

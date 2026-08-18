@@ -106,7 +106,7 @@ pub use packages::PgPackageRepository;
 pub use stats_history::PgStatsHistoryRepository;
 
 #[cfg(feature = "db-postgres")]
-pub use readme::PgReadmeRepository;
+pub use readme::{ensure_readme_text_config, PgReadmeRepository, DEFAULT_TEXT_CONFIG};
 
 #[cfg(feature = "db-postgres")]
 pub use sbom::PgSbomRepository;
