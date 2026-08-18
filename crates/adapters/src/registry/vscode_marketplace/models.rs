@@ -64,6 +64,12 @@ pub(super) struct ResolvedExtension {
 // ── API constants ─────────────────────────────────────────────────────────────
 
 pub(super) const VSIX_ASSET_TYPE: &str = "Microsoft.VisualStudio.Services.VSIXPackage";
+/// The extension's README, served as a separate asset URL rather than inline.
+///
+/// Following it is an outbound request in its own right, so it travels as a
+/// link and is read in the detached introspection task, same-origin checked
+/// against this registry's own base URL (RFC 0007 §7.4).
+pub(super) const README_ASSET_TYPE: &str = "Microsoft.VisualStudio.Services.Content.Details";
 pub(super) const GALLERY_API_ACCEPT: &str = "application/json;api-version=3.0-preview.1";
 
 // filterType values for extensionquery criteria

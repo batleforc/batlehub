@@ -108,6 +108,16 @@ form_urlencoded = "1"
 ipnet = "2"
 zip = "8"
 quick-xml = "0.41"
+# README rendering and sanitisation (RFC 0007 §7.1). `pulldown-cmark` is a
+# CommonMark pull parser with no HTML sanitisation of its own — it passes raw
+# HTML straight through, which is why nothing reaches a reader without going
+# through `ammonia` first. `ammonia` is an allow-list sanitiser over an
+# `html5ever` parse: deny by default, not a regex and not an escape pass.
+# `default-features = false` on pulldown-cmark drops its CLI/`getopts` path.
+# `html` is the renderer; `default-features = false` drops the crate's own
+# CLI/`getopts` path, which is not something a server needs in its tree.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+ammonia = "4"
 argon2 = { version = "0.5", features = ["std"] }
 
 # CLI

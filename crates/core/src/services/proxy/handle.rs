@@ -659,7 +659,11 @@ impl ProxyService {
     /// On an upstream failure a stale entry is served when the registry's policy
     /// allows it, matching `resolve_metadata_cached`: an upstream outage should
     /// degrade to slightly old version lists, not to a broken registry.
-    async fn cached_version_document(
+    /// `pub(super)` so the console's discovery read can reuse the three rungs
+    /// rather than inventing a second cache policy for the same document
+    /// (RFC 0007 §5.5). Still not public: nothing outside `ProxyService` gets
+    /// to fetch a listing document without going through a path that gates it.
+    pub(super) async fn cached_version_document(
         &self,
         prelude: &RequestPrelude,
         req: &ProxyRequest,

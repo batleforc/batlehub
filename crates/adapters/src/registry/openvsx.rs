@@ -5,14 +5,14 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 use batlehub_core::{
-    entities::{PackageId, PackageMetadata},
+    entities::{MetadataReadme, PackageId, PackageMetadata, ReadmeFormat},
     error::CoreError,
     ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
 };
 
 use super::http_client::{
-    basic_auth_get, cache_control, ensure_same_origin, new_http_client, percent_encode,
-    to_registry_error, UpstreamHttpOptions,
+    basic_auth_get, cache_control, ensure_same_origin, fetch_linked_text, new_http_client,
+    percent_encode, to_registry_error, UpstreamHttpOptions,
 };
 
 /// OpenVSX registry client (open-vsx.org or compatible).
@@ -78,6 +78,14 @@ struct OpenVsxFiles {
     signature: Option<String>,
     manifest: Option<String>,
     icon: Option<String>,
+    /// A URL to the extension's README, not the text.
+    ///
+    /// Following it is an outbound request in its own right, so it is carried
+    /// as a link and read in the detached introspection task rather than on the
+    /// resolve path — same-origin checked against this registry's own base URL,
+    /// so a compromised or misconfigured upstream cannot use it to point
+    /// BatleHub at an internal host (RFC 0007 §7.4).
+    readme: Option<String>,
 }
 
 // ── RegistryClient impl ───────────────────────────────────────────────────────
@@ -117,6 +125,12 @@ impl RegistryClient for OpenVsxRegistryClient {
             "verified": ext.verified,
             "manifest_url": ext.files.manifest,
             "icon_url": ext.files.icon,
+            "readme": ext.files.readme.as_deref().map(|url| {
+                // Markdown by protocol, whatever the upstream's `Content-Type`
+                // says when the link is followed: an upstream must not be able
+                // to choose which renderer path runs.
+                MetadataReadme::linked(url, ReadmeFormat::Markdown)
+            }),
             "all_versions_count": ext.all_versions.len(),
         });
 
@@ -132,6 +146,18 @@ impl RegistryClient for OpenVsxRegistryClient {
             extra,
             cache_control: None,
         })
+    }
+
+    /// Read the `files.readme` URL the packument linked to.
+    ///
+    /// Never called on the resolve path — the link travels on `extra` and this
+    /// runs in the detached introspection task (RFC 0007 §5.1).
+    async fn fetch_linked_readme(
+        &self,
+        url: &str,
+        max_bytes: usize,
+    ) -> Result<Option<String>, CoreError> {
+        fetch_linked_text(self.get(url), url, &self.base_url, max_bytes).await
     }
 
     async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
@@ -646,5 +672,98 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(CoreError::Registry(_))));
+    }
+    // ── README capture (RFC 0007 §2.1, §7.4) ─────────────────────────────────
+
+    /// `files.readme` is a URL, so it travels as a link: following it is an
+    /// outbound request in its own right and must not happen on the resolve
+    /// path a package manager is waiting on.
+    #[tokio::test]
+    async fn the_readme_url_travels_as_a_link_not_as_text() {
+        let mut server = Server::new_async().await;
+        let body = format!(
+            r#"{{"namespace":"ms-python","name":"python","version":"2023.20.0",
+                 "files":{{"download":"{url}/ext.vsix","readme":"{url}/README.md"}}}}"#,
+            url = server.url()
+        );
+        let _mock = server
+            .mock("GET", "/api/ms-python/python/2023.20.0")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let meta = client
+            .resolve_metadata(&pkg("ms-python.python", "2023.20.0"))
+            .await
+            .unwrap();
+
+        let found = MetadataReadme::from_extra(&meta.extra).expect("readme link captured");
+        assert_eq!(
+            found.url.as_deref(),
+            Some(format!("{}/README.md", server.url()).as_str())
+        );
+        assert_eq!(found.content, None);
+        // Markdown by protocol, decided before anything is fetched.
+        assert_eq!(found.format, ReadmeFormat::Markdown);
+    }
+
+    /// The read is bounded: an upstream must not be able to make this buffer a
+    /// gigabyte to keep 256 KiB of it, so the body is truncated as it streams
+    /// rather than after.
+    #[tokio::test]
+    async fn a_linked_readme_is_read_and_capped() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/README.md")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body("0123456789abcdef")
+            .expect(2)
+            .create_async()
+            .await;
+
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let url = format!("{}/README.md", server.url());
+
+        assert_eq!(
+            client.fetch_linked_readme(&url, 4096).await.unwrap(),
+            Some("0123456789abcdef".to_owned())
+        );
+        assert_eq!(
+            client.fetch_linked_readme(&url, 8).await.unwrap(),
+            Some("01234567".to_owned())
+        );
+    }
+
+    /// An upstream that has been compromised or misconfigured must not be able
+    /// to use the README link to point BatleHub at an internal host — the same
+    /// guard tarball URLs already get.
+    #[tokio::test]
+    async fn a_cross_origin_readme_url_is_refused() {
+        let server = Server::new_async().await;
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let result = client
+            .fetch_linked_readme("http://169.254.169.254/latest/meta-data/", 4096)
+            .await;
+        assert!(matches!(result, Err(CoreError::Registry(_))));
+    }
+
+    /// A README asset that has gone is a fact about that extension, not a
+    /// failure worth logging as one.
+    #[tokio::test]
+    async fn a_missing_readme_asset_is_none_not_an_error() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/README.md")
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let url = format!("{}/README.md", server.url());
+        assert_eq!(client.fetch_linked_readme(&url, 4096).await.unwrap(), None);
     }
 }

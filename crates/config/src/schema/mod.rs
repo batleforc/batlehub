@@ -23,8 +23,8 @@ pub use notifications::{
 };
 pub use registry::{
     default_true, BetaChannelConfig, CachePolicy, FeatureFlagsConfig, IntegrityConfig, QuotaConfig,
-    QuotaEnforcement, RegistryConfig, RegistryMode, RepoSigningConfig, SbomConfig, SigningConfig,
-    VersioningPolicy,
+    QuotaEnforcement, ReadmeConfig, RegistryConfig, RegistryMode, RepoSigningConfig, SbomConfig,
+    SigningConfig, UpstreamDetailConfig, VersioningPolicy,
 };
 pub use routing::{
     is_dns_label, normalise_host, validate_host_entry, wildcard_host, HostSyntaxError,
@@ -366,7 +366,173 @@ impl AppConfig {
         self.subdomain_warnings(&mut out);
         self.cors_warnings(&mut out);
         self.license_gate_warnings(&mut out);
+        self.readme_warnings(&mut out);
+        self.upstream_detail_warnings(&mut out);
         out
+    }
+
+    /// A `[registries.upstream_detail]` block that cannot do what it says.
+    ///
+    /// Only raised for blocks the operator **wrote down**, for the same reason
+    /// [`Self::readme_warnings`] is: the discovery read is on by default, so
+    /// warning about the implicit default would put a notice on the admin panel
+    /// for every `local`-mode registry in every deployment.
+    fn upstream_detail_warnings(&self, out: &mut Vec<ConfigWarning>) {
+        use batlehub_core::entities::{RegistryKind, UpstreamDetailSupport};
+
+        for (index, registry) in self.registries.iter().enumerate() {
+            let Some(detail) = &registry.upstream_detail else {
+                continue;
+            };
+            if !detail.enabled {
+                continue;
+            }
+            let path = format!("registries[{index}].upstream_detail");
+
+            if registry.mode == RegistryMode::Local {
+                out.push(ConfigWarning::new(
+                    warnings::UPSTREAM_DETAIL_LOCAL_MODE,
+                    path,
+                    format!(
+                        "registry '{}' is in local mode, so there is no upstream to ask. The \
+                         block is accepted and inert: the package page is already complete from \
+                         the versions published here.",
+                        registry.name,
+                    ),
+                ));
+                continue;
+            }
+
+            if let Ok(kind) = registry.registry_type.parse::<RegistryKind>() {
+                if let UpstreamDetailSupport::None(reason) = kind.upstream_detail() {
+                    out.push(ConfigWarning::new(
+                        warnings::UPSTREAM_DETAIL_UNSUPPORTED_KIND,
+                        path,
+                        format!(
+                            "registry '{}' has type '{kind}', which cannot be asked about a \
+                             package — {reason}. The block is accepted and inert: the detail page \
+                             answers from local rows only.",
+                            registry.name,
+                        ),
+                    ));
+                    continue;
+                }
+            }
+
+            // An estate with no route off site is a supported deployment, so
+            // this is a warning about what the operator will observe — one
+            // failed attempt per TTL — rather than a refusal to start.
+            if registry.upstreams.iter().all(|u| u.trim().is_empty())
+                && registry
+                    .registry_type
+                    .parse::<RegistryKind>()
+                    .is_ok_and(|k| k.requires_explicit_upstream_in_proxy_mode())
+            {
+                out.push(ConfigWarning::new(
+                    warnings::UPSTREAM_DETAIL_NO_UPSTREAM,
+                    path,
+                    format!(
+                        "registry '{}' has no upstream configured, so every discovery read will \
+                         fail. The page falls back to local rows and says the upstream could not \
+                         be reached; set enabled = false to stop it trying.",
+                        registry.name,
+                    ),
+                ));
+            }
+        }
+    }
+
+    /// A `[registries.readme]` block that cannot do what it says.
+    ///
+    /// Only raised for blocks the operator **wrote down**. README capture is on
+    /// by default (RFC 0007 §4.1), so warning about the implicit default would
+    /// put a notice on the admin panel for every `maven` and every `github`
+    /// registry in every deployment — noise, and the operator expressed no
+    /// belief to correct. A block written by hand is a belief.
+    fn readme_warnings(&self, out: &mut Vec<ConfigWarning>) {
+        for (index, registry) in self.registries.iter().enumerate() {
+            let Some(readme) = &registry.readme else {
+                continue;
+            };
+            if !readme.enabled {
+                continue;
+            }
+            let Ok(kind) = registry
+                .registry_type
+                .parse::<batlehub_core::entities::RegistryKind>()
+            else {
+                // An unknown type is a hard error from `validate()`; nothing
+                // useful to say about its README support here.
+                continue;
+            };
+            let path = format!("registries[{index}].readme");
+            let support = kind.readme_support();
+
+            if let batlehub_core::entities::ReadmeSupport::None(reason) = support {
+                out.push(ConfigWarning::new(
+                    warnings::README_UNSUPPORTED_TYPE,
+                    path,
+                    format!(
+                        "registry '{}' has type '{kind}', which carries no README — {reason}. The \
+                         block is accepted and inert: nothing will ever be stored for this \
+                         registry, and the package page will say so rather than showing an empty \
+                         panel.",
+                        registry.name,
+                    ),
+                ));
+                continue;
+            }
+
+            if readme.remote_images == "proxy" {
+                out.push(ConfigWarning::new(
+                    warnings::README_IMAGE_PROXY_UNIMPLEMENTED,
+                    path.clone(),
+                    format!(
+                        "registry '{}' sets readme.remote_images = \"proxy\", but this build has \
+                         no image-proxy endpoint to rewrite an image's src to, so images are \
+                         charted exactly as \"strip\" charts them — an inline chip carrying the \
+                         alt text and the host. The setting is accepted and carried; nothing \
+                         about the configuration changes when the endpoint lands.",
+                        registry.name,
+                    ),
+                ));
+            }
+
+            if !readme.from_archive {
+                continue;
+            }
+
+            if !support.reads_the_archive() {
+                out.push(ConfigWarning::new(
+                    warnings::README_FROM_ARCHIVE_INERT,
+                    path,
+                    format!(
+                        "registry '{}' has type '{kind}', whose README arrives in a metadata \
+                         document the proxy already fetches. 'from_archive' is accepted and \
+                         inert here — the artifact is never opened for it, and READMEs are \
+                         stored either way.",
+                        registry.name,
+                    ),
+                ));
+            } else if registry.firewall_only {
+                out.push(ConfigWarning::new(
+                    warnings::README_FROM_ARCHIVE_FIREWALL_ONLY,
+                    path,
+                    format!(
+                        "registry '{}' is firewall_only, so artifacts are streamed without ever \
+                         being cached and there is nothing for 'from_archive' to read. {}",
+                        registry.name,
+                        if support.answers_for_unheld_versions() {
+                            "Its metadata-borne READMEs still work; the archive-borne fallback \
+                             never will."
+                        } else {
+                            "This registry type has no other source, so no README will ever be \
+                             stored for it."
+                        },
+                    ),
+                ));
+            }
+        }
     }
 
     /// A `license_gate` on a registry type with no manifest parser.
@@ -807,6 +973,63 @@ impl AppConfig {
                         registry.name
                     )
                 })?;
+            }
+            if let Some(readme) = &registry.readme {
+                // An unrecognised `remote_images` must not silently become the
+                // default: the two behaviours differ in what leaves the network,
+                // and an operator who typed `"allow"` expecting images believes
+                // the opposite of what they would get.
+                if batlehub_core::services::RemoteImagePolicy::parse(&readme.remote_images)
+                    .is_none()
+                {
+                    bail!(
+                        "registry '{}': invalid readme.remote_images '{}' (expected \"strip\" or \
+                         \"proxy\"; there is no \"allow\" — the console's CSP is baked in at build \
+                         time, so it could only ever show broken images)",
+                        registry.name,
+                        readme.remote_images
+                    );
+                }
+                if readme.enabled && readme.max_bytes == 0 {
+                    bail!(
+                        "registry '{}': readme.max_bytes = 0 with enabled = true stores nothing \
+                         while claiming to be on; set enabled = false to turn the feature off",
+                        registry.name
+                    );
+                }
+                // The value is a row in a transactional store, read on a page
+                // load and held in memory while it renders.
+                const README_MAX_BYTES_CEILING: usize = 4 * 1024 * 1024;
+                if readme.max_bytes > README_MAX_BYTES_CEILING {
+                    bail!(
+                        "registry '{}': readme.max_bytes = {} exceeds the {README_MAX_BYTES_CEILING} \
+                         byte ceiling; a README is a database row read on every page load",
+                        registry.name,
+                        readme.max_bytes
+                    );
+                }
+            }
+            if let Some(detail) = &registry.upstream_detail {
+                if detail.enabled && detail.max_versions == 0 {
+                    bail!(
+                        "registry '{}': upstream_detail.max_versions = 0 with enabled = true \
+                         attempts the fetch and discards every result — the egress happens and \
+                         nothing is shown; set enabled = false instead",
+                        registry.name
+                    );
+                }
+                // One page's version table, held in memory and serialised to
+                // JSON per request.
+                const UPSTREAM_MAX_VERSIONS_CEILING: usize = 5_000;
+                if detail.max_versions > UPSTREAM_MAX_VERSIONS_CEILING {
+                    bail!(
+                        "registry '{}': upstream_detail.max_versions = {} exceeds the \
+                         {UPSTREAM_MAX_VERSIONS_CEILING} ceiling; one page's version table is \
+                         held in memory and serialised to JSON on every request",
+                        registry.name,
+                        detail.max_versions
+                    );
+                }
             }
             // `version_pattern` is a publish-time restriction (a security
             // control), so an uncompilable regex must fail the config load

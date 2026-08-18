@@ -40,3 +40,9 @@ name = "fuzz_release_age"
 path = "fuzz_targets/fuzz_release_age.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "fuzz_readme_render"
+path = "fuzz_targets/fuzz_readme_render.rs"
+test = false
+doc = false

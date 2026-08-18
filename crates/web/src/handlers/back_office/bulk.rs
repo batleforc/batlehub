@@ -232,6 +232,22 @@ pub async fn bulk_delete(
         .bulk_remove_versions(&registry, &items)
         .await
         .map_err(AppError::from)?;
+    // A README is deleted with its version. `package_readmes` has no foreign
+    // key — a cascade from anything evictable would take the README with the
+    // bytes, which RFC 0007 §5.4 rules out — so the delete is explicit, and
+    // only for the items that actually went.
+    let failed: std::collections::HashSet<(&str, &str)> = result
+        .failed
+        .iter()
+        .map(|(name, version, _)| (name.as_str(), version.as_str()))
+        .collect();
+    for (name, version) in &items {
+        if !failed.contains(&(name.as_str(), version.as_str())) {
+            local_svc
+                .delete_readme_for_version(&registry, name, version)
+                .await;
+        }
+    }
     record_bulk_lifecycle_audit(
         &local_svc,
         &registry,

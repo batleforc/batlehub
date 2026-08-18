@@ -950,3 +950,302 @@ fn sbom_disabled_on_an_unsupported_type_reports_only_the_sbom_problem() {
     assert!(codes.contains(&warnings::LICENSE_GATE_SBOM_DISABLED.to_owned()));
     assert!(!codes.contains(&warnings::LICENSE_GATE_NO_EXTRACTOR.to_owned()));
 }
+
+// ── README capture (RFC 0007 §4.5) ────────────────────────────────────────────
+
+fn config_with_readme(registry_type: &str, extra: &str, block: &str) -> AppConfig {
+    parse_config(&format!(
+        r#"
+        [[registries]]
+        type = "{registry_type}"
+        name = "reg"
+        upstreams = ["https://example.invalid"]
+{extra}
+        [registries.readme]
+{block}"#
+    ))
+}
+
+/// An unrecognised `remote_images` must not silently become the default: the
+/// two behaviours differ in what leaves the network, so an operator who wrote
+/// `"allow"` expecting images believes the opposite of what they would get.
+#[test]
+fn an_unknown_remote_images_value_refuses_to_start() {
+    let cfg = config_with_readme("npm", "", r#"        remote_images = "allow""#);
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("remote_images"), "{err}");
+    assert!(err.contains("there is no \"allow\""), "{err}");
+}
+
+#[test]
+fn the_two_documented_remote_images_values_are_accepted() {
+    for value in ["strip", "proxy"] {
+        let cfg = config_with_readme("npm", "", &format!("        remote_images = \"{value}\""));
+        cfg.validate().expect("documented value accepted");
+    }
+}
+
+/// Stores nothing while claiming to be on. A configuration that cannot do its
+/// job should not start.
+#[test]
+fn max_bytes_zero_while_enabled_refuses_to_start() {
+    let cfg = config_with_readme("npm", "", "        max_bytes = 0");
+    assert!(cfg
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("max_bytes"));
+}
+
+/// With the feature off, a zero cap says nothing and is not worth refusing over.
+#[test]
+fn max_bytes_zero_with_the_feature_off_is_not_an_error() {
+    let cfg = config_with_readme("npm", "", "        enabled = false\n        max_bytes = 0");
+    cfg.validate()
+        .expect("disabled registry stores nothing anyway");
+}
+
+#[test]
+fn max_bytes_above_the_ceiling_refuses_to_start() {
+    let cfg = config_with_readme("npm", "", "        max_bytes = 8388608");
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("ceiling"), "{err}");
+}
+
+/// The block written down on a type that has no README is accepted and inert,
+/// and says so by name — with the reason `readme_support()` carries, so the
+/// warning cannot drift from the behaviour.
+#[test]
+fn a_readme_block_on_a_type_with_none_warns_that_it_is_inert() {
+    let cfg = config_with_readme("maven", "", "        enabled = true");
+    let w = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::README_UNSUPPORTED_TYPE)
+        .expect("warning emitted");
+    assert!(w.message.contains("maven"), "{}", w.message);
+    assert!(w.message.contains("sentence"), "{}", w.message);
+    assert_eq!(w.path, "registries[0].readme");
+}
+
+/// The feature is on by default, so warning about every absent block would put
+/// a notice on the admin panel for every `maven` registry in every deployment.
+/// The operator expressed no belief there; there is nothing to correct.
+#[test]
+fn an_absent_readme_block_never_warns_even_on_an_unsupported_type() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "maven"
+        name = "reg""#,
+    );
+    assert!(!warning_codes(&cfg).iter().any(|c| c.starts_with("readme")));
+}
+
+/// `enabled = false` is a decision, not a mistake — nothing to warn about.
+#[test]
+fn a_disabled_readme_block_warns_about_nothing() {
+    let cfg = config_with_readme("maven", "", "        enabled = false");
+    assert!(!warning_codes(&cfg).iter().any(|c| c.starts_with("readme")));
+}
+
+/// `from_archive` on a metadata-borne-only kind is accepted and does nothing.
+/// Distinct from the unsupported-type warning: READMEs *are* stored here.
+#[test]
+fn from_archive_on_a_metadata_borne_type_warns_that_it_is_inert() {
+    let cfg = config_with_readme("jetbrains-marketplace", "", "        from_archive = true");
+    let w = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::README_FROM_ARCHIVE_INERT)
+        .expect("warning emitted");
+    assert!(w.message.contains("stored either way"), "{}", w.message);
+}
+
+/// npm reads both, so nothing about `from_archive` is inert there.
+#[test]
+fn from_archive_on_a_type_that_reads_the_archive_is_quiet() {
+    let cfg = config_with_readme("npm", "", "        from_archive = true");
+    assert!(!warning_codes(&cfg).iter().any(|c| c.starts_with("readme")));
+}
+
+/// `firewall_only` streams without buffering, so nothing is ever cached to
+/// extract from. On an archive-only kind that means no README at all, and the
+/// warning says which of the two it is.
+#[test]
+fn from_archive_on_a_firewall_only_registry_warns_that_nothing_is_cached() {
+    let cfg = config_with_readme(
+        "cargo",
+        "        firewall_only = true\n",
+        "        from_archive = true",
+    );
+    let w = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::README_FROM_ARCHIVE_FIREWALL_ONLY)
+        .expect("warning emitted");
+    assert!(
+        w.message.contains("no README will ever be stored"),
+        "{}",
+        w.message
+    );
+
+    // npm still has its metadata-borne half, and the message says so rather
+    // than telling the operator the feature is dead.
+    let npm = config_with_readme(
+        "npm",
+        "        firewall_only = true\n",
+        "        from_archive = true",
+    );
+    let w = npm
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::README_FROM_ARCHIVE_FIREWALL_ONLY)
+        .expect("warning emitted");
+    assert!(w.message.contains("still work"), "{}", w.message);
+}
+
+// ── The console's discovery read (RFC 0007 §4.5) ──────────────────────────────
+
+fn config_with_upstream_detail(registry_type: &str, extra: &str, block: &str) -> AppConfig {
+    parse_config(&format!(
+        r#"
+        [[registries]]
+        type = "{registry_type}"
+        name = "reg"
+        upstreams = ["https://example.invalid"]
+{extra}
+        [registries.upstream_detail]
+{block}"#
+    ))
+}
+
+/// Attempts the fetch and discards every result: the egress happens and nothing
+/// is shown.
+#[test]
+fn max_versions_zero_while_enabled_refuses_to_start() {
+    let cfg = config_with_upstream_detail("npm", "", "        max_versions = 0");
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("max_versions"), "{err}");
+    assert!(err.contains("nothing is shown"), "{err}");
+}
+
+#[test]
+fn max_versions_zero_with_the_read_disabled_is_not_an_error() {
+    let cfg = config_with_upstream_detail(
+        "npm",
+        "",
+        "        enabled = false\n        max_versions = 0",
+    );
+    cfg.validate()
+        .expect("a disabled read fetches nothing anyway");
+}
+
+#[test]
+fn max_versions_above_the_ceiling_refuses_to_start() {
+    let cfg = config_with_upstream_detail("npm", "", "        max_versions = 10000");
+    assert!(cfg.validate().unwrap_err().to_string().contains("ceiling"));
+}
+
+/// There is no upstream to ask, and the page is already complete from local
+/// rows.
+#[test]
+fn the_discovery_read_on_a_local_registry_warns_that_it_is_inert() {
+    let cfg = config_with_upstream_detail(
+        "npm",
+        "        mode = \"local\"\n",
+        "        enabled = true",
+    );
+    let w = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::UPSTREAM_DETAIL_LOCAL_MODE)
+        .expect("warning emitted");
+    assert!(w.message.contains("no upstream to ask"), "{}", w.message);
+    assert_eq!(w.path, "registries[0].upstream_detail");
+}
+
+/// A path-addressed kind has no package identity to ask about, and the warning
+/// quotes the reason `upstream_detail()` carries — so the code and the notice
+/// cannot disagree.
+#[test]
+fn the_discovery_read_on_an_unaskable_kind_warns_with_its_reason() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "generic"
+        name = "reg"
+        upstreams = ["https://example.invalid"]
+        path_allow = ["**"]
+
+        [registries.upstream_detail]
+        enabled = true"#,
+    );
+    let w = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::UPSTREAM_DETAIL_UNSUPPORTED_KIND)
+        .expect("warning emitted");
+    assert!(w.message.contains("path-addressed"), "{}", w.message);
+}
+
+/// The read is on by default, so warning about the implicit default would put a
+/// notice on the admin panel for every `local`-mode registry in every
+/// deployment. The operator expressed no belief there.
+#[test]
+fn an_absent_upstream_detail_block_never_warns() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "reg"
+        mode = "local""#,
+    );
+    assert!(!warning_codes(&cfg)
+        .iter()
+        .any(|c| c.starts_with("upstream-detail")));
+}
+
+#[test]
+fn a_disabled_discovery_read_warns_about_nothing() {
+    let cfg = config_with_upstream_detail(
+        "npm",
+        "        mode = \"local\"\n",
+        "        enabled = false",
+    );
+    assert!(!warning_codes(&cfg)
+        .iter()
+        .any(|c| c.starts_with("upstream-detail")));
+}
+
+/// A proxy-mode registry of an askable kind is the case the feature was written
+/// for, and it must stay quiet: a warning that fires on correct config teaches
+/// operators to ignore the channel.
+#[test]
+fn a_correctly_configured_discovery_read_is_quiet() {
+    let cfg = config_with_upstream_detail("npm", "", "        enabled = true");
+    assert!(!warning_codes(&cfg)
+        .iter()
+        .any(|c| c.starts_with("upstream-detail")));
+}
+
+/// `remote_images = "proxy"` is carried and validated, but this build has no
+/// image-proxy endpoint — so it is warned about rather than silently behaving
+/// as `"strip"`, which is the trap §4.1 refuses for the other image value.
+#[test]
+fn remote_images_proxy_warns_that_the_endpoint_is_not_built() {
+    let cfg = config_with_readme("npm", "", r#"        remote_images = "proxy""#);
+    cfg.validate().expect("accepted");
+    let w = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::README_IMAGE_PROXY_UNIMPLEMENTED)
+        .expect("warning emitted");
+    assert!(w.message.contains("charted"), "{}", w.message);
+
+    // `"strip"` is the default and says nothing.
+    let quiet = config_with_readme("npm", "", r#"        remote_images = "strip""#);
+    assert!(!warning_codes(&quiet)
+        .iter()
+        .any(|c| c == warnings::README_IMAGE_PROXY_UNIMPLEMENTED));
+}

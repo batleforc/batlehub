@@ -127,6 +127,29 @@ pub async fn npm_publish(
         .await
         .map_err(AppError::from)?;
 
+    // The README is not index data — widening `index_metadata` would change
+    // what package managers receive — so it is stored separately, keyed by the
+    // version it was published with (RFC 0007 §6.4).
+    //
+    // The version object's own `readme` first, then the document root's. The
+    // root is package-level in the packument, but on a publish it describes
+    // exactly the version being published: this *is* that version, and there is
+    // no older one it could be describing.
+    if let Some(text) = publish_readme(version_meta, &body) {
+        local_svc
+            .record_publish_readme(
+                &registry,
+                &name,
+                version_str,
+                text,
+                // npm READMEs are markdown by convention and by what every npm
+                // client renders. Nothing in the publish document declares
+                // otherwise, so there is nothing else to read it from.
+                batlehub_core::entities::ReadmeFormat::Markdown,
+            )
+            .await;
+    }
+
     dispatch_notification(
         &notification_svc,
         NotificationEventType::PackagePublished,
@@ -141,4 +164,74 @@ pub async fn npm_publish(
         resp.insert_header((k, v));
     }
     Ok(resp.json(NpmPublishResponse {}))
+}
+
+/// The README text an npm publish document carries, if any.
+///
+/// The version object's `readme` first, then the document root's. npm's own
+/// placeholder for "the tarball had no README" is a string, so a check for
+/// presence alone would store an error message as documentation.
+fn publish_readme(version_meta: &serde_json::Value, body: &serde_json::Value) -> Option<String> {
+    /// npm writes this rather than omitting the field.
+    const MISSING: &str = "ERROR: No README data found!";
+
+    [version_meta.get("readme"), body.get("readme")]
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .map(str::trim)
+        .find(|t| !t.is_empty() && *t != MISSING)
+        .map(str::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_versions_own_readme_wins_over_the_document_root() {
+        let version = serde_json::json!({ "readme": "# this version" });
+        let body = serde_json::json!({ "readme": "# the package" });
+        assert_eq!(
+            publish_readme(&version, &body).as_deref(),
+            Some("# this version")
+        );
+    }
+
+    /// A publish document's root README describes exactly the version being
+    /// published — there is no older version it could belong to — so it is used
+    /// when the version object carries none.
+    #[test]
+    fn the_root_readme_is_used_when_the_version_has_none() {
+        let body = serde_json::json!({ "readme": "# the package" });
+        assert_eq!(
+            publish_readme(&serde_json::json!({}), &body).as_deref(),
+            Some("# the package")
+        );
+    }
+
+    /// npm's placeholder is a string, so a presence check alone would store an
+    /// error message as documentation.
+    #[test]
+    fn npms_missing_readme_placeholder_is_not_a_readme() {
+        let version = serde_json::json!({ "readme": "ERROR: No README data found!" });
+        let body = serde_json::json!({ "readme": "   \n " });
+        assert_eq!(publish_readme(&version, &body), None);
+    }
+
+    #[test]
+    fn a_document_with_no_readme_anywhere_yields_none() {
+        assert_eq!(
+            publish_readme(&serde_json::json!({}), &serde_json::json!({})),
+            None
+        );
+        // A non-string `readme` is not a README either.
+        assert_eq!(
+            publish_readme(
+                &serde_json::json!({ "readme": 42 }),
+                &serde_json::json!({ "readme": null })
+            ),
+            None
+        );
+    }
 }

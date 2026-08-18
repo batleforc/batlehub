@@ -2,7 +2,7 @@
 
 | Field       | Value                                                        |
 | ----------- | ------------------------------------------------------------ |
-| Status      | Draft — deferred behind RFC 0009, which found six shipped protocol defects and argues the testing gap that let them ship |
+| Status      | **Implemented** — all nine phases landed; see the implementation notes in §13. RFC 0009's dependency is discharged (it shipped), and the discovery read reuses the three rungs it built rather than inventing a second cache policy |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                       |
 | Co-author   | —                                                             |
 | Created     | 2026-08-15                                                    |
@@ -1202,6 +1202,11 @@ model and it needs stating rather than assuming, so:
 
 ### Still open
 
+Three of the seven below — 1, 2 and 6 — are taken up by
+[RFC 0007-bis](/rfc/0007-bis-images-search-and-fetch), which settles them. The
+recommendations here are what it argues from; the decisions are there. The other
+four were answered in the building and are recorded in §13.8.
+
 1. **`remote_images = "proxy"` — phase 5, or never?** It is the only way images render at all, and
    there is real demand for badge rows in READMEs. Against: it makes BatleHub an open-ish image proxy
    for whatever a package author writes, and the SSRF surface has to be exactly right. Recommendation:
@@ -1264,3 +1269,217 @@ on their own even if nothing after them lands.
 Phases 6 and 7 could be one commit and should not be: the merge in `detail.rs` is where a mistake
 becomes a wrong statement about what this instance holds, and it deserves a diff that contains nothing
 else.
+
+---
+
+## 13. Implementation notes
+
+What was built, and the places the built thing differs from what §1–§12
+proposed. Recorded because an RFC published under a label saying it shipped, and
+describing something the code does not do, is a claim about the product that is
+not true.
+
+### 13.1 The phases, as landed
+
+| Phase | Landed as |
+| --- | --- |
+| 1 | `entities/readme.rs`, `ports/readme.rs`, `RegistryKind::readme_support()`, migration `034_package_readmes.sql`, `db/readme.rs` + `in_memory/readme_repo.rs`, `ReadmeConfig` in config and `HotConfig`, the §4.5 rejections and warnings, `tests/pg_readmes.rs` behind `task test:pg-readmes` |
+| 2 | `NpmVersionMeta.readme` and the packument root, `PypiVersionJson.info`, `OpenVsxFiles.readme`, the VS Code `Content.Details` asset; `MetadataReadme` as the `extra` channel; `ReadmeService::record_from_metadata` / `record_from_publish` / `record_from_linked`; npm and cargo publish capture |
+| 3 | `ExtractedManifest.readme`, `maybe_trigger_sbom` → `maybe_introspect_artifact`, extractors for cargo, npm, NuGet, PyPI, Go, Composer, Terraform, conda and RubyGems, `README_EXTRACTION_TYPES` and its two drift tests |
+| 4 | `services/readme/{render,sanitize,detect}.rs`, the render cache keyed by digest + `RENDERER_VERSION`, `fuzz_readme_render`, `pulldown-cmark` + `ammonia` through `cargo deny` |
+| 5 | `GET …/readme`, the tri-state `readme` and `vulnerabilities_scanned` on the version DTO, `openapi.json` and the generated client |
+| 6 | `RegistryKind::upstream_detail()`, `services/upstream_detail/` with nine per-protocol readers and the drift test, `ProxyService::upstream_detail` with the three rungs, `UpstreamDetailCoordinator` (single-flight + negative cache), `UpstreamDetailConfig` |
+| 7 | The merge in `detail.rs`, `?upstream=skip`, the `upstream` block, the derived README path in `readme.rs` |
+| 8 | `ReadmePanel.vue`, `UpstreamNotice.vue`, the detail-page binding, the *not held here* / *not scanned* rendering, `en`/`fr`, the `v-html` boundary assertion |
+| 9 | `batlehub package readme` with `--no-upstream`, the generated support table, both config blocks documented, `docs/operations/egress.md` |
+
+### 13.2 PyPI reads its archive too
+
+§4.3 files PyPI as metadata-borne only. The extractor contradicted that on the
+first run of the drift test: `pypi.rs` reads the long description out of a
+wheel's `METADATA` and an sdist's `PKG-INFO`, which is the *same text* the JSON
+API returns under `info.description`. A version resolved through the simple index
+rather than the JSON API would otherwise have had no README at all.
+
+`readme_support()` therefore says `MetadataThenArchive` for PyPI, as it does for
+npm. The *unheld* column is unchanged — a metadata-borne source still answers for
+a version we hold no bytes for — so §4.3's table reads the same to an operator.
+
+This is the drift test doing its job on its first day: the table and the code
+disagreed, and the test refused to let the table be the one that was believed.
+
+### 13.3 `remote_images = "proxy"` is accepted, warned about, and inert
+
+Open question 1 recommended the image proxy for "phase 5, or never", and it is
+not built. §4.1 refuses an `"allow"` value precisely because a setting that
+appears to do something and does not is a trap — so `"proxy"` could not simply
+render as `"strip"` in silence.
+
+It is accepted and validated as §4.5 requires, carried through `HotConfig` to the
+renderer, and raises a `readme.image-proxy-unimplemented`
+[config warning](/guide/admin-config#config-warnings) naming exactly what it does
+instead. The renderer and sanitiser implement the proxied path in full and are
+tested; the only missing piece is an endpoint to rewrite `src` to, which is one
+line in `explore/readme.rs` when it lands.
+
+### 13.4 Open question 7 was nearly answered wrong, and the table caught it
+
+§4.3's PyPI row promises **versions + README** for a version this instance holds
+no bytes for, with the note that "the panel fetches on selection rather than for
+the whole table". The first implementation of the derived read only looked in the
+*listing* document — which npm's packument carries a README in and PyPI's simple
+page does not. Three of the four kinds in that column answered `404`: PyPI,
+OpenVSX and the VS Code Marketplace.
+
+Nothing failed. The generated support table said `versions + README` and the code
+served nothing, which is precisely the failure RFC 0009 was written about — a
+published table claiming coverage dispatch cannot deliver.
+
+The fix is `ProxyService::upstream_version_readme`: when the listing document
+carries no README **and the caller named a version**, resolve that one version's
+metadata (cache-first, single request per version per TTL) and take the README
+from it — inline for PyPI, by following the link for the two galleries, through
+the same same-origin and SSRF guards §7.4 requires. Open question 7's cost is
+accepted exactly as recommended: PyPI rows report `readme: "unknown"` until a row
+is selected, and the version table resolves nothing.
+
+One thing the fixtures could not have told us, and a real upstream did: **npm's
+packument no longer carries a README for large packages.** `registry.npmjs.org`
+answers `readme: ""` for `express` and has no per-version field at all, so
+npm's rows report `unknown` and the panel says the README arrives on first
+download. That is the tri-state doing its job — the alternative shape, a boolean
+`false`, would have said "there is none" about a package with a perfectly good
+README in its tarball. Smaller packages (`left-pad`) still ship one and the
+derived path serves it. §4.3's npm row is a statement about the protocol, and it
+remains true; what changed is how often the protocol's optional field is filled.
+
+That finding also bought a bound: because npm's *listing* document is its README
+source, a per-version resolve would re-fetch the same packument to find the same
+nothing. `upstream_detail::listing_carries_readmes` — exhaustive, no wildcard —
+stops it, so the second read happens only for the kinds where it is a different
+request with a different answer.
+
+Two things stop this becoming a hole:
+
+- **It writes nothing.** `resolve_metadata_uncaptured` is the ordinary resolve
+  with the capture removed, so a page view stores no `package_readmes` row for a
+  version it holds no bytes for (§5.6) while still warming the cache a later real
+  download reads. Asserted at the unit boundary as well as through the handler,
+  because the recording hook and the resolve sit one line apart.
+- **The promise is now tested exhaustively.**
+  `every_kind_promising_a_readme_for_unheld_versions_delivers_one` walks
+  `RegistryKind::ALL`, and any kind whose `readme_support()` answers for unheld
+  versions must actually serve one. Its fixture is driven off `readme_support()`
+  rather than a list of kinds, so a kind added to that column gets coverage
+  without anyone remembering to add it. That test is what would have caught this
+  on the first day; it exists now because it did not.
+
+### 13.5 The version cap keeps the top of the table, not a second ordering
+
+§4.1 says `max_versions` is "applied newest-first". Implemented as *the first N
+rows of the table's own order* — stable before pre-release, then newest first —
+rather than a semver ordering that would keep a different pair. Consistency with
+what the reader sees matters more here: a truncated list whose kept rows were not
+the ones at the top is confusing in a way a shorter list is not, and a reader
+deciding whether to adopt something is looking at the top of the table either way.
+
+### 13.6 The fuzz target found two bugs, both in itself
+
+`fuzz_readme_render` asserts that no forbidden URL scheme survives. Its first
+version looked for `"data:`, and the fuzzer produced the *text* `"data:` inside a
+paragraph within seconds. The second looked for `="data:`, and it produced that
+too. Neither was a sanitiser defect; both were the check confusing markup with
+text.
+
+It now tests whether the match is inside a tag — the last `<` more recent than
+the last `>`, which is exact because the sanitiser escapes `<` in text. 320 000
+runs clean afterwards. The episode is recorded because it is the argument for the
+target rather than against it: a check that cannot tell markup from text would
+have passed a real bypass of the same shape, and no unit test would have found
+that.
+
+### 13.7 Two components use `v-html`, and the second is not a hole
+
+§6.5 asks for a vitest asserting that no component other than `ReadmePanel.vue`
+uses `v-html`. `CodeBlock.vue` already did: its HTML is Shiki's rendering of *this
+repository's own* snippet strings, not anything a package author can write.
+
+The assertion names both and fails on a third, which is the property that
+matters — the boundary cannot quietly move — while being true about the tree as
+it is rather than about the tree the RFC imagined.
+
+### 13.8 Where the open questions landed
+
+| # | Question | Where it landed |
+| --- | --- | --- |
+| 1 | `remote_images = "proxy"` — phase 5, or never? | **Not built here.** Accepted, validated and carried to the renderer, with a `readme.image-proxy-unimplemented` config warning naming what it does instead. The chip is the complete answer §7.3 said it would be. Taken up by [RFC 0007-bis](/rfc/0007-bis-images-search-and-fetch) §4.2. §13.3 |
+| 2 | Should README text feed the catalogue's search? | **Not here**, as recommended — and it was asked for, so [RFC 0007-bis](/rfc/0007-bis-images-search-and-fetch) §4.3 takes it up, opt-in, with a name match always outranking a prose match and every result saying which it was. |
+| 3 | RubyGems convention matching | **Built**, as recommended. The fixture work did not show a poor hit rate: a gem's `data.tar.gz` carries `README*` at its root in the ordinary case, and a gem that names its documentation something else reports none rather than showing the wrong file. The row stays. |
+| 4 | Refresh policy for a mutated upstream README | **Kept**, as recommended. A re-resolve compares digests and replaces on a change; nothing is recorded about the previous text. No reviewer asked for history, and adding it later remains a schema change. |
+| 5 | Should the discovery read default to on? | **On**, as recommended — and named in `docs/operations/egress.md` rather than left to a traffic graph. Flipping it is still one line: `[registries.upstream_detail] enabled = false`, per registry. |
+| 6 | Offer an upstream-only version as a download from the page? | **Not in this RFC**, as recommended. The page is now honest about what it holds, which was the stated precondition — and [RFC 0007-bis](/rfc/0007-bis-images-search-and-fetch) §4.4 is that follow-up. |
+| 7 | PyPI's per-version description costs one request per version | **Accepted**, as recommended — and it took a second pass to actually deliver. The version table reports `unknown` and resolves nothing; the panel resolves the one version selected. §13.4 |
+
+### 13.9 What the tests cover
+
+- **Store and service**: `crates/core/src/services/readme/tests.rs` (capture
+  rules, truncation on a character boundary, the fallback rule and its
+  exclusions, the render cache's content addressing),
+  `crates/adapters/tests/pg_readmes.rs` (`ON CONFLICT`, the `= ANY($3)`
+  exclusion, scoped deletion).
+- **Sanitiser**: a table-driven corpus of the standard vectors plus mXSS shapes
+  in `sanitize.rs`, and `fuzz_readme_render` over arbitrary input.
+- **Images written as HTML**: `render.rs` asserts that a raw `<img>` and a
+  `<picture>` both chart, in a markdown document and in an HTML one, that the
+  alternative `<source>` is not a second chip, and that the attribute parser
+  handles all three quoting forms — the assertions §13.10 was found by not
+  having.
+- **Extraction**: real archives built in-process — gzipped tar, plain tar, zip,
+  bzip2, zstd — in each extractor, plus the path-escape, truncation and
+  non-UTF-8 guards in `extractor/readme.rs`.
+- **The unheld case**: `services/upstream_detail/tests.rs` per protocol,
+  `services/proxy/tests.rs` for the rungs, coalescing and negative cache, and
+  `crates/web/tests/explore_upstream_detail.rs` for what a page view does *not*
+  write.
+- **Endpoints**: `crates/web/tests/package_readmes.rs` (publish capture, the
+  endpoint's four answer shapes, sanitisation through the real handler) and the
+  updated `explore.rs`, which now pins the local-row half with `?upstream=skip`
+  and asserts the new default separately.
+- **Console**: `ReadmePanel.test.ts`, `UpstreamNotice.test.ts`.
+- **CLI**: `cli/tests/integration.rs`, including that the qualifying notes go to
+  stderr so a redirect writes the document alone.
+
+### 13.10 An image written as HTML rendered to nothing
+
+Found by surveying real READMEs for [RFC 0007-bis](/rfc/0007-bis-images-search-and-fetch)
+§13.1, not by a test: an image the author wrote as an
+`<img>` element rather than in markdown's own image syntax produced **an empty
+string**. No image, which is the point of stripping
+— but also no chip, no alt text, nothing at all. A `<picture>` was worse: `picture`
+and `source` are not in the allow-list either, so the whole element disappeared.
+
+The mechanism is exactly the one §7.3 relies on and did not follow through. GFM
+images become chips in `render.rs` before the sanitiser sees them, so `img` can
+leave the allow-list; raw HTML never went through that walk, and `img` being a
+void element there were no children for the sanitiser to keep. Every part behaved
+as designed and the reader was told nothing.
+
+It is a defect against §7.3's own promise — *"the reader can see that an image was
+there and where it pointed"* — for the roughly 7% of READMEs the survey found
+using `<picture>` or `srcset`, and it is fixed here rather than deferred to the
+follow-up RFC: `chip_html_images` gives raw-HTML images the same chip, in the
+markdown path via `Event::Html`/`Event::InlineHtml` and on the `Html`-format path
+over the whole document. `<picture>` needs nothing of its own — once its fallback
+`<img>` is a chip, the sanitiser drops the two wrapper tags and keeps their
+contents. `RENDERER_VERSION` goes to `2`, which is what makes the fix reach every
+already-rendered README with no backfill (§5.3).
+
+The rewrite is cosmetic and deliberately not a security boundary: the sanitiser
+still runs after it and still owns that. Mis-parsing a tag there yields a missing
+chip — the behaviour being fixed — never a tag that survives, because anything
+left behind meets the same allow-list it would have met anyway.
+
+Worth stating plainly: this shipped, and the phase-4 tests passed, because every
+image test in the suite was written in markdown. The corpus was drawn from what
+the RFC described rather than from what packages contain, and the fix's first
+commit is a set of assertions in the second dialect.

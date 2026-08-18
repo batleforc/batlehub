@@ -175,7 +175,18 @@ registry-terraform = []
 registry-vscode-marketplace = []
 storage-fs = []
 storage-s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
-sbom = ["db-postgres", "dep:flate2", "dep:tar", "dep:zip", "dep:quick-xml"]
+# `bzip2`/`zstd` are for conda's two container formats, which the README
+# extractor reads `info/about.json` out of (RFC 0007 §4.3). Both are already in
+# the default build through `registry-conda`, so this widens no dependency tree.
+sbom = [
+  "db-postgres",
+  "dep:flate2",
+  "dep:tar",
+  "dep:zip",
+  "dep:quick-xml",
+  "dep:bzip2",
+  "dep:zstd",
+]
 vuln-scan = ["db-postgres"]
 
 [lints]

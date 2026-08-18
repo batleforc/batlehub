@@ -435,6 +435,7 @@ export default defineConfig({
           items: [
             { text: "Incident response", link: "/operations/incident-response" },
             { text: "Disaster recovery", link: "/operations/disaster-recovery" },
+            { text: "What leaves this instance", link: "/operations/egress" },
             {
               text: "Production hardening",
               link: "/operations/production-hardening",
@@ -510,6 +511,10 @@ export default defineConfig({
             {
               text: "0007 — The README, per version",
               link: "/rfc/0007-package-readmes",
+            },
+            {
+              text: "0007-bis — The three 0007 deferred",
+              link: "/rfc/0007-bis-images-search-and-fetch",
             },
             {
               text: "0008 — mise in an air-gapped estate",

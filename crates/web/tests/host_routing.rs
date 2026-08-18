@@ -131,6 +131,8 @@ async fn make_host_routed_app(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
 
     let names: Vec<&str> = spec.registries.iter().map(|(n, _)| *n).collect();

@@ -116,6 +116,23 @@ tasks:
       - until podman exec {{.PG_CONTAINER}} pg_isready -U postgres; do sleep 1; done
       - cargo test -p batlehub-adapters --test pg_stats_history -- --nocapture
 
+  test:pg-readmes:
+    desc: Run PgReadmeRepository integration tests (starts a temporary Postgres container via Podman)
+    vars:
+      PG_CONTAINER: batlehub-test-pg-readmes
+      PG_PORT: "15437"
+      PG_PASSWORD: testpass
+      CONF_OVERRIDE: /tmp/batlehub-containers.conf
+    env:
+      CONTAINERS_CONF_OVERRIDE: "{{.CONF_OVERRIDE}}"
+      DATABASE_URL: "postgresql://postgres:{{.PG_PASSWORD}}@127.0.0.1:{{.PG_PORT}}/postgres"
+    cmds:
+      - printf '[network]\ndefault_rootless_network_cmd = "pasta"\n' > {{.CONF_OVERRIDE}}
+      - defer: podman rm -f {{.PG_CONTAINER}} 2>/dev/null || true
+      - podman run -d --name {{.PG_CONTAINER}} -p {{.PG_PORT}}:5432 -e POSTGRES_PASSWORD={{.PG_PASSWORD}} postgres:17-alpine
+      - until podman exec {{.PG_CONTAINER}} pg_isready -U postgres; do sleep 1; done
+      - cargo test -p batlehub-adapters --test pg_readmes -- --nocapture
+
   test:pg-me-scoping:
     desc: Run the /api/v1/me scoping integration tests (starts a temporary Postgres container via Podman)
     vars:
@@ -1094,6 +1111,50 @@ tasks:
         ' "$page" > "$page.tmp"
         mv "$page.tmp" "$page"
 
+  # ── README coverage (RFC 0007 §4.3) ──────────────────────────────────────────
+  # Which registries carry a README, where it comes from, and whether the
+  # package page can show one for a version this instance holds no bytes for.
+  # Generated from `RegistryKind::readme_support()` and
+  # `RegistryKind::upstream_detail()` — two exhaustive matches a new registry
+  # kind cannot be added without answering — for the same reason the
+  # listing-filter table above is generated rather than written: a published
+  # table claiming coverage the code does not deliver is a statement about the
+  # product that is not true.
+
+  docs:readme-coverage:
+    desc: Regenerate the README support table in the registries index
+    cmds:
+      - |
+        set -euo pipefail
+        page=docs/registries/index.md
+        table=$(cargo run -q -p batlehub-server --bin readme_coverage)
+        awk -v table="$table" '
+          /^<!-- BEGIN readme-coverage/ { print; print table; skip = 1; next }
+          /^<!-- END readme-coverage/   { skip = 0 }
+          !skip                          { print }
+        ' "$page" > "$page.tmp"
+        mv "$page.tmp" "$page"
+
+  docs:readme-coverage:check:
+    desc: Fail if the registries index's README table has drifted from the code
+    cmds:
+      - |
+        set -euo pipefail
+        page=docs/registries/index.md
+        block() {
+          awk '/^<!-- BEGIN readme-coverage/ { skip = 1; next }
+               /^<!-- END readme-coverage/   { skip = 0 }
+               skip                          { print }' "$1"
+        }
+        committed=$(block "$page")
+        generated=$(cargo run -q -p batlehub-server --bin readme_coverage)
+        if [ "$committed" != "$generated" ]; then
+          echo "the README support table has drifted — run 'task docs:readme-coverage' and commit the result" >&2
+          diff <(echo "$committed") <(echo "$generated") >&2 || true
+          exit 1
+        fi
+        echo "the published README support table matches the code"
+
   docs:listing-coverage:check:
     desc: Fail if the admin guide's coverage table has drifted from the code
     # Diffs only the region between the markers, not the whole page. A
@@ -1152,6 +1213,7 @@ tasks:
       - task: ui:tokens:check
       - task: docs:roadmap:check
       - task: docs:listing-coverage:check
+      - task: docs:readme-coverage:check
       - task: docs:endpoints:check
       - task: docs:links
       - task: docs:structure

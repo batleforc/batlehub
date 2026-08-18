@@ -117,6 +117,7 @@ impl LocalProxy {
             sbom: None,
             explore_cache: None,
             package_repo: None,
+            readme: None,
         });
 
         // No upstream registries — local mode only.
@@ -134,6 +135,8 @@ impl LocalProxy {
             artifact_meta: NoopArtifactMetaRepository::arc(),
             metrics: Arc::new(ProxyMetrics::new(&[])),
             sbom: None,
+            readme: None,
+            discovery: Default::default(),
         });
         let admin_svc = Arc::new(AdminService::new(repo));
         let token_repo = NullUserTokenRepository::arc();

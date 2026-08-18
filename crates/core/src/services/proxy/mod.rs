@@ -1,8 +1,10 @@
 mod cache;
-mod handle;
+mod discovery;
+pub(crate) mod handle;
 mod passthrough;
 mod resolve;
 
+pub use discovery::DiscoveryOutcome;
 pub use passthrough::{FetchOutcome, Freshness, Passthrough, UpstreamBytes};
 
 use std::sync::Arc;
@@ -18,6 +20,7 @@ use crate::ports::{
 };
 use crate::services::hot_config::HotConfigLock;
 use crate::services::metrics::ProxyMetrics;
+use crate::services::readme::ReadmeService;
 use crate::services::sbom::SbomService;
 
 /// Input to `ProxyService::handle`.
@@ -52,6 +55,20 @@ pub struct ProxyService {
     pub metrics: Arc<ProxyMetrics>,
     /// Optional SBOM service; when `None`, SBOM generation is disabled globally.
     pub sbom: Option<Arc<SbomService>>,
+    /// Per-process coordination for the console's discovery read: the
+    /// single-flight map and the negative cache (RFC 0007 §5.5).
+    ///
+    /// Not optional and not in `ExploreCache`: that cache is keyed by query and
+    /// invalidated per registry, so a per-package absence marker keyed into it
+    /// would be cleared by an unrelated catalogue write. Defaulted, so a test
+    /// that does not exercise the discovery read need not know it exists.
+    pub discovery: Arc<crate::services::upstream_detail::UpstreamDetailCoordinator>,
+    /// Optional README service; when `None`, README capture is disabled globally.
+    ///
+    /// Per-registry configuration lives in `HotConfig::readme` and defaults to
+    /// *on* — this field is the process-level wiring, absent only where nothing
+    /// has a store to write to (RFC 0007 §4.1).
+    pub readme: Option<Arc<ReadmeService>>,
 }
 
 pub(super) fn warn_if_audit_failed(r: Result<(), CoreError>, ctx: &str) {

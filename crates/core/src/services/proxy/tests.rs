@@ -434,6 +434,8 @@ fn proxy(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     }
 }
 
@@ -520,6 +522,8 @@ async fn metadata_cache_miss_then_hit() {
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     };
 
     let cache_key = format!("meta:{}", req("npm").package_id.cache_key());
@@ -596,6 +600,8 @@ async fn artifact_cache_hit_returns_stored_bytes() {
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     };
 
     let resp = svc.handle(req("npm")).await.unwrap();
@@ -648,6 +654,8 @@ async fn payload_too_large_returns_error() {
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     };
 
     let result = svc.handle(req("npm")).await;
@@ -666,6 +674,8 @@ async fn unused_registry_id_in_policies_does_not_panic() {
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     };
 
     let resp = svc.handle(req("npm")).await.unwrap();
@@ -695,6 +705,8 @@ async fn firewall_only_streams_without_storing() {
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     };
 
     let pkg = PackageId::new("npm", "test-pkg", "1.0.0");
@@ -753,6 +765,8 @@ fn proxy_with_stale(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     }
 }
 
@@ -949,6 +963,8 @@ async fn metadata_no_store_skips_cache() {
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     };
 
     let cache_key = format!("meta:{}", req("npm").package_id.cache_key());
@@ -975,6 +991,8 @@ async fn artifact_no_store_skips_storage() {
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     };
 
     let pkg = PackageId::new("npm", "test-pkg", "1.0.0");
@@ -1037,6 +1055,8 @@ async fn artifact_ttl_expired_refetches_from_upstream() {
         artifact_meta: spy_meta.clone(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     };
 
     let resp = svc.handle(req("npm")).await.unwrap();
@@ -1098,6 +1118,8 @@ async fn artifact_cache_hit_records_touch() {
         artifact_meta: spy_meta.clone(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     };
 
     let resp = svc.handle(req("npm")).await.unwrap();
@@ -1122,6 +1144,8 @@ async fn artifact_cache_miss_records_meta() {
         artifact_meta: spy_meta.clone(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     };
 
     let pkg = PackageId::new("npm", "test-pkg", "1.0.0");
@@ -1158,6 +1182,8 @@ async fn metrics_artifact_miss_then_hit() {
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: proxy_metrics.clone(),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     };
 
     let npm = proxy_metrics.all().get("npm").unwrap();
@@ -1281,6 +1307,8 @@ fn proxy_with_integrity(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     };
     (svc, storage)
 }
@@ -1598,6 +1626,8 @@ fn reverify_proxy(
         artifact_meta: spy_meta,
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     }
 }
 
@@ -1907,6 +1937,8 @@ async fn resolve_metadata_for_miss_fetches_then_serves_from_cache() {
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     };
 
     let meta = svc.resolve_metadata_for(&req("jbm")).await.unwrap();
@@ -2014,6 +2046,8 @@ mod passthrough_rungs {
             artifact_meta: NoopArtifactMeta::arc(),
             metrics: Arc::new(ProxyMetrics::new(&[])),
             sbom: None,
+            readme: None,
+            discovery: Default::default(),
         };
         (svc, cache)
     }
@@ -2227,6 +2261,8 @@ mod search_rungs {
             artifact_meta: NoopArtifactMeta::arc(),
             metrics: Arc::new(ProxyMetrics::new(&[])),
             sbom: None,
+            readme: None,
+            discovery: Default::default(),
         }
     }
 
@@ -2314,5 +2350,960 @@ mod search_rungs {
             .expect("still not an error");
         assert!(results.hits.is_empty());
         assert_eq!(results.total, 0);
+    }
+}
+
+// ── README capture on the resolve path (RFC 0007 §5.1) ────────────────────────
+
+mod readme_capture {
+    use super::*;
+    use crate::entities::{MetadataReadme, PackageReadme, ReadmeFormat, ReadmeSource};
+    use crate::ports::ReadmeRepository;
+    use crate::services::hot_config::ReadmeConfig;
+    use crate::services::ReadmeService;
+    use std::sync::Mutex;
+
+    /// A registry whose metadata document carries a README, and one that
+    /// carries only a link to one.
+    struct ReadmeRegistry {
+        linked: bool,
+        /// How many times the linked README was actually read.
+        linked_reads: Arc<Mutex<usize>>,
+    }
+
+    #[async_trait]
+    impl RegistryClient for ReadmeRegistry {
+        fn registry_type(&self) -> &str {
+            "test"
+        }
+
+        async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
+            let found = if self.linked {
+                MetadataReadme::linked("https://upstream.invalid/README.md", ReadmeFormat::Markdown)
+            } else {
+                MetadataReadme::text("# from the packument", ReadmeFormat::Markdown)
+            };
+            Ok(PackageMetadata {
+                id: pkg.clone(),
+                published_at: Some(Utc::now() - chrono::Duration::days(30)),
+                download_url: None,
+                checksum: None,
+                is_signed: None,
+                extra: serde_json::json!({ "readme": found }),
+                cache_control: None,
+            })
+        }
+
+        async fn fetch_linked_readme(
+            &self,
+            _url: &str,
+            _max_bytes: usize,
+        ) -> Result<Option<String>, CoreError> {
+            *self.linked_reads.lock().unwrap() += 1;
+            Ok(Some("# fetched from the link".to_owned()))
+        }
+
+        async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
+            let data = Bytes::from(format!("artifact:{}", pkg.cache_key()));
+            Ok(FetchedArtifact {
+                stream: Box::pin(stream::once(async move { Ok::<Bytes, CoreError>(data) })),
+                cache_control: None,
+            })
+        }
+    }
+
+    #[derive(Default)]
+    pub(super) struct RecordingRepo {
+        pub(super) rows: Mutex<Vec<PackageReadme>>,
+    }
+
+    #[async_trait]
+    impl ReadmeRepository for RecordingRepo {
+        async fn upsert(&self, readme: PackageReadme) -> Result<(), CoreError> {
+            self.rows.lock().unwrap().push(readme);
+            Ok(())
+        }
+        async fn get(
+            &self,
+            registry: &str,
+            name: &str,
+            version: &str,
+        ) -> Result<Option<PackageReadme>, CoreError> {
+            Ok(self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|r| r.registry == registry && r.name == name && r.version == version)
+                .cloned())
+        }
+        async fn get_latest_with_readme(
+            &self,
+            _registry: &str,
+            _name: &str,
+            _exclude_versions: &[String],
+        ) -> Result<Option<PackageReadme>, CoreError> {
+            Ok(None)
+        }
+        async fn list_versions_with_readme(
+            &self,
+            _registry: &str,
+            _name: &str,
+        ) -> Result<Vec<String>, CoreError> {
+            Ok(vec![])
+        }
+        async fn delete_for_version(
+            &self,
+            _registry: &str,
+            _name: &str,
+            _version: &str,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn delete_for_package(&self, _registry: &str, _name: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
+    fn proxy_with_readme(
+        client: Arc<dyn RegistryClient>,
+        repo: Arc<RecordingRepo>,
+        cfg: Option<ReadmeConfig>,
+    ) -> ProxyService {
+        let mut hot = HotConfig {
+            registries: HashMap::from([("r1".to_owned(), client)]),
+            policies: HashMap::from([(
+                "r1".to_owned(),
+                Arc::new(RegistryPolicy {
+                    metadata_ttl: None,
+                    firewall_only: false,
+                    serve_stale_metadata: false,
+                    artifact_ttl: None,
+                    rules: vec![],
+                }),
+            )]),
+            ..Default::default()
+        };
+        if let Some(cfg) = cfg {
+            hot.readme.insert("r1".to_owned(), cfg);
+        }
+        ProxyService {
+            hot: new_hot_lock(hot),
+            storage: MemStorage::new(),
+            cache: TestCacheStore::new(),
+            repo: SpyRepo::new(),
+            artifact_meta: NoopArtifactMeta::arc(),
+            metrics: Arc::new(ProxyMetrics::new(&["r1".to_owned()])),
+            sbom: None,
+            readme: Some(Arc::new(ReadmeService::new(
+                repo as Arc<dyn ReadmeRepository>,
+            ))),
+            discovery: Default::default(),
+        }
+    }
+
+    /// Capture is a detached task, so a test has to wait for it. Bounded, and
+    /// it fails the test rather than hanging if nothing ever lands.
+    async fn wait_for_row(repo: &RecordingRepo) -> Option<PackageReadme> {
+        for _ in 0..200 {
+            if let Some(row) = repo.get("r1", "test-pkg", "1.0.0").await.unwrap() {
+                return Some(row);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        None
+    }
+
+    /// The document has just been parsed and the README is a field of it, so
+    /// resolving a version stores it — without the package manager's request
+    /// waiting on the write.
+    #[tokio::test]
+    async fn resolving_a_version_records_the_readme_its_metadata_carried() {
+        let repo = Arc::new(RecordingRepo::default());
+        let svc = proxy_with_readme(
+            Arc::new(ReadmeRegistry {
+                linked: false,
+                linked_reads: Arc::new(Mutex::new(0)),
+            }),
+            Arc::clone(&repo),
+            None,
+        );
+
+        svc.handle(req("r1")).await.unwrap();
+
+        let row = wait_for_row(&repo).await.expect("README recorded");
+        assert_eq!(row.content, "# from the packument");
+        assert_eq!(row.source, ReadmeSource::UpstreamMetadata);
+        assert_eq!(row.format, ReadmeFormat::Markdown);
+    }
+
+    /// A linked README is followed — but off the resolve path, in the same
+    /// detached task, and it is recorded as having come from the upstream's own
+    /// answer rather than from bytes we opened.
+    #[tokio::test]
+    async fn a_linked_readme_is_followed_off_the_resolve_path() {
+        let reads = Arc::new(Mutex::new(0));
+        let repo = Arc::new(RecordingRepo::default());
+        let svc = proxy_with_readme(
+            Arc::new(ReadmeRegistry {
+                linked: true,
+                linked_reads: Arc::clone(&reads),
+            }),
+            Arc::clone(&repo),
+            None,
+        );
+
+        svc.handle(req("r1")).await.unwrap();
+
+        let row = wait_for_row(&repo).await.expect("README recorded");
+        assert_eq!(row.content, "# fetched from the link");
+        assert_eq!(row.source, ReadmeSource::UpstreamMetadata);
+        assert_eq!(*reads.lock().unwrap(), 1);
+    }
+
+    /// A registry with the feature turned off stores nothing and, for a linked
+    /// README, makes no outbound request at all.
+    #[tokio::test]
+    async fn a_disabled_registry_records_nothing_and_fetches_nothing() {
+        let reads = Arc::new(Mutex::new(0));
+        let repo = Arc::new(RecordingRepo::default());
+        let svc = proxy_with_readme(
+            Arc::new(ReadmeRegistry {
+                linked: true,
+                linked_reads: Arc::clone(&reads),
+            }),
+            Arc::clone(&repo),
+            Some(ReadmeConfig {
+                enabled: false,
+                ..ReadmeConfig::default()
+            }),
+        );
+
+        svc.handle(req("r1")).await.unwrap();
+
+        // Give the task that would have run a chance to run.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(repo.rows.lock().unwrap().is_empty());
+        assert_eq!(*reads.lock().unwrap(), 0);
+    }
+
+    /// A cache hit returns before the capture, so a second request within the
+    /// TTL neither re-reads the document nor rewrites the row.
+    #[tokio::test]
+    async fn a_metadata_cache_hit_does_not_re_record() {
+        let repo = Arc::new(RecordingRepo::default());
+        let svc = proxy_with_readme(
+            Arc::new(ReadmeRegistry {
+                linked: false,
+                linked_reads: Arc::new(Mutex::new(0)),
+            }),
+            Arc::clone(&repo),
+            None,
+        );
+
+        svc.handle(req("r1")).await.unwrap();
+        wait_for_row(&repo).await.expect("README recorded");
+        svc.handle(req("r1")).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert_eq!(
+            repo.rows.lock().unwrap().len(),
+            1,
+            "the second request hit the metadata cache and must not have re-recorded"
+        );
+    }
+
+    // ── The single introspection pass (RFC 0007 §5.2) ────────────────────────
+
+    /// An extractor that finds a README and nothing else — the shape the five
+    /// README-only registry kinds have.
+    struct ReadmeOnlyExtractor;
+
+    impl crate::ports::SbomExtractor for ReadmeOnlyExtractor {
+        fn extract(&self, _data: &Bytes, _registry_type: &str) -> crate::ports::ExtractedManifest {
+            crate::ports::ExtractedManifest {
+                readme: Some(crate::ports::ExtractedReadme {
+                    content: "# from the archive".to_owned(),
+                    format: ReadmeFormat::Markdown,
+                    path: "package/README.md".to_owned(),
+                    truncated: false,
+                }),
+                ..Default::default()
+            }
+        }
+    }
+
+    struct NoopSbomRepo;
+
+    #[async_trait]
+    impl crate::ports::SbomRepository for NoopSbomRepo {
+        async fn upsert_sbom(&self, _: crate::entities::ArtifactSbom) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn get_sbom(
+            &self,
+            _: &str,
+            _: &crate::entities::SbomFormat,
+        ) -> Result<Option<crate::entities::ArtifactSbom>, CoreError> {
+            Ok(None)
+        }
+        async fn get_sbom_by_coordinates(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &crate::entities::SbomFormat,
+        ) -> Result<Option<crate::entities::ArtifactSbom>, CoreError> {
+            Ok(None)
+        }
+        async fn get_license_for_coordinate(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<Option<String>, CoreError> {
+            Ok(None)
+        }
+        async fn list_sboms_for_export(
+            &self,
+            _: Option<&str>,
+            _: Option<chrono::DateTime<Utc>>,
+            _: Option<chrono::DateTime<Utc>>,
+            _: u64,
+            _: u64,
+        ) -> Result<Vec<crate::entities::ArtifactSbom>, CoreError> {
+            Ok(vec![])
+        }
+    }
+
+    /// The early return changed from *SBOM is off* to *SBOM is off **and**
+    /// README-from-archive is off*. With SBOM disabled and README capture on,
+    /// the artifact is still read — and this is the assertion that fails if the
+    /// old early return comes back.
+    #[tokio::test]
+    async fn the_archive_is_read_for_the_readme_even_with_sbom_off() {
+        let repo = Arc::new(RecordingRepo::default());
+        let mut svc = proxy_with_readme(
+            // A plain registry: nothing in its metadata carries a README, so
+            // the archive is the only source.
+            Arc::new(FixedRegistry),
+            Arc::clone(&repo),
+            None,
+        );
+        svc.sbom = Some(Arc::new(crate::services::SbomService::new(
+            Arc::new(NoopSbomRepo),
+            Some(Arc::new(ReadmeOnlyExtractor)),
+            None,
+        )));
+        // `hot.sbom` has no entry for this registry, so SBOM generation is off.
+
+        svc.handle(req("r1")).await.unwrap();
+
+        let row = wait_for_row(&repo).await.expect("README recorded");
+        assert_eq!(row.content, "# from the archive");
+        assert_eq!(row.source, ReadmeSource::Archive);
+    }
+
+    /// `from_archive = false` is the operator saying "do not open the artifact
+    /// for this", and it has to mean that even when the bytes are already being
+    /// read for something else.
+    #[tokio::test]
+    async fn from_archive_false_stores_no_archive_readme() {
+        let repo = Arc::new(RecordingRepo::default());
+        let mut svc = proxy_with_readme(
+            Arc::new(FixedRegistry),
+            Arc::clone(&repo),
+            Some(ReadmeConfig {
+                from_archive: false,
+                ..ReadmeConfig::default()
+            }),
+        );
+        svc.sbom = Some(Arc::new(crate::services::SbomService::new(
+            Arc::new(NoopSbomRepo),
+            Some(Arc::new(ReadmeOnlyExtractor)),
+            None,
+        )));
+
+        svc.handle(req("r1")).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(repo.rows.lock().unwrap().is_empty());
+    }
+}
+
+// ── The discovery read (RFC 0007 §5.5) ────────────────────────────────────────
+
+mod discovery {
+    use super::*;
+    use crate::entities::RegistryKind;
+    use crate::ports::{DocumentKind, VersionDocument};
+    use crate::services::hot_config::UpstreamDetailConfig;
+    use crate::services::proxy::Freshness;
+    use std::sync::Mutex;
+
+    /// A registry whose listing document is whatever the test says, counting
+    /// how many times it was actually asked.
+    struct CountingRegistry {
+        kind: &'static str,
+        document: Mutex<Result<VersionDocument, CoreError>>,
+        fetches: Arc<Mutex<usize>>,
+        /// Milliseconds to hold the fetch open, so a second caller reaches the
+        /// single-flight wait rather than racing past it.
+        delay_ms: u64,
+    }
+
+    impl CountingRegistry {
+        fn npm(document: VersionDocument, fetches: Arc<Mutex<usize>>) -> Arc<Self> {
+            Arc::new(Self {
+                kind: "npm",
+                document: Mutex::new(Ok(document)),
+                fetches,
+                delay_ms: 0,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl RegistryClient for CountingRegistry {
+        fn registry_type(&self) -> &str {
+            self.kind
+        }
+
+        async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
+            Ok(PackageMetadata {
+                id: pkg.clone(),
+                published_at: None,
+                download_url: None,
+                checksum: None,
+                is_signed: None,
+                extra: serde_json::json!({}),
+                cache_control: None,
+            })
+        }
+
+        async fn fetch_version_document(
+            &self,
+            _package: &str,
+            _kind: DocumentKind,
+        ) -> Result<VersionDocument, CoreError> {
+            *self.fetches.lock().unwrap() += 1;
+            if self.delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+            }
+            match &*self.document.lock().unwrap() {
+                Ok(doc) => Ok(doc.clone()),
+                Err(CoreError::NotFound(m)) => Err(CoreError::NotFound(m.clone())),
+                Err(e) => Err(CoreError::Registry(e.to_string())),
+            }
+        }
+
+        async fn list_versions(&self, _package: &str) -> Result<Vec<String>, CoreError> {
+            *self.fetches.lock().unwrap() += 1;
+            Ok(vec!["1.0.0".to_owned(), "2.0.0".to_owned()])
+        }
+
+        async fn fetch_artifact(&self, _pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
+            Err(CoreError::Registry("not used".into()))
+        }
+    }
+
+    fn packument() -> VersionDocument {
+        VersionDocument::json(serde_json::json!({
+            "dist-tags": { "latest": "2.0.0" },
+            "readme": "# express",
+            "versions": { "1.0.0": {}, "2.0.0": {} }
+        }))
+    }
+
+    fn svc_with(
+        client: Arc<dyn RegistryClient>,
+        cfg: Option<UpstreamDetailConfig>,
+    ) -> ProxyService {
+        let mut hot = HotConfig {
+            registries: HashMap::from([("r1".to_owned(), client)]),
+            policies: HashMap::from([(
+                "r1".to_owned(),
+                Arc::new(RegistryPolicy {
+                    metadata_ttl: None,
+                    firewall_only: false,
+                    serve_stale_metadata: false,
+                    artifact_ttl: None,
+                    rules: vec![],
+                }),
+            )]),
+            ..Default::default()
+        };
+        if let Some(cfg) = cfg {
+            hot.upstream_detail.insert("r1".to_owned(), cfg);
+        }
+        ProxyService {
+            hot: new_hot_lock(hot),
+            storage: MemStorage::new(),
+            cache: TestCacheStore::new(),
+            repo: SpyRepo::new(),
+            artifact_meta: NoopArtifactMeta::arc(),
+            metrics: Arc::new(ProxyMetrics::new(&["r1".to_owned()])),
+            sbom: None,
+            discovery: Default::default(),
+            readme: None,
+        }
+    }
+
+    /// A package this instance holds nothing of comes back with its versions
+    /// and its README — the test that would have failed before this RFC, and
+    /// the whole point of §2.3.
+    #[tokio::test]
+    async fn a_package_with_no_local_rows_comes_back_from_upstream() {
+        let fetches = Arc::new(Mutex::new(0));
+        let svc = svc_with(
+            CountingRegistry::npm(packument(), Arc::clone(&fetches)),
+            None,
+        );
+
+        let outcome = svc
+            .upstream_detail("r1", "express", &Identity::anonymous())
+            .await
+            .unwrap()
+            .expect("attempted");
+
+        let mut versions: Vec<&str> = outcome
+            .detail
+            .versions
+            .iter()
+            .map(|v| v.version.as_str())
+            .collect();
+        versions.sort_unstable();
+        assert_eq!(versions, ["1.0.0", "2.0.0"]);
+        assert_eq!(outcome.freshness, Freshness::Fresh);
+        assert!(!outcome.truncated);
+        // The packument carries the README, so one fetch answered both halves.
+        assert_eq!(
+            outcome.detail.readmes["2.0.0"].content.as_deref(),
+            Some("# express")
+        );
+        assert_eq!(*fetches.lock().unwrap(), 1);
+    }
+
+    /// A second read within the TTL makes no upstream call: the document is in
+    /// the metadata cache, which is rung 1.
+    #[tokio::test]
+    async fn a_second_read_within_the_ttl_makes_no_upstream_call() {
+        let fetches = Arc::new(Mutex::new(0));
+        let svc = svc_with(
+            CountingRegistry::npm(packument(), Arc::clone(&fetches)),
+            None,
+        );
+
+        let first = svc
+            .upstream_detail("r1", "express", &Identity::anonymous())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.freshness, Freshness::Fresh);
+
+        let second = svc
+            .upstream_detail("r1", "express", &Identity::anonymous())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.freshness, Freshness::Cached);
+        assert_eq!(*fetches.lock().unwrap(), 1, "the cache was not consulted");
+    }
+
+    /// Ten operators opening the same new package must produce one upstream
+    /// request. Without this the console amplifies requests under exactly the
+    /// conditions that make a package interesting.
+    #[tokio::test]
+    async fn concurrent_readers_produce_exactly_one_upstream_request() {
+        let fetches = Arc::new(Mutex::new(0));
+        let client = Arc::new(CountingRegistry {
+            kind: "npm",
+            document: Mutex::new(Ok(packument())),
+            fetches: Arc::clone(&fetches),
+            delay_ms: 60,
+        });
+        let svc = Arc::new(svc_with(client, None));
+
+        let readers: Vec<_> = (0..10)
+            .map(|_| {
+                let svc = Arc::clone(&svc);
+                tokio::spawn(async move {
+                    svc.upstream_detail("r1", "express", &Identity::anonymous())
+                        .await
+                        .unwrap()
+                        .is_some()
+                })
+            })
+            .collect();
+        for reader in readers {
+            assert!(reader.await.unwrap(), "every reader got an answer");
+        }
+        assert_eq!(*fetches.lock().unwrap(), 1);
+    }
+
+    /// A `404` is a fact — upstream *answered* — so it is remembered, and a
+    /// reload loop or a crawler cannot turn every page view into a request.
+    #[tokio::test]
+    async fn an_upstream_404_is_remembered_for_the_negative_ttl() {
+        let fetches = Arc::new(Mutex::new(0));
+        let client = Arc::new(CountingRegistry {
+            kind: "npm",
+            document: Mutex::new(Err(CoreError::NotFound("no such package".into()))),
+            fetches: Arc::clone(&fetches),
+            delay_ms: 0,
+        });
+        let svc = svc_with(client, None);
+
+        for _ in 0..3 {
+            assert!(svc
+                .upstream_detail("r1", "nope", &Identity::anonymous())
+                .await
+                .unwrap()
+                .is_none());
+        }
+        assert_eq!(
+            *fetches.lock().unwrap(),
+            1,
+            "the absence was not remembered"
+        );
+    }
+
+    /// A connection failure is not a fact about the package, so it is not
+    /// remembered — the next reader tries again, and the page meanwhile says
+    /// the upstream could not be reached rather than that the package is gone.
+    #[tokio::test]
+    async fn a_connection_failure_is_not_cached_as_an_absence() {
+        let fetches = Arc::new(Mutex::new(0));
+        let client = Arc::new(CountingRegistry {
+            kind: "npm",
+            document: Mutex::new(Err(CoreError::Registry("connection refused".into()))),
+            fetches: Arc::clone(&fetches),
+            delay_ms: 0,
+        });
+        let svc = svc_with(client, None);
+
+        for _ in 0..3 {
+            assert!(svc
+                .upstream_detail("r1", "express", &Identity::anonymous())
+                .await
+                .is_err());
+        }
+        assert_eq!(
+            *fetches.lock().unwrap(),
+            3,
+            "a failure was cached as absence"
+        );
+    }
+
+    /// `enabled = false` makes no upstream call at all — the switch an
+    /// air-gapped estate sets, and the one an operator whose threat model is
+    /// "this box talks upstream only when a build needs bytes" reaches for.
+    #[tokio::test]
+    async fn a_disabled_registry_is_never_asked() {
+        let fetches = Arc::new(Mutex::new(0));
+        let svc = svc_with(
+            CountingRegistry::npm(packument(), Arc::clone(&fetches)),
+            Some(UpstreamDetailConfig {
+                enabled: false,
+                ..UpstreamDetailConfig::default()
+            }),
+        );
+
+        assert!(svc
+            .upstream_detail("r1", "express", &Identity::anonymous())
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(*fetches.lock().unwrap(), 0);
+    }
+
+    /// `max_versions` truncates newest-first and says so. A truncated list that
+    /// dropped the *newest* versions would be worse than no list at all.
+    #[tokio::test]
+    async fn max_versions_truncates_newest_first_and_reports_it() {
+        let doc = VersionDocument::json(serde_json::json!({
+            "dist-tags": { "latest": "3.0.0" },
+            "versions": { "1.0.0": {}, "2.0.0": {}, "3.0.0": {} }
+        }));
+        let svc = svc_with(
+            CountingRegistry::npm(doc, Arc::new(Mutex::new(0))),
+            Some(UpstreamDetailConfig {
+                max_versions: 2,
+                ..UpstreamDetailConfig::default()
+            }),
+        );
+
+        let outcome = svc
+            .upstream_detail("r1", "express", &Identity::anonymous())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(outcome.truncated);
+        let versions: Vec<&str> = outcome
+            .detail
+            .versions
+            .iter()
+            .map(|v| v.version.as_str())
+            .collect();
+        assert_eq!(versions, ["3.0.0", "2.0.0"]);
+    }
+
+    /// A kind with no listing document but a version list still answers — with
+    /// rows carrying no publish times, which is honest and still the difference
+    /// between a versions table and an empty state.
+    #[tokio::test]
+    async fn a_list_versions_kind_answers_with_bare_rows() {
+        let fetches = Arc::new(Mutex::new(0));
+        let client = Arc::new(CountingRegistry {
+            kind: "openvsx",
+            document: Mutex::new(Err(CoreError::NotSupported("no document".into()))),
+            fetches: Arc::clone(&fetches),
+            delay_ms: 0,
+        });
+        let svc = svc_with(client, None);
+
+        let outcome = svc
+            .upstream_detail("r1", "pub.ext", &Identity::anonymous())
+            .await
+            .unwrap()
+            .expect("attempted");
+        assert_eq!(outcome.detail.versions.len(), 2);
+        assert!(outcome
+            .detail
+            .versions
+            .iter()
+            .all(|v| v.published_at.is_none()));
+        assert_eq!(*fetches.lock().unwrap(), 1);
+    }
+
+    /// A kind with nothing to ask is not asked. `generic` is path-addressed:
+    /// there is no package identity to ask about.
+    #[tokio::test]
+    async fn a_kind_with_no_upstream_detail_is_not_asked() {
+        assert!(matches!(
+            RegistryKind::Generic.upstream_detail(),
+            crate::entities::UpstreamDetailSupport::None(_)
+        ));
+
+        let fetches = Arc::new(Mutex::new(0));
+        let client = Arc::new(CountingRegistry {
+            kind: "generic",
+            document: Mutex::new(Ok(packument())),
+            fetches: Arc::clone(&fetches),
+            delay_ms: 0,
+        });
+        let svc = svc_with(client, None);
+
+        assert!(svc
+            .upstream_detail("r1", "anything", &Identity::anonymous())
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(*fetches.lock().unwrap(), 0);
+    }
+
+    /// The read writes nothing to the catalogue: no access event, and nothing
+    /// that would make the package appear in `/api/v1/explore/packages`. A page
+    /// view must not be able to change what the catalogue claims this instance
+    /// has (§4.4).
+    #[tokio::test]
+    async fn a_discovery_read_records_no_access_event() {
+        let repo = SpyRepo::new();
+        let mut svc = svc_with(
+            CountingRegistry::npm(packument(), Arc::new(Mutex::new(0))),
+            None,
+        );
+        svc.repo = Arc::clone(&repo) as Arc<dyn PackageRepository>;
+
+        svc.upstream_detail("r1", "express", &Identity::anonymous())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            repo.events().is_empty(),
+            "the discovery read recorded an access event: {:?}",
+            repo.events()
+        );
+    }
+}
+
+// ── The per-version README read (RFC 0007 §5.6, open question 7) ─────────────
+
+mod version_readme {
+    use super::*;
+    use crate::entities::{MetadataReadme, ReadmeFormat};
+
+    /// The invariant that makes the derived read safe: a page view resolves a
+    /// version's metadata and **writes no `package_readmes` row**.
+    ///
+    /// A row created because somebody looked at a page has nothing that ever
+    /// deletes it — deletion keys on a version being deleted, and a version
+    /// never held here is never deleted. Asserted at the unit boundary as well
+    /// as through the handler, because the recording hook and the resolve sit
+    /// one line apart and a future edit could reunite them without any HTTP
+    /// test noticing.
+    #[tokio::test]
+    async fn a_per_version_readme_read_records_nothing() {
+        use crate::services::readme::ReadmeService;
+        use std::sync::Mutex;
+
+        struct PypiLike {
+            resolves: Arc<Mutex<usize>>,
+        }
+
+        #[async_trait]
+        impl RegistryClient for PypiLike {
+            fn registry_type(&self) -> &str {
+                "pypi"
+            }
+            async fn resolve_metadata(
+                &self,
+                pkg: &PackageId,
+            ) -> Result<PackageMetadata, CoreError> {
+                *self.resolves.lock().unwrap() += 1;
+                Ok(PackageMetadata {
+                    id: pkg.clone(),
+                    published_at: None,
+                    download_url: None,
+                    checksum: None,
+                    is_signed: None,
+                    extra: serde_json::json!({
+                        "readme": MetadataReadme::text("# requests", ReadmeFormat::Markdown),
+                    }),
+                    cache_control: None,
+                })
+            }
+            async fn fetch_artifact(&self, _pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
+                Err(CoreError::Registry("not used".into()))
+            }
+        }
+
+        let repo = Arc::new(super::readme_capture::RecordingRepo::default());
+        let resolves = Arc::new(Mutex::new(0));
+        let svc = ProxyService {
+            hot: new_hot_lock(HotConfig {
+                registries: HashMap::from([(
+                    "r1".to_owned(),
+                    Arc::new(PypiLike {
+                        resolves: Arc::clone(&resolves),
+                    }) as Arc<dyn RegistryClient>,
+                )]),
+                policies: HashMap::from([(
+                    "r1".to_owned(),
+                    Arc::new(RegistryPolicy {
+                        metadata_ttl: None,
+                        firewall_only: false,
+                        serve_stale_metadata: false,
+                        artifact_ttl: None,
+                        rules: vec![],
+                    }),
+                )]),
+                ..Default::default()
+            }),
+            storage: MemStorage::new(),
+            cache: TestCacheStore::new(),
+            repo: SpyRepo::new(),
+            artifact_meta: NoopArtifactMeta::arc(),
+            metrics: Arc::new(ProxyMetrics::new(&["r1".to_owned()])),
+            sbom: None,
+            discovery: Default::default(),
+            readme: Some(Arc::new(ReadmeService::new(
+                Arc::clone(&repo) as Arc<dyn crate::ports::ReadmeRepository>
+            ))),
+        };
+
+        let answer = svc
+            .upstream_version_readme("r1", "requests", "2.31.0", &Identity::anonymous())
+            .await
+            .unwrap()
+            .expect("a per-version README");
+        assert_eq!(answer.0, "# requests");
+        assert_eq!(answer.3, crate::services::proxy::Freshness::Fresh);
+
+        // The capture path spawns, so give it every chance to have run.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            repo.rows.lock().unwrap().is_empty(),
+            "a page view stored a README row: {:?}",
+            repo.rows.lock().unwrap()
+        );
+
+        // Cache-first: a second reader of the same version costs no request,
+        // and reports rung 1.
+        let again = svc
+            .upstream_version_readme("r1", "requests", "2.31.0", &Identity::anonymous())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.3, crate::services::proxy::Freshness::Cached);
+        assert_eq!(*resolves.lock().unwrap(), 1);
+    }
+
+    /// An archive-borne kind is never asked: its text is inside bytes we do not
+    /// hold, so resolving a version would be a request for nothing.
+    #[tokio::test]
+    async fn an_archive_borne_kind_is_not_resolved_for_a_readme() {
+        let repo = Arc::new(super::readme_capture::RecordingRepo::default());
+        let svc = proxy_for_kind("cargo", Arc::clone(&repo));
+        assert!(svc
+            .upstream_version_readme("r1", "mylib", "1.0.0", &Identity::anonymous())
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    fn proxy_for_kind(
+        kind: &'static str,
+        repo: Arc<super::readme_capture::RecordingRepo>,
+    ) -> ProxyService {
+        use crate::services::readme::ReadmeService;
+
+        struct Bare(&'static str);
+
+        #[async_trait]
+        impl RegistryClient for Bare {
+            fn registry_type(&self) -> &str {
+                self.0
+            }
+            async fn resolve_metadata(
+                &self,
+                _pkg: &PackageId,
+            ) -> Result<PackageMetadata, CoreError> {
+                panic!("an archive-borne kind must not be resolved for a README")
+            }
+            async fn fetch_artifact(&self, _pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
+                Err(CoreError::Registry("not used".into()))
+            }
+        }
+
+        ProxyService {
+            hot: new_hot_lock(HotConfig {
+                registries: HashMap::from([(
+                    "r1".to_owned(),
+                    Arc::new(Bare(kind)) as Arc<dyn RegistryClient>,
+                )]),
+                policies: HashMap::from([(
+                    "r1".to_owned(),
+                    Arc::new(RegistryPolicy {
+                        metadata_ttl: None,
+                        firewall_only: false,
+                        serve_stale_metadata: false,
+                        artifact_ttl: None,
+                        rules: vec![],
+                    }),
+                )]),
+                ..Default::default()
+            }),
+            storage: MemStorage::new(),
+            cache: TestCacheStore::new(),
+            repo: SpyRepo::new(),
+            artifact_meta: NoopArtifactMeta::arc(),
+            metrics: Arc::new(ProxyMetrics::new(&["r1".to_owned()])),
+            sbom: None,
+            discovery: Default::default(),
+            readme: Some(Arc::new(ReadmeService::new(
+                repo as Arc<dyn crate::ports::ReadmeRepository>,
+            ))),
+        }
     }
 }

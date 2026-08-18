@@ -528,6 +528,7 @@
     "time": "Time",
     "type": "Type",
     "unblock": "Unblock",
+    "unknown": "unknown",
     "unknownError": "Unknown error",
     "upstream": "Upstream",
     "user": "User",
@@ -702,12 +703,18 @@
     "loading": "Loading…",
     "local": "Local",
     "memberPreReleaseVersionsVisible": "Member — pre-release versions visible",
-    "nonMember": "Non-member",
     "noSbom": "No SBOM",
-    "nothingHasBeenPulledThrough": "Nothing has been pulled through or published to this registry under this name.",
     "noVersionsYet": "No versions yet",
+    "nonMember": "Non-member",
+    "notHeldHere": "not held here",
+    "notHeldHereHelp": "This instance holds no bytes for this version; it exists upstream.",
+    "notScanned": "not scanned",
+    "notScannedHelp": "Nothing has opened this version's bytes here, so no scan has run. An empty list would read as “clear”, which we cannot claim.",
+    "nothingHasBeenPulledThrough": "Nothing has been pulled through or published to this registry under this name.",
     "registryAccess": "Registry access:",
     "supplyChainReportOn": "Supply-chain report on socket.dev",
+    "upstreamHasNoneEither": "Nothing has been pulled through, and the upstream does not have it either.",
+    "upstreamUnreachable": "Nothing has been pulled through, and the upstream could not be reached.",
     "why": "Why?"
   },
   "packageEventsTable": {
@@ -767,6 +774,17 @@
     "storage": "Storage",
     "title": "Your quota",
     "versions": "Versions"
+  },
+  "readmePanel": {
+    "title": "README",
+    "fallbackFrom": "README from {shown}; version {requested} ships none.",
+    "packageLevel": "This is the package's README, not this version's — the registry publishes one per package and attributes it to the latest release.",
+    "truncated": "This README is longer than this registry stores; what you see is the beginning of it.",
+    "notHeldHere": "Read from the upstream's own answer. Nothing of this version is held here, so this text is not stored — it is as current as the cached metadata.",
+    "noneStored": "No README stored for this package.",
+    "noneForThisRegistryType": "Packages in this registry carry no README.",
+    "blocked": "This version is blocked, so its README is not served. The block's reason is on the version row.",
+    "unreachable": "The README could not be read."
   },
   "recentPullsWidget": {
     "blockedSincePull": "Blocked after you pulled it — this version is now refused.",
@@ -845,6 +863,12 @@
     "description": "Work out why a request was allowed or refused, and what URL a client should use.",
     "title": "Tools",
     "urlMapper": "URL Mapper"
+  },
+  "upstreamNotice": {
+    "added": "{count} version(s) below exist upstream and are not held here.",
+    "addedTruncated": "Showing the first {count} versions upstream knows about; there are more.",
+    "stale": "The upstream could not be reached, so this list comes from an older cached answer.",
+    "unreachable": "The upstream could not be reached, so only what is held here is listed."
   },
   "userMenu": {
     "downloadCli": "Download CLI",

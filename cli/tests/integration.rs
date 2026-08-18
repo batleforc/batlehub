@@ -61,6 +61,11 @@ struct TestServer {
     /// This is necessary because in-memory local-registry and admin-service
     /// backends are separate stores (in Postgres they share the same tables).
     repo: Arc<InMemoryPackageRepository>,
+    /// Exposed for the same reason `repo` is: `package readme` reads the README
+    /// store, and nothing a CLI test can do through the HTTP surface puts a row
+    /// in it — the capture paths are a proxied resolve and a publish, neither of
+    /// which this harness runs.
+    readme_repo: Arc<batlehub_adapters::in_memory::InMemoryReadmeRepository>,
     _runtime: tokio::runtime::Runtime,
 }
 
@@ -133,6 +138,12 @@ impl TestServer {
             })
             .collect();
 
+        let readme_repo = batlehub_adapters::in_memory::InMemoryReadmeRepository::new();
+        let readme_svc = Arc::new(batlehub_core::services::ReadmeService::new(Arc::clone(
+            &readme_repo,
+        )
+            as Arc<dyn batlehub_core::ports::ReadmeRepository>));
+
         let local_svc = Arc::new(LocalRegistryService {
             backend: Arc::new(InMemoryLocalRegistry::new()),
             storage: storage.clone(),
@@ -147,6 +158,7 @@ impl TestServer {
             sbom: None,
             explore_cache: None,
             package_repo: None,
+            readme: Some(Arc::clone(&readme_svc)),
         });
 
         let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
@@ -162,6 +174,8 @@ impl TestServer {
             artifact_meta: NoopArtifactMetaRepository::arc(),
             metrics: Arc::new(ProxyMetrics::new(&[])),
             sbom: None,
+            readme: Some(Arc::clone(&readme_svc)),
+            discovery: Default::default(),
         });
 
         let admin_svc = Arc::new(AdminService::new(repo.clone()));
@@ -289,6 +303,7 @@ impl TestServer {
         Self {
             port,
             repo,
+            readme_repo,
             _runtime: rt,
         }
     }
@@ -315,6 +330,34 @@ impl TestServer {
             .build()
             .unwrap()
             .block_on(async move { repo.record_access(event).await.unwrap() });
+    }
+
+    /// Seed a README directly into the store, for the same reason
+    /// [`Self::seed_package`] exists: the capture paths are a proxied resolve
+    /// and a publish, and this harness runs neither.
+    fn seed_readme(&self, name: &str, version: &str, body: &str) {
+        use batlehub_core::entities::{readme_digest, PackageReadme, ReadmeFormat, ReadmeSource};
+
+        let readme = PackageReadme {
+            registry: REGISTRY.to_owned(),
+            name: name.to_owned(),
+            version: version.to_owned(),
+            content: body.to_owned(),
+            format: ReadmeFormat::Markdown,
+            source: ReadmeSource::LocalPublish,
+            digest: readme_digest(body),
+            truncated: false,
+            package_level: false,
+            extracted_at: chrono::Utc::now(),
+        };
+        let repo = Arc::clone(&self.readme_repo);
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(async move {
+                use batlehub_core::ports::ReadmeRepository;
+                repo.upsert(readme).await.unwrap()
+            });
     }
 }
 
@@ -2579,4 +2622,143 @@ fn publish_nuget_package_accessible_via_proxy() {
         versions.iter().any(|v| v == "4.0.0"),
         "expected 4.0.0 in flat index versions: {versions:?}"
     );
+}
+
+// ── `package readme` (RFC 0007 §6.6) ──────────────────────────────────────────
+
+/// The source, not a rendering: markdown in a terminal is readable, and turning
+/// it into ANSI is a separate concern.
+#[test]
+fn package_readme_prints_the_source_for_an_explicit_version() {
+    let srv = TestServer::start();
+    srv.seed_readme("mylib", "1.0.0", "# mylib\n\nDoes a thing.");
+    srv.seed_readme("mylib", "2.0.0", "# mylib 2\n\nDoes another thing.");
+
+    let (ok, stdout, _stderr) = cli_cmd(
+        &["package", "readme", &format!("{REGISTRY}/mylib@1.0.0")],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "package readme should succeed");
+    assert!(stdout.contains("# mylib"), "{stdout}");
+    assert!(stdout.contains("Does a thing."), "{stdout}");
+    // Each version's own text, which is the whole point of the version key.
+    assert!(!stdout.contains("Does another thing."), "{stdout}");
+}
+
+/// Without a version, the newest that has a README answers.
+#[test]
+fn package_readme_without_a_version_prints_one_anyway() {
+    let srv = TestServer::start();
+    srv.seed_readme("mylib", "1.0.0", "# the only one");
+
+    let (ok, stdout, _stderr) = cli_cmd(
+        &["package", "readme", &format!("{REGISTRY}/mylib")],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "package readme should succeed");
+    assert!(stdout.contains("# the only one"), "{stdout}");
+}
+
+/// The qualifications go to stderr, so `batlehub package readme x/y > README.md`
+/// writes the document and not a header — while a reader at a terminal still
+/// sees that they are looking at another version's prose.
+#[test]
+fn package_readme_puts_the_fallback_note_on_stderr_and_the_text_on_stdout() {
+    let srv = TestServer::start();
+    srv.seed_readme("mylib", "1.4.2", "# 1.4.2 documentation");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["package", "readme", &format!("{REGISTRY}/mylib@2.0.0-rc1")],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "package readme should succeed");
+    assert!(stdout.contains("# 1.4.2 documentation"), "{stdout}");
+    assert!(
+        !stdout.contains("note:"),
+        "the note leaked into stdout: {stdout}"
+    );
+    assert!(stderr.contains("1.4.2"), "{stderr}");
+    assert!(stderr.contains("2.0.0-rc1"), "{stderr}");
+}
+
+/// An unknown coordinate exits non-zero with something a person can act on.
+#[test]
+fn package_readme_for_an_unknown_package_fails_readably() {
+    let srv = TestServer::start();
+
+    let (ok, _stdout, stderr) = cli_cmd(
+        &["package", "readme", &format!("{REGISTRY}/no-such-package")],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(!ok, "an unknown package should exit non-zero");
+    assert!(
+        stderr.to_lowercase().contains("readme") || stderr.contains("404"),
+        "the message should say what was not found: {stderr}"
+    );
+}
+
+/// A malformed coordinate is rejected before any request is made.
+#[test]
+fn package_readme_rejects_a_coordinate_with_no_registry() {
+    let srv = TestServer::start();
+
+    let (ok, _stdout, stderr) = cli_cmd(
+        &["package", "readme", "just-a-name"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(!ok);
+    assert!(stderr.contains("registry/name"), "{stderr}");
+}
+
+/// `--json` prints the whole response, so a script can read `is_fallback` and
+/// `stored` rather than parsing the notes.
+#[test]
+fn package_readme_json_carries_the_qualifiers() {
+    let srv = TestServer::start();
+    srv.seed_readme("mylib", "1.0.0", "# mylib");
+
+    let (ok, stdout, _stderr) = cli_cmd(
+        &[
+            "package",
+            "readme",
+            &format!("{REGISTRY}/mylib@1.0.0"),
+            "--json",
+        ],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "package readme --json should succeed");
+    let body: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(body["version"], "1.0.0");
+    assert_eq!(body["is_fallback"], false);
+    assert_eq!(body["stored"], true);
+    assert_eq!(body["source_text"], "# mylib");
+}
+
+/// `--no-upstream` maps to `?upstream=skip`. This harness has no upstream at
+/// all, so the assertion is that the flag is accepted and still answers from
+/// what is held — the "makes no upstream call" half is asserted on a mock in
+/// `crates/web/tests/explore_upstream_detail.rs`, which can count requests.
+#[test]
+fn package_readme_no_upstream_still_answers_from_what_is_held() {
+    let srv = TestServer::start();
+    srv.seed_readme("mylib", "1.0.0", "# held here");
+
+    let (ok, stdout, _stderr) = cli_cmd(
+        &[
+            "package",
+            "readme",
+            &format!("{REGISTRY}/mylib@1.0.0"),
+            "--no-upstream",
+        ],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "package readme --no-upstream should succeed");
+    assert!(stdout.contains("# held here"), "{stdout}");
 }

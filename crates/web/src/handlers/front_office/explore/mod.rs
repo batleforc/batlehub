@@ -14,6 +14,7 @@ use crate::{error::AppError, extractors::AuthIdentity};
 
 pub mod detail;
 pub mod list;
+pub mod readme;
 pub mod stats;
 
 pub use detail::{
@@ -21,6 +22,7 @@ pub use detail::{
     PackageDetailPath,
 };
 pub use list::{explore_packages, ExploreEntryDto, ExplorePackageListResponse, ExploreQuery};
+pub use readme::{explore_package_readme, ReadmePath, ReadmeQuery, ReadmeResponse};
 pub use stats::{
     explore_registry_stats, explore_upstream_search, ExploreRegistryStatsResponse, RegistryStatDto,
     UpstreamPackageDto, UpstreamSearchQuery, UpstreamSearchResponse,

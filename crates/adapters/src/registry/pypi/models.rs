@@ -16,6 +16,24 @@ pub(super) struct PypiSearchInfoInner {
 pub(super) struct PypiVersionJson {
     #[serde(default)]
     pub(super) urls: Vec<PypiFileInfo>,
+    /// The long description and its declared markup.
+    ///
+    /// Per-version by construction — a wheel's `METADATA` ships inside the
+    /// wheel — which is why PyPI is metadata-borne and can answer for a version
+    /// this instance holds no bytes for (RFC 0007 §4.3).
+    #[serde(default)]
+    pub(super) info: Option<PypiVersionInfo>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct PypiVersionInfo {
+    #[serde(default)]
+    pub(super) description: Option<String>,
+    /// PEP 566's `Description-Content-Type`. Written by the publisher in the
+    /// package metadata, not a transport header — which is why it is trusted to
+    /// choose a renderer and an upstream `Content-Type` is not (§7.4).
+    #[serde(default)]
+    pub(super) description_content_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

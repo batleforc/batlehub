@@ -13,7 +13,7 @@ is not that a project has never been wrong; it is what it does when it finds
 out.
 
 **Every page here opens with a status banner, and the status is not uniform.**
-Five of the eleven below are implemented and six are not. The banner is
+Six of the twelve below are implemented and six are not. The banner is
 generated from each document's own `Status` field rather than written on the
 page, so it cannot drift from the table it is quoting — an RFC that describes a
 proposal, published under a label saying it shipped, would be a claim about the
@@ -30,21 +30,29 @@ product that is not true.
 | [0005-bis — Two readers, one home each](/rfc/0005-bis-audience-split-and-one-home) | Splitting the guide by audience, giving every instruction one home, cutting each page down to one subject, and turning the showcase back into an introduction |
 | [0006 — A block every ecosystem can see](/rfc/0006-blocked-versions-hidden-everywhere) | Hiding blocked versions from every registry's listings, not just npm's, and stating which protocols cannot be filtered |
 | [0007 — The README, per version](/rfc/0007-package-readmes) | Storing each version's own README, rendering it safely on the server, and making the package page answer — versions and documentation — for packages this instance holds nothing of |
+| [0007-bis — The three 0007 deferred](/rfc/0007-bis-images-search-and-fetch) | Rendering a README's images without telling their host who is reading, searching what a package says rather than what it is called, and asking for a version the page has told you exists |
 | [0008 — mise in an air-gapped estate](/rfc/0008-mise-in-an-air-gapped-estate) | Making `mise install` work with no route off the site: `mise.lock` as the bill of materials, a server that will not dial out, and verification moved to the connected side |
 | [0009 — Every endpoint the client actually calls](/rfc/0009-protocol-coverage) | Serving the paths each package manager really requests, and two mechanisms so the next invented endpoint fails the build |
 
-0007 and 0008 were deferred behind 0009, and the reason is worth stating plainly:
+0007 and 0008 were deferred behind 0009, and the reason was worth stating plainly:
 0009 found six protocol defects that had all shipped green, and the common cause
 was tests written from our implementation rather than from what the client sends.
 Building further on that foundation before fixing it would put more surface on a
 floor we know does not hold. 0008's air-gapped case also depended directly on
 0009's checksum-database and upstream-caching work.
 
+0007-bis picks up the three open questions 0007 recommended a decision on and did
+not take — the image proxy, prose search, and a way to fetch a version the page
+has just told you exists. All three are the same shape: the page knows something
+it cannot act on.
+
 0009 has since landed, and with it that dependency: the Go checksum database is
 proxied *and cached*, so a second build resolves with no route off the site, and
 Terraform's checksum files no longer send an otherwise air-gapped provider
-install to the internet at its last step. 0008 is therefore waiting on
-scheduling rather than on 0009 — see its own §2.7 for what that leaves.
+install to the internet at its last step. 0007 has since landed on that
+foundation — reusing 0009's three rungs for its discovery read rather than
+inventing a second cache policy — and 0008 is waiting on scheduling rather than
+on 0009; see its own §2.7 for what that leaves.
 
 They read in order: each one argues with the state the previous one left.
 

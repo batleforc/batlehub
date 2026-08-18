@@ -1,6 +1,8 @@
 use batlehub_core::ports::{ExtractedManifest, SbomDependency};
 use bytes::Bytes;
 
+use super::readme;
+
 pub(super) fn extract_npm_manifest(data: &Bytes) -> ExtractedManifest {
     use flate2::read::GzDecoder;
     use std::io::Read;
@@ -28,7 +30,12 @@ pub(super) fn extract_npm_manifest(data: &Bytes) -> ExtractedManifest {
                 tracing::warn!("sbom: failed to parse npm manifest, treating as no dependencies");
                 return ExtractedManifest::default();
             }
-            return parse_npm_package_json(&content);
+            let mut manifest = parse_npm_package_json(&content);
+            // The tarball's own README, for the versions whose packument
+            // carries none — which is why npm's `readme_support()` is
+            // `MetadataThenArchive`. Every path is prefixed `package/`.
+            manifest.readme = readme::readme_from_targz(data, readme::root_readme_matcher(1));
+            return manifest;
         }
     }
     ExtractedManifest::default()
@@ -56,6 +63,7 @@ fn parse_npm_package_json(content: &str) -> ExtractedManifest {
     ExtractedManifest {
         dependencies: deps,
         license: parse_npm_license(&val),
+        readme: None,
     }
 }
 
@@ -198,5 +206,37 @@ mod tests {
             extract_npm_manifest(&Bytes::from_static(b"not a gzip stream")),
             ExtractedManifest::default()
         );
+    }
+
+    use super::super::readme::fixtures::targz;
+
+    /// The tarball's README is what answers for the versions whose packument
+    /// carries none — which is why npm reads both.
+    #[test]
+    fn the_tarballs_readme_comes_back_with_the_manifest() {
+        let data = targz(&[
+            (
+                "package/package.json",
+                br#"{"name":"x","license":"MIT","dependencies":{"y":"^1"}}"#.as_slice(),
+            ),
+            ("package/README.md", b"# x".as_slice()),
+        ]);
+        let manifest = extract_npm_manifest(&data);
+        assert_eq!(manifest.license.as_deref(), Some("MIT"));
+        assert_eq!(manifest.dependencies.len(), 1);
+        assert_eq!(manifest.readme.unwrap().content, "# x");
+    }
+
+    /// A README inside a bundled dependency is not this package's.
+    #[test]
+    fn a_bundled_dependencys_readme_is_not_the_packages_own() {
+        let data = targz(&[
+            ("package/package.json", br#"{"name":"x"}"#.as_slice()),
+            (
+                "package/node_modules/dep/README.md",
+                b"# somebody else".as_slice(),
+            ),
+        ]);
+        assert!(extract_npm_manifest(&data).readme.is_none());
     }
 }

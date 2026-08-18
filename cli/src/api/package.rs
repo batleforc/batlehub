@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use super::auth::percent_encode;
 use super::BatleHubClient;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,8 +39,59 @@ pub struct PackageQuery {
     pub per_page: u64,
 }
 
+/// One version's README, as the explore endpoint returns it.
+///
+/// Only the fields the CLI prints or reasons about: the response carries the
+/// rendered HTML too, and a terminal has no use for it — `format=source` is
+/// what this asks for.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadmeResponse {
+    pub registry: String,
+    pub name: String,
+    pub version: String,
+    pub requested_version: Option<String>,
+    pub is_fallback: bool,
+    pub format: String,
+    pub source: String,
+    pub package_level: bool,
+    pub stored: bool,
+    pub freshness: Option<String>,
+    pub truncated: bool,
+    pub source_text: Option<String>,
+    pub extracted_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReadmeQuery {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Always `source`: markdown in a terminal is readable, and rendering it to
+    /// ANSI is a separate concern (RFC 0007 §4.2).
+    pub format: &'static str,
+    /// `skip` maps to `--no-upstream`, for a caller who wants the answer this
+    /// instance can give without asking anyone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<&'static str>,
+}
+
 impl BatleHubClient {
     pub async fn list_packages(&self, query: PackageQuery) -> Result<PackageListResponse> {
         self.get_with_params("/api/v1/packages", &query).await
+    }
+
+    pub async fn package_readme(
+        &self,
+        registry: &str,
+        name: &str,
+        query: ReadmeQuery,
+    ) -> Result<ReadmeResponse> {
+        // The name is percent-encoded because a scoped npm package is
+        // `@scope/pkg` and the slash would otherwise split the path segment.
+        let path = format!(
+            "/api/v1/explore/packages/{}/{}/readme",
+            percent_encode(registry),
+            percent_encode(name)
+        );
+        self.get_with_params(&path, &query).await
     }
 }

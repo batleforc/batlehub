@@ -229,6 +229,7 @@ the rendered TOML under a `toml` key.
 ```
 batlehub-cli package list   [--registry <r>] [--search <q>] [--blocked-only] [--page N] [--per-page N]
 batlehub-cli package versions <registry> <name>
+batlehub-cli package readme   <registry>/<name>[@<version>] [--no-upstream]
 ```
 
 ### `package list`
@@ -271,6 +272,47 @@ batlehub-cli --json package list | jq '[.[] | select(.status.status == "blocked"
 ### `package versions <registry> <name>`
 
 List all cached versions of a package with their status and download count.
+
+### `package readme <registry>/<name>[@<version>]`
+
+Print a version's README — the **source**, not a rendering. Markdown in a
+terminal is readable, and turning it into ANSI is a separate concern.
+
+```
+$ batlehub-cli package readme internal/mylib@1.4.2
+# mylib
+
+Does a thing.
+```
+
+Without a version, the newest one that has a README answers. When the version
+you asked for ships none, the newest that does answers instead — and says so:
+
+```
+$ batlehub-cli package readme internal/mylib@2.0.0-rc1 > README.md
+note: showing 1.4.2's README; version 2.0.0-rc1 ships none
+```
+
+**Every qualification goes to stderr**, so redirecting stdout writes the document
+and nothing else. The notes you may see: a fallback from another version, a
+README that is the *package's* rather than this version's, one read from the
+upstream's own answer because nothing of this version is held here, one
+truncated at the registry's `max_bytes`, and one that is not markdown.
+
+`--no-upstream` answers from what this instance holds, without asking the
+registry's upstream about a version it holds nothing of — for a script, or for a
+host with no route off site. See
+[what leaves this instance](/operations/egress#the-console-s-discovery-read).
+
+`--json` prints the whole response, so a script can read `is_fallback`, `stored`
+and `truncated` rather than parsing the notes:
+
+```bash
+batlehub-cli --json package readme internal/mylib@1.4.2 | jq -r .source_text
+```
+
+Which registries carry a README at all, and where each one's comes from, is in
+the [README support table](/registries/#readmes).
 
 ---
 

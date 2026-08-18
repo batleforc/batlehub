@@ -4,6 +4,7 @@ pub mod config_change;
 pub mod governance;
 pub mod notification;
 pub mod ops;
+pub mod readme;
 pub mod registry;
 pub mod sbom;
 pub mod stats_history;
@@ -26,14 +27,15 @@ pub use ops::{
     BlockedIpInfo, IpBlockStore, NoopWarmCoordinator, QuotaOutcome, QuotaRepository, QuotaUsage,
     RateLimitStore, WarmCoordinator,
 };
+pub use readme::ReadmeRepository;
 pub use registry::{
     ArtifactCacheMeta, ArtifactInventory, ArtifactMeta, ArtifactMetaRecord, ArtifactMetaRepository,
     ArtifactStream, BulkResult, DocumentBody, DocumentKind, FetchedArtifact, LocalRegistryBackend,
     PackageRepository, RecentErrorRecord, RegistryClient, UpstreamPackage, VersionDocument,
 };
 pub use sbom::{
-    ExtractedManifest, SbomDependency, SbomExtractor, SbomRepository, UpstreamSbomFetcher,
-    LICENSE_EXTRACTION_TYPES,
+    ExtractedManifest, ExtractedReadme, SbomDependency, SbomExtractor, SbomRepository,
+    UpstreamSbomFetcher, LICENSE_EXTRACTION_TYPES, README_EXTRACTION_TYPES, README_EXTRACT_CEILING,
 };
 pub use stats_history::{StatsHistoryRepository, StatsRollupRow};
 pub use storage::{

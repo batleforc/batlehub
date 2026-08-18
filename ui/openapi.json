@@ -3564,6 +3564,19 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "upstream",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Whether the discovery read may run for this request.",
+              "enum": [
+                "auto",
+                "skip"
+              ]
+            }
           }
         ],
         "responses": {
@@ -3576,6 +3589,83 @@
                 }
               }
             }
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/explore/packages/{registry}/{name}/readme": {
+      "get": {
+        "tags": [
+          "explore"
+        ],
+        "summary": "A version's README, rendered and sanitised.",
+        "operationId": "explore_package_readme",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "description": "The version to show. Absent means the newest version that has one.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "description": "Inlined into the parameter rather than referenced: nothing returns this\nenum in a body, so utoipa emits no component for it and the generated\nTypeScript client would carry a dangling `$ref` — which reaches the\nconsole as `unknown`, the exact outcome `openapi_contract.rs` exists to\nprevent for response bodies.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "What to return: the rendered HTML, the source, or both.\n\n`source` exists for the CLI, which prints markdown to a terminal — and for\nan operator checking what the package actually said against what the panel\nrendered, which is the whole reason the store keeps the source (§5.3).",
+              "enum": [
+                "html",
+                "source",
+                "both"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The README for this version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadmeResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The version is blocked; the body carries the reason"
+          },
+          "404": {
+            "description": "No README, or the package is not visible to this caller"
           }
         },
         "security": [
@@ -4711,6 +4801,16 @@
             "name": "size",
             "in": "query",
             "description": "Maximum results",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Offset into the result set",
             "required": false,
             "schema": {
               "type": "integer",
@@ -7949,6 +8049,16 @@
               "type": "integer",
               "minimum": 0
             }
+          },
+          {
+            "name": "skip",
+            "in": "query",
+            "description": "Offset into the result set",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
           }
         ],
         "responses": {
@@ -8162,6 +8272,17 @@
             "name": "take",
             "in": "query",
             "description": "Max results",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "skip",
+            "in": "query",
+            "description": "Offset into the result set",
             "required": true,
             "schema": {
               "type": "integer",
@@ -14588,7 +14709,8 @@
           "name",
           "gate",
           "versions",
-          "upstream_unavailable"
+          "upstream_unavailable",
+          "upstream"
         ],
         "properties": {
           "gate": {
@@ -14599,6 +14721,10 @@
           },
           "registry": {
             "type": "string"
+          },
+          "upstream": {
+            "$ref": "#/components/schemas/UpstreamReadDto",
+            "description": "What the discovery read did (RFC 0007 §4.2)."
           },
           "upstream_unavailable": {
             "type": "boolean",
@@ -14673,11 +14799,12 @@
           "version",
           "source",
           "firewall",
-          "download_count",
           "is_prerelease",
           "vulnerabilities",
           "deprecated",
-          "unlisted"
+          "unlisted",
+          "readme",
+          "vulnerabilities_scanned"
         ],
         "properties": {
           "deprecated": {
@@ -14692,8 +14819,12 @@
             "description": "Optional deprecation message."
           },
           "download_count": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64",
+            "description": "`null` on an upstream-only row — **not** `0`.\n\n`0` would be a definite answer with nothing behind it: nobody has\ndownloaded it *through here*, which is not the same as nobody having\ndownloaded it, and the row exists precisely because this instance has\nnever held the version (RFC 0007 §4.2).",
             "minimum": 0
           },
           "firewall": {
@@ -14721,6 +14852,10 @@
               "null"
             ]
           },
+          "readme": {
+            "$ref": "#/components/schemas/ReadmeState",
+            "description": "`available` | `none` | `unknown` — whether this version has a README.\n\nA tri-state rather than a boolean, because the answer genuinely has three\nvalues and the third is the common one for an archive-borne registry\nkind: a version this instance holds no bytes for has a README that cannot\nbe read yet. `false` rendered for *\"we have not looked\"* would be a\ndefinite-looking answer with nothing behind it (RFC 0007 §4.2)."
+          },
           "socket_badge_url": {
             "type": [
               "string",
@@ -14730,7 +14865,7 @@
           },
           "source": {
             "type": "string",
-            "description": "`\"proxied\"` | `\"local\"`"
+            "description": "`\"proxied\"` | `\"local\"` | `\"upstream\"`\n\n`upstream` means this instance holds no bytes for the version and knows\nabout it only because it asked. Every cell that would be a fact about\nwhat we hold is `null` on such a row rather than `0`."
           },
           "unlisted": {
             "type": "boolean",
@@ -14745,6 +14880,10 @@
               "$ref": "#/components/schemas/VulnerabilityDto"
             },
             "description": "Known vulnerabilities for this version (from the periodic SBOM re-scan)."
+          },
+          "vulnerabilities_scanned": {
+            "type": "boolean",
+            "description": "Whether this version has ever been scanned for vulnerabilities.\n\n`vulnerabilities: []` means *scanned and clear* only when this is `true`.\nOn a version nothing has ever opened it means *never scanned*, and the\ntwo must not render identically — a green row on a package this instance\nhas never held is a claim we cannot support."
           }
         }
       },
@@ -16025,6 +16164,98 @@
           }
         }
       },
+      "ReadmeResponse": {
+        "type": "object",
+        "required": [
+          "registry",
+          "name",
+          "version",
+          "is_fallback",
+          "format",
+          "source",
+          "package_level",
+          "stored",
+          "truncated",
+          "extracted_at"
+        ],
+        "properties": {
+          "extracted_at": {
+            "type": "string",
+            "description": "When *this instance* read the text, not when upstream published it."
+          },
+          "format": {
+            "type": "string",
+            "description": "`markdown` | `html` | `rst` | `plain` — what the source *is*."
+          },
+          "freshness": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`cached` | `fresh` | `stale`. Only meaningful when `stored` is `false`."
+          },
+          "is_fallback": {
+            "type": "boolean",
+            "description": "`version != requested_version` — the panel labels it."
+          },
+          "name": {
+            "type": "string"
+          },
+          "package_level": {
+            "type": "boolean",
+            "description": "The text is the package's, not this version's: npm's document-root\n`readme`, attributed to the version `dist-tags.latest` names. The panel\nsays so rather than presenting a package-level document as this\nversion's."
+          },
+          "registry": {
+            "type": "string"
+          },
+          "rendered_html": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Sanitised HTML, present unless `format=source`."
+          },
+          "requested_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the caller asked for, when they named a version."
+          },
+          "source": {
+            "type": "string",
+            "description": "`upstream-metadata` | `archive` | `local-publish` — where it came from."
+          },
+          "source_text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The stored source, present unless `format=html`."
+          },
+          "stored": {
+            "type": "boolean",
+            "description": "`true` for a durable record. `false` when it was derived from a cached\nupstream document for a version this instance holds no bytes for."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "The source hit the registry's `max_bytes` and what is shown is a prefix."
+          },
+          "version": {
+            "type": "string",
+            "description": "The coordinate the returned text belongs to."
+          }
+        }
+      },
+      "ReadmeState": {
+        "type": "string",
+        "description": "Whether a version has a README, in the three states the answer really has.\n\nA boolean cannot carry the third one, and the third one is the common case\nthe moment the page starts answering for packages this instance holds nothing\nof: `false` rendered for *\"we have not looked\"* is a definite-looking answer\nwith nothing behind it (RFC 0007 §4.2).",
+        "enum": [
+          "available",
+          "none",
+          "unknown"
+        ]
+      },
       "RecentErrorDto": {
         "type": "object",
         "required": [
@@ -16811,6 +17042,44 @@
           },
           "registry": {
             "type": "string"
+          }
+        }
+      },
+      "UpstreamReadDto": {
+        "type": "object",
+        "description": "What the discovery read did, so the page can say which rung answered rather\nthan presenting a degraded answer as a complete one.",
+        "required": [
+          "attempted",
+          "version_count",
+          "truncated"
+        ],
+        "properties": {
+          "attempted": {
+            "type": "boolean",
+            "description": "`false` for a `local`-mode registry, a kind with no upstream to ask, a\n`?upstream=skip` caller, a registry with the read disabled, or a package\npublished here — a private name is never sent to a public index."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set when the read was attempted and every rung failed. The page says the\nupstream could not be reached rather than showing an empty table as an\nanswer."
+          },
+          "freshness": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`cached` | `fresh` | `stale`, when the read answered."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "`max_versions` shortened the list. A silently shortened list is a lie\nabout the registry."
+          },
+          "version_count": {
+            "type": "integer",
+            "description": "How many upstream-only versions came back.",
+            "minimum": 0
           }
         }
       },

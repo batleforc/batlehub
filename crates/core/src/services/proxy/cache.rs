@@ -372,7 +372,7 @@ impl ProxyService {
             tracing::warn!(key = %artifact_key, error = %e, "record_artifact failed");
         }
 
-        self.maybe_trigger_sbom(
+        self.maybe_introspect_artifact(
             registry_name,
             &artifact_key,
             &metadata,

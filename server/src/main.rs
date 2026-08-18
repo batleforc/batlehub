@@ -190,6 +190,12 @@ async fn main() -> Result<()> {
     let hot = new_hot_lock(init_hot);
 
     let sbom_svc = stores::build_sbom_service(repo.pool())?;
+    // Per-registry README capture is configured in `HotConfig::readme` and
+    // defaults to on, so the service is always wired: an absent
+    // `[registries.readme]` block means enabled, not disabled (RFC 0007 §4.1).
+    let readme_svc = Arc::new(batlehub_core::services::ReadmeService::new(Arc::new(
+        batlehub_adapters::db::PgReadmeRepository::new(repo.pool()),
+    )));
     let proxy_svc = Arc::new(ProxyService {
         hot: Arc::clone(&hot),
         storage: storage.clone(),
@@ -198,6 +204,8 @@ async fn main() -> Result<()> {
         artifact_meta,
         metrics: Arc::clone(&proxy_metrics),
         sbom: Some(Arc::clone(&sbom_svc)),
+        readme: Some(Arc::clone(&readme_svc)),
+        discovery: Default::default(),
     });
 
     let ip_block_store = stores::create_ip_block_store(&config, repo.pool()).await?;
@@ -220,6 +228,7 @@ async fn main() -> Result<()> {
         ownership: Some(ownership_store),
         team_namespace: Some(Arc::clone(&team_namespace_store)),
         sbom: Some(Arc::clone(&sbom_svc)),
+        readme: Some(Arc::clone(&readme_svc)),
         explore_cache: Some(Arc::clone(&admin_svc.explore_cache)),
         package_repo: Some(repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>),
     });

@@ -48,7 +48,7 @@ use batlehub_core::{
     rules::{BlockListRule, RbacRule},
     services::{
         new_hot_lock, AdminService, HotConfig, LocalRegistryService, ProxyMetrics, ProxyService,
-        RegistryPolicy, SbomService,
+        ReadmeService, RegistryPolicy, SbomService,
     },
 };
 use batlehub_web::handlers::back_office::ops::eviction::EvictionServiceMap;
@@ -148,6 +148,11 @@ impl RegistryClient for FixedRegistry {
                 let tarball = |v: &str| {
                     serde_json::json!({
                         "version": v,
+                        // Per-version READMEs, because a packument carries them
+                        // and the discovery read's whole argument is that one
+                        // cached fetch answers both halves of the page
+                        // (RFC 0007 §2.3).
+                        "readme": format!("# {package} {v}"),
                         "dist": { "tarball": format!("https://upstream.invalid/{package}/-/{package}-{v}.tgz") }
                     })
                 };
@@ -492,6 +497,8 @@ pub fn one_registry_proxy(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[name.to_owned()])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     (proxy_svc, repo, local_svc)
 }
@@ -670,6 +677,19 @@ pub fn make_local_svc_with_repo(
     storage: Arc<dyn StorageBackend>,
     package_repo: Option<Arc<dyn PackageRepository>>,
 ) -> Arc<LocalRegistryService> {
+    make_local_svc_with_readme(storage, package_repo, None)
+}
+
+/// [`make_local_svc_with_repo`] with a README store wired in.
+///
+/// Separate rather than a fourth parameter on the common helper: only the
+/// README suite reads the store back, and every other caller would have to pass
+/// a `None` that means nothing to it.
+pub fn make_local_svc_with_readme(
+    storage: Arc<dyn StorageBackend>,
+    package_repo: Option<Arc<dyn PackageRepository>>,
+    readme: Option<Arc<ReadmeService>>,
+) -> Arc<LocalRegistryService> {
     Arc::new(LocalRegistryService {
         backend: Arc::new(InMemoryLocalRegistry::new()),
         storage,
@@ -684,6 +704,7 @@ pub fn make_local_svc_with_repo(
         sbom: None,
         explore_cache: None,
         package_repo,
+        readme,
     })
 }
 pub fn rbac_policy(repo: Arc<dyn PackageRepository>) -> RegistryPolicy {
@@ -1046,6 +1067,8 @@ pub async fn make_app_with_defaults(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: proxy_metrics.clone(),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
 
@@ -1099,6 +1122,21 @@ pub fn local_registry_app_parts(
     mode: RegistryMode,
     sbom_svc: Option<Arc<SbomService>>,
 ) -> LocalRegistryAppParts {
+    local_registry_app_parts_with_readme(name, registry_type, mode, sbom_svc, None)
+}
+
+/// [`local_registry_app_parts`] with a README store wired into both services.
+///
+/// Both, because the two capture paths are different: publish records through
+/// `LocalRegistryService`, a proxied resolve records through `ProxyService`, and
+/// a test that wired only one would pass while the other stored nothing.
+pub fn local_registry_app_parts_with_readme(
+    name: &str,
+    registry_type: &str,
+    mode: RegistryMode,
+    sbom_svc: Option<Arc<SbomService>>,
+    readme_svc: Option<Arc<ReadmeService>>,
+) -> LocalRegistryAppParts {
     let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
@@ -1111,7 +1149,8 @@ pub fn local_registry_app_parts(
     let policies: HashMap<String, Arc<RegistryPolicy>> =
         [(name.to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
 
-    let local_svc = make_local_svc_with_repo(storage.clone(), Some(repo_dyn.clone()));
+    let local_svc =
+        make_local_svc_with_readme(storage.clone(), Some(repo_dyn.clone()), readme_svc.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
             registries,
@@ -1128,6 +1167,8 @@ pub fn local_registry_app_parts(
         // pass vacuously.
         metrics: Arc::new(ProxyMetrics::new(&[name.to_owned()])),
         sbom: sbom_svc,
+        readme: readme_svc,
+        discovery: Default::default(),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
 
@@ -1185,6 +1226,8 @@ pub fn local_only_app_parts(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[name.to_owned()])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     let mode_map = RegistryModeMap::default();
     mode_map.insert(name.to_owned(), mode);
@@ -1265,6 +1308,8 @@ pub fn empty_app_parts() -> EmptyAppParts {
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     EmptyAppParts {
         proxy_svc,
@@ -1373,6 +1418,8 @@ pub async fn make_app_with_eviction(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -1425,6 +1472,8 @@ pub async fn make_app_with_warming(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -1659,6 +1708,8 @@ pub async fn make_local_nuget_app(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let mode_map = RegistryModeMap::default();

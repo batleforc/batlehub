@@ -202,6 +202,95 @@ admin = ["*"]
 
 ---
 
+### README capture {#readme-capture}
+
+Every registry that has a notion of *a package as a thing a person reads about*
+carries a README, and most carry a different one per version. BatleHub stores it
+keyed by `(registry, name, version)` and renders it — sanitised, on the server —
+on the package page and through `batlehub package readme`.
+
+**Absent means on.** For the metadata-borne registry types the text is a field of
+a document the proxy already fetches and parses, so the default costs one
+deserialised field. Which types those are, and where each one's README comes
+from, is in the [README support table](/registries/#readmes).
+
+```toml
+[registries.readme]
+enabled       = true      # store and serve READMEs for this registry
+from_archive  = true      # extract from the cached artifact when the metadata carries none
+max_bytes     = 262144    # cap on stored source (256 KiB); larger is truncated and flagged
+remote_images = "strip"   # "strip" | "proxy"
+```
+
+- **`from_archive`** is the one part of the default that is not free. It rides
+  the artifact read SBOM already performs when SBOM is on, and adds one storage
+  read per newly-cached version when it is not. It is inert on a registry whose
+  README is metadata-borne only, and on a `firewall_only` registry — which
+  streams without buffering, so no artifact is ever cached to extract from.
+  Both are warned about rather than rejected.
+- **`max_bytes`** caps the *stored source*, after decompression. Truncation is
+  recorded and shown to the reader, never silent. `0` with `enabled = true` is
+  refused: it stores nothing while claiming to be on.
+- **`remote_images`** decides what happens to an `<img>` pointing at a
+  third-party host. `"strip"` (the default) replaces it with an inline chip
+  carrying the alt text and the host, so the reader can see that an image was
+  there and where it pointed. Rendering it would mean every console page view
+  sending a request — with a `Referer` — to a host the package author chose,
+  announcing that someone inside your network is reading about this package
+  right now. There is deliberately **no `"allow"`**: the console's CSP is baked
+  into the document at build time, so the setting could only ever produce broken
+  images with no error anywhere. `"proxy"` is accepted and carried, but no
+  image-proxy endpoint is built yet, so images are charted exactly as `"strip"`
+  charts them — you get the `readme.image-proxy-unimplemented`
+  [config warning](#config-warnings) rather than silence.
+
+Rendering is server-side, allow-listed and fuzzed. Blocked versions serve no
+README (`403`, with the same reason the download path gives); yanked, deprecated
+and unlisted versions serve theirs normally, because withdrawing a
+recommendation is not withdrawing the documentation.
+
+---
+
+### The console's discovery read {#the-console-s-discovery-read}
+
+Whether the package page may ask upstream about a package this instance holds
+nothing of.
+
+Without it, the console's own search — which finds packages and flags them
+"not yet proxied" — links to a page that says *no versions yet*. With it, the
+page lists the versions upstream knows about, marks every one **not held here**,
+and shows the README where the protocol carries one.
+
+**Absent means on.** It is inert on a `local`-mode registry (there is no
+upstream to ask) and on the registry kinds that cannot be asked about a package
+at all; both are warned about rather than rejected.
+
+```toml
+[registries.upstream_detail]
+enabled           = true    # the console may ask upstream about a package we hold nothing of
+max_versions      = 300     # cap on upstream-only versions returned for one package
+negative_ttl_secs = 300     # how long an upstream "no such package" is remembered
+```
+
+- **There is no TTL of its own.** The document lands in the metadata cache under
+  the key the proxy path already uses, so it obeys this registry's
+  `cache.metadata_ttl_secs` and `cache.serve_stale`. A second, independently
+  clocked expiry for the same bytes is how two caches come to disagree.
+- **`max_versions`** bounds the *response*, not the fetch — the document is one
+  document whatever its size. The page says when it was applied.
+- **`negative_ttl_secs`** remembers an upstream `404`, so a bad URL, a typo or a
+  crawler cannot turn every reload into an upstream request. A *connection
+  failure* is not a fact about the package and is never remembered.
+
+**Looking at a package is not downloading it.** The read fetches one metadata
+document and nothing else: no artifact, no `package_statuses` row, no download
+count, no `last_accessed`, no quota, no storage entry — and the package does not
+appear in the catalogue because somebody looked at it. What leaves the instance,
+and how to turn it off, is in [what leaves this
+instance](/operations/egress#the-console-s-discovery-read).
+
+---
+
 ### Auth providers {#auth}
 
 Auth providers are evaluated in declaration order. The first provider that recognises a credential wins. Requests with no matching credential are treated as `anonymous`.

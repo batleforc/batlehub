@@ -94,6 +94,66 @@ pub const LICENSE_GATE_NO_EXTRACTOR: &str = "license-gate.no-extractor";
 /// it: the parser worked, the rule was loaded, and no licence was ever stored.
 pub const LICENSE_GATE_SBOM_DISABLED: &str = "license-gate.sbom-disabled";
 
+/// A `[registries.readme]` block written down on a registry type that has no
+/// README to give — `maven`, the source-hosting kinds, the path-addressed kinds.
+///
+/// Accepted and inert. Only raised when the operator wrote the block: the
+/// feature is on by default, so warning about every absent block would put a
+/// notice on the admin panel for every `maven` registry in every deployment,
+/// which is noise rather than information. Written down, it is a belief about
+/// what the server will do, and it is wrong.
+pub const README_UNSUPPORTED_TYPE: &str = "readme.unsupported-type";
+
+/// `from_archive = true` on a registry kind whose README is metadata-borne only.
+///
+/// The artifact is never opened for it, so the setting does nothing. Distinct
+/// from [`README_UNSUPPORTED_TYPE`]: READMEs *are* stored for this registry, and
+/// an operator who set this to control cost should know it was already free.
+pub const README_FROM_ARCHIVE_INERT: &str = "readme.from-archive-inert";
+
+/// `remote_images = "proxy"` on a build that has no image-proxy endpoint.
+///
+/// Accepted, validated and carried all the way to the renderer — the setting is
+/// real and the day the endpoint lands nothing about the configuration changes —
+/// but with nowhere to rewrite an image's `src` to, images are charted exactly
+/// as `"strip"` charts them.
+///
+/// Warned rather than silently degraded, because a setting that appears to do
+/// something and does not is the trap RFC 0007 §4.1 refuses for the *other*
+/// image value: an operator who set this and saw chips would reasonably conclude
+/// the feature was broken. It is not built (open question 1).
+pub const README_IMAGE_PROXY_UNIMPLEMENTED: &str = "readme.image-proxy-unimplemented";
+
+/// `from_archive = true` on a `firewall_only` registry.
+///
+/// `firewall_only` streams without buffering, so no artifact is ever cached to
+/// extract from. Metadata-borne sources still work; archive-borne ones never
+/// will — which on an archive-only kind (cargo, NuGet, Go, …) means this
+/// registry stores no README at all, however the block is written.
+pub const README_FROM_ARCHIVE_FIREWALL_ONLY: &str = "readme.from-archive-firewall-only";
+
+/// `[registries.upstream_detail]` enabled on a `local`-mode registry.
+///
+/// Accepted and inert: there is no upstream to ask, and the package page is
+/// already complete from local rows.
+pub const UPSTREAM_DETAIL_LOCAL_MODE: &str = "upstream-detail.local-mode";
+
+/// `[registries.upstream_detail]` enabled on a kind that cannot be asked.
+///
+/// The path-addressed kinds have no package identity to ask about, and the
+/// source-hosting kinds' release listings are not what a package page shows.
+/// Accepted and inert; the detail page answers from local rows only.
+pub const UPSTREAM_DETAIL_UNSUPPORTED_KIND: &str = "upstream-detail.unsupported-kind";
+
+/// `[registries.upstream_detail]` enabled on a registry with no reachable
+/// upstream configured.
+///
+/// Warned rather than rejected because an air-gapped estate is a supported
+/// deployment (RFC 0008), and its operator should be told the setting will
+/// produce one failed attempt per TTL rather than have the server refuse to
+/// start.
+pub const UPSTREAM_DETAIL_NO_UPSTREAM: &str = "upstream-detail.no-upstream";
+
 /// The same missing parser, but with `allow_unknown = false` and `block = true`
 /// — so instead of never firing, the gate refuses **every** download from that
 /// registry. Separate code from [`LICENSE_GATE_NO_EXTRACTOR`] because the

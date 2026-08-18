@@ -1,5 +1,7 @@
-use batlehub_core::ports::{ExtractedManifest, SbomDependency};
+use batlehub_core::ports::{ExtractedManifest, ExtractedReadme, SbomDependency};
 use bytes::Bytes;
+
+use super::readme;
 
 pub(super) fn extract_cargo_manifest(data: &Bytes) -> ExtractedManifest {
     use flate2::read::GzDecoder;
@@ -23,13 +25,72 @@ pub(super) fn extract_cargo_manifest(data: &Bytes) -> ExtractedManifest {
                 tracing::warn!("sbom: failed to parse cargo manifest, treating as no dependencies");
                 return ExtractedManifest::default();
             }
+            // Same decompression, three facts. The archive is open and in
+            // memory; opening it again for the README would repeat the waste
+            // RFC 0004-bis §13.1 removed.
             return ExtractedManifest {
                 dependencies: parse_cargo_toml_deps(&content),
                 license: parse_cargo_toml_license(&content),
+                readme: cargo_readme(data, parse_cargo_toml_readme(&content).as_deref()),
             };
         }
     }
     ExtractedManifest::default()
+}
+
+/// The README named by `[package] readme`, or the conventional one.
+///
+/// A `.crate` wraps everything in one `{name}-{version}/` directory, so the
+/// declared path is relative to that. `readme = false` is cargo's way of saying
+/// there is none, and it means none — not "fall back to the convention".
+fn cargo_readme(data: &Bytes, declared: Option<&str>) -> Option<ExtractedReadme> {
+    match declared {
+        // `readme = false`: the crate says it has none.
+        Some("false") => None,
+        // A named file, matched at the wrapper directory's depth. Not anywhere
+        // in the archive: `readme = "guide/README.md"` names one file, and a
+        // same-named file elsewhere is a different document.
+        Some(path) if path != "true" => {
+            let wanted = path.trim_start_matches("./").replace('\\', "/");
+            readme::readme_from_targz(data, |entry| {
+                entry
+                    .split_once('/')
+                    .is_some_and(|(_, rest)| rest == wanted)
+            })
+        }
+        // Absent, or `readme = true` — cargo's shorthand for "the conventional
+        // one" — both mean the root `README*`.
+        _ => readme::readme_from_targz(data, readme::root_readme_matcher(1)),
+    }
+}
+
+/// `[package] readme = "README.md"`, `readme = true`, or `readme = false`.
+///
+/// Returned as the raw token rather than a parsed enum: the caller has to
+/// distinguish three cases and a `bool` cannot carry a filename.
+fn parse_cargo_toml_readme(content: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_package = trimmed == "[package]";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix("readme") else {
+            continue;
+        };
+        let Some(value) = rest.trim().strip_prefix('=') else {
+            continue; // `readme-file`, or anything else starting "readme"
+        };
+        let value = value.trim().trim_matches('"').trim();
+        if !value.is_empty() {
+            return Some(value.to_owned());
+        }
+    }
+    None
 }
 
 /// `[package] license = "MIT OR Apache-2.0"`.
@@ -175,7 +236,119 @@ tokio = { version = "1.0", features = ["full"] }
     }
 
     #[test]
+    fn parse_cargo_toml_readme_reads_the_three_shapes() {
+        assert_eq!(
+            parse_cargo_toml_readme("[package]\nreadme = \"README.md\"\n").as_deref(),
+            Some("README.md")
+        );
+        assert_eq!(
+            parse_cargo_toml_readme("[package]\nreadme = true\n").as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            parse_cargo_toml_readme("[package]\nreadme = false\n").as_deref(),
+            Some("false")
+        );
+        assert_eq!(parse_cargo_toml_readme("[package]\nname = \"x\"\n"), None);
+        // Another table's `readme` is not the crate's own declaration.
+        assert_eq!(
+            parse_cargo_toml_readme("[dependencies]\nreadme = \"X\"\n"),
+            None
+        );
+    }
+
+    #[test]
     fn parse_cargo_toml_license_absent_is_none() {
         assert_eq!(parse_cargo_toml_license("[package]\nname = \"x\"\n"), None);
+    }
+
+    use super::super::readme::fixtures::targz;
+
+    /// A `.crate` wraps everything in `{name}-{version}/`, and the conventional
+    /// README is read alongside the manifest — one decompression, three facts.
+    #[test]
+    fn the_conventional_readme_comes_back_with_the_manifest() {
+        let data = targz(&[
+            (
+                "mylib-1.0.0/Cargo.toml",
+                b"[package]\nname = \"mylib\"\nlicense = \"MIT\"\n\n[dependencies]\nserde = \"1\"\n"
+                    .as_slice(),
+            ),
+            ("mylib-1.0.0/README.md", b"# mylib".as_slice()),
+        ]);
+        let manifest = extract_cargo_manifest(&data);
+        assert_eq!(manifest.license.as_deref(), Some("MIT"));
+        assert_eq!(manifest.dependencies.len(), 1);
+        let readme = manifest.readme.expect("README read");
+        assert_eq!(readme.content, "# mylib");
+        assert_eq!(readme.path, "mylib-1.0.0/README.md");
+    }
+
+    /// `readme = "guide/OVERVIEW.md"` names one file. A same-named file
+    /// elsewhere is a different document, and the conventional `README.md` is
+    /// not what the crate said to show.
+    #[test]
+    fn a_declared_readme_path_is_read_instead_of_the_convention() {
+        let data = targz(&[
+            (
+                "mylib-1.0.0/Cargo.toml",
+                b"[package]\nreadme = \"guide/OVERVIEW.md\"\n".as_slice(),
+            ),
+            (
+                "mylib-1.0.0/README.md",
+                b"# the conventional one".as_slice(),
+            ),
+            (
+                "mylib-1.0.0/guide/OVERVIEW.md",
+                b"# the declared one".as_slice(),
+            ),
+        ]);
+        assert_eq!(
+            extract_cargo_manifest(&data).readme.unwrap().content,
+            "# the declared one"
+        );
+    }
+
+    /// `readme = false` means the crate has none. Falling back to the
+    /// convention would show a file the author said not to.
+    #[test]
+    fn readme_false_means_none_not_fall_back() {
+        let data = targz(&[
+            (
+                "mylib-1.0.0/Cargo.toml",
+                b"[package]\nreadme = false\n".as_slice(),
+            ),
+            ("mylib-1.0.0/README.md", b"# there anyway".as_slice()),
+        ]);
+        assert!(extract_cargo_manifest(&data).readme.is_none());
+    }
+
+    /// `readme = true` is cargo's shorthand for the conventional one.
+    #[test]
+    fn readme_true_means_the_conventional_one() {
+        let data = targz(&[
+            (
+                "mylib-1.0.0/Cargo.toml",
+                b"[package]\nreadme = true\n".as_slice(),
+            ),
+            ("mylib-1.0.0/README", b"plain prose".as_slice()),
+        ]);
+        let readme = extract_cargo_manifest(&data).readme.unwrap();
+        assert_eq!(readme.content, "plain prose");
+        // No extension declared it as markup, so it is shown escaped.
+        assert_eq!(readme.format, batlehub_core::entities::ReadmeFormat::Plain);
+    }
+
+    /// A crate with no README at all reports none, and still reports its
+    /// licence and dependencies.
+    #[test]
+    fn a_crate_without_a_readme_still_answers_for_everything_else() {
+        let data = targz(&[(
+            "mylib-1.0.0/Cargo.toml",
+            b"[package]\nlicense = \"Apache-2.0\"\n".as_slice(),
+        )]);
+        let manifest = extract_cargo_manifest(&data);
+        assert!(manifest.readme.is_none());
+        assert_eq!(manifest.license.as_deref(), Some("Apache-2.0"));
     }
 }

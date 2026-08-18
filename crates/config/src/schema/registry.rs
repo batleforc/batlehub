@@ -154,6 +154,22 @@ pub struct RegistryConfig {
     /// Optional SBOM generation configuration. When absent, SBOM is disabled.
     #[serde(default)]
     pub sbom: Option<SbomConfig>,
+    /// Optional README capture configuration.
+    ///
+    /// Unlike [`Self::sbom`], **absent means enabled**: for the metadata-borne
+    /// registry kinds the text is a field of a document the proxy already
+    /// fetches and parses, so the default costs one deserialised field
+    /// (RFC 0007 §4.1).
+    #[serde(default)]
+    pub readme: Option<ReadmeConfig>,
+    /// Optional configuration for the console's discovery read — whether this
+    /// instance may ask upstream about a package it holds nothing of.
+    ///
+    /// A separate block from [`Self::readme`] because it is not a README
+    /// setting: it governs the version list too, and an operator may want one
+    /// without the other. **Absent means enabled** (RFC 0007 §4.1).
+    #[serde(default)]
+    pub upstream_detail: Option<UpstreamDetailConfig>,
     /// Optional per-registry feature flags (opt-in/out toggles for cross-cutting
     /// UI/integration features). When absent, every flag takes its default.
     #[serde(default)]
@@ -372,6 +388,117 @@ pub struct SbomConfig {
     /// falling back to extraction / minimal generation.
     #[serde(default = "default_true")]
     pub fetch_upstream: bool,
+}
+
+// ── README capture ────────────────────────────────────────────────────────────
+
+fn default_readme_max_bytes() -> usize {
+    batlehub_core::services::DEFAULT_README_MAX_BYTES
+}
+
+fn default_remote_images() -> String {
+    "strip".to_owned()
+}
+
+/// Per-registry README capture configuration.
+///
+/// ```toml
+/// [registries.readme]
+/// enabled       = true      # store and serve READMEs for this registry
+/// from_archive  = true      # extract from the cached artifact when the metadata carries none
+/// max_bytes     = 262144    # cap on stored source (256 KiB); larger is truncated and flagged
+/// remote_images = "strip"   # "strip" | "proxy"
+/// ```
+///
+/// The whole block is optional and its absence means **on**, which is why every
+/// field defaults to the enabled shape rather than to `false`/zero. `from_archive`
+/// is the one part of that default that is not free: it rides the artifact read
+/// SBOM already performs when SBOM is on, and adds one storage read per
+/// newly-cached version when it is not.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReadmeConfig {
+    /// Store and serve READMEs for this registry.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Read the README out of the artifact when the metadata carries none. Inert
+    /// on kinds whose README is metadata-borne only, and on `firewall_only`
+    /// registries, which never cache an artifact to extract from — both warned
+    /// about rather than rejected.
+    #[serde(default = "default_true")]
+    pub from_archive: bool,
+    /// Cap on the stored source, in bytes, applied after decompression.
+    /// Truncation is recorded and surfaced, never silent.
+    #[serde(default = "default_readme_max_bytes")]
+    pub max_bytes: usize,
+    /// `"strip"` (default) or `"proxy"`. There is no `"allow"`: the SPA's CSP is
+    /// baked into the document at build time, so it would silently do nothing.
+    #[serde(default = "default_remote_images")]
+    pub remote_images: String,
+}
+
+impl Default for ReadmeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            from_archive: true,
+            max_bytes: default_readme_max_bytes(),
+            remote_images: default_remote_images(),
+        }
+    }
+}
+
+// ── The console's discovery read ──────────────────────────────────────────────
+
+fn default_upstream_max_versions() -> usize {
+    batlehub_core::services::DEFAULT_UPSTREAM_MAX_VERSIONS
+}
+
+fn default_upstream_negative_ttl_secs() -> u64 {
+    batlehub_core::services::DEFAULT_UPSTREAM_NEGATIVE_TTL_SECS
+}
+
+/// Whether the console may ask upstream about a package this instance holds
+/// nothing of, and how much of the answer it may show.
+///
+/// ```toml
+/// [registries.upstream_detail]
+/// enabled           = true    # the console may ask upstream about a package we hold nothing of
+/// max_versions      = 300     # cap on upstream-only versions returned for one package
+/// negative_ttl_secs = 300     # how long an upstream "no such package" is remembered
+/// ```
+///
+/// **There is no TTL of its own.** The document lands in the existing metadata
+/// cache, so it obeys the registry's `metadata_ttl_secs` and its `serve_stale`.
+/// A second, independently clocked expiry for the same bytes is how two caches
+/// come to disagree about one document.
+///
+/// Inert on a `local`-mode registry — there is no upstream to ask — and on the
+/// path-addressed kinds, which have no package identity to ask about. Both are
+/// warned about rather than rejected.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpstreamDetailConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Cap on the upstream-only versions one package's page is handed. Applied
+    /// newest-first, and the response says it was applied: a silently shortened
+    /// list is a lie about the registry.
+    #[serde(default = "default_upstream_max_versions")]
+    pub max_versions: usize,
+    /// How long an upstream `404` is remembered, so a bad URL, a typo or a
+    /// crawler cannot turn every reload into an upstream request. A connection
+    /// failure is not a fact about the package and is never remembered.
+    #[serde(default = "default_upstream_negative_ttl_secs")]
+    pub negative_ttl_secs: u64,
+}
+
+impl Default for UpstreamDetailConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_versions: default_upstream_max_versions(),
+            negative_ttl_secs: default_upstream_negative_ttl_secs(),
+        }
+    }
 }
 
 // ── Quota management ──────────────────────────────────────────────────────────

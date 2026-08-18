@@ -298,7 +298,12 @@ fn url_decode(s: &str) -> String {
     String::from_utf8_lossy(&decoded).into_owned()
 }
 
-fn percent_encode(s: &str) -> String {
+/// Percent-encode one path or query segment.
+///
+/// `pub(crate)` rather than private: `package.rs` needs the same rule for a
+/// scoped npm name (`@scope/pkg`), whose slash would otherwise split a path
+/// segment, and a second copy of an encoder is how two of them come to disagree.
+pub(crate) fn percent_encode(s: &str) -> String {
     s.chars()
         .flat_map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {

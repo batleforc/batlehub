@@ -1,0 +1,122 @@
+# What leaves this instance
+
+For the operator who has to answer *what does this box talk to, and when*.
+
+A caching proxy exists partly so that developer machines stop talking to the
+public internet. That only holds if you know what the proxy itself talks to, and
+what makes it start. This page is the list.
+
+Nothing here is new outbound *infrastructure*: every request below goes to a
+registry upstream you configured, through the same HTTP client, with the same
+timeouts, TLS settings, upstream authentication and SSRF guards as any other
+fetch. What differs between the entries is **what makes the request happen**.
+
+## A build asks for something
+
+The ordinary case, and the reason the software exists. A package manager
+resolves a version or downloads an artifact, the proxy has neither cached, and it
+fetches from the configured upstream.
+
+Turn it off by not running a proxy-mode registry: `mode = "local"` never
+consults an upstream at all.
+
+## A search box is typed into
+
+`GET /api/v1/explore/upstream` fans a query out across every accessible
+registry's upstream search API. **The user's free-text query is forwarded
+upstream**, which for an operator whose threat model is "this box does not tell
+anyone what we are looking for" is a disclosure worth knowing about.
+
+Turn it off per registry with `search_url = ""`.
+
+## The console's discovery read {#the-console-s-discovery-read}
+
+**New behaviour, on by default.** When somebody opens the package page for a
+package this instance holds nothing of, BatleHub asks the registry's upstream
+what versions exist — one metadata document, the same one the first
+`npm install` of that package would have caused.
+
+Before this, the page said *"no versions yet"* about a package the console's own
+search had just told the reader exists. That is the defect it fixes, and it is
+also the one default in the change that alters an instance's outbound traffic
+without the operator asking. It is named here rather than left to be discovered
+in a traffic graph.
+
+**What it does not do.** Looking at a package is not downloading it. The read
+fetches one metadata document and nothing else:
+
+- no artifact is fetched, and no storage entry is created;
+- no `package_statuses` row is written, so the package does not appear in
+  `GET /api/v1/explore/packages` because somebody looked at it;
+- no access event is recorded, no download count moves, no `last_accessed` is
+  touched;
+- no quota is consumed, and the eviction service's accounting does not change.
+
+A page view must not be able to change what the catalogue claims this instance
+has — otherwise browsing the console silently rewrites the inventory you read to
+make decisions.
+
+**What bounds it.**
+
+| Bound | Effect |
+| --- | --- |
+| Cache-first | The document lands in the metadata cache under the key the proxy path already uses, so it obeys the registry's `metadata_ttl_secs`. N page views within one TTL produce one request. |
+| Single-flight | Ten people opening the same new package at once produce one upstream request, not ten. |
+| Negative cache | An upstream `404` is remembered for `negative_ttl_secs` (300 by default), so a bad URL or a crawler cannot make every reload a request. A *connection failure* is not remembered — it is not a fact about the package. |
+| Registry access | The read only happens for a registry the caller can already explore. Somebody who cannot see a registry cannot make it emit traffic. |
+| Rate limit | The per-registry `rate_limit` still applies on top, for a caller enumerating *different* names. |
+
+**A private name is never sent upstream.** If the local backend hosts the
+package, the read is suppressed entirely — on any mode. On a `hybrid` registry a
+private package shares a namespace with a public index, and sending its name
+there on every page view would disclose the existence of internal software to a
+third party. It would also invite a dependency-confusion answer, where the page
+shows upstream's versions of a name that means something else here.
+
+**Turning it off.** Per registry:
+
+```toml
+[registries.upstream_detail]
+enabled = false
+```
+
+The page then answers from local rows exactly as it did before, with no attempt
+and no banner. That is the right setting for an
+[air-gapped estate](/rfc/0008-mise-in-an-air-gapped-estate): with no route off
+site the read would fail once per TTL and the page would say the upstream could
+not be reached, which is a supported outcome but a noisy one when it is the
+permanent state of the world.
+
+## A README's images
+
+None. A README's images are **not** loaded: they normally live on third-party
+hosts, and rendering them would mean every console page view sending a request —
+with a `Referer` — to a host the *package author* chose, announcing that someone
+inside your network is reading about this package at this moment.
+
+Each image is replaced with an inline chip carrying its alt text and its host, so
+a reader can see that an image was there and where it pointed. See
+[`remote_images`](/guide/admin-config#readme-capture).
+
+## A linked README
+
+OpenVSX and the VS Code Marketplace give a *URL* for an extension's README rather
+than the text. Following it is one outbound request, made in a background task
+rather than on the request path a package manager is waiting on, and only for a
+version this instance is caching. The URL is checked to be on the same origin as
+the configured registry, so a compromised or misconfigured upstream cannot use it
+to point BatleHub at an internal host.
+
+## Vulnerability scanning
+
+The periodic OSV re-check, when `[vulnerability_scan] enabled = true`. Off by
+default. See [SBOM](/guide/sbom).
+
+## See also
+
+- [Production hardening](/operations/production-hardening) — the other settings
+  that differ between a working instance and one you would put in front of a
+  company.
+- [Configuration → README capture](/guide/admin-config#readme-capture) and
+  [→ the console's discovery read](/guide/admin-config#the-console-s-discovery-read).
+- [Package Explorer search](/use/package-explorer-search#upstream-search).

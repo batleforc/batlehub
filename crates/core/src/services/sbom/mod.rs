@@ -366,6 +366,7 @@ mod tests {
             ExtractedManifest {
                 dependencies: self.deps.clone(),
                 license: self.license.clone(),
+                readme: None,
             }
         }
     }

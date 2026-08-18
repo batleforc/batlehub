@@ -64,6 +64,8 @@ async fn make_explore_app(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -189,11 +191,16 @@ async fn explore_registry_stats_returns_empty_initially() {
     assert_eq!(body["upstream_unavailable"], false);
 }
 
+/// The local-row half of the detail response is byte-for-byte what it was
+/// before RFC 0007, and `?upstream=skip` is how a caller asks for exactly that
+/// (§9). This test used to assert the *whole* response, and the discovery read
+/// is precisely the thing that changed it — so it now names the shape it is
+/// pinning rather than pinning the default and calling it "unknown package".
 #[actix_web::test]
-async fn explore_package_detail_returns_empty_versions_for_unknown_package() {
+async fn explore_package_detail_with_upstream_skipped_returns_only_local_rows() {
     let app = make_explore_app(InMemoryRepo::new()).await;
     let req = TestRequest::get()
-        .uri("/api/v1/explore/packages/npm/lodash")
+        .uri("/api/v1/explore/packages/npm/lodash?upstream=skip")
         .insert_header(("Authorization", bearer(USER_TOKEN)))
         .to_request();
     let resp = call_service(&app, req).await;
@@ -202,9 +209,38 @@ async fn explore_package_detail_returns_empty_versions_for_unknown_package() {
     assert_eq!(body["registry"], "npm");
     assert_eq!(body["name"], "lodash");
     assert_eq!(body["versions"], serde_json::json!([]));
+    assert_eq!(body["upstream"]["attempted"], false);
     assert!(body["gate"]["registry_accessible"]
         .as_bool()
         .unwrap_or(false));
+}
+
+/// And the default now answers, which is the whole point of RFC 0007 §2.3: the
+/// console's own search finds packages this instance holds nothing of, and the
+/// page it links to used to say *"no versions yet"*.
+///
+/// `explore_upstream_detail.rs` is where that behaviour is tested properly;
+/// this is here so the *change in default* is visible from the suite that
+/// pinned the old one.
+#[actix_web::test]
+async fn explore_package_detail_now_answers_for_a_package_held_nowhere() {
+    let app = make_explore_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/packages/npm/lodash")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let body: Value = read_body_json(call_service(&app, req).await).await;
+
+    assert_eq!(body["upstream"]["attempted"], true);
+    let versions = body["versions"].as_array().unwrap();
+    assert!(!versions.is_empty(), "the page said nothing: {body}");
+    for version in versions {
+        assert_eq!(version["source"], "upstream");
+        // Nothing about a version this instance has never held is stated as a
+        // number: `0` downloads would be a claim we cannot support.
+        assert!(version["download_count"].is_null());
+        assert_eq!(version["vulnerabilities_scanned"], false);
+    }
 }
 
 #[actix_web::test]

@@ -131,6 +131,11 @@ pub fn embedded_migrator() -> Migrator {
             "stats history listing reads",
             "../migrations/033_stats_history_listing_reads.sql"
         ),
+        mig!(
+            34,
+            "package readmes",
+            "../migrations/034_package_readmes.sql"
+        ),
     ])
 }
 

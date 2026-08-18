@@ -98,6 +98,127 @@ pub struct SbomConfig {
     pub registry_type: String,
 }
 
+/// What the renderer does with an `<img>` pointing at a third-party host.
+///
+/// There is deliberately no `Allow`: the SPA's CSP is baked into the document at
+/// build time (`img-src 'self' data:`), so a setting that only worked in a custom
+/// UI build would be a trap — the operator would set it and see broken images
+/// with no error anywhere (RFC 0007 §4.1).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteImagePolicy {
+    /// Replace the image with an inline chip carrying its `alt` text and its
+    /// host, so the reader can see that an image was there and where it pointed.
+    #[default]
+    Strip,
+    /// Rewrite it to fetch through this server. Every page view would otherwise
+    /// beacon to a host the package author chose, from inside the network.
+    Proxy,
+}
+
+impl RemoteImagePolicy {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Strip => "strip",
+            Self::Proxy => "proxy",
+        }
+    }
+
+    /// `None` for anything else — an unrecognised value must not silently become
+    /// the default, because the two behaviours differ in what leaves the network.
+    /// [`crate::entities::RegistryKind`]-style parse: the config validator turns
+    /// the `None` into a refusal to start.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "strip" => Some(Self::Strip),
+            "proxy" => Some(Self::Proxy),
+            _ => None,
+        }
+    }
+}
+
+/// README capture configuration stored in the service (mirrors config-layer
+/// `ReadmeConfig`).
+///
+/// Unlike [`SbomConfig`], the absence of the config block means **enabled**: for
+/// the metadata-borne registry kinds the text is a field of a document the proxy
+/// already fetches and parses, so the default costs one deserialised field
+/// (RFC 0007 §4.1).
+#[derive(Debug, Clone)]
+pub struct ReadmeConfig {
+    pub enabled: bool,
+    /// Extract from the cached artifact when the metadata carries none. Rides
+    /// the artifact read SBOM already performs when SBOM is on, and adds one
+    /// storage read per newly-cached version when it is not.
+    pub from_archive: bool,
+    /// Cap on the **stored source**, applied after decompression at the point of
+    /// extraction. Truncation is recorded and surfaced, never silent.
+    pub max_bytes: usize,
+    pub remote_images: RemoteImagePolicy,
+    /// The registry adapter type (e.g. "cargo", "npm") — used to pick the
+    /// extraction family, exactly as [`SbomConfig::registry_type`] is.
+    pub registry_type: String,
+}
+
+impl Default for ReadmeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            from_archive: true,
+            max_bytes: DEFAULT_README_MAX_BYTES,
+            remote_images: RemoteImagePolicy::Strip,
+            registry_type: String::new(),
+        }
+    }
+}
+
+/// 256 KiB. Large enough for essentially every real README, small enough that
+/// the row stays cheap to read on a page load.
+pub const DEFAULT_README_MAX_BYTES: usize = 262_144;
+
+/// The console's discovery read, per registry (mirrors config-layer
+/// `UpstreamDetailConfig`).
+///
+/// A separate block from [`ReadmeConfig`] because it is not a README setting:
+/// it governs the *version list* too, and an operator may want one without the
+/// other (RFC 0007 §4.1).
+///
+/// **There is no TTL of its own.** The document lands in the existing metadata
+/// cache under the key `cached_version_document` already builds, so it obeys the
+/// registry's `metadata_ttl_secs` and its `serve_stale_metadata`. A second,
+/// independently clocked expiry for the same bytes is how two caches come to
+/// disagree about one document.
+#[derive(Debug, Clone)]
+pub struct UpstreamDetailConfig {
+    pub enabled: bool,
+    /// Cap on upstream-only versions returned for one package.
+    ///
+    /// Bounds the *response*, not the fetch: the document is one document
+    /// whatever its size. Applied newest-first, and the response says it was
+    /// applied — a silently shortened list is a lie about the registry.
+    pub max_versions: usize,
+    /// How long an upstream "no such package" is remembered, so a bad URL, a
+    /// typo or a crawler cannot turn every reload into an upstream request.
+    pub negative_ttl: Duration,
+}
+
+impl Default for UpstreamDetailConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_versions: DEFAULT_UPSTREAM_MAX_VERSIONS,
+            negative_ttl: Duration::from_secs(DEFAULT_UPSTREAM_NEGATIVE_TTL_SECS),
+        }
+    }
+}
+
+/// 300 versions. Long enough for essentially every real package's table, short
+/// enough that one page's JSON stays a page's worth.
+pub const DEFAULT_UPSTREAM_MAX_VERSIONS: usize = 300;
+
+/// Five minutes. Long enough to absorb a reload loop, short enough that a
+/// package published a moment ago appears without an operator waiting.
+pub const DEFAULT_UPSTREAM_NEGATIVE_TTL_SECS: u64 = 300;
+
 /// Per-registry feature flags (mirrors config-layer `FeatureFlagsConfig`).
 /// A "feature flag" category of optional, cross-cutting UI/integration toggles.
 #[derive(Debug, Clone)]
@@ -130,6 +251,19 @@ pub struct HotConfig {
     pub signing: HashMap<String, SigningConfig>,
     /// Per-registry SBOM generation configs (Clone, cheap).
     pub sbom: HashMap<String, SbomConfig>,
+    /// Per-registry README capture configs (Clone, cheap).
+    ///
+    /// A registry with no entry is *not* one with the feature off: the absence
+    /// of a `[registries.readme]` block means enabled, so the builder writes an
+    /// entry for every registry and a missing key only happens in a test that
+    /// did not care. Readers use `unwrap_or_default()`, which is the enabled
+    /// shape (RFC 0007 §4.1).
+    pub readme: HashMap<String, ReadmeConfig>,
+    /// Per-registry discovery-read configs (Clone, cheap).
+    ///
+    /// Populated for every registry for the same reason `readme` is: the absence
+    /// of a `[registries.upstream_detail]` block means **on**.
+    pub upstream_detail: HashMap<String, UpstreamDetailConfig>,
     /// Per-registry feature flags (Clone, cheap).
     pub feature_flags: HashMap<String, FeatureFlags>,
     /// Per-registry artifact integrity policies (Clone, cheap).
@@ -163,6 +297,8 @@ impl Default for HotConfig {
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            readme: HashMap::new(),
+            upstream_detail: HashMap::new(),
             feature_flags: HashMap::new(),
             integrity: HashMap::new(),
             beta_channel: HashMap::new(),

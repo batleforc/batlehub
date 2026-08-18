@@ -563,8 +563,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             banner::get_banner,
             cli_download::download_cli,
             explore::{
-                explore_package_detail, explore_packages, explore_registry_stats,
-                explore_upstream_search,
+                explore_package_detail, explore_package_readme, explore_packages,
+                explore_registry_stats, explore_upstream_search,
             },
             me::{me, my_advisories, my_downloads, my_quota},
             packages::{check_access, list_packages},
@@ -936,7 +936,12 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(my_advisories);
     cfg.service(download_cli);
     cfg.service(list_registries);
-    // Explore: detail path before list (more specific first); upstream before list
+    // Explore: detail path before list (more specific first); upstream before
+    // list. The README route is more specific than the detail route it extends,
+    // so it comes first — otherwise `/{registry}/{name}/readme` would match the
+    // detail path with `name = "{name}/readme"` on the registries whose names
+    // contain a slash.
+    cfg.service(explore_package_readme);
     cfg.service(explore_package_detail);
     cfg.service(explore_upstream_search);
     cfg.service(explore_packages);

@@ -9,8 +9,8 @@ use batlehub_core::ports::{
     BetaChannelPort, PackageRepository, SbomRepository, VulnerabilityRepository,
 };
 use batlehub_core::services::{
-    FeatureFlags, HotConfig, HotSbomConfig, IntegrityPolicy, SigningConfig as CoreSigningConfig,
-    VersioningPolicy,
+    FeatureFlags, HotConfig, HotReadmeConfig, HotSbomConfig, HotUpstreamDetailConfig,
+    IntegrityPolicy, RemoteImagePolicy, SigningConfig as CoreSigningConfig, VersioningPolicy,
 };
 
 use crate::builders::parse_role;
@@ -121,6 +121,59 @@ fn build_sbom_map(registries: &[RegistryConfig]) -> HashMap<String, HotSbomConfi
             registry_type: reg.registry_type.clone(),
         },
     )
+}
+
+/// Populate every registry, because the absence of a `[registries.readme]`
+/// block means **on** (RFC 0007 §4.1) — the opposite of `[registries.sbom]`.
+/// A map keyed only by the registries that wrote the block down would make the
+/// default "off" for everyone else, which is the wrong default and would be
+/// invisible.
+fn build_readme_map(registries: &[RegistryConfig]) -> HashMap<String, HotReadmeConfig> {
+    registries
+        .iter()
+        .map(|reg| {
+            let cfg = reg.readme.as_ref().map_or_else(
+                || HotReadmeConfig {
+                    registry_type: reg.registry_type.clone(),
+                    ..HotReadmeConfig::default()
+                },
+                |r| HotReadmeConfig {
+                    enabled: r.enabled,
+                    from_archive: r.from_archive,
+                    max_bytes: r.max_bytes,
+                    // `validate()` has already refused an unrecognised value, so
+                    // this cannot silently become the default on a running
+                    // server — the process would not have started.
+                    remote_images: RemoteImagePolicy::parse(&r.remote_images).unwrap_or_default(),
+                    registry_type: reg.registry_type.clone(),
+                },
+            );
+            (reg.name.clone(), cfg)
+        })
+        .collect()
+}
+
+/// Populate every registry, for the same reason `build_readme_map` does: the
+/// absence of a `[registries.upstream_detail]` block means **on**.
+fn build_upstream_detail_map(
+    registries: &[RegistryConfig],
+) -> HashMap<String, HotUpstreamDetailConfig> {
+    registries
+        .iter()
+        .map(|reg| {
+            let cfg =
+                reg.upstream_detail
+                    .as_ref()
+                    .map_or_else(HotUpstreamDetailConfig::default, |d| {
+                        HotUpstreamDetailConfig {
+                            enabled: d.enabled,
+                            max_versions: d.max_versions,
+                            negative_ttl: std::time::Duration::from_secs(d.negative_ttl_secs),
+                        }
+                    });
+            (reg.name.clone(), cfg)
+        })
+        .collect()
 }
 
 fn build_feature_flags_map(registries: &[RegistryConfig]) -> HashMap<String, FeatureFlags> {
@@ -261,6 +314,8 @@ pub(super) fn build_hot_bundle(
         versioning: build_versioning_map(&cfg.registries),
         signing: build_signing_map(&cfg.registries),
         sbom: build_sbom_map(&cfg.registries),
+        readme: build_readme_map(&cfg.registries),
+        upstream_detail: build_upstream_detail_map(&cfg.registries),
         feature_flags: build_feature_flags_map(&cfg.registries),
         integrity: build_integrity_map(&cfg.registries),
         beta_channel: build_beta_channel_map(Arc::clone(beta_channel_store), &cfg.registries),

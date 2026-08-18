@@ -7,9 +7,10 @@ use super::super::http_client::{
 use super::models::{PypiPackageJson, PypiSearchInfo, PypiVersionJson};
 use super::PypiRegistryClient;
 use batlehub_core::{
-    entities::{PackageId, PackageMetadata},
+    entities::{MetadataReadme, PackageId, PackageMetadata},
     error::CoreError,
     ports::{DocumentKind, FetchedArtifact, RegistryClient, UpstreamPackage, VersionDocument},
+    services::readme::detect::format_from_content_type,
 };
 
 // ── PEP 503 name normalisation ────────────────────────────────────────────────
@@ -280,6 +281,21 @@ impl RegistryClient for PypiRegistryClient {
         let version_json: PypiVersionJson = serde_json::from_slice(&body)
             .map_err(|e| CoreError::Registry(format!("pypi: parse version JSON: {e}")))?;
 
+        // The long description, before `urls` is consumed below. Metadata-borne
+        // and per-version: a wheel's `METADATA` ships inside the wheel, so this
+        // is this version's own account of itself and not the package's.
+        let readme = version_json.info.as_ref().and_then(|info| {
+            let text = info
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())?;
+            Some(MetadataReadme::text(
+                text,
+                format_from_content_type(info.description_content_type.as_deref()),
+            ))
+        });
+
         // Find the specific file matching pkg.artifact, or use the first file.
         let file = match &pkg.artifact {
             Some(filename) => version_json
@@ -307,7 +323,7 @@ impl RegistryClient for PypiRegistryClient {
             download_url,
             checksum,
             is_signed: None,
-            extra: serde_json::Value::Null,
+            extra: serde_json::json!({ "readme": readme }),
             cache_control,
         })
     }

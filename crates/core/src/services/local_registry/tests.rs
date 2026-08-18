@@ -173,6 +173,7 @@ fn svc(
         sbom: None,
         explore_cache: None,
         package_repo: None,
+        readme: None,
     }
 }
 
@@ -588,6 +589,7 @@ fn svc_with_beta(
         sbom: None,
         explore_cache: None,
         package_repo: None,
+        readme: None,
     }
 }
 
@@ -921,6 +923,7 @@ fn svc_with_ns(backend: Arc<InMemBackend>, ns: Arc<dyn TeamNamespacePort>) -> Lo
         sbom: None,
         explore_cache: None,
         package_repo: None,
+        readme: None,
     }
 }
 
@@ -1395,6 +1398,7 @@ fn download_svc_with_access_log(
         sbom: None,
         explore_cache: None,
         package_repo,
+        readme: None,
     }
 }
 
@@ -2061,6 +2065,7 @@ async fn get_artifact_records_denied_download_when_visibility_check_fails() {
         sbom: None,
         explore_cache: None,
         package_repo: Some(spy.clone()),
+        readme: None,
     };
 
     // Anonymous identity can't see an `Internal` package.

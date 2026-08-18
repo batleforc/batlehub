@@ -79,6 +79,93 @@ impl ListingDocument {
     }
 }
 
+/// Where a registry kind's README comes from, if it has one at all.
+///
+/// A property of the *protocol*, not a preference: whether the text arrives in a
+/// document the proxy already fetches to resolve a version, or only inside the
+/// artifact, is decided by the ecosystem and decides in turn whether a version
+/// this instance holds no bytes for can have one (RFC 0007 §4.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadmeSupport {
+    /// The text is a field of a metadata document the proxy already parses.
+    /// Available for every version upstream knows about.
+    Metadata,
+    /// The metadata carries a *URL*, not the text. Reading it is an outbound
+    /// request in its own right, same-origin checked against the registry's own
+    /// base URL (RFC 0007 §7.4).
+    MetadataLinked,
+    /// The text is a file inside the artifact. Available only for versions this
+    /// instance has cached or hosts — the same honest limit `license` has.
+    Archive,
+    /// Metadata when the document carries it, the artifact when it does not.
+    /// npm is the only one: the packument's `readme` is often empty for versions
+    /// published by tooling that only writes the tarball.
+    MetadataThenArchive,
+    /// This kind has no README to give, and why.
+    ///
+    /// The reason travels with the code that decides it so the published support
+    /// table cannot drift from the behaviour, exactly as [`ListingSupport`] does.
+    /// The string completes "no — …".
+    None(&'static str),
+}
+
+impl ReadmeSupport {
+    /// Whether any README can ever be stored for this kind.
+    pub fn is_supported(&self) -> bool {
+        !matches!(self, Self::None(_))
+    }
+
+    /// Whether the artifact has to be opened for this kind's README, i.e.
+    /// whether `from_archive` means anything on a registry of this kind.
+    pub fn reads_the_archive(&self) -> bool {
+        matches!(self, Self::Archive | Self::MetadataThenArchive)
+    }
+
+    /// Whether a version this instance holds no bytes for can have a README —
+    /// the *unheld* column of the support table.
+    pub fn answers_for_unheld_versions(&self) -> bool {
+        matches!(
+            self,
+            Self::Metadata | Self::MetadataLinked | Self::MetadataThenArchive
+        )
+    }
+}
+
+/// How this kind answers "what versions exist upstream" for the console's
+/// discovery read (RFC 0007 §4.3, §5.5).
+///
+/// The *unheld* column of the support table. Which arm a kind takes decides how
+/// much the package page can say about a package this instance holds nothing of:
+/// a listing document carries publish times and, for npm, the README; a bare
+/// version list carries neither, which is honest and still the difference
+/// between a versions table and an empty state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpstreamDetailSupport {
+    /// Read this kind's listing document, and name *which* one: the kinds with
+    /// more than one would otherwise have the choice made twice, once here and
+    /// once at the fetch.
+    ///
+    /// The string is the same discriminant `DocumentKind::as_str` returns, for
+    /// the reason [`ListingDocument::documents`] carries strings: `entities`
+    /// does not depend on `ports`, and this is the one fact it needs from there.
+    /// Checked against the real enum by the drift test in
+    /// `services::upstream_detail`, so a typo is a test failure rather than a
+    /// silently skipped kind.
+    Document(&'static str),
+    /// This kind has no listing document the proxy can read, but it can
+    /// enumerate versions. Produces rows with no publish times — honest, and
+    /// enough for a table.
+    ListVersions,
+    /// There is nothing to ask, and why. The string completes "no — …".
+    None(&'static str),
+}
+
+impl UpstreamDetailSupport {
+    pub fn is_supported(&self) -> bool {
+        !matches!(self, Self::None(_))
+    }
+}
+
 /// The protocol a registry adapter speaks — e.g. `"cargo"`, `"npm"`, `"maven"`.
 ///
 /// Distinct from a registry's user-configured *instance* name (e.g. `"my-maven"`
@@ -338,6 +425,119 @@ impl RegistryKind {
         }
     }
 
+    /// Where this kind's README comes from, or why it has none.
+    ///
+    /// The single source of truth for the per-type support table in
+    /// `docs/registries/`, which is *generated* from this rather than maintained
+    /// beside it — the same arrangement [`Self::listing_filter`] has, and for the
+    /// same reason: a published table claiming coverage the code does not deliver
+    /// is a statement about the product that is not true.
+    ///
+    /// Exhaustive with no wildcard arm, so a new registry kind does not compile
+    /// until it answers the question.
+    pub fn readme_support(&self) -> ReadmeSupport {
+        match self {
+            // The packument carries `readme` per version and at the document
+            // root; when a publisher's tooling wrote neither, the tarball still
+            // has one.
+            Self::Npm => ReadmeSupport::MetadataThenArchive,
+            // `info.description` with `info.description_content_type` naming
+            // its markup. Per version by construction, and the archive says the
+            // same thing from the other side: the JSON API's `description` *is*
+            // the wheel's `METADATA` body, so a version resolved through the
+            // simple index rather than the JSON API still gets one.
+            Self::Pypi => ReadmeSupport::MetadataThenArchive,
+            // The plugin `<description>`, already HTML.
+            Self::JetbrainsMarketplace => ReadmeSupport::Metadata,
+            // `files.readme` and the `Content.Details` asset are URLs.
+            Self::Openvsx | Self::VscodeMarketplace => ReadmeSupport::MetadataLinked,
+            // The sparse index has no README field; the `.crate` does, named by
+            // `Cargo.toml [package] readme`. On publish the metadata carries the
+            // full text, which is why cargo has a `LocalPublish` source too.
+            Self::Cargo => ReadmeSupport::Archive,
+            // The `.nuspec` `<readme>` element names a file inside the `.nupkg`.
+            Self::Nuget => ReadmeSupport::Archive,
+            // `README*` at the module root of the `.zip`.
+            Self::Goproxy => ReadmeSupport::Archive,
+            // `README*` at the root of a module tarball. Providers have none,
+            // which the extractor answers for by finding no file.
+            Self::Terraform => ReadmeSupport::Archive,
+            // `README*` at the root of the dist zip.
+            Self::Composer => ReadmeSupport::Archive,
+            // `info/about.json` → `description`, as plain text.
+            Self::Conda => ReadmeSupport::Archive,
+            // `README*` in `data.tar.gz`. There is no declared field in a
+            // gemspec, so this is a filename convention rather than a protocol
+            // guarantee (RFC 0007 open question 3).
+            Self::Rubygems => ReadmeSupport::Archive,
+            Self::Maven => ReadmeSupport::None(
+                "the POM carries `<description>`, which is a sentence rather than a document; \
+                 putting one where a reader expects the other makes every package look thinly \
+                 documented",
+            ),
+            Self::Deb | Self::Rpm | Self::Pacman | Self::Jetbrains | Self::Generic => {
+                ReadmeSupport::None(
+                    "path-addressed: there is no package identity to hang a README on",
+                )
+            }
+            Self::Github | Self::Gitlab | Self::Forgejo => ReadmeSupport::None(
+                "the README is one of the repository files this proxy already serves by path, \
+                 under `raw/{ref}/`, so a second URL for it would be a second answer to a \
+                 solved question",
+            ),
+        }
+    }
+
+    /// How this kind answers the console's discovery read.
+    ///
+    /// The other half of the per-type support table, and generated into it for
+    /// the same reason [`Self::readme_support`] is. Exhaustive with no wildcard
+    /// arm, so a new registry kind does not compile until it answers.
+    pub fn upstream_detail(&self) -> UpstreamDetailSupport {
+        match self {
+            // The packument: versions, `time`, `dist-tags`, and the README.
+            // One cached fetch answers both halves of what the page is missing.
+            Self::Npm => UpstreamDetailSupport::Document("versions"),
+            // The PEP 691 JSON simple page, not the HTML one: same document,
+            // and a parser rather than an HTML scrape.
+            Self::Pypi => UpstreamDetailSupport::Document("simple-json"),
+            // The sparse index, one JSON object per line, carrying `yanked`.
+            Self::Cargo => UpstreamDetailSupport::Document("versions"),
+            // The flat index — the document that resolves a version.
+            Self::Nuget => UpstreamDetailSupport::Document("versions"),
+            // `@v/list`, one version per line.
+            Self::Goproxy => UpstreamDetailSupport::Document("versions"),
+            // `maven-metadata.xml`.
+            Self::Maven => UpstreamDetailSupport::Document("versions"),
+            // p2 metadata.
+            Self::Composer => UpstreamDetailSupport::Document("versions"),
+            // The versions API.
+            Self::Rubygems => UpstreamDetailSupport::Document("versions"),
+            // Module and provider versions. The explore name carries the
+            // `modules/`/`providers/` prefix the protocol addresses by.
+            Self::Terraform => UpstreamDetailSupport::Document("versions"),
+            // `repodata.json` describes a whole channel, not a package: reading
+            // one package's versions out of it would fetch and parse every
+            // package's on every page view. `list_versions` asks the same
+            // question at the size of the answer.
+            Self::Conda => UpstreamDetailSupport::ListVersions,
+            // The extension galleries answer by query rather than by document —
+            // `allVersions` and `extensionquery` — which is what
+            // `list_versions` already wraps.
+            Self::Openvsx | Self::VscodeMarketplace | Self::JetbrainsMarketplace => {
+                UpstreamDetailSupport::ListVersions
+            }
+            Self::Github | Self::Gitlab | Self::Forgejo => UpstreamDetailSupport::None(
+                "a release listing is this instance's own view of a repository it proxies by                  path, and the console's package page is not where a repository is browsed",
+            ),
+            Self::Deb | Self::Rpm | Self::Pacman | Self::Jetbrains | Self::Generic => {
+                UpstreamDetailSupport::None(
+                    "path-addressed: there is no package identity to ask about",
+                )
+            }
+        }
+    }
+
     /// The `PackageId::artifact` sub-coordinate this kind's primary downloadable
     /// artifact is cached under, when it uses one.
     ///
@@ -484,6 +684,105 @@ mod tests {
                 "deb", "rpm", "pacman",
             ]
         );
+    }
+
+    /// Every kind answers, and a "no" answers with a reason an operator can
+    /// read — the published support table prints it verbatim.
+    #[test]
+    fn every_kind_answers_the_readme_question_with_a_reason() {
+        for kind in RegistryKind::ALL {
+            if let ReadmeSupport::None(reason) = kind.readme_support() {
+                assert!(
+                    !reason.is_empty(),
+                    "{kind} says it has no README; say why, the docs table quotes it"
+                );
+            }
+        }
+    }
+
+    /// The three "no" groups of RFC 0007 §4.3, and only those. Each is a
+    /// decision in §3's non-goals, not a gap to be closed later.
+    #[test]
+    fn the_kinds_without_a_readme_are_the_ones_we_decided_against() {
+        let unsupported: Vec<&str> = RegistryKind::ALL
+            .iter()
+            .filter(|k| !k.readme_support().is_supported())
+            .map(|k| k.as_str())
+            .collect();
+        assert_eq!(
+            unsupported,
+            [
+                // The README is a file already served by path.
+                "github",
+                "forgejo",
+                "gitlab",
+                // A sentence, not a document.
+                "maven",
+                // Path-addressed: no package identity.
+                "deb",
+                "rpm",
+                "pacman",
+                "jetbrains",
+                "generic",
+            ]
+        );
+    }
+
+    /// A kind that answers for unheld versions must not be one whose README
+    /// only exists inside bytes we do not have — that combination would put
+    /// "available" on a row we can never serve.
+    #[test]
+    fn only_metadata_borne_kinds_answer_for_unheld_versions() {
+        assert!(RegistryKind::Npm
+            .readme_support()
+            .answers_for_unheld_versions());
+        assert!(RegistryKind::Pypi
+            .readme_support()
+            .answers_for_unheld_versions());
+        assert!(RegistryKind::Openvsx
+            .readme_support()
+            .answers_for_unheld_versions());
+        assert!(!RegistryKind::Cargo
+            .readme_support()
+            .answers_for_unheld_versions());
+        assert!(!RegistryKind::Maven
+            .readme_support()
+            .answers_for_unheld_versions());
+        // npm is both: the packument answers when it carries the text, the
+        // tarball when it does not.
+        assert!(RegistryKind::Npm.readme_support().reads_the_archive());
+        // A kind whose README arrives in a *link* has nothing in the archive to
+        // fall back to, and must not claim otherwise.
+        assert!(!RegistryKind::Openvsx.readme_support().reads_the_archive());
+    }
+
+    /// Every kind answers, and a "no" answers with a reason the published
+    /// table prints verbatim.
+    #[test]
+    fn every_kind_answers_the_upstream_detail_question_with_a_reason() {
+        for kind in RegistryKind::ALL {
+            if let UpstreamDetailSupport::None(reason) = kind.upstream_detail() {
+                assert!(
+                    !reason.is_empty(),
+                    "{kind} says it cannot be asked about upstream; say why"
+                );
+            }
+        }
+    }
+
+    /// A kind whose README arrives in a metadata document must be one the
+    /// discovery read can actually reach, or the support table promises a
+    /// README for an unheld version that nothing can fetch.
+    #[test]
+    fn every_kind_that_answers_for_unheld_versions_can_be_asked_upstream() {
+        for kind in RegistryKind::ALL {
+            if kind.readme_support().answers_for_unheld_versions() {
+                assert!(
+                    kind.upstream_detail().is_supported(),
+                    "{kind} promises a README for unheld versions but cannot be asked upstream"
+                );
+            }
+        }
     }
 
     #[test]

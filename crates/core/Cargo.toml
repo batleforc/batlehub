@@ -26,6 +26,12 @@ semver.workspace = true
 # external entities — it hands unknown ones back to the caller untouched — so a
 # hostile upstream document gets no XXE primitive against the proxy.
 quick-xml.workspace = true
+# README rendering (RFC 0007 phase 4). Both live in `core` rather than `web`
+# because the security boundary has to be somewhere the fuzz target,
+# `cargo audit` and `cargo deny` already look — and because the CLI and any
+# other API consumer must not each need their own renderer and their own bugs.
+pulldown-cmark.workspace = true
+ammonia.workspace = true
 sha1 = "0.11"
 sha2.workspace = true
 # The RubyGems compact index identifies each `/info/{gem}` document by the MD5

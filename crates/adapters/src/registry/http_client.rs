@@ -286,6 +286,73 @@ async fn fetch_document_body(
         .map_err(|e| CoreError::Registry(format!("reading {what}: {e}")))
 }
 
+/// Read a linked README, same-origin checked and bounded.
+///
+/// The three guards RFC 0007 §7.4 requires of every linked-README fetch, in one
+/// place so the two kinds that have one cannot implement them differently:
+///
+/// - `ensure_same_origin` against the registry's own base URL, the guard
+///   `npm.rs` already applies to tarball URLs, so a compromised or misconfigured
+///   upstream cannot point BatleHub at an internal host;
+/// - the body read **incrementally** to `max_bytes` rather than `bytes()`-then-
+///   truncate, so an upstream cannot make this buffer a gigabyte to keep 256 KiB
+///   of it;
+/// - the response `Content-Type` ignored entirely — the caller states the format
+///   from the protocol, and this returns text.
+///
+/// `Ok(None)` for a `404`: an extension whose README asset has gone is a fact
+/// about that extension, not a failure worth logging as one.
+pub async fn fetch_linked_text(
+    req: reqwest::RequestBuilder,
+    url: &str,
+    base_url: &str,
+    max_bytes: usize,
+) -> Result<Option<String>, CoreError> {
+    use futures::StreamExt;
+
+    ensure_same_origin(url, base_url)?;
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| CoreError::Registry(format!("readme request failed: {e}")))?;
+
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        return Err(CoreError::Registry(format!(
+            "readme returned {} from upstream",
+            resp.status()
+        )));
+    }
+
+    let mut body = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| CoreError::Registry(format!("reading readme: {e}")))?;
+        let remaining = max_bytes.saturating_sub(body.len());
+        if remaining == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+        if body.len() >= max_bytes {
+            break;
+        }
+    }
+
+    // A README that is not UTF-8 is not a README this can display. Lossy
+    // conversion would put replacement characters in a document an operator is
+    // reading to decide something, which is worse than saying there is none.
+    match String::from_utf8(body) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) => {
+            tracing::warn!(url = %url, error = %e, "linked readme is not valid UTF-8; ignoring");
+            Ok(None)
+        }
+    }
+}
+
 /// True when `a` and `b` share scheme, host, and (explicit-or-default) port.
 pub fn same_origin(a: &reqwest::Url, b: &reqwest::Url) -> bool {
     a.scheme() == b.scheme()

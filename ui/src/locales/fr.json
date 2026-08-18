@@ -528,6 +528,7 @@
     "time": "Heure",
     "type": "Type",
     "unblock": "Débloquer",
+    "unknown": "inconnu",
     "unknownError": "Erreur inconnue",
     "upstream": "Upstream",
     "user": "Utilisateur",
@@ -702,12 +703,18 @@
     "loading": "Chargement…",
     "local": "Local",
     "memberPreReleaseVersionsVisible": "Membre — versions pre-release visibles",
-    "nonMember": "Non-membre",
     "noSbom": "Aucun SBOM",
-    "nothingHasBeenPulledThrough": "Rien n'a été récupéré ni publié dans ce registre sous ce nom.",
     "noVersionsYet": "Aucune version",
+    "nonMember": "Non-membre",
+    "notHeldHere": "non conservée ici",
+    "notHeldHereHelp": "Aucun octet de cette version n'est conservé sur cette instance ; elle existe en amont.",
+    "notScanned": "non analysée",
+    "notScannedHelp": "Rien n'a ouvert les octets de cette version ici : aucune analyse n'a eu lieu. Une liste vide se lirait « aucune vulnérabilité », ce que nous ne pouvons pas affirmer.",
+    "nothingHasBeenPulledThrough": "Rien n'a été récupéré ni publié dans ce registre sous ce nom.",
     "registryAccess": "Accès au registre :",
     "supplyChainReportOn": "Rapport supply-chain sur socket.dev",
+    "upstreamHasNoneEither": "Rien n'est passé par le proxy, et l'amont ne la connaît pas non plus.",
+    "upstreamUnreachable": "Rien n'est passé par le proxy, et l'amont est injoignable.",
     "why": "Pourquoi ?"
   },
   "packageEventsTable": {
@@ -767,6 +774,17 @@
     "storage": "Stockage",
     "title": "Votre quota",
     "versions": "Versions"
+  },
+  "readmePanel": {
+    "title": "README",
+    "fallbackFrom": "README de la version {shown} ; la version {requested} n'en fournit aucun.",
+    "packageLevel": "Ce README décrit le paquet, pas cette version : le registre n'en publie qu'un par paquet et l'attribue à la dernière version.",
+    "truncated": "Ce README dépasse la taille conservée par ce registre ; seul son début est affiché.",
+    "notHeldHere": "Lu depuis la réponse de l'amont. Aucun octet de cette version n'est conservé ici, donc ce texte n'est pas stocké — il est aussi récent que les métadonnées en cache.",
+    "noneStored": "Aucun README conservé pour ce paquet.",
+    "noneForThisRegistryType": "Les paquets de ce registre ne comportent pas de README.",
+    "blocked": "Cette version est bloquée : son README n'est pas servi. Le motif du blocage figure sur sa ligne.",
+    "unreachable": "Impossible de lire le README."
   },
   "recentPullsWidget": {
     "blockedSincePull": "Bloquée après votre récupération — cette version est désormais refusée.",
@@ -845,6 +863,12 @@
     "description": "Comprendre pourquoi une requête a été autorisée ou refusée, et quelle URL un client doit utiliser.",
     "title": "Outils",
     "urlMapper": "Mappage d'URL"
+  },
+  "upstreamNotice": {
+    "added": "{count} version(s) ci-dessous existent en amont et ne sont pas conservées ici.",
+    "addedTruncated": "Affichage des {count} premières versions connues en amont ; il en existe d'autres.",
+    "stale": "L'amont est injoignable : cette liste provient d'une réponse mise en cache plus ancienne.",
+    "unreachable": "L'amont est injoignable : seules les versions conservées ici sont listées."
   },
   "userMenu": {
     "downloadCli": "Télécharger le CLI",

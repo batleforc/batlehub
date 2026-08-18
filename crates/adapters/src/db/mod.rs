@@ -39,6 +39,9 @@ pub async fn timed_query<T>(
 pub mod artifact_meta;
 
 #[cfg(feature = "db-postgres")]
+pub mod readme;
+
+#[cfg(feature = "db-postgres")]
 pub mod sbom;
 
 #[cfg(feature = "db-postgres")]
@@ -101,6 +104,9 @@ pub use packages::PgPackageRepository;
 
 #[cfg(feature = "db-postgres")]
 pub use stats_history::PgStatsHistoryRepository;
+
+#[cfg(feature = "db-postgres")]
+pub use readme::PgReadmeRepository;
 
 #[cfg(feature = "db-postgres")]
 pub use sbom::PgSbomRepository;
