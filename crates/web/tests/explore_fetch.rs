@@ -140,15 +140,47 @@ async fn fetching_a_version_already_held_is_a_conflict() {
 /// here, which is exactly why this test exists (§5.3, §7.5).
 #[actix_web::test]
 async fn a_caller_the_rules_would_refuse_is_refused_with_the_rules_reason() {
-    let (app, _) = app("npm").await;
+    // A *signed-in* caller the rules refuse.
+    //
+    // This used to send the request anonymously, because anonymous has
+    // `releases:read` and not `source:read` in the shared test policy. That is
+    // no longer a rules question: an anonymous caller is now turned away at the
+    // door with `401` (see `an_anonymous_caller_cannot_pull_at_all`), which
+    // would have made this test pass for the wrong reason and stop defending
+    // what it exists to defend. So the policy is narrowed instead — `User`
+    // keeps metadata and loses the bytes — and the caller carries a token.
+    let parts = local_registry_app_parts(REG, "npm", RegistryMode::Proxy, None);
+    {
+        let mut hot = parts.proxy_svc.hot.write().await;
+        let perms = std::collections::HashMap::from([
+            (
+                batlehub_core::entities::Role::Anonymous,
+                vec!["releases:read".to_owned()],
+            ),
+            (
+                batlehub_core::entities::Role::User,
+                vec!["releases:read".to_owned()],
+            ),
+            (batlehub_core::entities::Role::Admin, vec!["*".to_owned()]),
+        ]);
+        hot.policies.insert(
+            REG.to_owned(),
+            std::sync::Arc::new(batlehub_core::services::RegistryPolicy {
+                metadata_ttl: Some(std::time::Duration::from_secs(300)),
+                firewall_only: false,
+                serve_stale_metadata: false,
+                artifact_ttl: None,
+                rules: vec![Box::new(batlehub_core::rules::RbacRule::new(perms))],
+            }),
+        );
+    }
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
 
-    // Anonymous has `releases:read` and not `source:read` in the shared test
-    // policy, so the rule engine refuses the bytes while allowing metadata —
-    // precisely the split the button must honour.
     let resp = call_service(
         &app,
         TestRequest::post()
             .uri(&fetch_uri("widget", "1.0.0"))
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
             .to_request(),
     )
     .await;
@@ -285,4 +317,101 @@ async fn an_unknown_registry_is_a_404_rather_than_a_complaint_about_its_type() {
     )
     .await;
     assert_eq!(resp.status(), 404, "unexpected {}", resp.status());
+}
+
+// ── A pull is an authenticated act ───────────────────────────────────────────
+
+/// **An unauthenticated reader cannot pull.**
+///
+/// The endpoint used to admit an anonymous caller, on the argument that the
+/// fetch downloads exactly what that caller could already pull through the proxy
+/// with `curl`, so it grants no *read* they did not have. The argument is sound
+/// about reading and incomplete about the act: a fetch is a write to this
+/// instance — it fills the cache, spends bandwidth on both sides, extracts an
+/// SBOM and writes an audit row whose actor would read `anonymous`.
+///
+/// Measured against a running instance before this check existed, an anonymous
+/// `POST …/strip-ansi/7.2.0/fetch` answered `409 already-held`: it had passed
+/// visibility, the operator's switch and the kind check, and was stopped only by
+/// the artifact happening to already be there.
+#[actix_web::test]
+async fn an_anonymous_caller_cannot_pull_at_all() {
+    let (app, _) = app("npm").await;
+
+    let resp = call_service(
+        &app,
+        TestRequest::post()
+            .uri(&fetch_uri("widget", "1.0.0"))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(resp.status(), 401, "a pull requires a session");
+    let body: serde_json::Value = read_body_json(resp).await;
+    assert_eq!(body["code"], "fetch.unauthenticated");
+}
+
+/// And it is refused *before* the download, not after.
+///
+/// The status code alone would pass against a handler that pulled the bytes and
+/// then declined to say so, which would leave the instance holding an artifact
+/// nobody was authorised to ask for. Storage is the assertion that cannot be
+/// satisfied that way.
+#[actix_web::test]
+async fn an_anonymous_attempt_pulls_nothing() {
+    let parts = local_registry_app_parts(REG, "npm", RegistryMode::Proxy, None);
+    let storage = std::sync::Arc::clone(&parts.proxy_svc.storage);
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+
+    let key = batlehub_core::services::proxy::proxy_artifact_key(
+        &batlehub_core::entities::PackageId::new(REG, "widget", "1.0.0"),
+    );
+
+    let resp = call_service(
+        &app,
+        TestRequest::post()
+            .uri(&fetch_uri("widget", "1.0.0"))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 401);
+
+    assert!(
+        !storage.exists(&key).await.unwrap(),
+        "a refused fetch must leave nothing behind"
+    );
+}
+
+/// The console is told, so it does not draw a button the API will refuse.
+///
+/// The offer and the endpoint have to agree — that is the whole reason the
+/// server answers this rather than letting the page guess (§4.4). A page that
+/// drew the button for a signed-out reader would be promising a `401`.
+#[actix_web::test]
+async fn the_button_is_not_offered_to_an_anonymous_reader() {
+    let (app, _) = app("npm").await;
+    let uri = format!("/api/v1/explore/packages/{REG}/widget");
+
+    let anon: serde_json::Value =
+        read_body_json(call_service(&app, TestRequest::get().uri(&uri).to_request()).await).await;
+    assert_eq!(
+        anon["fetch"]["offered"], false,
+        "a signed-out reader is not offered the button: {anon}"
+    );
+
+    let signed_in: serde_json::Value = read_body_json(
+        call_service(
+            &app,
+            TestRequest::get()
+                .uri(&uri)
+                .insert_header(("Authorization", bearer(USER_TOKEN)))
+                .to_request(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        signed_in["fetch"]["offered"], true,
+        "a signed-in reader still is: {signed_in}"
+    );
 }

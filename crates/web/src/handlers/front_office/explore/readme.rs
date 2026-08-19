@@ -450,6 +450,7 @@ async fn render_options(
     RenderOptions {
         remote_images: cfg.remote_images,
         image_proxy_prefix: Some(image_prefix(req, registry, name, version)),
+        image_hosts: Vec::new(),
     }
 }
 

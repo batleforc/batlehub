@@ -32,6 +32,21 @@ async fn make_explore_app(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
+    make_explore_app_with_limits(repo, None, None).await
+}
+
+/// The same, with the two `[limits]` page sizes set — each the key that decides
+/// both what an unasked-for page gets and the most one request may ask for, for
+/// its own list.
+async fn make_explore_app_with_limits(
+    repo: Arc<InMemoryRepo>,
+    versions_per_page: Option<u64>,
+    packages_per_page: Option<u64>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
     let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
@@ -52,10 +67,27 @@ async fn make_explore_app(
         .collect();
 
     let local_svc = make_local_svc(storage.clone());
+    // The handler reads the page size off `local_svc.hot`, which is the same
+    // lock as the proxy's in production (`server/src/main.rs` clones one `Arc`)
+    // and a second, independent one in this fixture. Set both, or the test would
+    // be configuring a `HotConfig` nothing reads.
+    {
+        let mut hot = local_svc.hot.write().await;
+        if let Some(per_page) = versions_per_page {
+            hot.versions_per_page = per_page;
+        }
+        if let Some(per_page) = packages_per_page {
+            hot.packages_per_page = per_page;
+        }
+    }
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
             registries,
             policies,
+            versions_per_page: versions_per_page
+                .unwrap_or(batlehub_core::services::hot_config::DEFAULT_VERSIONS_PER_PAGE),
+            packages_per_page: packages_per_page
+                .unwrap_or(batlehub_core::services::hot_config::DEFAULT_PACKAGES_PER_PAGE),
             ..Default::default()
         }),
         storage: storage.clone(),
@@ -422,4 +454,412 @@ async fn explore_cache_clears_after_invalidate_all() {
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
     assert_eq!(body["upstream_unavailable"], false);
+}
+
+// ── One page of a long version list (RFC 0013 §4.3) ───────────────────────────
+//
+// The endpoint used to answer with every version it could assemble, and the
+// console filtered and paged that list in the browser. Two things were wrong
+// with it and only one was visible: 169 versions of
+// `@babel/plugin-transform-runtime` cost a vulnerability read and an SBOM read
+// each to serve a table showing 25 rows, and — once the answer is a page — a
+// filter applied in the browser searches what happened to arrive rather than
+// what this server has.
+//
+// So the filter, the pager and the pre-release toggle are query parameters, and
+// the answer carries the counts the console says out loud.
+
+/// One package, `n` held versions, zero-padded so the endpoint's
+/// newest-first-by-string order is the same as newest-first by number.
+async fn seed_versions(repo: &Arc<InMemoryRepo>, name: &str, n: usize) {
+    for i in 0..n {
+        repo.record_access(batlehub_core::entities::AccessEvent::allowed_download(
+            batlehub_core::entities::PackageId::new("npm", name, format!("1.{i:03}.0")),
+            Some("user-1".to_owned()),
+            batlehub_core::entities::Role::User,
+        ))
+        .await
+        .unwrap();
+    }
+}
+
+async fn detail_body(
+    app: &impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+    uri: &str,
+) -> Value {
+    let resp = call_service(app, TestRequest::get().uri(uri).to_request()).await;
+    assert_eq!(resp.status(), 200, "GET {uri}");
+    read_body_json(resp).await
+}
+
+#[actix_web::test]
+async fn a_long_version_list_comes_back_one_page_at_a_time() {
+    let repo = InMemoryRepo::new();
+    seed_versions(&repo, "lodash", 60).await;
+    let app = make_explore_app(repo).await;
+
+    let body = detail_body(
+        &app,
+        "/api/v1/explore/packages/npm/lodash?upstream=skip&per_page=25",
+    )
+    .await;
+
+    assert_eq!(body["versions"].as_array().unwrap().len(), 25);
+    assert_eq!(body["versions_page"]["page"], 0);
+    assert_eq!(body["versions_page"]["per_page"], 25);
+    // The totals are about the package, not about the page — they are what the
+    // console's `25 of 60 shown` is made of.
+    assert_eq!(body["versions_page"]["total"], 60);
+    assert_eq!(body["versions_page"]["unfiltered_total"], 60);
+    // Newest first, and page two picks up exactly where page one stopped.
+    assert_eq!(body["versions"][0]["version"], "1.059.0");
+
+    let second = detail_body(
+        &app,
+        "/api/v1/explore/packages/npm/lodash?upstream=skip&per_page=25&page=1",
+    )
+    .await;
+    assert_eq!(second["versions"][0]["version"], "1.034.0");
+    assert_eq!(second["versions_page"]["page"], 1);
+}
+
+/// The operator's key is the answer to "how much of a version list will this
+/// server build for one request", so it is both the unasked-for default…
+#[actix_web::test]
+async fn the_configured_page_size_is_what_an_unasked_for_page_gets() {
+    let repo = InMemoryRepo::new();
+    seed_versions(&repo, "lodash", 60).await;
+    let app = make_explore_app_with_limits(repo, Some(10), None).await;
+
+    let body = detail_body(&app, "/api/v1/explore/packages/npm/lodash?upstream=skip").await;
+
+    assert_eq!(body["versions"].as_array().unwrap().len(), 10);
+    assert_eq!(body["versions_page"]["per_page"], 10);
+    assert_eq!(body["versions_page"]["total"], 60);
+}
+
+/// …and the ceiling. A caller asking for more gets the operator's number rather
+/// than an error: the ask is not illegitimate, it is simply more than this
+/// server is willing to serialise at once, and it is reported back so the caller
+/// can page instead of silently missing rows.
+#[actix_web::test]
+async fn asking_for_more_than_the_operator_allows_gets_the_operators_number() {
+    let repo = InMemoryRepo::new();
+    seed_versions(&repo, "lodash", 60).await;
+    let app = make_explore_app_with_limits(repo, Some(10), None).await;
+
+    let body = detail_body(
+        &app,
+        "/api/v1/explore/packages/npm/lodash?upstream=skip&per_page=50",
+    )
+    .await;
+
+    assert_eq!(body["versions"].as_array().unwrap().len(), 10);
+    assert_eq!(body["versions_page"]["per_page"], 10);
+}
+
+/// The whole reason the filter is here rather than in the console: `1.004.0` is
+/// on the third page, and a filter that only searched the page it was handed
+/// would answer *no* about a version this server holds.
+#[actix_web::test]
+async fn the_filter_searches_every_page_rather_than_the_one_returned() {
+    let repo = InMemoryRepo::new();
+    seed_versions(&repo, "lodash", 60).await;
+    let app = make_explore_app(repo).await;
+
+    let body = detail_body(
+        &app,
+        "/api/v1/explore/packages/npm/lodash?upstream=skip&per_page=25&q=004",
+    )
+    .await;
+
+    assert_eq!(body["versions"].as_array().unwrap().len(), 1);
+    assert_eq!(body["versions"][0]["version"], "1.004.0");
+    // What the console's `1 of 60 shown` is made of: the filtered total and the
+    // one before it, so a filtered list is never mistaken for a short one.
+    assert_eq!(body["versions_page"]["total"], 1);
+    assert_eq!(body["versions_page"]["unfiltered_total"], 60);
+}
+
+#[actix_web::test]
+async fn a_filter_matching_nothing_is_an_empty_page_not_an_error() {
+    let repo = InMemoryRepo::new();
+    seed_versions(&repo, "lodash", 60).await;
+    let app = make_explore_app(repo).await;
+
+    let body = detail_body(
+        &app,
+        "/api/v1/explore/packages/npm/lodash?upstream=skip&q=9.9.9",
+    )
+    .await;
+
+    assert!(body["versions"].as_array().unwrap().is_empty());
+    assert_eq!(body["versions_page"]["total"], 0);
+    assert_eq!(body["versions_page"]["unfiltered_total"], 60);
+}
+
+/// A hand-edited URL, or a link sent before versions were yanked. Answering it
+/// with an empty page would be indistinguishable from a package with nothing in
+/// it.
+#[actix_web::test]
+async fn a_page_past_the_end_is_the_last_page() {
+    let repo = InMemoryRepo::new();
+    seed_versions(&repo, "lodash", 60).await;
+    let app = make_explore_app(repo).await;
+
+    let body = detail_body(
+        &app,
+        "/api/v1/explore/packages/npm/lodash?upstream=skip&per_page=25&page=99",
+    )
+    .await;
+
+    assert_eq!(body["versions_page"]["page"], 2);
+    assert_eq!(body["versions"].as_array().unwrap().len(), 10);
+}
+
+/// The compatible default: this endpoint has always answered with every version,
+/// and dropping rows out of an existing caller's response on an upgrade is not a
+/// change anyone opted into.
+#[actix_web::test]
+async fn pre_releases_are_in_the_answer_until_the_caller_says_otherwise() {
+    let repo = InMemoryRepo::new();
+    seed_versions(&repo, "lodash", 3).await;
+    repo.record_access(batlehub_core::entities::AccessEvent::allowed_download(
+        batlehub_core::entities::PackageId::new("npm", "lodash", "1.003.0-rc.1"),
+        Some("user-1".to_owned()),
+        batlehub_core::entities::Role::User,
+    ))
+    .await
+    .unwrap();
+    let app = make_explore_app(repo).await;
+
+    let shown = detail_body(&app, "/api/v1/explore/packages/npm/lodash?upstream=skip").await;
+    assert_eq!(shown["versions"].as_array().unwrap().len(), 4);
+    assert_eq!(shown["versions_page"]["prerelease_total"], 1);
+    assert_eq!(shown["versions_page"]["hidden_prereleases"], 0);
+
+    let hidden = detail_body(
+        &app,
+        "/api/v1/explore/packages/npm/lodash?upstream=skip&prereleases=hide",
+    )
+    .await;
+    assert_eq!(hidden["versions"].as_array().unwrap().len(), 3);
+    assert_eq!(hidden["versions_page"]["prerelease_total"], 1);
+    assert_eq!(hidden["versions_page"]["hidden_prereleases"], 1);
+    // The count the console offers is what is *currently* hidden, and the total
+    // is what exists — two numbers, because the pinned version keeps its own.
+    assert_eq!(hidden["versions_page"]["unfiltered_total"], 4);
+}
+
+/// A link to `?version=…-rc.1` must not answer with a list its own subject is
+/// missing from — the console would be marking a row it was never given.
+#[actix_web::test]
+async fn the_version_asked_for_survives_the_pre_release_filter() {
+    let repo = InMemoryRepo::new();
+    seed_versions(&repo, "lodash", 3).await;
+    repo.record_access(batlehub_core::entities::AccessEvent::allowed_download(
+        batlehub_core::entities::PackageId::new("npm", "lodash", "1.003.0-rc.1"),
+        Some("user-1".to_owned()),
+        batlehub_core::entities::Role::User,
+    ))
+    .await
+    .unwrap();
+    let app = make_explore_app(repo).await;
+
+    let body = detail_body(
+        &app,
+        "/api/v1/explore/packages/npm/lodash?upstream=skip&prereleases=hide&version=1.003.0-rc.1",
+    )
+    .await;
+
+    let versions: Vec<&str> = body["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["version"].as_str().unwrap())
+        .collect();
+    assert!(versions.contains(&"1.003.0-rc.1"), "{versions:?}");
+    assert_eq!(body["versions_page"]["hidden_prereleases"], 0);
+    assert_eq!(body["selected_version"], "1.003.0-rc.1");
+}
+
+/// A package that has never cut a stable release: hiding every pre-release would
+/// answer forty versions with an empty table, so the one the caller is about to
+/// be pointed at survives too.
+#[actix_web::test]
+async fn a_pre_release_only_package_still_answers_with_a_row() {
+    let repo = InMemoryRepo::new();
+    for i in 0..3 {
+        repo.record_access(batlehub_core::entities::AccessEvent::allowed_download(
+            batlehub_core::entities::PackageId::new("npm", "alpha", format!("0.{i}.0-rc.1")),
+            Some("user-1".to_owned()),
+            batlehub_core::entities::Role::User,
+        ))
+        .await
+        .unwrap();
+    }
+    let app = make_explore_app(repo).await;
+
+    let body = detail_body(
+        &app,
+        "/api/v1/explore/packages/npm/alpha?upstream=skip&prereleases=hide",
+    )
+    .await;
+
+    assert_eq!(body["default_version"], "0.2.0-rc.1");
+    assert_eq!(body["versions"].as_array().unwrap().len(), 1);
+    assert_eq!(body["versions"][0]["version"], "0.2.0-rc.1");
+}
+
+/// A link to a version sixty rows down opens on the page that holds it. Only
+/// this side can say which page that is, and the answer says which it was.
+#[actix_web::test]
+async fn a_version_with_no_page_asked_for_opens_on_its_own_page() {
+    let repo = InMemoryRepo::new();
+    seed_versions(&repo, "lodash", 60).await;
+    let app = make_explore_app(repo).await;
+
+    let body = detail_body(
+        &app,
+        "/api/v1/explore/packages/npm/lodash?upstream=skip&per_page=25&version=1.004.0",
+    )
+    .await;
+
+    assert_eq!(body["versions_page"]["page"], 2);
+    assert_eq!(body["selected_version"], "1.004.0");
+
+    // An explicit page outranks it: the caller turned to page one *while* that
+    // version was selected, and a server that pulled them back would be
+    // overruling the address they are looking at.
+    let pinned = detail_body(
+        &app,
+        "/api/v1/explore/packages/npm/lodash?upstream=skip&per_page=25&version=1.004.0&page=0",
+    )
+    .await;
+    assert_eq!(pinned["versions_page"]["page"], 0);
+}
+
+/// A typo, or a version yanked since the link was sent. The caller cannot tell
+/// that from "on another page", so this side answers it.
+#[actix_web::test]
+async fn a_version_this_package_does_not_have_is_not_echoed_back() {
+    let repo = InMemoryRepo::new();
+    seed_versions(&repo, "lodash", 3).await;
+    let app = make_explore_app(repo).await;
+
+    let body = detail_body(
+        &app,
+        "/api/v1/explore/packages/npm/lodash?upstream=skip&version=9.9.9",
+    )
+    .await;
+
+    assert!(body["selected_version"].is_null());
+    assert_eq!(body["default_version"], "1.002.0");
+}
+
+// ── One page of the catalog (RFC 0013 §4.3) ───────────────────────────────────
+//
+// The catalog has always been paginated; what it did not have was an operator's
+// say in how long a page is. 20 was a literal in two places — a `serde` default
+// here and a `const perPage` in the console — so the number could not be
+// changed without a rebuild, and the two copies could disagree.
+
+/// `n` distinct package names in one registry, so the listing has something to
+/// page through.
+async fn seed_packages(repo: &Arc<InMemoryRepo>, n: usize) {
+    for i in 0..n {
+        repo.record_access(batlehub_core::entities::AccessEvent::allowed_download(
+            batlehub_core::entities::PackageId::new("npm", format!("pkg-{i:03}"), "1.0.0"),
+            Some("user-1".to_owned()),
+            batlehub_core::entities::Role::User,
+        ))
+        .await
+        .unwrap();
+    }
+}
+
+#[actix_web::test]
+async fn the_catalog_answers_twenty_packages_by_default() {
+    let repo = InMemoryRepo::new();
+    seed_packages(&repo, 25).await;
+    let app = make_explore_app(repo).await;
+
+    let body = detail_body(&app, "/api/v1/explore/packages").await;
+
+    assert_eq!(body["items"].as_array().unwrap().len(), 20);
+    assert_eq!(body["per_page"], 20);
+    assert_eq!(body["total"], 25);
+}
+
+#[actix_web::test]
+async fn the_configured_catalog_page_size_is_what_an_unasked_for_page_gets() {
+    let repo = InMemoryRepo::new();
+    seed_packages(&repo, 25).await;
+    let app = make_explore_app_with_limits(repo, None, Some(5)).await;
+
+    let body = detail_body(&app, "/api/v1/explore/packages").await;
+
+    assert_eq!(body["items"].as_array().unwrap().len(), 5);
+    assert_eq!(body["per_page"], 5);
+    // The total is still about the catalog rather than about the page, which is
+    // what the console's pager divides.
+    assert_eq!(body["total"], 25);
+}
+
+/// The same two readings as the version list: default *and* ceiling.
+#[actix_web::test]
+async fn asking_for_more_of_the_catalog_than_the_operator_allows_gets_the_operators_number() {
+    let repo = InMemoryRepo::new();
+    seed_packages(&repo, 25).await;
+    let app = make_explore_app_with_limits(repo, None, Some(5)).await;
+
+    let body = detail_body(&app, "/api/v1/explore/packages?per_page=50").await;
+
+    assert_eq!(body["items"].as_array().unwrap().len(), 5);
+    assert_eq!(body["per_page"], 5);
+}
+
+/// Asking for *less* is honoured — the ceiling is a ceiling, not a fixed size.
+#[actix_web::test]
+async fn a_caller_may_still_ask_the_catalog_for_a_shorter_page() {
+    let repo = InMemoryRepo::new();
+    seed_packages(&repo, 25).await;
+    let app = make_explore_app(repo).await;
+
+    let body = detail_body(&app, "/api/v1/explore/packages?per_page=3").await;
+
+    assert_eq!(body["items"].as_array().unwrap().len(), 3);
+    assert_eq!(body["per_page"], 3);
+}
+
+/// `per_page=0` collapsed the listing query's cache key onto the count query's
+/// — both become `limit=0, offset=0` — so it has always been clamped rather
+/// than passed through. The configured ceiling must not have lost that.
+#[actix_web::test]
+async fn a_zero_page_size_is_still_clamped_to_one_row() {
+    let repo = InMemoryRepo::new();
+    seed_packages(&repo, 25).await;
+    let app = make_explore_app(repo).await;
+
+    let body = detail_body(&app, "/api/v1/explore/packages?per_page=0").await;
+
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+    assert_eq!(body["per_page"], 1);
+}
+
+/// The two keys are one each: sizing the version table must not resize the
+/// catalog, and the other way round.
+#[actix_web::test]
+async fn the_two_page_sizes_are_independent() {
+    let repo = InMemoryRepo::new();
+    seed_packages(&repo, 25).await;
+    let app = make_explore_app_with_limits(repo, Some(3), None).await;
+
+    let body = detail_body(&app, "/api/v1/explore/packages").await;
+
+    assert_eq!(body["per_page"], 20, "versions_per_page moved the catalog");
 }

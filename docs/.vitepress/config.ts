@@ -528,6 +528,14 @@ export default defineConfig({
               text: "0010 — The toolchain layer",
               link: "/rfc/0010-toolchain-managers",
             },
+            {
+              text: "0012 — Signed URLs for the credential-less request",
+              link: "/rfc/0012-signed-urls-for-terraform",
+            },
+            {
+              text: "0013 — What the console owes a reader",
+              link: "/rfc/0013-console-answers-for-a-package",
+            },
           ],
         },
       ],

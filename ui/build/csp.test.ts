@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { buildCsp, resolveLivePort } from "./csp.ts";
 
 const API_ORIGIN = "https://api.example.com";
+const SOCKET_BADGE = "https://badge.socket.dev";
 
 /**
  * Split a policy into `{ directive -> source tokens }`.
@@ -132,7 +133,12 @@ describe("buildCsp — live mode", () => {
 
   /** The overlay screenshots the page into a `blob:` URL. */
   it("allows blob: images for the live overlay", () => {
-    expect(directives(buildCsp("", 4849))["img-src"]).toEqual(["'self'", "data:", "blob:"]);
+    expect(directives(buildCsp("", 4849))["img-src"]).toEqual([
+      "'self'",
+      "data:",
+      SOCKET_BADGE,
+      "blob:",
+    ]);
   });
 
   it("widens nothing else", () => {
@@ -192,5 +198,39 @@ describe("resolveLivePort", () => {
     "'unsafe-inline'",
   ])("refuses the value %p", (value) => {
     expect(resolveLivePort("development", { VITE_IMPECCABLE_LIVE_PORT: value })).toBeNull();
+  });
+});
+
+/**
+ * The one third-party image origin, pinned.
+ *
+ * `socket_badge` is on by default and the version table renders one
+ * `<img src="https://badge.socket.dev/…">` per row, so under the previous
+ * `img-src 'self' data:` the feature was a broken-image box per row in every
+ * deployment. The origin is now admitted — deliberately, and at a cost stated in
+ * `csp.ts`: each badge tells socket.dev which package a reader is looking at.
+ *
+ * Pinned as a whole token and as an exact list, because both halves are the
+ * assertion: that the badge can load, and that admitting it widened *nothing
+ * else*. A substring check would accept `https://badge.socket.dev.evil.test`,
+ * which is the pattern the tests at the top of this file already refuse for
+ * `connect-src`.
+ */
+describe("buildCsp — the socket.dev badge", () => {
+  it("admits the badge origin on img-src and nowhere else", () => {
+    const parsed = directives(buildCsp(API_ORIGIN));
+
+    expect(parsed["img-src"]).toEqual(["'self'", "data:", SOCKET_BADGE]);
+    const elsewhere = Object.entries(parsed)
+      .filter(([name, sources]) => name !== "img-src" && sources.includes(SOCKET_BADGE))
+      .map(([name]) => name);
+    expect(elsewhere).toEqual([]);
+  });
+
+  /** It is a constant, not derived from any environment value. */
+  it("admits it whatever the API base URL is", () => {
+    for (const base of ["", "/api", API_ORIGIN, "https://elsewhere.example"]) {
+      expect(directives(buildCsp(base))["img-src"]).toContain(SOCKET_BADGE);
+    }
   });
 });

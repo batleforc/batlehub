@@ -28,7 +28,7 @@ use futures::StreamExt;
 
 use super::{web, AppError, Arc, AuthIdentity, Deserialize, IntoParams, Serialize, ToSchema};
 use batlehub_core::{
-    entities::{PackageId, RegistryKind},
+    entities::{PackageId, RegistryKind, Role},
     services::{LocalRegistryService, ProxyRequest, ProxyResponse, ProxyService},
 };
 
@@ -42,6 +42,9 @@ pub const FETCH_ALREADY_HELD: &str = "fetch.already-held";
 
 /// The registry, or this build, does not offer the button.
 pub const FETCH_UNSUPPORTED: &str = "fetch.unsupported";
+
+/// The caller has no session. Pulling is an authenticated act (§4.1 revisited).
+pub const FETCH_UNAUTHENTICATED: &str = "fetch.unauthenticated";
 
 #[derive(Deserialize, IntoParams)]
 pub struct FetchPath {
@@ -75,6 +78,7 @@ pub struct FetchResponse {
     params(FetchPath),
     responses(
         (status = 200, description = "The version was fetched and is now held", body = FetchResponse),
+        (status = 401, description = "No session; pulling a version requires one"),
         (status = 403, description = "A rule refused it; the body carries the rule's own reason"),
         (status = 404, description = "No such registry, package or version upstream"),
         (status = 409, description = "This instance already holds the version"),
@@ -106,6 +110,35 @@ pub async fn explore_fetch_version(
         return Err(AppError::not_found(format!(
             "package '{name}' not found in registry '{registry}'"
         )));
+    }
+
+    // **A session is required to pull.**
+    //
+    // This endpoint used to admit an anonymous caller, on the reasoning above:
+    // the fetch downloads exactly what that caller could already pull through
+    // the proxy with `curl`, so it grants no read they did not have. That is
+    // true about *reading* and it is not the whole question. A fetch is a write
+    // to this instance — it fills the cache, spends the upstream's bandwidth and
+    // ours, extracts an SBOM, and lands a row in the audit log — and it is the
+    // one button in the console that does so on a page an unauthenticated reader
+    // can open. Measured against the running instance before this check existed,
+    // an anonymous `POST …/strip-ansi/7.2.0/fetch` came back `409 already-held`:
+    // it had passed visibility, the operator's switch and the kind check, and
+    // was stopped only by the artifact happening to be there already.
+    //
+    // The proxy path is unchanged and still serves whoever the operator's
+    // `anonymous` policy allows. What is refused here is *causing this instance
+    // to go and get something* without saying who you are — the audit row for
+    // which would read `anonymous`.
+    //
+    // After the visibility check on purpose: a package this caller may not see
+    // must answer `404` first, or `401` becomes an oracle for whether a private
+    // package exists.
+    if identity.0.role == Role::Anonymous {
+        return Err(AppError::unauthorized(
+            "fetching a version requires a signed-in session".to_owned(),
+        )
+        .coded(FETCH_UNAUTHENTICATED));
     }
 
     // The operator's switch. It admits nothing — the fetch is a download the

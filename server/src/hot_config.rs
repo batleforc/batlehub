@@ -145,6 +145,7 @@ fn build_readme_map(registries: &[RegistryConfig]) -> HashMap<String, HotReadmeC
                     // this cannot silently become the default on a running
                     // server — the process would not have started.
                     remote_images: RemoteImagePolicy::parse(&r.remote_images).unwrap_or_default(),
+                    remote_image_hosts: r.remote_image_hosts.clone(),
                     image_max_bytes: r.image_max_bytes,
                     registry_type: reg.registry_type.clone(),
                 },
@@ -327,6 +328,8 @@ pub(super) fn build_hot_bundle(
         beta_channel: build_beta_channel_map(Arc::clone(beta_channel_store), &cfg.registries),
         resolution: reg_resolution,
         max_artifact_size_bytes: cfg.limits.max_artifact_size_bytes,
+        versions_per_page: cfg.limits.versions_per_page,
+        packages_per_page: cfg.limits.packages_per_page,
     };
 
     Ok((

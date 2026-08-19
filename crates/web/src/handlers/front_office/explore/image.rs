@@ -175,6 +175,10 @@ async fn image_config(
             max_bytes: readme.image_max_bytes,
             ttl,
             negative_ttl,
+            // Read from the *live* config on every request, like everything else
+            // here: an operator who removes a host stops this server dialling it
+            // on the next request rather than when a cache expires.
+            allowed_hosts: readme.remote_image_hosts.clone(),
         },
     )
 }

@@ -1397,3 +1397,121 @@ fn prose_search_over_registries_that_store_nothing_is_warned_about() {
         .iter()
         .any(|c| c == warnings::SEARCH_READMES_NOTHING_STORED));
 }
+
+// ── `[limits].versions_per_page` ──────────────────────────────────────────────
+
+/// The key answers one question — how much of a version list this server is
+/// willing to build for one request — so it is both the default for a caller
+/// that asks for nothing and the ceiling on what one may ask for. Absent means
+/// the same number either way, which is what this pins: a `[limits]` block that
+/// mentions something else must not read as zero.
+#[test]
+fn versions_per_page_defaults_to_a_hundred_with_or_without_a_limits_block() {
+    let none = parse_config("");
+    assert_eq!(none.limits.versions_per_page, DEFAULT_VERSIONS_PER_PAGE);
+
+    let other_key = parse_config(
+        r#"
+        [limits]
+        max_artifact_size_bytes = 1024"#,
+    );
+    assert_eq!(
+        other_key.limits.versions_per_page,
+        DEFAULT_VERSIONS_PER_PAGE
+    );
+}
+
+/// Every caller would get an empty version list, and the failure would land on a
+/// package page rather than at startup.
+#[test]
+fn versions_per_page_zero_refuses_to_start() {
+    let cfg = parse_config(
+        r#"
+        [limits]
+        versions_per_page = 0"#,
+    );
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("versions_per_page"), "{err}");
+    assert!(err.contains("empty version list"), "{err}");
+}
+
+/// Every row costs a vulnerability read and a licence read before it is
+/// serialised — the same argument `upstream_detail.max_versions` makes one level
+/// up.
+#[test]
+fn versions_per_page_above_the_ceiling_refuses_to_start() {
+    let cfg = parse_config(
+        r#"
+        [limits]
+        versions_per_page = 5000"#,
+    );
+    assert!(cfg.validate().unwrap_err().to_string().contains("ceiling"));
+}
+
+#[test]
+fn versions_per_page_within_the_ceiling_loads() {
+    let cfg = parse_config(
+        r#"
+        [limits]
+        versions_per_page = 250"#,
+    );
+    cfg.validate().expect("250 is under the ceiling");
+    assert_eq!(cfg.limits.versions_per_page, 250);
+}
+
+// ── `[limits].packages_per_page` ──────────────────────────────────────────────
+
+/// The catalog's half of the same idea, with its own number because a screenful
+/// of names and a query's worth of enriched version rows are not the same
+/// question.
+#[test]
+fn packages_per_page_defaults_to_twenty() {
+    assert_eq!(
+        parse_config("").limits.packages_per_page,
+        DEFAULT_PACKAGES_PER_PAGE
+    );
+    let other_key = parse_config(
+        r#"
+        [limits]
+        versions_per_page = 50"#,
+    );
+    assert_eq!(
+        other_key.limits.packages_per_page,
+        DEFAULT_PACKAGES_PER_PAGE
+    );
+}
+
+#[test]
+fn packages_per_page_zero_refuses_to_start() {
+    let cfg = parse_config(
+        r#"
+        [limits]
+        packages_per_page = 0"#,
+    );
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("packages_per_page"), "{err}");
+    assert!(err.contains("empty package catalog"), "{err}");
+}
+
+#[test]
+fn packages_per_page_above_the_ceiling_refuses_to_start() {
+    let cfg = parse_config(
+        r#"
+        [limits]
+        packages_per_page = 5000"#,
+    );
+    assert!(cfg.validate().unwrap_err().to_string().contains("ceiling"));
+}
+
+/// The two keys are independent: setting one must not move the other.
+#[test]
+fn the_two_page_sizes_do_not_move_each_other() {
+    let cfg = parse_config(
+        r#"
+        [limits]
+        packages_per_page = 40"#,
+    );
+    cfg.validate().expect("40 is a fine catalog page");
+    assert_eq!(cfg.limits.packages_per_page, 40);
+    assert_eq!(cfg.limits.versions_per_page, DEFAULT_VERSIONS_PER_PAGE);
+}

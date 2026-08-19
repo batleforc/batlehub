@@ -819,3 +819,41 @@ async fn npm_does_not_refetch_its_packument_for_a_per_version_readme() {
         "npm resolved a version to re-read the packument it had already fetched"
     );
 }
+
+/// The default selection is **the newest stable version this instance holds**,
+/// and it is answered here rather than in the console (RFC 0007 §4.2, RFC 0013
+/// §4.3).
+///
+/// The console used to derive it from the list it was sent. It is now sent one
+/// *page* of that list, and the rule does not survive the move: read off page
+/// one of a package held only at 1.0.0 while upstream is at 1.1.0, "the first
+/// stable row" is the upstream one — a highlighted row this instance serves
+/// nothing of, with the README panel below it rendering prose derived from
+/// cached upstream metadata rather than from bytes we hold. That is the exact
+/// defect the rule was written to fix, so the rule moved to the side that can
+/// see every version.
+#[actix_web::test]
+async fn the_default_version_is_the_newest_held_release_not_the_newest_that_exists() {
+    let f = fixture("npm", RegistryMode::Proxy, None).await;
+    // 1.0.0 recorded as pulled through; upstream also offers 1.1.0 and a beta.
+    f.parts
+        .proxy_svc
+        .repo
+        .record_access(batlehub_core::entities::AccessEvent::allowed_download(
+            PackageId::new("reg1", "partly-held", "1.0.0"),
+            Some("user-1".to_owned()),
+            batlehub_core::entities::Role::User,
+        ))
+        .await
+        .unwrap();
+    let app = build(f.parts).await;
+
+    let body = detail(&app, "/api/v1/explore/packages/reg1/partly-held").await;
+
+    // The newest stable row is 1.1.0 and it is upstream-only; the held one wins.
+    assert_eq!(body["default_version"], "1.0.0", "{body}");
+    // And the releases sort above the pre-release, which is what decides what
+    // page one is now that the answer is a page.
+    assert_eq!(body["versions"][0]["version"], "1.1.0", "{body}");
+    assert_eq!(body["versions"][2]["version"], "2.0.0-beta.1", "{body}");
+}

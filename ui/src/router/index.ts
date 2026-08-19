@@ -135,6 +135,23 @@ function handleCatalogPath(to: RouteLocationNormalized): RouteLocationRaw | null
 
 export const router = createRouter({
   history: createWebHistory(),
+  /**
+   * Returning to a list returns to the place in it.
+   *
+   * Without this the router leaves the scroll offset wherever the browser put
+   * it, which for an SPA is "wherever the previous page ended" — so pressing
+   * Back from a package landed at the top of the catalog, and the row the reader
+   * had opened was somewhere below the fold. `savedPosition` is populated only
+   * on a *pop* (Back/Forward), which is exactly when the reader is returning
+   * rather than arriving.
+   *
+   * `{ top: 0 }` for everything else: a fresh destination starts at its own
+   * beginning, and this is also what makes a route change behave like a page
+   * load for anyone who expects one.
+   */
+  scrollBehavior(_to, _from, savedPosition) {
+    return savedPosition ?? { top: 0 };
+  },
   routes: [
     { path: "/", component: () => import("@/pages/HomePage.vue") },
     { path: "/login", component: () => import("@/pages/LoginPage.vue") },

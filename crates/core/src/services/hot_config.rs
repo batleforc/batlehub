@@ -154,6 +154,10 @@ pub struct ReadmeConfig {
     /// extraction. Truncation is recorded and surfaced, never silent.
     pub max_bytes: usize,
     pub remote_images: RemoteImagePolicy,
+    /// Hosts an image may be proxied from. Empty means every host — see
+    /// `ReadmeConfig::remote_image_hosts` in the config crate for why the
+    /// permissive reading is the compatible one.
+    pub remote_image_hosts: Vec<String>,
     /// Cap on **one proxied image**, separate from `max_bytes` above, which caps
     /// the stored text. Inert under [`RemoteImagePolicy::Strip`], where nothing
     /// is fetched (RFC 0007-bis §4.1).
@@ -170,6 +174,7 @@ impl Default for ReadmeConfig {
             from_archive: true,
             max_bytes: DEFAULT_README_MAX_BYTES,
             remote_images: RemoteImagePolicy::Strip,
+            remote_image_hosts: Vec::new(),
             image_max_bytes: DEFAULT_README_IMAGE_MAX_BYTES,
             registry_type: String::new(),
         }
@@ -309,7 +314,34 @@ pub struct HotConfig {
     pub resolution: HashMap<String, ResolutionPolicy>,
     /// Maximum artifact size when buffering from upstream; None = 500 MiB default.
     pub max_artifact_size_bytes: Option<u64>,
+    /// How many versions one package-detail answer carries — the default for a
+    /// caller that asks for no `per_page`, and the ceiling on what one may ask
+    /// for. From `[limits].versions_per_page`; see the config crate for why the
+    /// two readings are one key.
+    pub versions_per_page: u64,
+    /// How many packages one catalog answer carries — the same two readings as
+    /// `versions_per_page`, for the other list. From `[limits].packages_per_page`.
+    ///
+    /// A separate key rather than one shared number because the two answer
+    /// different questions: a catalog row is a name and a handful of counts and
+    /// 20 of them is a screenful, while a version row costs a vulnerability read
+    /// and a licence read and 100 is about what one request should build. One
+    /// key would force an operator sizing a screen to also size a query.
+    pub packages_per_page: u64,
 }
+
+/// What a server with no `[limits].versions_per_page` serves, and what a
+/// `HotConfig` built by hand — a test, an embedder — gets.
+///
+/// It lives here rather than in the config crate because `HotConfig` must be
+/// able to answer without one: a `..Default::default()` that fell back to zero
+/// would build a version table that can never return a row, and the config
+/// crate's own default re-exports this constant so the two cannot drift.
+pub const DEFAULT_VERSIONS_PER_PAGE: u64 = 100;
+
+/// The same for `[limits].packages_per_page`, and 20 because that is what the
+/// catalog has always drawn.
+pub const DEFAULT_PACKAGES_PER_PAGE: u64 = 20;
 
 impl Default for HotConfig {
     /// All maps empty, no size limit. Useful as a base for `..Default::default()`
@@ -330,6 +362,8 @@ impl Default for HotConfig {
             beta_channel: HashMap::new(),
             resolution: HashMap::new(),
             max_artifact_size_bytes: None,
+            versions_per_page: DEFAULT_VERSIONS_PER_PAGE,
+            packages_per_page: DEFAULT_PACKAGES_PER_PAGE,
         }
     }
 }

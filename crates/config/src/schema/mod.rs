@@ -280,12 +280,61 @@ pub struct VulnerabilityScanConfig {
 /// ```toml
 /// [limits]
 /// max_artifact_size_bytes = 524288000  # 500 MiB
+/// versions_per_page       = 100        # rows in one package-detail answer
+/// packages_per_page       = 20         # rows in one catalog answer
 /// ```
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
+#[serde(default)]
 pub struct LimitsConfig {
     /// Maximum artifact size for proxy downloads and local publishes.
     /// Defaults to 500 MiB when absent.
     pub max_artifact_size_bytes: Option<u64>,
+    /// How many versions `GET /api/v1/explore/packages/{registry}/{name}`
+    /// returns in one answer.
+    ///
+    /// Two things at once, deliberately: the number a caller that asks for no
+    /// `per_page` gets, **and** the most any caller may ask for. A ceiling and a
+    /// default expressed as two keys would let them contradict each other, and
+    /// the question an operator actually has is one question — how much of a
+    /// version list this server is willing to build, hold in memory and
+    /// serialise for one request. `@babel/plugin-transform-runtime` has 169
+    /// versions and the enrichment behind each row is a database read.
+    ///
+    /// The console asks for the number of rows it draws, which is its own
+    /// business and smaller than this; it reads back the `per_page` the server
+    /// actually applied rather than assuming it got what it asked for.
+    pub versions_per_page: u64,
+    /// How many packages `GET /api/v1/explore/packages` returns in one answer.
+    ///
+    /// The same two readings as `versions_per_page` — the unasked-for default
+    /// and the ceiling — for the other list, and a separate key because the two
+    /// are not the same question. A catalog row is a name and a few counts; 20
+    /// of them is a screenful, which is why that is the default and has always
+    /// been what the console drew. A version row costs a vulnerability read and
+    /// a licence read. An operator sizing a screen should not be sizing a query
+    /// at the same time.
+    ///
+    /// The console does **not** ask for a number here, unlike the version table:
+    /// the catalog *is* the list, so the operator's number is the right one, and
+    /// the console reads it back out of the answer to size its pager.
+    pub packages_per_page: u64,
+}
+
+/// Re-exported from `core`, which owns it because `HotConfig` has to answer with
+/// the same number when a test or an embedder builds one without a config file.
+/// A second literal here would be a second source of truth for one default.
+pub use batlehub_core::services::hot_config::{
+    DEFAULT_PACKAGES_PER_PAGE, DEFAULT_VERSIONS_PER_PAGE,
+};
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        Self {
+            max_artifact_size_bytes: None,
+            versions_per_page: DEFAULT_VERSIONS_PER_PAGE,
+            packages_per_page: DEFAULT_PACKAGES_PER_PAGE,
+        }
+    }
 }
 
 impl AppConfig {
@@ -946,6 +995,41 @@ impl AppConfig {
         // entry is dropped as before and surfaced as
         // `PROXY_TRUST_INVALID_DEPRECATED_ENTRY` instead.
         self.validate_host_routing()?;
+
+        // A page size of zero is a list that can never answer, and the failure
+        // would land on a page rather than at startup. The ceiling is the same
+        // argument `upstream_detail.max_versions` makes one level up: every row
+        // is built, held in memory and serialised, and these keys are the *most*
+        // any caller may ask for.
+        const PER_PAGE_CEILING: u64 = 1_000;
+        for (key, value, default, empties) in [
+            (
+                "versions_per_page",
+                self.limits.versions_per_page,
+                DEFAULT_VERSIONS_PER_PAGE,
+                "version list",
+            ),
+            (
+                "packages_per_page",
+                self.limits.packages_per_page,
+                DEFAULT_PACKAGES_PER_PAGE,
+                "package catalog",
+            ),
+        ] {
+            if value == 0 {
+                bail!(
+                    "[limits].{key} = 0 would return an empty {empties} to every caller; \
+                     omit the key for the default of {default}"
+                );
+            }
+            if value > PER_PAGE_CEILING {
+                bail!(
+                    "[limits].{key} = {value} exceeds the {PER_PAGE_CEILING} ceiling; every row \
+                     in the answer is built and serialised, and this is the most one request \
+                     may ask for"
+                );
+            }
+        }
 
         // The index is a Postgres generated column with a GIN index. There is no
         // other backend to put it in, and failing at startup beats a search that

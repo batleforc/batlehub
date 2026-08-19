@@ -623,6 +623,7 @@ async fn the_image_policy_is_part_of_the_cache_key() {
             &render::RenderOptions {
                 remote_images: crate::services::RemoteImagePolicy::Proxy,
                 image_proxy_prefix: Some("https://hub.example.com/i?url=".into()),
+                image_hosts: Vec::new(),
             },
         )
         .await;

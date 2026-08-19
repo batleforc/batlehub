@@ -142,10 +142,16 @@ describe("ReadmePanel", () => {
     expect(wrapper.text().toLowerCase()).toContain("blocked");
   });
 
-  /** With no version selected, the panel asks for the newest that has one. */
-  it("asks for no particular version when none is selected", async () => {
+  /**
+   * With no version selected, the panel asks for the newest that has one — and
+   * it asks for `format=both`, without which `source_text` comes back `null` and
+   * the *View source* control has nothing to switch to.
+   */
+  it("asks for no particular version when none is selected, and for both formats", async () => {
     await mountPanel(null);
-    expect(explorePackageReadmeMock).toHaveBeenCalledWith(expect.objectContaining({ query: {} }));
+    expect(explorePackageReadmeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ query: { format: "both" } }),
+    );
   });
 });
 

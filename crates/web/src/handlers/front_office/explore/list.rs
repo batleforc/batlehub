@@ -13,9 +13,8 @@ use batlehub_core::services::LocalRegistryService;
 use chrono::Utc;
 
 use super::{
-    default_per_page, format_dt, get, web, AdminService, AppError, Arc, AuthIdentity, Deserialize,
-    ExploreFilter, ExploreSortBy, IntoParams, PackageSource, ProxyService, Responder, Serialize,
-    ToSchema,
+    format_dt, get, web, AdminService, AppError, Arc, AuthIdentity, Deserialize, ExploreFilter,
+    ExploreSortBy, IntoParams, PackageSource, ProxyService, Responder, Serialize, ToSchema,
 };
 
 // ── List packages (collapsed) ─────────────────────────────────────────────────
@@ -83,8 +82,16 @@ pub struct ExploreQuery {
     pub sort: Option<String>,
     #[serde(default)]
     pub page: u64,
-    #[serde(default = "default_per_page")]
-    pub per_page: u64,
+    /// Rows in the answer. Absent means `[limits].packages_per_page`, which is
+    /// also the most this may be — a larger ask is clamped down to it, and the
+    /// applied value is reported back in `per_page`.
+    ///
+    /// The console deliberately sends nothing here: the catalog *is* this list,
+    /// so the number the operator configured is the right one, and a console
+    /// that asked for its own would make the setting inert on the one page it
+    /// exists for.
+    #[serde(default)]
+    pub per_page: Option<u64>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -196,10 +203,21 @@ pub async fn explore_packages(
         .await
         .explore_accessible_registries_for(&identity);
 
-    // See `clamp_pagination`'s doc comment for why page/per_page are clamped;
-    // an unclamped per_page=0 here would also collapse `filter`'s cache key
-    // onto `count_filter`'s (both would be limit=0,offset=0).
-    let (page, per_page) = crate::handlers::clamp_pagination(query.page, query.per_page);
+    // `[limits].packages_per_page` is both the unasked-for default and the
+    // ceiling — one key, because the question an operator has is one question
+    // (see the config crate). `clamp_pagination` still bounds the page number;
+    // its `per_page` half is superseded here by the configured ceiling, which is
+    // the operator's number rather than a constant.
+    //
+    // The clamp to at least 1 matters beyond politeness: an unclamped
+    // `per_page=0` collapses `filter`'s cache key onto `count_filter`'s (both
+    // would be limit=0, offset=0).
+    let configured_per_page = local_svc.hot.read().await.packages_per_page;
+    let (page, _) = crate::handlers::clamp_pagination(query.page, configured_per_page);
+    let per_page = query
+        .per_page
+        .unwrap_or(configured_per_page)
+        .clamp(1, configured_per_page);
 
     let readme_search_enabled = *search_cfg.read().await;
     // With the feature off, `in=readme` answers exactly as `in=name` does, and

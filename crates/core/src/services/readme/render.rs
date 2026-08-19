@@ -20,6 +20,7 @@ use pulldown_cmark::{html, CowStr, Event, Options, Parser, Tag, TagEnd};
 use crate::entities::ReadmeFormat;
 use crate::services::hot_config::RemoteImagePolicy;
 
+use super::image::image_host_allowed;
 use super::sanitize::{sanitize_capturing_images, STRIPPED_IMAGE_CLASS};
 
 /// What the renderer needs to know that is not in the source.
@@ -38,6 +39,14 @@ pub struct RenderOptions {
     /// at all: every image invisible and nothing said about it. See
     /// [`proxy_prefix`].
     pub image_proxy_prefix: Option<String>,
+    /// Hosts this registry will fetch an image from. Empty means every host,
+    /// which is what `proxy` meant before the list existed.
+    ///
+    /// The decision is per image rather than per registry: a README that badges
+    /// from `shields.io` and screenshots from a personal domain gets the badges
+    /// and a chip for the screenshot, instead of an all-or-nothing choice
+    /// between a beacon and a blank (RFC 0013 §4.2).
+    pub image_hosts: Vec<String>,
 }
 
 impl Default for RenderOptions {
@@ -45,6 +54,7 @@ impl Default for RenderOptions {
         Self {
             remote_images: RemoteImagePolicy::Strip,
             image_proxy_prefix: None,
+            image_hosts: Vec::new(),
         }
     }
 }
@@ -69,7 +79,12 @@ pub fn render_capturing_images(
         ReadmeFormat::Markdown => markdown_to_html(source, opts),
         // Not re-rendered, only filtered — except that its images become chips
         // like a markdown document's do, for the reason in `chip_html_images`.
-        ReadmeFormat::Html if strips_images(opts) => chip_html_images(source),
+        ReadmeFormat::Html if strips_images(opts) => chip_html_images(source, &[]),
+        // Proxying from named hosts only: an HTML README's images take the same
+        // per-image decision a markdown one's do.
+        ReadmeFormat::Html if !opts.image_hosts.is_empty() => {
+            chip_html_images(source, &opts.image_hosts)
+        }
         ReadmeFormat::Html => source.to_owned(),
         // No markup means no images, and an early return keeps that a fact about
         // the format rather than something the sanitiser happens to arrive at.
@@ -88,13 +103,19 @@ pub fn render_capturing_images(
 /// The prefix here is a placeholder — the caller wants the list, not the HTML —
 /// and it is absolute because a relative one would make the sanitiser drop every
 /// `src` and capture nothing.
-pub fn image_urls(source: &str, format: ReadmeFormat) -> Vec<String> {
+pub fn image_urls(source: &str, format: ReadmeFormat, image_hosts: &[String]) -> Vec<String> {
     render_capturing_images(
         source,
         format,
         &RenderOptions {
             remote_images: RemoteImagePolicy::Proxy,
             image_proxy_prefix: Some(INDEX_PROBE_PREFIX.to_owned()),
+            // **The same list the rendering used**, or the numbering drifts:
+            // index 2 of a document rendered under an allow-list is not index 2
+            // of the same document rendered without one, and the endpoint would
+            // fetch a different image from the one the page asked about — the
+            // exact disagreement §5.1's single-walk rule exists to prevent.
+            image_hosts: image_hosts.to_vec(),
         },
     )
     .1
@@ -166,9 +187,14 @@ fn markdown_options() -> Options {
 fn markdown_to_html(source: &str, opts: &RenderOptions) -> String {
     let parser = Parser::new_ext(source, markdown_options());
     let events: Vec<Event> = if strips_images(opts) {
-        strip_images(parser)
-    } else {
+        strip_images(parser, &[])
+    } else if opts.image_hosts.is_empty() {
         parser.collect()
+    } else {
+        // Proxying, but only from named hosts: the same chip pass, told which
+        // images to leave alone. One pass rather than two, so an image can never
+        // be both chipped and rewritten.
+        strip_images(parser, &opts.image_hosts)
     };
     let mut out = String::with_capacity(source.len() * 3 / 2);
     html::push_html(&mut out, events.into_iter());
@@ -191,7 +217,10 @@ fn strips_images(opts: &RenderOptions) -> bool {
 /// The chip is what makes stripping honest rather than lossy: the reader can see
 /// that an image was there and where it pointed, which is the whole of what a
 /// badge row communicates anyway.
-fn strip_images<'a>(parser: Parser<'a>) -> Vec<Event<'a>> {
+/// `keep_hosts` empty chips **every** image — the `strip` policy. Non-empty
+/// chips only the images whose host is not in it, which is the allow-list case:
+/// the kept ones flow on to the sanitiser and are rewritten to this server.
+fn strip_images<'a>(parser: Parser<'a>, keep_hosts: &[String]) -> Vec<Event<'a>> {
     let mut out: Vec<Event<'a>> = Vec::new();
     // Images nest: the alt text between `Start(Image)` and `End(Image)` is
     // itself an event stream, and it can contain another image. A depth counter
@@ -199,33 +228,53 @@ fn strip_images<'a>(parser: Parser<'a>) -> Vec<Event<'a>> {
     let mut depth = 0usize;
     let mut alt = String::new();
     let mut host: Option<String> = None;
+    /* The image's own events, replayed verbatim when its host is allowed.
+    Buffered rather than re-parsed: what reaches the sanitiser then is exactly
+    what `pulldown-cmark` produced, and the alt text — which is a stream of
+    events, not a string — survives intact. */
+    let mut buffered: Vec<Event<'a>> = Vec::new();
+    let mut keep = false;
 
     for event in parser {
         match event {
-            Event::Start(Tag::Image { dest_url, .. }) => {
+            Event::Start(Tag::Image { ref dest_url, .. }) => {
                 if depth == 0 {
                     alt.clear();
-                    host = url_host(&dest_url);
+                    host = url_host(dest_url);
+                    keep = !keep_hosts.is_empty() && image_host_allowed(dest_url, keep_hosts);
+                    buffered.clear();
                 }
                 depth += 1;
+                if keep {
+                    buffered.push(event);
+                }
             }
             Event::End(TagEnd::Image) => {
                 depth = depth.saturating_sub(1);
+                if keep {
+                    buffered.push(event);
+                }
                 if depth == 0 {
-                    out.push(Event::Html(CowStr::from(chip(&alt, host.as_deref()))));
+                    if keep {
+                        out.append(&mut buffered);
+                        keep = false;
+                    } else {
+                        out.push(Event::Html(CowStr::from(chip(&alt, host.as_deref()))));
+                    }
                 }
             }
             // Raw HTML inside markdown: `pulldown-cmark` hands it over
             // untouched, so an author who wrote `<img>` or a `<picture>` rather
             // than `![…]()` would otherwise reach the sanitiser as an element
             // that is not in the allow-list, and vanish entirely.
-            Event::Html(html) if depth == 0 => {
-                out.push(Event::Html(CowStr::from(chip_html_images(&html))))
-            }
-            Event::InlineHtml(html) if depth == 0 => {
-                out.push(Event::InlineHtml(CowStr::from(chip_html_images(&html))))
-            }
-            // Inside an image, everything is alt text.
+            Event::Html(html) if depth == 0 => out.push(Event::Html(CowStr::from(
+                chip_html_images(&html, keep_hosts),
+            ))),
+            Event::InlineHtml(html) if depth == 0 => out.push(Event::InlineHtml(CowStr::from(
+                chip_html_images(&html, keep_hosts),
+            ))),
+            // Inside an image, everything is alt text — collected for the chip,
+            // and buffered too when the image is being kept.
             Event::Text(text) | Event::Code(text) if depth > 0 => alt.push_str(&text),
             other if depth > 0 => {
                 // Any other markup inside alt text (emphasis, a nested link)
@@ -260,7 +309,7 @@ fn strip_images<'a>(parser: Parser<'a>) -> Vec<Event<'a>> {
 /// a missing chip, which is exactly the behaviour being fixed, never a tag that
 /// survives: anything this pass leaves behind faces the same allow-list it would
 /// have faced anyway.
-fn chip_html_images(html: &str) -> String {
+fn chip_html_images(html: &str, keep_hosts: &[String]) -> String {
     let bytes = html.as_bytes();
     let mut out = String::with_capacity(html.len());
     let mut i = 0usize;
@@ -279,8 +328,14 @@ fn chip_html_images(html: &str) -> String {
         out.push_str(&html[i..start]);
         let tag = &html[start..end];
         let src = tag_attribute(tag, "src").unwrap_or_default();
-        let alt = tag_attribute(tag, "alt").unwrap_or_default();
-        out.push_str(&chip(&alt, url_host(&src).as_deref()));
+        if !keep_hosts.is_empty() && image_host_allowed(&src, keep_hosts) {
+            // Left as written, for the sanitiser to rewrite to this server —
+            // the same route a markdown image on an allowed host takes.
+            out.push_str(tag);
+        } else {
+            let alt = tag_attribute(tag, "alt").unwrap_or_default();
+            out.push_str(&chip(&alt, url_host(&src).as_deref()));
+        }
         i = end;
     }
     out
@@ -413,7 +468,7 @@ fn decode_basic_entities(raw: &str) -> String {
 /// Parsed rather than pattern-matched, and `None` for anything that is not an
 /// absolute `http(s)` URL — a relative `src` has no host to report, and a
 /// `javascript:` one is not a host at all.
-fn url_host(url: &str) -> Option<String> {
+pub(super) fn url_host(url: &str) -> Option<String> {
     let rest = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))?;
@@ -456,6 +511,94 @@ fn chip(alt: &str, host: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hosts(entries: &[&str]) -> Vec<String> {
+        entries.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    fn proxying_from(entries: &[&str]) -> RenderOptions {
+        RenderOptions {
+            remote_images: RemoteImagePolicy::Proxy,
+            image_proxy_prefix: Some("https://console.example/img/".to_owned()),
+            image_hosts: hosts(entries),
+        }
+    }
+
+    /// The point of the list: a README that badges from one host and screenshots
+    /// from another gets the badges *and* a chip, instead of an all-or-nothing
+    /// choice between a beacon and a blank.
+    #[test]
+    fn an_allowed_host_is_proxied_and_the_rest_are_chipped() {
+        let source = "![badge](https://img.shields.io/b.svg)\n\n![shot](https://cdn.example/s.png)";
+        let out = render(
+            source,
+            ReadmeFormat::Markdown,
+            &proxying_from(&["shields.io"]),
+        );
+
+        assert!(out.contains("https://console.example/img/0"), "{out}");
+        assert!(
+            !out.contains("img.shields.io"),
+            "the badge must be rewritten: {out}"
+        );
+        assert!(
+            out.contains(STRIPPED_IMAGE_CLASS),
+            "the screenshot needs a chip: {out}"
+        );
+        assert!(
+            out.contains("cdn.example"),
+            "the chip names the host it refused: {out}"
+        );
+    }
+
+    /// Raw `<img>` inside markdown takes the same decision — an author who
+    /// writes HTML must not get a different policy from one who writes markdown.
+    #[test]
+    fn a_raw_html_image_takes_the_same_decision() {
+        let source = "<img src=\"https://img.shields.io/b.svg\" alt=\"b\"> <img src=\"https://cdn.example/s.png\" alt=\"s\">";
+        let out = render(
+            source,
+            ReadmeFormat::Markdown,
+            &proxying_from(&["shields.io"]),
+        );
+
+        assert!(out.contains("https://console.example/img/0"), "{out}");
+        assert!(out.contains("cdn.example"), "{out}");
+        assert!(
+            !out.contains("https://cdn.example/s.png"),
+            "no src for the refused host: {out}"
+        );
+    }
+
+    /// **The numbering is the endpoint's contract.** `image_urls` must see the
+    /// same list the rendering did, or index 1 of the page is index 1 of a
+    /// different document.
+    #[test]
+    fn the_index_list_matches_what_the_page_was_given() {
+        let source = "![a](https://cdn.example/a.png)\n\n![b](https://img.shields.io/b.svg)";
+        let allowed = hosts(&["shields.io"]);
+
+        let out = render(
+            source,
+            ReadmeFormat::Markdown,
+            &proxying_from(&["shields.io"]),
+        );
+        let urls = image_urls(source, ReadmeFormat::Markdown, &allowed);
+
+        assert_eq!(urls, vec!["https://img.shields.io/b.svg".to_owned()]);
+        assert!(out.contains("https://console.example/img/0"), "{out}");
+        assert!(!out.contains("/img/1"), "only one image survived: {out}");
+    }
+
+    /// An empty list is every host — what `proxy` meant before the list existed.
+    #[test]
+    fn an_empty_list_proxies_everything() {
+        let source = "![a](https://cdn.example/a.png)\n\n![b](https://img.shields.io/b.svg)";
+        let out = render(source, ReadmeFormat::Markdown, &proxying_from(&[]));
+
+        assert!(out.contains("/img/0") && out.contains("/img/1"), "{out}");
+        assert!(!out.contains(STRIPPED_IMAGE_CLASS), "{out}");
+    }
 
     fn md(source: &str) -> String {
         render(source, ReadmeFormat::Markdown, &RenderOptions::default())
@@ -627,7 +770,7 @@ mod tests {
             // A valueless attribute before the ones that matter.
             r#"<img loading src="https://e.example/x.png" alt="logo">"#,
         ] {
-            let out = chip_html_images(tag);
+            let out = chip_html_images(tag, &[]);
             assert!(out.contains("e.example"), "{tag} → {out}");
             assert!(
                 !out.contains("<img") && !out.contains("<IMG"),
@@ -642,7 +785,7 @@ mod tests {
             "text with < and no tag",
             "<img src=x",
         ] {
-            assert_eq!(chip_html_images(untouched), untouched);
+            assert_eq!(chip_html_images(untouched, &[]), untouched);
         }
     }
 
@@ -665,6 +808,7 @@ mod tests {
             &RenderOptions {
                 remote_images: RemoteImagePolicy::Proxy,
                 image_proxy_prefix: Some("https://hub.example.com/api/v1/readme-image/".into()),
+                image_hosts: Vec::new(),
             },
         );
         assert!(out.contains("<img"), "{out}");
@@ -680,6 +824,7 @@ mod tests {
             &RenderOptions {
                 remote_images: RemoteImagePolicy::Proxy,
                 image_proxy_prefix: Some("https://hub.example.com/api/v1/readme-image/".into()),
+                image_hosts: Vec::new(),
             },
         );
         assert!(out.contains("<img"), "{out}");
@@ -711,6 +856,7 @@ mod tests {
                 // "no third-party host survives" assertion below fail on output
                 // that was perfectly correct.
                 image_proxy_prefix: Some("https://hub.invalid/i/".into()),
+                image_hosts: Vec::new(),
             },
         );
         assert_eq!(
@@ -721,7 +867,7 @@ mod tests {
                 "https://c.example/3.png",
             ]
         );
-        assert_eq!(urls, image_urls(source, ReadmeFormat::Markdown));
+        assert_eq!(urls, image_urls(source, ReadmeFormat::Markdown, &[]));
         for (n, _) in urls.iter().enumerate() {
             assert!(
                 html.contains(&format!(r#"src="https://hub.invalid/i/{n}""#)),
@@ -745,7 +891,7 @@ mod tests {
         assert!(!charted.contains("<img"), "{charted}");
         // …and the list is the same one the proxied rendering would number.
         assert_eq!(
-            image_urls(source, ReadmeFormat::Markdown),
+            image_urls(source, ReadmeFormat::Markdown, &[]),
             vec!["https://a.example/1.png", "https://b.example/2.png"]
         );
     }
@@ -753,7 +899,7 @@ mod tests {
     #[test]
     fn a_format_with_no_markup_has_no_images() {
         for format in [ReadmeFormat::Rst, ReadmeFormat::Plain] {
-            assert!(image_urls("<img src=\"https://a.example/1.png\">", format).is_empty());
+            assert!(image_urls("<img src=\"https://a.example/1.png\">", format, &[]).is_empty());
         }
     }
 
@@ -770,6 +916,7 @@ mod tests {
                 &RenderOptions {
                     remote_images: RemoteImagePolicy::Proxy,
                     image_proxy_prefix: Some(prefix.into()),
+                    image_hosts: Vec::new(),
                 },
             );
             assert!(out.contains(STRIPPED_IMAGE_CLASS), "{prefix:?} → {out}");

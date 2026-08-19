@@ -6,6 +6,7 @@ import path from "node:path";
 import { readdirSync, existsSync } from "node:fs";
 
 import { buildCsp, resolveLivePort } from "./build/csp.ts";
+import { denyDesignProofPlugin } from "./build/deny-design-proof.ts";
 
 /** Injects the derived CSP into the `%VITE_CSP%` placeholder in index.html. */
 function cspPlugin(apiBaseUrl: string, livePort: number | null): Plugin {
@@ -80,6 +81,9 @@ export default defineConfig(({ mode }) => {
       // `resolveLivePort` returns null for every production build — see
       // `build/csp.ts` and RFC 0003 §7.
       cspPlugin(env.VITE_API_BASE_URL ?? "", resolveLivePort(mode, env)),
+      // `ui/design-proof/` sits inside Vite's root without being part of the
+      // console, so the dev server published it — see `build/deny-design-proof.ts`.
+      denyDesignProofPlugin(),
     ],
     resolve: {
       alias: {
@@ -89,6 +93,10 @@ export default defineConfig(({ mode }) => {
     server: {
       allowedHosts: [".cde.batleforc.fr", "localhost"],
       host: true,
+      // No `fs.deny` here on purpose: a user-declared `deny` *replaces* Vite's
+      // defaults rather than extending them, and `ui/.env` came back with a 200
+      // the moment one was set. What this server refuses is a middleware
+      // instead — `build/deny-design-proof.ts`.
     },
     build: {
       outDir: "dist",

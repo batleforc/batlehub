@@ -4,7 +4,7 @@ use super::{
 };
 use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
-    entities::{absent_readme_state_for, ReadmeState, RegistryKind},
+    entities::{absent_readme_state_for, Identity, ReadmeState, RegistryKind, Role},
     services::{proxy::Freshness, ProxyService, SbomService},
 };
 
@@ -55,11 +55,60 @@ pub enum UpstreamMode {
     Skip,
 }
 
+/// Whether pre-release versions are in the answer.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PrereleaseMode {
+    /// Every version, pre-release or not.
+    ///
+    /// The default because it is what this endpoint has always answered:
+    /// dropping rows out of an existing caller's response on an upgrade is not
+    /// a compatible change, however sensible the narrower list is for a reader.
+    #[default]
+    Show,
+    /// Releases only — what the console asks for, since a release candidate is
+    /// not what a reader is looking for by default. The version named by
+    /// `version=` is kept whatever this says.
+    Hide,
+}
+
 #[derive(Deserialize, IntoParams)]
 pub struct PackageDetailQuery {
     #[serde(default)]
     #[param(inline)]
     pub upstream: UpstreamMode,
+    /// 0-based, like every other paginated endpoint here.
+    ///
+    /// Absent is *not* the same as `0`: absent lets `version=` choose the page,
+    /// which is how a link to one version opens on the page that holds it.
+    /// Past the end is clamped to the last page rather than answered empty.
+    #[serde(default)]
+    pub page: Option<u64>,
+    /// Rows in the answer. Absent means `[limits].versions_per_page`, which is
+    /// also the most this may be — a larger ask is clamped down to it, and the
+    /// applied value is reported back in `versions_page.per_page`.
+    #[serde(default)]
+    pub per_page: Option<u64>,
+    /// Case-insensitive substring on the version string — "is 4.0.2 in here",
+    /// which is the question a reader has in front of a 169-version list.
+    ///
+    /// It filters the *whole* list, which is the reason it is here rather than
+    /// in the console: a filter that only searched the page it was handed would
+    /// answer "no" about versions this server knows perfectly well it has.
+    #[serde(default)]
+    pub q: Option<String>,
+    #[serde(default)]
+    #[param(inline)]
+    pub prereleases: PrereleaseMode,
+    /// A version the caller is pointing at.
+    ///
+    /// Two effects, both serving "a link named this version": it survives
+    /// `prereleases=hide`, so the console never marks a row it was not given;
+    /// and when no `page` is asked for, the page returned is the one holding it.
+    /// It does **not** survive `q` — a filter is a question the reader typed,
+    /// and answering it with a row that does not match would be a different lie.
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 /// What the discovery read did, so the page can say which rung answered rather
@@ -83,12 +132,57 @@ pub struct UpstreamReadDto {
     pub error: Option<String>,
 }
 
+/// Where the returned rows sit in the whole version list.
+///
+/// Every count here is over the *whole* list rather than the page, because each
+/// one answers a question the console asks out loud — `42 of 44 shown`, `Show 3
+/// pre-releases`, how many pages there are — and a count taken from the page
+/// would make each of those sentences false as soon as there was more than one.
+#[derive(Serialize, ToSchema)]
+pub struct VersionPageDto {
+    /// 0-based, and the page **actually returned**: the one holding `version=`
+    /// when the caller named one and asked for no page, or the last page when
+    /// the ask was past the end.
+    pub page: u64,
+    /// The page size actually applied, after the `[limits].versions_per_page`
+    /// ceiling. A caller that asked for more gets this, not what it asked for.
+    pub per_page: u64,
+    /// Versions matching `q` and the pre-release mode, across every page.
+    pub total: u64,
+    /// Versions this endpoint knows of, before either filter.
+    pub unfiltered_total: u64,
+    /// Pre-releases this package has, whatever the mode — the number behind
+    /// *Show 3 pre-releases*.
+    pub prerelease_total: u64,
+    /// How many the pre-release mode is currently removing. Not the same number
+    /// as `prerelease_total`: `version=` keeps its own, so a page opened on a
+    /// release candidate hides one fewer than it has.
+    pub hidden_prereleases: u64,
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct ExplorePackageDetailResponse {
     pub registry: String,
     pub name: String,
     pub gate: GateDto,
+    /// One page of them — see `versions_page`.
     pub versions: Vec<ExploreVersionDto>,
+    pub versions_page: VersionPageDto,
+    /// The version a reader who has asked for none should be shown: the newest
+    /// stable version this instance **holds**, falling back to the newest stable
+    /// and then to whatever is held (RFC 0007 §4.2).
+    ///
+    /// Answered here because it is a fact about the whole list, and the console
+    /// is now given one page of it: a client deriving this rule from the rows it
+    /// received would pick the newest stable version *on page one*, which on a
+    /// package held only at 2.1.0 is an upstream row we serve nothing of.
+    /// `None` only for a package with no versions at all.
+    pub default_version: Option<String>,
+    /// The version asked for by `version=`, echoed back **only if this package
+    /// has it**. `None` for a typo or a version yanked since the link was sent,
+    /// which is the caller's signal to fall back to `default_version` rather
+    /// than mark nothing.
+    pub selected_version: Option<String>,
     /// `true` when the upstream database was unreachable and this package has no cached data.
     pub upstream_unavailable: bool,
     /// What the discovery read did (RFC 0007 §4.2).
@@ -222,14 +316,18 @@ pub async fn explore_package_detail(
     let registry = &path.registry;
     let name = &path.name;
 
-    // socket.dev badge: enabled per registry via feature flag, mapped by type.
-    let socket_badge_enabled = local_svc
-        .hot
-        .read()
-        .await
-        .feature_flags
-        .get(registry)
-        .is_none_or(|f| f.socket_badge);
+    // Two settings out of one read: the socket.dev badge flag (per registry, by
+    // feature flag) and the page size (global). Both are copied out of the guard
+    // before the first `await` below, the rule every handler here follows.
+    let (socket_badge_enabled, versions_per_page) = {
+        let hot = local_svc.hot.read().await;
+        (
+            hot.feature_flags
+                .get(registry)
+                .is_none_or(|f| f.socket_badge),
+            hot.versions_per_page,
+        )
+    };
     let registry_type = registry_map.type_of(registry);
     let badge_for = |version: &str| -> Option<String> {
         if !socket_badge_enabled {
@@ -367,7 +465,20 @@ pub async fn explore_package_detail(
         })
         .collect();
 
-    // Build version entries
+    // Build version entries.
+    //
+    // ── What is deliberately *not* built here ──────────────────────────────
+    //
+    // Three fields — `vulnerabilities`, `license`, `socket_badge_url` — are left
+    // at their empty value and filled in by `enrich_page` after the list has
+    // been filtered and sliced. They used to be built in these loops, which cost
+    // one vulnerability read and one SBOM read *per version of the package*:
+    // 169 of each for `@babel/plugin-transform-runtime`, to serve a page showing
+    // 25 rows. Paginating the answer while still enriching every row would have
+    // moved the bytes and left the cost, which is most of the point.
+    //
+    // Nothing above the slice may depend on them: the sort is by pre-release and
+    // version string, and the default selection is by source. Both hold.
     let mut versions: Vec<ExploreVersionDto> = Vec::new();
 
     // Track which versions came from local to avoid duplicating proxied entries
@@ -392,15 +503,6 @@ pub async fn explore_package_detail(
             },
         };
         let is_prerelease = summary.package_id.version.contains('-');
-        let vulnerabilities = admin_svc
-            .list_vulnerabilities(registry, name, &summary.package_id.version)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(VulnerabilityDto::from)
-            .collect();
-        let socket_badge_url = badge_for(&summary.package_id.version);
-        let license = license_for(&sbom_svc, registry, name, &summary.package_id.version).await;
         let readme = readme_state(&summary.package_id.version);
         versions.push(ExploreVersionDto {
             readme,
@@ -415,9 +517,10 @@ pub async fn explore_package_detail(
             last_accessed: summary.last_accessed.map(format_dt),
             published_at: None,
             is_prerelease,
-            vulnerabilities,
-            license,
-            socket_badge_url,
+            // Filled by `enrich_page`, for the rows that survive to the answer.
+            vulnerabilities: Vec::new(),
+            license: None,
+            socket_badge_url: None,
             deprecated: false,
             deprecation_message: None,
             unlisted: false,
@@ -431,15 +534,6 @@ pub async fn explore_package_detail(
             FirewallDto::Clear
         };
         let is_prerelease = pkg.version.contains('-');
-        let vulnerabilities = admin_svc
-            .list_vulnerabilities(registry, name, &pkg.version)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(VulnerabilityDto::from)
-            .collect();
-        let socket_badge_url = badge_for(&pkg.version);
-        let license = license_for(&sbom_svc, registry, name, &pkg.version).await;
         let readme = readme_state(&pkg.version);
         versions.push(ExploreVersionDto {
             readme,
@@ -451,9 +545,9 @@ pub async fn explore_package_detail(
             last_accessed: None,
             published_at: Some(pkg.published_at.to_rfc3339()),
             is_prerelease,
-            vulnerabilities,
-            license,
-            socket_badge_url,
+            vulnerabilities: Vec::new(),
+            license: None,
+            socket_badge_url: None,
             deprecated: pkg.deprecated,
             deprecation_message: pkg.deprecation_message,
             unlisted: pkg.unlisted,
@@ -528,7 +622,7 @@ pub async fn explore_package_detail(
                 is_prerelease: candidate.is_prerelease,
                 vulnerabilities: Vec::new(),
                 license: None,
-                socket_badge_url: badge_for(&candidate.version),
+                socket_badge_url: None,
                 deprecated: candidate.deprecated.is_some(),
                 deprecation_message: candidate.deprecated.clone(),
                 unlisted: false,
@@ -537,12 +631,111 @@ pub async fn explore_package_detail(
         versions.extend(extra);
     }
 
-    // Sort: stable versions first, then pre-release; within each group newest first
+    // Sort: stable versions first, then pre-release; within each group newest
+    // first.
+    //
+    // The comparator said `b.is_prerelease.cmp(&a.is_prerelease)`, which orders
+    // `false` after `true` and put every pre-release *above* every release —
+    // the opposite of the line above it, which has described the intent since
+    // this endpoint was written. It went unnoticed while the console received
+    // the whole list and sorted its own view of it; it stops being invisible
+    // the moment the answer is a page, because the order is then what decides
+    // which versions page one *is*. On a package like `chalk`, whose betas
+    // outnumber its releases, page one was entirely release candidates.
     versions.sort_by(|a, b| {
-        b.is_prerelease
-            .cmp(&a.is_prerelease)
+        a.is_prerelease
+            .cmp(&b.is_prerelease)
             .then(b.version.cmp(&a.version))
     });
+
+    // ── Filter, then page ─────────────────────────────────────────────────────
+    //
+    // Both counted against the whole list before anything is sliced: every
+    // number the console says out loud — `42 of 44 shown`, `Show 3 pre-releases`
+    // — is a statement about the package, and a count taken after the slice
+    // would make each of them a statement about page one wearing the package's
+    // name.
+    let unfiltered_total = versions.len() as u64;
+    let prerelease_total = versions.iter().filter(|v| v.is_prerelease).count() as u64;
+    let default_version = default_selection(&versions);
+    // Whether the version asked for is one this package actually has — a typo,
+    // or one yanked since the link was sent, is the case this answers. The
+    // caller cannot work it out from a page the version is not on, and a console
+    // that guessed would either mark no row at all or claim a version we do not
+    // list. Judged against the unfiltered list: a version excluded by the
+    // caller's own `q` still exists.
+    let selected_version = query
+        .version
+        .as_deref()
+        .filter(|asked| versions.iter().any(|v| v.version == *asked))
+        .map(str::to_owned);
+
+    // The version the caller is pointing at survives the pre-release filter:
+    // a link to `?version=5.0.0-beta.2` must not answer with a list its own
+    // subject is missing from. It does not survive `q` — see the field's doc.
+    //
+    // `default_version` survives it too, and for the same reason one step
+    // earlier: on a package that has never cut a stable release — an 0.x
+    // library, a pre-release-only plugin — the row the caller is *about* to be
+    // pointed at is itself a pre-release, and hiding it answers a package that
+    // has forty versions with an empty table.
+    let pinned = query.version.as_deref();
+    if query.prereleases == PrereleaseMode::Hide {
+        versions.retain(|v| {
+            !v.is_prerelease
+                || Some(v.version.as_str()) == pinned
+                || Some(&v.version) == default_version.as_ref()
+        });
+    }
+    let hidden_prereleases = unfiltered_total - versions.len() as u64;
+
+    if let Some(needle) = query
+        .q
+        .as_deref()
+        .map(|q| q.trim().to_lowercase())
+        .filter(|q| !q.is_empty())
+    {
+        versions.retain(|v| v.version.to_lowercase().contains(&needle));
+    }
+    let total = versions.len() as u64;
+
+    // `unwrap_or` then `min`, not `clamp` against the config value alone: the
+    // ceiling and the default are the same key, so asking for more than the
+    // operator allows quietly gets the operator's number rather than an error.
+    // Zero is a caller mistake and reads as "one row" rather than as an empty
+    // answer with no way to tell it from a package with no versions.
+    let per_page = query
+        .per_page
+        .unwrap_or(versions_per_page)
+        .clamp(1, versions_per_page);
+    let last_page = total.div_ceil(per_page).saturating_sub(1);
+    let page = match query.page {
+        Some(asked) => asked,
+        // No page asked for: open on the one holding the version named, which is
+        // what makes a link to a version sixty rows down land on it.
+        None => pinned
+            .and_then(|v| versions.iter().position(|c| c.version == v))
+            .map(|index| index as u64 / per_page)
+            .unwrap_or(0),
+    }
+    .min(last_page);
+
+    let start = (page * per_page) as usize;
+    let mut versions: Vec<ExploreVersionDto> = versions
+        .into_iter()
+        .skip(start)
+        .take(per_page as usize)
+        .collect();
+
+    enrich_page(
+        &mut versions,
+        &admin_svc,
+        &sbom_svc,
+        registry,
+        name,
+        &badge_for,
+    )
+    .await;
 
     Ok(web::Json(ExplorePackageDetailResponse {
         registry: registry.clone(),
@@ -552,10 +745,78 @@ pub async fn explore_package_detail(
             beta_member,
         },
         versions,
+        versions_page: VersionPageDto {
+            page,
+            per_page,
+            total,
+            unfiltered_total,
+            prerelease_total,
+            hidden_prereleases,
+        },
+        default_version,
+        selected_version,
         upstream_unavailable,
         upstream: upstream.dto,
-        fetch: fetch_offer(&local_svc, &registry_map, registry.as_str()).await,
+        fetch: fetch_offer(&local_svc, &registry_map, registry.as_str(), &identity.0).await,
     }))
+}
+
+/// The version a reader who has asked for none should be shown: **the newest
+/// stable version this instance holds** — stable first, held second, and the
+/// pre-releases only when a package has nothing else (RFC 0007 §4.2).
+///
+/// It used to be the console's rule, over the whole list. The console is now
+/// given one page of that list, and the rule does not survive the move: "the
+/// first held stable row" read off page one of a package held only at 2.1.0
+/// picks an upstream row, which is the exact defect §4.2 exists to have fixed.
+///
+/// The list arrives sorted stable-before-pre-release and newest-first within
+/// each group, so *the first held row is the newest held one* — this reads the
+/// order already established rather than inventing a second one.
+fn default_selection(versions: &[ExploreVersionDto]) -> Option<String> {
+    let held = |v: &&ExploreVersionDto| v.source != "upstream";
+    let stable = || versions.iter().filter(|v| !v.is_prerelease);
+
+    stable()
+        .find(held)
+        .or_else(|| stable().next())
+        // Nothing stable at all — an 0.x-only package, or one that has never cut
+        // a release. Something has to be selected, and preferring what we hold
+        // is the right rule for that case too.
+        .or_else(|| versions.iter().find(held))
+        .or_else(|| versions.first())
+        .map(|v| v.version.clone())
+}
+
+/// Fill in the three per-row fields that cost a query each, for the rows that
+/// actually made it into the answer.
+///
+/// Upstream-only rows are skipped for two of them, and not as an optimisation:
+/// nothing has ever opened those bytes, so an empty vulnerability list there
+/// would be a claim we cannot support (`vulnerabilities_scanned` says so), and
+/// there is no SBOM to read a licence out of.
+async fn enrich_page(
+    versions: &mut [ExploreVersionDto],
+    admin_svc: &AdminService,
+    sbom_svc: &Option<web::Data<Arc<SbomService>>>,
+    registry: &str,
+    name: &str,
+    badge_for: &impl Fn(&str) -> Option<String>,
+) {
+    for row in versions.iter_mut() {
+        row.socket_badge_url = badge_for(&row.version);
+        if row.source == "upstream" {
+            continue;
+        }
+        row.vulnerabilities = admin_svc
+            .list_vulnerabilities(registry, name, &row.version)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(VulnerabilityDto::from)
+            .collect();
+        row.license = license_for(sbom_svc, registry, name, &row.version).await;
+    }
 }
 
 /// Whether the console may offer **Fetch this version**, and why not.
@@ -565,6 +826,36 @@ pub async fn explore_package_detail(
 /// left to guess. A console that guessed would draw a button that always fails
 /// on Maven (RFC 0007-bis §4.4).
 async fn fetch_offer(
+    local_svc: &LocalRegistryService,
+    registry_map: &RegistryMap,
+    registry: &str,
+    identity: &Identity,
+) -> FetchOfferDto {
+    // A reader with no session cannot pull — `explore_fetch_version` answers
+    // `401 fetch.unauthenticated` — so the button is not offered to one. Decided
+    // here rather than by the console for the same reason the other two halves
+    // are: the offer and the endpoint must agree, and a page that drew the button
+    // anyway would be promising something the API refuses.
+    //
+    // The kind's reason is computed first and kept, so it survives the override:
+    // on a Maven registry the honest answer is still "this kind has no single
+    // artifact per version", and "sign in" would be advice that does not help.
+    // Where the offer *would* have been made, the reason is `None` and the
+    // console says the one thing it knows better than the server — that this
+    // viewer has no session — in its own translated words.
+    if identity.role == Role::Anonymous {
+        let would_offer = fetch_offer_for_registry(local_svc, registry_map, registry).await;
+        return FetchOfferDto {
+            offered: false,
+            reason: would_offer.reason,
+        };
+    }
+    fetch_offer_for_registry(local_svc, registry_map, registry).await
+}
+
+/// The half that is about the registry: the operator's switch and whether the
+/// kind has one artifact per version.
+async fn fetch_offer_for_registry(
     local_svc: &LocalRegistryService,
     registry_map: &RegistryMap,
     registry: &str,

@@ -220,6 +220,7 @@ enabled         = true      # store and serve READMEs for this registry
 from_archive    = true      # extract from the cached artifact when the metadata carries none
 max_bytes       = 262144    # cap on stored source (256 KiB); larger is truncated and flagged
 remote_images   = "strip"   # "strip" | "proxy"
+remote_image_hosts = []     # under "proxy": which hosts may be fetched from; [] means every host
 image_max_bytes = 2097152   # cap on one proxied image (2 MiB); larger is not served
 ```
 
@@ -267,6 +268,31 @@ image_max_bytes = 2097152   # cap on one proxied image (2 MiB); larger is not se
   the response carries `Content-Security-Policy: default-src 'none'; …; sandbox`,
   which stops script even for a reader who opens the image in a new tab. Either
   control is sufficient on its own.
+- **`remote_image_hosts`** narrows `"proxy"` to a named set of hosts. It is the
+  middle setting between a beacon and a blank: a README that badges from
+  `shields.io` and screenshots from somebody's personal domain gets the badges
+  proxied and a chip for the screenshot, rather than an all-or-nothing choice.
+
+  ```toml
+  [registries.readme]
+  remote_images      = "proxy"
+  remote_image_hosts = ["img.shields.io", "badgen.net", "codecov.io"]
+  ```
+
+  An entry matches the host itself or any subdomain of it, so `shields.io`
+  covers `img.shields.io` — and does **not** cover `notshields.io`, because the
+  dot is required. Ports and userinfo are not part of the comparison. Anything
+  not matched becomes the same chip `"strip"` produces, so the reader still sees
+  that an image was there and where it pointed.
+
+  **An empty or absent list means every host**, which is what `"proxy"` did
+  before this setting existed: adding a key to your config must not change what a
+  running instance already serves. Narrowing is one line, and it is checked in
+  two places — when the page is rendered, and again before this server dials the
+  host, so removing an entry takes effect on the next request rather than on the
+  next render-cache miss.
+
+  Inert under `"strip"`, where nothing is fetched at all.
 - **`image_max_bytes`** caps **one proxied image**, separate from `max_bytes`,
   which caps the stored *text*. They are not the same number for the same
   reason, and sharing one would make raising either a decision about the other.
@@ -320,6 +346,73 @@ count, no `last_accessed`, no quota, no storage entry — and the package does n
 appear in the catalogue because somebody looked at it. What leaves the instance,
 and how to turn it off, is in [what leaves this
 instance](/operations/egress#the-console-s-discovery-read).
+
+---
+
+### How long a list this server hands out {#per-page}
+
+Both browse endpoints answer with one **page**, and these two keys are how long a
+page is.
+
+```toml
+[limits]
+versions_per_page = 100     # one package's versions; the default, 1–1000
+packages_per_page = 20      # the catalog; the default, 1–1000
+```
+
+Each key has two readings, deliberately: it is what a caller that asks for no
+`per_page` gets, **and** the most any caller may ask for. A separate ceiling and
+default would be two numbers that can contradict each other, and the question an
+operator actually has is one question — how much of a list this server will
+build, hold in memory and serialise for one request.
+
+They are **two keys and not one** because the two lists are not the same
+question. A catalog row is a name and a handful of counts, and 20 of them is a
+screenful. A version row costs a vulnerability read and a licence read before it
+is serialised, and `@babel/plugin-transform-runtime` has 169 versions. An
+operator sizing a screen should not be sizing a query at the same time.
+
+The console treats them differently for the same reason, and it is worth knowing
+which is which:
+
+| List | What the console sends | Why |
+| --- | --- | --- |
+| `GET …/explore/packages` (catalog) | nothing | The catalog *is* the list, so the operator's number is the right one. A console asking for its own would make `packages_per_page` inert on the one screen it exists for. |
+| `GET …/explore/packages/{registry}/{name}` (versions) | `per_page=25` | The version table sits above a README on a package page; 25 is how many rows fit there. `versions_per_page` is the ceiling over it. |
+
+Either way the console sizes its pager from the `per_page` that comes back
+rather than from what it asked for.
+
+A request may ask for less and may ask for more, in which case it gets the
+configured number rather than an error — the ask is not illegitimate, it is
+simply more than this server hands out at once. What was applied always comes
+back in the answer, so a caller pages rather than silently missing rows:
+
+```json
+"versions_page": { "page": 0, "per_page": 100, "total": 169,
+                   "unfiltered_total": 169, "prerelease_total": 12,
+                   "hidden_prereleases": 0 }
+```
+
+(the catalog's own envelope is flatter — `total`, `page`, `per_page` beside the
+`items` — because it has one list and no filters to count against.)
+
+On the version endpoint the other parameters narrow the list before it is paged —
+`q=` filters on the version string, `prereleases=hide` drops pre-releases,
+`version=` names one that must survive that filter and, when no `page` is asked
+for, chooses the page holding it.
+
+`0` is refused at startup for either key: it would answer every caller with an
+empty list, and the failure would land on a page rather than on the operator.
+
+::: warning A narrower answer than before
+Before `versions_per_page` existed the version endpoint returned **every**
+version it could assemble. A client that reads `versions` and assumes it has the
+whole list now sees at most 100 of them unless it pages; the counts in
+`versions_page` are what tell it there is more. The catalog is unaffected — it
+has always paged, and `packages_per_page` only makes its 20 an operator's number
+instead of a literal.
+:::
 
 ---
 

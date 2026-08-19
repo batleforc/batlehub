@@ -1,4 +1,32 @@
 /**
+ * The one third-party image origin this policy admits.
+ *
+ * `socket_badge` is a per-registry feature flag, on by default, and the version
+ * table renders `<img src="https://badge.socket.dev/…">` for every row of a
+ * package on a supported ecosystem. Under `img-src 'self' data:` not one of them
+ * could ever load: the feature shipped as a broken-image box per row, in every
+ * deployment, because the policy the document carries forbids what the server
+ * tells it to fetch.
+ *
+ * **This is a decision with a cost, taken deliberately.** Each badge is a request
+ * to a third party naming the package and version being read, made on page load
+ * rather than on a click — so an operator's browsing of their own estate is
+ * described to socket.dev, one row at a time. RFC 0007-bis refused exactly this
+ * for README images and proxies them server-side instead. The alternative here
+ * was the same proxy, or dropping the `<img>` and keeping the link; the badge was
+ * kept visible instead.
+ *
+ * The split that keeps this honest: the **policy** says what the page *may*
+ * load, the **config** says what it *does*. An instance that sets
+ * `[registries.feature_flags] socket_badge = false` everywhere emits no badge
+ * URL, so nothing is fetched and this entry is inert — it never makes a request
+ * happen, it only stops one being blocked. An air-gapped instance is in that
+ * position by force: the origin is unreachable, and the row falls back to its
+ * text.
+ */
+const SOCKET_BADGE_ORIGIN = "https://badge.socket.dev";
+
+/**
  * Content-Security-Policy for the SPA document.
  *
  * Lives in the document (a `<meta http-equiv>` substituted at build time) rather
@@ -48,7 +76,7 @@ export function buildCsp(apiBaseUrl: string, livePort?: number | null): string {
   }
 
   const scriptSrc = ["'self'"];
-  const imgSrc = ["'self'", "data:"];
+  const imgSrc = ["'self'", "data:", SOCKET_BADGE_ORIGIN];
   if (isUsablePort(livePort)) {
     const liveOrigin = `http://localhost:${livePort}`;
     scriptSrc.push(liveOrigin);

@@ -3541,9 +3541,13 @@
           {
             "name": "per_page",
             "in": "query",
+            "description": "Rows in the answer. Absent means `[limits].packages_per_page`, which is\nalso the most this may be — a larger ask is clamped down to it, and the\napplied value is reported back in `per_page`.\n\nThe console deliberately sends nothing here: the catalog *is* this list,\nso the number the operator configured is the right one, and a console\nthat asked for its own would make the setting inert on the one page it\nexists for.",
             "required": false,
             "schema": {
-              "type": "integer",
+              "type": [
+                "integer",
+                "null"
+              ],
               "format": "int64",
               "minimum": 0
             }
@@ -3602,6 +3606,71 @@
               "enum": [
                 "auto",
                 "skip"
+              ]
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "0-based, like every other paginated endpoint here.\n\nAbsent is *not* the same as `0`: absent lets `version=` choose the page,\nwhich is how a link to one version opens on the page that holds it.\nPast the end is clamped to the last page rather than answered empty.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "per_page",
+            "in": "query",
+            "description": "Rows in the answer. Absent means `[limits].versions_per_page`, which is\nalso the most this may be — a larger ask is clamped down to it, and the\napplied value is reported back in `versions_page.per_page`.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Case-insensitive substring on the version string — \"is 4.0.2 in here\",\nwhich is the question a reader has in front of a 169-version list.\n\nIt filters the *whole* list, which is the reason it is here rather than\nin the console: a filter that only searched the page it was handed would\nanswer \"no\" about versions this server knows perfectly well it has.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "prereleases",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Whether pre-release versions are in the answer.",
+              "enum": [
+                "show",
+                "hide"
+              ]
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "description": "A version the caller is pointing at.\n\nTwo effects, both serving \"a link named this version\": it survives\n`prereleases=hide`, so the console never marks a row it was not given;\nand when no `page` is asked for, the page returned is the one holding it.\nIt does **not** survive `q` — a filter is a question the reader typed,\nand answering it with a row that does not match would be a different lie.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
               ]
             }
           }
@@ -3745,6 +3814,9 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "No session; pulling a version requires one"
           },
           "403": {
             "description": "A rule refused it; the body carries the rule's own reason"
@@ -14877,11 +14949,19 @@
           "name",
           "gate",
           "versions",
+          "versions_page",
           "upstream_unavailable",
           "upstream",
           "fetch"
         ],
         "properties": {
+          "default_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The version a reader who has asked for none should be shown: the newest\nstable version this instance **holds**, falling back to the newest stable\nand then to whatever is held (RFC 0007 §4.2).\n\nAnswered here because it is a fact about the whole list, and the console\nis now given one page of it: a client deriving this rule from the rows it\nreceived would pick the newest stable version *on page one*, which on a\npackage held only at 2.1.0 is an upstream row we serve nothing of.\n`None` only for a package with no versions at all."
+          },
           "fetch": {
             "$ref": "#/components/schemas/FetchOfferDto",
             "description": "Whether the console may offer **Fetch this version** on an\nupstream-only row (RFC 0007-bis §4.4)."
@@ -14895,6 +14975,13 @@
           "registry": {
             "type": "string"
           },
+          "selected_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The version asked for by `version=`, echoed back **only if this package\nhas it**. `None` for a typo or a version yanked since the link was sent,\nwhich is the caller's signal to fall back to `default_version` rather\nthan mark nothing."
+          },
           "upstream": {
             "$ref": "#/components/schemas/UpstreamReadDto",
             "description": "What the discovery read did (RFC 0007 §4.2)."
@@ -14907,7 +14994,11 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ExploreVersionDto"
-            }
+            },
+            "description": "One page of them — see `versions_page`."
+          },
+          "versions_page": {
+            "$ref": "#/components/schemas/VersionPageDto"
           }
         }
       },
@@ -17364,6 +17455,56 @@
           },
           "user_id": {
             "type": "string"
+          }
+        }
+      },
+      "VersionPageDto": {
+        "type": "object",
+        "description": "Where the returned rows sit in the whole version list.\n\nEvery count here is over the *whole* list rather than the page, because each\none answers a question the console asks out loud — `42 of 44 shown`, `Show 3\npre-releases`, how many pages there are — and a count taken from the page\nwould make each of those sentences false as soon as there was more than one.",
+        "required": [
+          "page",
+          "per_page",
+          "total",
+          "unfiltered_total",
+          "prerelease_total",
+          "hidden_prereleases"
+        ],
+        "properties": {
+          "hidden_prereleases": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many the pre-release mode is currently removing. Not the same number\nas `prerelease_total`: `version=` keeps its own, so a page opened on a\nrelease candidate hides one fewer than it has.",
+            "minimum": 0
+          },
+          "page": {
+            "type": "integer",
+            "format": "int64",
+            "description": "0-based, and the page **actually returned**: the one holding `version=`\nwhen the caller named one and asked for no page, or the last page when\nthe ask was past the end.",
+            "minimum": 0
+          },
+          "per_page": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The page size actually applied, after the `[limits].versions_per_page`\nceiling. A caller that asked for more gets this, not what it asked for.",
+            "minimum": 0
+          },
+          "prerelease_total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Pre-releases this package has, whatever the mode — the number behind\n*Show 3 pre-releases*.",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Versions matching `q` and the pre-release mode, across every page.",
+            "minimum": 0
+          },
+          "unfiltered_total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Versions this endpoint knows of, before either filter.",
+            "minimum": 0
           }
         }
       },

@@ -106,3 +106,101 @@ mod tests {
         assert_eq!(matched, "image/jpeg");
     }
 }
+
+/// Whether an image URL's host is one this registry will fetch from.
+///
+/// **Empty list means every host.** That is the reading that keeps
+/// `remote_images = "proxy"` doing what it did before the list existed; an
+/// operator narrows it by naming hosts, and naming none is not the same as
+/// naming nothing (RFC 0013 §4.2).
+///
+/// An entry matches the host itself or any subdomain of it, so `shields.io`
+/// covers `img.shields.io` and does **not** cover `notshields.io` — the dot is
+/// required, which is the difference between a suffix rule and a substring one.
+/// Comparison is ASCII-case-insensitive because hosts are.
+///
+/// A URL with no host — a relative `src`, a `data:` URI — is not allowed by this
+/// function. Those are dropped earlier for their own reasons, and answering
+/// "yes" for something with no host to check would make this the wrong kind of
+/// default.
+pub fn image_host_allowed(url: &str, allowed: &[String]) -> bool {
+    if allowed.is_empty() {
+        return true;
+    }
+    // The renderer's parser, so the host this matches on is the same string the
+    // chip would have named — one reading of a URL, not two. The port is not
+    // part of the host for this comparison: `shields.io:8443` is `shields.io`.
+    let Some(host) = super::render::url_host(url) else {
+        return false;
+    };
+    let host = host
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    allowed.iter().any(|entry| {
+        let entry = entry.trim().trim_start_matches('.').to_ascii_lowercase();
+        !entry.is_empty() && (host == entry || host.ends_with(&format!(".{entry}")))
+    })
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::*;
+
+    fn list(entries: &[&str]) -> Vec<String> {
+        entries.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn an_empty_list_allows_every_host() {
+        assert!(image_host_allowed("https://anything.example/x.png", &[]));
+    }
+
+    #[test]
+    fn an_entry_matches_its_own_host_and_its_subdomains() {
+        let allowed = list(&["shields.io", "codecov.io"]);
+        assert!(image_host_allowed("https://shields.io/a.svg", &allowed));
+        assert!(image_host_allowed("https://img.shields.io/a.svg", &allowed));
+        assert!(image_host_allowed("http://CODECOV.IO/badge.svg", &allowed));
+    }
+
+    /// The dot is the whole rule: a suffix match without it would let
+    /// `notshields.io` — a host an attacker can register — through a list that
+    /// names `shields.io`.
+    #[test]
+    fn a_host_that_merely_ends_with_the_entry_is_refused() {
+        let allowed = list(&["shields.io"]);
+        assert!(!image_host_allowed("https://notshields.io/a.svg", &allowed));
+        assert!(!image_host_allowed(
+            "https://shields.io.evil.test/a.svg",
+            &allowed
+        ));
+    }
+
+    /// Userinfo and ports are not the host, and neither is a path that happens
+    /// to contain an allowed name.
+    #[test]
+    fn the_host_is_read_from_the_authority_only() {
+        let allowed = list(&["shields.io"]);
+        assert!(image_host_allowed(
+            "https://shields.io:8443/a.svg",
+            &allowed
+        ));
+        assert!(!image_host_allowed(
+            "https://evil.test/shields.io/a.svg",
+            &allowed
+        ));
+        assert!(!image_host_allowed(
+            "https://shields.io@evil.test/a.svg",
+            &allowed
+        ));
+    }
+
+    #[test]
+    fn something_with_no_host_is_not_allowed() {
+        let allowed = list(&["shields.io"]);
+        assert!(!image_host_allowed("/relative.png", &allowed));
+        assert!(!image_host_allowed("data:image/png;base64,AAAA", &allowed));
+    }
+}

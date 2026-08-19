@@ -187,6 +187,12 @@ role_claim = "groups"
 # are 1–1.7 GB).
 # [limits]
 # max_artifact_size_bytes = 2147483648   # 2 GiB — required for JetBrains IDE archives
+# versions_per_page       = 100          # rows in one package-detail answer: the default
+#                                        # for a caller that asks for none, and the most
+#                                        # one may ask for (1–1000)
+# packages_per_page       = 20           # the same, for one page of the catalog. Two keys
+#                                        # because a screenful of names and a query's worth
+#                                        # of enriched version rows are not one question.
 
 # ── Storage backend ────────────────────────────────────────────────────────────
 

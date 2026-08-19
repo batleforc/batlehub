@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { FileText } from "@lucide/vue";
 import { explorePackageReadme } from "@/client/sdk.gen";
 import type { ReadmeResponse } from "@/client/types.gen";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { highlightInto, useShiki } from "@/composables/useShiki";
 
 /**
  * A package version's own account of itself.
@@ -48,7 +50,11 @@ async function load() {
   try {
     const { data, error } = await explorePackageReadme({
       path: { registry: props.registry, name: props.name },
-      query: props.version ? { version: props.version } : {},
+      // `both`, because the panel now offers the source as well as the
+      // rendering. The default is `html`, which returns `source_text: null` —
+      // so the toggle had nothing to switch to, and the reason was a query
+      // parameter rather than anything missing from the store.
+      query: { format: "both", ...(props.version ? { version: props.version } : {}) },
     });
     if (error) {
       // A `404`/`403` here is information, not a failure: the panel renders a
@@ -106,6 +112,79 @@ const derivedNotice = computed(() =>
   readme.value && !readme.value.stored ? t("readmePanel.notHeldHere") : null,
 );
 
+// ── Rendered, or the source it was rendered from ─────────────────────────────
+//
+// A README is a document *and* a file, and the two answer different questions.
+// The rendered view answers "what does this package say"; the source answers
+// "what exactly is stored here" — which is the one a reader needs when the
+// rendering surprises them, when an image was stripped, or when they are about
+// to publish something similar and want the markup that produced it.
+//
+// The endpoint already sends both: `rendered_html` and `source_text` (RFC 0007
+// §4.4), the second absent only when the source *was* HTML. So this is a control
+// over data the page already has, not a second request.
+type ReadmeView = "rendered" | "source";
+const view = ref<ReadmeView>("rendered");
+
+/** Offered only when there are two things to switch between. */
+const canShowSource = computed(() => !!readme.value?.source_text && !!readme.value.rendered_html);
+
+/* A new package, or a new version, is a new document: it opens rendered. */
+watch(
+  () => [props.registry, props.name, props.version],
+  () => {
+    view.value = "rendered";
+  },
+);
+
+const bodyEl = ref<HTMLElement | null>(null);
+const sourceEl = ref<HTMLElement | null>(null);
+
+/* `ready` is watched, not awaited: the highlighter's chunk may land after the
+   README does, and a block that stays plain because the page rendered first is
+   the defect this dependency exists to avoid. */
+const { ready: shikiReady } = useShiki();
+
+/**
+ * Highlight the fenced blocks of the rendered document.
+ *
+ * The language comes from the class the server's renderer writes
+ * (`<code class="language-rust">`), and an unknown one paints nothing and keeps
+ * the plain block — a README can fence `mermaid` or nothing at all.
+ *
+ * Nothing here writes HTML. `highlightInto` builds spans and sets their text
+ * through `textContent`, so package-authored bytes never re-enter the page as
+ * markup, and the component keeps the single `v-html` its own test counts.
+ */
+async function paintRendered() {
+  const root = bodyEl.value;
+  if (!root) return;
+  for (const code of root.querySelectorAll("pre > code")) {
+    const el = code as HTMLElement;
+    if (el.dataset.highlighted === "true") continue;
+    const lang = /language-([\w#+.-]+)/.exec(el.className)?.[1] ?? "";
+    const text = el.textContent ?? "";
+    if (!lang || !text.trim()) continue;
+    if (await highlightInto(el, text, lang)) el.dataset.highlighted = "true";
+  }
+}
+
+/** The source view is itself a code block, so it is highlighted as one. */
+async function paintSource() {
+  const el = sourceEl.value;
+  const text = readme.value?.source_text;
+  if (!el || !text) return;
+  // `format` is what the source *is* — `markdown` | `rst` | `plain`. Handing
+  // Shiki the wrong grammar is worse than handing it none.
+  await highlightInto(el, text, readme.value?.format ?? "");
+}
+
+watch([readme, view, shikiReady], async () => {
+  await nextTick();
+  if (view.value === "rendered") await paintRendered();
+  else await paintSource();
+});
+
 const absenceMessage = computed(() => {
   switch (absence.value) {
     case "readme.unsupported-type":
@@ -125,13 +204,28 @@ const absenceMessage = computed(() => {
 <template>
   <Card>
     <CardHeader class="pb-2">
-      <CardTitle class="text-base flex items-center gap-2">
-        <FileText class="h-4 w-4 text-primary shrink-0" />
-        {{ t("readmePanel.title") }}
-        <span v-if="readme" class="font-mono text-xs text-muted-foreground">
-          {{ readme.version }}
-        </span>
-      </CardTitle>
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <CardTitle class="text-base flex items-center gap-2">
+          <FileText class="h-4 w-4 text-primary shrink-0" />
+          {{ t("readmePanel.title") }}
+          <span v-if="readme" class="font-mono text-xs text-muted-foreground">
+            {{ readme.version }}
+          </span>
+        </CardTitle>
+        <!-- One control, labelled with the view it switches *to* rather than
+             the one you are in: a button that says where you already are makes
+             a reader test it to find out. -->
+        <Button
+          v-if="canShowSource"
+          variant="outline"
+          size="sm"
+          class="h-7 px-2 text-xs"
+          :aria-pressed="view === 'source'"
+          @click="view = view === 'rendered' ? 'source' : 'rendered'"
+        >
+          {{ view === "rendered" ? t("readmePanel.showSource") : t("readmePanel.showRendered") }}
+        </Button>
+      </div>
     </CardHeader>
     <CardContent>
       <p v-if="loading" class="text-sm text-muted-foreground">
@@ -139,13 +233,13 @@ const absenceMessage = computed(() => {
       </p>
 
       <template v-else-if="readme">
-        <p v-if="fallbackNotice" class="text-sm text-muted-foreground mb-3">
+        <p v-if="fallbackNotice" class="text-sm text-muted-foreground mb-3 max-w-[72ch]">
           {{ fallbackNotice }}
         </p>
-        <p v-if="packageLevelNotice" class="text-sm text-muted-foreground mb-3">
+        <p v-if="packageLevelNotice" class="text-sm text-muted-foreground mb-3 max-w-[72ch]">
           {{ packageLevelNotice }}
         </p>
-        <p v-if="derivedNotice" class="text-sm text-muted-foreground mb-3">
+        <p v-if="derivedNotice" class="text-sm text-muted-foreground mb-3 max-w-[72ch]">
           {{ derivedNotice }}
         </p>
         <!--
@@ -157,8 +251,19 @@ const absenceMessage = computed(() => {
           `ReadmePanel.test.ts` asserts no third component grows one.
         -->
         <!-- eslint-disable-next-line vue/no-v-html -->
-        <div class="readme-body" v-html="readme.rendered_html ?? ''"></div>
-        <p v-if="truncationNotice" class="text-xs text-muted-foreground mt-3">
+        <div
+          v-if="view === 'rendered'"
+          ref="bodyEl"
+          class="readme-body"
+          v-html="readme.rendered_html ?? ''"
+        ></div>
+        <!-- The source as **text**, through interpolation. It is the same bytes
+             the rendered view came from, and the whole reason a reader opens
+             this is to see them exactly — so this is the one place they must not
+             be parsed. Shiki paints over it afterwards without changing a
+             character. -->
+        <pre v-else ref="sourceEl" class="readme-source">{{ readme.source_text }}</pre>
+        <p v-if="truncationNotice" class="text-xs text-muted-foreground mt-3 max-w-[72ch]">
           {{ truncationNotice }}
         </p>
       </template>
@@ -204,6 +309,21 @@ const absenceMessage = computed(() => {
   margin: var(--s2) 0;
   font-size: var(--t-body);
   line-height: 1.6;
+  /* The panel's own measure, on the running text and nothing else.
+
+     `PackageDetailPage` used to cap the whole page at `max-w-4xl`, which kept
+     this prose readable by accident while squeezing the versions table into
+     846px. With the page full-bleed, a README on a 1920 window would otherwise
+     set 230-character lines. 72ch is the measure the specimen caption already
+     uses, so the console keeps one measure vocabulary rather than growing a
+     third number.
+
+     On `p`/`ul`/`ol` rather than on `.readme-body`: capping the container
+     capped everything inside it, and a README's code blocks, tables and images
+     are not prose — measured on `react-smooth`, whose own table came out at
+     562px, narrower than it had been before the page went full width. They now
+     take the card, and `pre`/`table` still scroll inside themselves. */
+  max-width: 72ch;
 }
 .readme-body :deep(ul),
 .readme-body :deep(ol) {
@@ -227,6 +347,29 @@ const absenceMessage = computed(() => {
 .readme-body :deep(pre code) {
   background: none;
   padding: 0;
+}
+/* Shiki paints each token's colour onto a custom property; the same pair the
+   console's own `CodeBlock` uses, so a README block and a Setup Guide snippet
+   are lit by one theme rather than two. A block Shiki did not recognise sets
+   neither property and keeps the inherited ink. */
+.readme-body :deep(pre code span),
+.readme-source span {
+  color: var(--shiki-light);
+}
+[data-theme="dark"] .readme-body :deep(pre code span),
+[data-theme="dark"] .readme-source span {
+  color: var(--shiki-dark);
+}
+.readme-source {
+  background: var(--ground-raised);
+  padding: var(--s3);
+  overflow-x: auto;
+  font-family: var(--face-text);
+  font-size: var(--t-meta);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
 }
 .readme-body :deep(table) {
   border-collapse: collapse;

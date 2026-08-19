@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 
 const { explorePackagesMock, exploreUpstreamSearchMock, listRegistriesMock, statsMock } =
@@ -15,9 +15,20 @@ vi.mock("@/client/sdk.gen", () => ({
   exploreRegistryStats: statsMock,
 }));
 
-const { pushMock } = vi.hoisted(() => ({ pushMock: vi.fn() }));
+/**
+ * `routeState` stands in for the address bar: the page reads its whole starting
+ * state out of `route.query` and writes every change back with `replace`, so a
+ * test that cannot see both halves cannot tell whether a search survives a
+ * return to the list.
+ */
+const { pushMock, replaceMock, routeState } = vi.hoisted(() => ({
+  pushMock: vi.fn(),
+  replaceMock: vi.fn(),
+  routeState: { path: "/packages", query: {} as Record<string, string> },
+}));
 vi.mock("vue-router", () => ({
-  useRouter: () => ({ push: pushMock }),
+  useRouter: () => ({ push: pushMock, replace: replaceMock }),
+  useRoute: () => routeState,
   RouterLink: { template: "<a :href='String(to)'><slot/></a>", props: ["to"] },
 }));
 
@@ -494,7 +505,6 @@ describe("PackageCatalog browsing", () => {
     expect(explorePackagesMock).toHaveBeenLastCalledWith({
       query: {
         page: 0,
-        per_page: 20,
         sort: "fetched",
         registry: "pypi",
         q: undefined,
@@ -540,7 +550,7 @@ describe("PackageCatalog browsing", () => {
     await typeSearch(wrapper, "lo");
 
     expect(explorePackagesMock).toHaveBeenLastCalledWith({
-      query: { page: 0, per_page: 20, sort: "fetched", registry: undefined, q: "lo", in: "name" },
+      query: { page: 0, sort: "fetched", registry: undefined, q: "lo", in: "name" },
     });
     expect(exploreUpstreamSearchMock).toHaveBeenCalledWith({
       query: { name: "lo", limit: 10, registry: undefined },
@@ -608,7 +618,6 @@ describe("PackageCatalog browsing", () => {
     expect(explorePackagesMock).toHaveBeenLastCalledWith({
       query: {
         page: 1,
-        per_page: 20,
         sort: "fetched",
         registry: undefined,
         q: undefined,
@@ -643,17 +652,56 @@ describe("PackageCatalog browsing", () => {
     expect(wrapper.text()).toContain("No packages cached yet");
   });
 
-  it("opens a cached package's page on click, and leaves upstream rows alone", async () => {
+  /**
+   * A package this instance has not pulled opens too, and used to be the one
+   * row in the catalog that led nowhere.
+   *
+   * This test asserted the opposite — that an upstream row calls no navigation —
+   * and that assertion was the bug held in place: `explore/detail.rs` resolves
+   * `upstream_detail` for anything not held here, and `PackageDetailPage`
+   * renders those versions with the per-version *Fetch this version* button
+   * (RFC 0007-bis §6.4). The page existed, the search surfaced the package, and
+   * the click between them was refused, so the only way in was to type the URL.
+   *
+   * Both kinds are asserted in one test on purpose: the point is that they now
+   * resolve to the *same* address from the same two fields.
+   */
+  it("opens a package's page on click whether or not this instance holds it", async () => {
     exploreUpstreamSearchMock.mockResolvedValue({ data: { items: [upstreamHit("left-pad")] } });
     const wrapper = await mountPage();
     await typeSearch(wrapper, "l@test");
 
     const rows = wrapper.findAll("tbody tr");
     await rows.find((r) => r.text().includes("left-pad"))!.trigger("click");
-    expect(pushMock).not.toHaveBeenCalled();
+    expect(pushMock).toHaveBeenCalledWith({ path: "/packages/npm/left-pad" });
 
     await rows.find((r) => r.text().includes("lodash"))!.trigger("click");
     expect(pushMock).toHaveBeenCalledWith({ path: "/packages/npm/lodash" });
+  });
+
+  /**
+   * A name with slashes in it — Go and Composer coordinates — survives the trip.
+   *
+   * The path is built with `encodeURIComponent`, so `github.com/ttacon/chalk`
+   * arrives as one route param rather than three path segments. An upstream
+   * search against a `go` registry returns exactly this shape, so it is the
+   * first thing a click on those results would have hit.
+   */
+  it("encodes a slashed package name into a single route param", async () => {
+    exploreUpstreamSearchMock.mockResolvedValue({
+      data: { items: [upstreamHit("github.com/ttacon/chalk", { registry: "go" })] },
+    });
+    const wrapper = await mountPage();
+    await typeSearch(wrapper, "chalk");
+
+    await wrapper
+      .findAll("tbody tr")
+      .find((r) => r.text().includes("github.com/ttacon/chalk"))!
+      .trigger("click");
+
+    expect(pushMock).toHaveBeenCalledWith({
+      path: "/packages/go/github.com%2Fttacon%2Fchalk",
+    });
   });
 });
 
@@ -666,6 +714,66 @@ describe("PackageCatalog browsing", () => {
  * the ones that do not, a snippet rendered as **text**, and an empty state that
  * says what was actually searched.
  */
+/**
+ * The catalog's page size is the operator's, not this component's.
+ *
+ * It was a hard-coded 20 in both places — the request and the pager arithmetic
+ * — so `[limits].packages_per_page` would have been a setting the one screen it
+ * exists for ignored. The console asks for no size here (unlike the version
+ * table on a package page, which asks for the rows it draws) and sizes its
+ * pager from what came back.
+ */
+describe("PackageCatalog page size", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    pushMock.mockReset();
+    explorePackagesMock.mockReset();
+    exploreUpstreamSearchMock.mockReset().mockResolvedValue({ data: { items: [] } });
+    listRegistriesMock.mockReset().mockResolvedValue({ data: [] });
+    statsMock.mockReset().mockResolvedValue({ data: { registries: [] } });
+    scopeExploreCacheTo(`test-${Math.random()}`);
+  });
+
+  it("asks for no page size at all", async () => {
+    explorePackagesMock.mockResolvedValue(listing(["lodash"]));
+
+    await mountPage();
+
+    const query = explorePackagesMock.mock.calls.at(-1)?.[0]?.query;
+    expect(query).toBeDefined();
+    expect(query).not.toHaveProperty("per_page");
+  });
+
+  /** 60 rows at 50 a page is two pages, not three — the pager has to do its
+      arithmetic with the number the server applied. */
+  it("sizes the pager from the answer rather than from a constant", async () => {
+    explorePackagesMock.mockResolvedValue({
+      data: {
+        items: Array.from({ length: 50 }, (_, i) => entry(`pkg-${i}`)),
+        total: 60,
+        page: 0,
+        per_page: 50,
+      },
+    });
+
+    const wrapper = await mountPage();
+
+    expect(wrapper.text()).toContain("1 of 2");
+  });
+
+  /** An older server, or one whose answer omits it: the pager still works off
+      the number the console started with rather than dividing by undefined. */
+  it("falls back to twenty when the answer does not say", async () => {
+    explorePackagesMock.mockResolvedValue({
+      data: { items: [entry("lodash")], total: 60, page: 0 },
+    });
+
+    const wrapper = await mountPage();
+
+    expect(wrapper.text()).toContain("1 of 3");
+  });
+});
+
 describe("PackageCatalog prose search", () => {
   const proseListing = (over: Record<string, unknown> = {}) => ({
     data: {
@@ -724,7 +832,6 @@ describe("PackageCatalog prose search", () => {
     expect(explorePackagesMock).toHaveBeenLastCalledWith({
       query: {
         page: 0,
-        per_page: 20,
         sort: "fetched",
         registry: undefined,
         q: undefined,
@@ -801,5 +908,112 @@ describe("PackageCatalog prose search", () => {
       .mockResolvedValue(proseListing({ truncated: true, total: 200 }));
     const wrapper = await mountPage();
     expect(wrapper.text()).toContain("Narrow the query");
+  });
+});
+
+/**
+ * The search lives in the URL (so a return to the list is a return to the
+ * search).
+ *
+ * Every control on this page wrote to component state and nowhere else, so the
+ * whole arrangement — registry, query, scope, sort, page — existed only as long
+ * as the component did. Open a package from the fifth page of a search, come
+ * back, and the box was empty. The detail page's own back button pushed
+ * `/packages?registry=…`, which read like a fix and was not: nothing here ever
+ * looked at `route.query`.
+ */
+describe("PackageCatalog url state", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    routeState.query = {};
+    replaceMock.mockReset().mockImplementation((loc: { query?: Record<string, string> }) => {
+      // Stand in for the address bar actually changing, which is what the page's
+      // own "has anything changed?" check reads back.
+      routeState.query = loc.query ?? {};
+    });
+    explorePackagesMock.mockReset().mockResolvedValue(listing(["lodash"]));
+    exploreUpstreamSearchMock.mockReset().mockResolvedValue({ data: { items: [] } });
+    listRegistriesMock.mockReset().mockResolvedValue({ data: [{ name: "npm", type: "npm" }] });
+    statsMock.mockReset().mockResolvedValue({ data: { registries: [] } });
+    scopeExploreCacheTo(`test-${Math.random()}`);
+  });
+
+  afterEach(() => {
+    routeState.query = {};
+  });
+
+  it("opens on the search its URL describes", async () => {
+    routeState.query = { registry: "npm", q: "lodash", in: "both", sort: "name", page: "3" };
+
+    const wrapper = await mountPage();
+
+    // The first request is the reader's search, not the defaults — fetching
+    // those first would show a list nobody asked for and then replace it.
+    expect(explorePackagesMock).toHaveBeenCalledTimes(1);
+    expect(explorePackagesMock).toHaveBeenLastCalledWith({
+      query: { page: 2, sort: "name", registry: "npm", q: "lodash", in: "both" },
+    });
+    // And the controls agree with the list, rather than showing an empty box
+    // above rows that were filtered.
+    expect(wrapper.find("input").element.value).toBe("lodash");
+  });
+
+  it("writes a search back so returning to the list returns to it", async () => {
+    const wrapper = await mountPage();
+
+    await wrapper.find("input").setValue("left-pad");
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await flushPromises();
+
+    expect(replaceMock).toHaveBeenLastCalledWith({
+      path: "/packages",
+      query: { q: "left-pad" },
+    });
+  });
+
+  it("keeps a default off the URL", async () => {
+    const wrapper = await mountPage();
+
+    // `fetched` is the default sort, so selecting it says nothing.
+    await wrapper.find("select").setValue("name");
+    await flushPromises();
+    expect(replaceMock).toHaveBeenLastCalledWith({ path: "/packages", query: { sort: "name" } });
+
+    await wrapper.find("select").setValue("fetched");
+    await flushPromises();
+    expect(replaceMock).toHaveBeenLastCalledWith({ path: "/packages", query: {} });
+  });
+
+  /** A hand-edited URL cannot put the page somewhere its own controls could not. */
+  it("falls back to the defaults for values it does not recognise", async () => {
+    routeState.query = { sort: "whatever", in: "sideways", page: "-4" };
+
+    await mountPage();
+
+    expect(explorePackagesMock).toHaveBeenLastCalledWith({
+      query: {
+        page: 0,
+        sort: "fetched",
+        registry: undefined,
+        q: undefined,
+        in: "name",
+      },
+    });
+  });
+
+  /**
+   * The page must not write to a route it no longer owns: a fetch settling after
+   * the reader has opened a package would otherwise rewrite that page's address.
+   */
+  it("does not touch the URL once the reader has left the catalog", async () => {
+    const wrapper = await mountPage();
+    routeState.path = "/packages/npm/lodash";
+
+    await wrapper.find("input").setValue("left-pad");
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await flushPromises();
+
+    expect(replaceMock).not.toHaveBeenCalled();
+    routeState.path = "/packages";
   });
 });

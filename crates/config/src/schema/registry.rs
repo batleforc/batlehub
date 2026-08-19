@@ -448,6 +448,28 @@ pub struct ReadmeConfig {
     /// Truncation is recorded and surfaced, never silent.
     #[serde(default = "default_readme_max_bytes")]
     pub max_bytes: usize,
+    /// Which hosts an image may be proxied *from*, when `remote_images =
+    /// "proxy"`.
+    ///
+    /// ```toml
+    /// [registries.readme]
+    /// remote_images = "proxy"
+    /// remote_image_hosts = ["img.shields.io", "badgen.net", "codecov.io"]
+    /// ```
+    ///
+    /// An entry matches the host exactly or any subdomain of it, so
+    /// `"shields.io"` covers `img.shields.io`. An image from anywhere else is
+    /// chipped exactly as `strip` chips it — the reader still sees that an image
+    /// was there and where it pointed.
+    ///
+    /// **Absent means every host**, which is what `proxy` did before this
+    /// existed: adding a key must not silently change what a running instance
+    /// serves. An operator who wants the narrow behaviour asks for it, and the
+    /// asking is one line.
+    ///
+    /// Inert under `strip`, where nothing is fetched at all.
+    #[serde(default)]
+    pub remote_image_hosts: Vec<String>,
     /// `"strip"` (default) or `"proxy"`. There is no `"allow"`: the SPA's CSP is
     /// baked into the document at build time, so it would silently do nothing.
     #[serde(default = "default_remote_images")]
@@ -469,6 +491,7 @@ impl Default for ReadmeConfig {
             from_archive: true,
             max_bytes: default_readme_max_bytes(),
             remote_images: default_remote_images(),
+            remote_image_hosts: Vec::new(),
             image_max_bytes: default_image_max_bytes(),
         }
     }

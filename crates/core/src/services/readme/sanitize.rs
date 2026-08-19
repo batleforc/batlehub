@@ -44,6 +44,69 @@ pub const RENDERER_VERSION: u32 = 3;
 /// would hand them the console's whole stylesheet.
 pub const STRIPPED_IMAGE_CLASS: &str = "readme-stripped-image";
 
+/// The fence classes that survive the pass.
+///
+/// `pulldown-cmark` writes the fence's info string onto the `code` element, and
+/// this list is the only reason any of it reaches the console: `class` is not in
+/// `tag_attributes`, so a README's own classes are dropped wholesale (see the
+/// note beside `allowed_classes` below). Without it the panel receives
+/// `<pre><code>` with the language erased and has nothing to highlight — found
+/// by rendering `chalk`, whose README fences a dozen `js` blocks and arrived
+/// with every one of them anonymous.
+///
+/// **Whole class names, enumerated**, rather than a `language-*` pattern:
+/// `allowed_classes` takes exact values, and the threat model wants exact values
+/// too — `language-*` sounds harmless until it is a selector some stylesheet
+/// matches. Written out rather than built with `format!` because the builder is
+/// `Builder<'static>` and these must outlive it.
+///
+/// A fence in a language nobody listed renders as a plain block, which is what
+/// an unhighlighted block is anyway. The console's highlighter knows a superset
+/// (`ui/src/composables/useShiki.ts`) and treats an unknown class as plain, so
+/// the two lists may differ without either side breaking: this one decides what
+/// is *said*, that one what can be *drawn*.
+const HIGHLIGHT_LANGUAGE_CLASSES: &[&str] = &[
+    "language-bash",
+    "language-c",
+    "language-console",
+    "language-cpp",
+    "language-csharp",
+    "language-css",
+    "language-diff",
+    "language-dockerfile",
+    "language-go",
+    "language-graphql",
+    "language-html",
+    "language-ini",
+    "language-java",
+    "language-javascript",
+    "language-js",
+    "language-json",
+    "language-jsonc",
+    "language-jsx",
+    "language-kotlin",
+    "language-lua",
+    "language-markdown",
+    "language-php",
+    "language-python",
+    "language-ruby",
+    "language-rust",
+    "language-scala",
+    "language-sh",
+    "language-shell",
+    "language-shellscript",
+    "language-sql",
+    "language-swift",
+    "language-terraform",
+    "language-toml",
+    "language-ts",
+    "language-tsx",
+    "language-typescript",
+    "language-xml",
+    "language-yaml",
+    "language-yml",
+];
+
 /// Every element a README may contain.
 ///
 /// Everything else is dropped, including `script`, `iframe`, `object`, `embed`,
@@ -141,10 +204,12 @@ fn builder(
     // deliberately absent from `tag_attributes` above — ammonia asserts the two
     // are mutually exclusive, because listing it there would let *any* value
     // through and make this allow-list decorative.
-    b.allowed_classes(HashMap::from([(
-        "span",
-        HashSet::from([STRIPPED_IMAGE_CLASS]),
-    )]));
+    b.allowed_classes(HashMap::from([
+        ("span", HashSet::from([STRIPPED_IMAGE_CLASS])),
+        // The fence language, and nothing else a README author writes on a
+        // `code` element — see `HIGHLIGHT_LANGUAGES`.
+        ("code", HIGHLIGHT_LANGUAGE_CLASSES.iter().copied().collect()),
+    ]));
 
     // `javascript:`, `data:` and `vbscript:` are dropped rather than rewritten.
     // `data:` is dropped for images too, despite the CSP permitting it: a data
@@ -252,6 +317,42 @@ mod tests {
     //
     // Each asserts the *specific* removal, not merely "no script": a test that
     // only greps for `<script` passes on output that still carries an `onerror`.
+
+    /// The fence language reaches the console, and nothing else on that element
+    /// does.
+    ///
+    /// Both halves matter. Without the first, every code block in every README
+    /// arrives anonymous and the panel has nothing to highlight — which is how
+    /// `chalk`'s dozen `js` fences rendered grey. Without the second, `class` on
+    /// a `code` element would be a README author's handle on the console's own
+    /// stylesheet, which is what the note beside `allowed_classes` refuses.
+    #[test]
+    fn a_known_fence_language_survives_and_an_arbitrary_class_does_not() {
+        let out = clean(r#"<pre><code class="language-rust">fn main() {}</code></pre>"#);
+        assert!(out.contains(r#"class="language-rust""#), "{out}");
+
+        for hostile in [
+            r#"<pre><code class="sidebar-open">x</code></pre>"#,
+            r#"<pre><code class="language-rust sidebar-open">x</code></pre>"#,
+            r#"<p class="language-rust">x</p>"#,
+        ] {
+            let out = clean(hostile);
+            assert!(!out.contains("sidebar-open"), "{out}");
+        }
+    }
+
+    /// A language nobody listed is a plain block, not a passed-through class.
+    ///
+    /// Ammonia empties the attribute rather than removing it, so the assertion
+    /// is on the *value*: `class=""` carries nothing, and asserting the absence
+    /// of the attribute would be asserting ammonia's formatting rather than this
+    /// policy.
+    #[test]
+    fn an_unlisted_fence_language_is_dropped_rather_than_echoed() {
+        let out = clean(r#"<pre><code class="language-brainfuck">+++</code></pre>"#);
+        assert!(out.contains("+++"), "{out}");
+        assert!(!out.contains("brainfuck"), "{out}");
+    }
 
     #[test]
     fn script_elements_are_removed_with_their_contents() {

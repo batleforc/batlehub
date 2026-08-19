@@ -36,6 +36,8 @@ pub fn format_dt(dt: DateTime<Utc>) -> String {
     dt.to_rfc3339()
 }
 
-pub fn default_per_page() -> u64 {
-    20
-}
+// `default_per_page` used to live here as a constant 20. The catalog's page size
+// is `[limits].packages_per_page` now — an operator's number rather than a
+// literal — so the only thing a compile-time default could still do is disagree
+// with it. `DEFAULT_PACKAGES_PER_PAGE` in `batlehub_core::services::hot_config`
+// is what an unconfigured server answers with.

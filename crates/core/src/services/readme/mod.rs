@@ -229,8 +229,16 @@ impl ReadmeService {
         cfg: &ReadmeImageConfig,
     ) -> Option<image::FetchedImage> {
         let fetcher = self.image_fetcher.as_ref()?;
-        let urls = render::image_urls(&readme.content, readme.format);
+        let urls = render::image_urls(&readme.content, readme.format, &cfg.allowed_hosts);
         let url = urls.get(index)?;
+
+        // Belt and braces: the walk above already excludes a disallowed host, so
+        // this can only fire if the two ever disagree. It is one comparison, and
+        // the thing it guards is this server making a request to a host an
+        // operator has said no to.
+        if !image::image_host_allowed(url, &cfg.allowed_hosts) {
+            return None;
+        }
 
         let key = image_cache_key(url);
         if let Some(cache) = &self.cache {
@@ -451,7 +459,7 @@ impl ReadmeService {
 /// bytes ride the metadata cache, for the reason RFC 0007 §4.1 gives about
 /// `upstream_detail` — a second, independently clocked expiry for bytes that
 /// already have one is how two caches come to disagree.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ReadmeImageConfig {
     /// Per image, and separate from [`ReadmeConfig::max_bytes`], which caps a
     /// stored README's *text*. A 256 KiB text cap and a 2 MiB image cap are not
@@ -460,6 +468,14 @@ pub struct ReadmeImageConfig {
     pub max_bytes: usize,
     pub ttl: std::time::Duration,
     pub negative_ttl: std::time::Duration,
+    /// The registry's `remote_image_hosts`. Empty means every host.
+    ///
+    /// Passed to the *fetch* side as well as the render side on purpose. The
+    /// rendering decided what the page shows; this decides what this server
+    /// dials, and the two are separated in time by a cache — an operator who
+    /// narrows the list wants the narrowing to take effect on the next request,
+    /// not on the next render-cache miss.
+    pub allowed_hosts: Vec<String>,
 }
 
 /// The cache key for one image URL.
