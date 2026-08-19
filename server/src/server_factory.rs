@@ -264,23 +264,16 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
                     // API origin. `frame-ancestors` is ignored in meta form, which
                     // is why `security_headers()` sends `X-Frame-Options: DENY`.
                     //
-                    // What *is* new: the document itself is served by
-                    // `configure_spa` rather than by `Files`, so the built policy
-                    // can be narrowed to the running config on the way out — see
-                    // `crates/web/src/spa.rs` for why that narrowing can only ever
-                    // subtract. It must be registered **first**: `Files` mounted
-                    // at "/" would otherwise answer `/` and `/index.html` itself,
-                    // straight off disk, and which policy a reader got would
-                    // depend on the URL they arrived by.
-                    cfg.app_data(actix_web::web::Data::new(batlehub_web::SpaDir(
-                        std::path::PathBuf::from(dir),
-                    )));
-                    batlehub_web::configure_spa(cfg);
-                    cfg.service(
-                        actix_files::Files::new("/", dir)
-                            .index_file("index.html")
-                            .use_last_modified(true),
-                    );
+                    // What *is* new: the document is served by `configure_spa`
+                    // rather than straight off disk, so the built policy can be
+                    // narrowed to the running config on the way out — see
+                    // `crates/web/src/spa.rs` for why that narrowing can only
+                    // ever subtract, and for the deep-link fallback that sits
+                    // behind the file service so `/packages/npm/chalk` resolves
+                    // to the console rather than to a 404.
+                    // Document, static files and the deep-link fallback, in the
+                    // one place that knows their order matters.
+                    batlehub_web::configure_spa(cfg, std::path::PathBuf::from(dir));
                 }
             })
     })

@@ -2,7 +2,7 @@
 
 | Field      | Value                                                                                          |
 | ---------- | ---------------------------------------------------------------------------------------------- |
-| Status     | **Implemented** — all twelve phases landed; §12 records what each one changed, and §11 O1 records the one decision this RFC reversed against its own first draft |
+| Status     | **Implemented** — all thirteen phases landed; §12 records what each one changed, and §11 O1 records the one decision this RFC reversed against its own first draft |
 | Author     | batleforc                                                                                       |
 | Co-author  | —                                                                                               |
 | Created    | 2026-08-18                                                                                      |
@@ -385,6 +385,7 @@ sign in for something signing in will not fix.
 | Anonymous fetch refused | A reduction. The proxy path is untouched: whoever the operator's `anonymous` policy allows still downloads, and still fills the cache as a side effect. What is refused is *causing this instance to go and get something* unattributably. |
 | The version list's new query parameters | `q` is matched in memory against strings this server already assembled — no store is queried with it, and it narrows a list the visibility and RBAC gates have already produced, so it cannot widen what a caller sees. `per_page` is the one that could cost something, which is why `[limits]` bounds it: without a ceiling, `?per_page=100000` is an invitation to build and serialise every version of every package, one request at a time. |
 | `img-src` widened to `badge.socket.dev` | **An increase, taken deliberately and against the recommendation in this document's own drafting.** Every package page tells socket.dev which package is being read, at page load rather than on a click. The alternatives were a server-side proxy (which fails air-gapped, where the server cannot reach it either) and dropping the `<img>` for the link. The badge was kept visible. The policy says what the page *may* load; `socket_badge = false` says what it *does* — and since phase 12 the first follows the second: the server narrows the built policy to the running config when it serves the document, so an instance with the badge off everywhere no longer announces an origin it will never call. |
+| The deep-link fallback | The failure mode is serving the console to something that is not a browser — a package manager that asked for a missing artifact and got `200 text/html` would parse markup as a package. Four conditions narrow it, each able only to answer *less* often: `GET` alone; never under `/api`, `/proxy`, `/scalar`, `/metrics`, `/healthz`, `/livez`; never under the build's own `/assets/` or `/fonts/`; and never a dotted single segment (`/favicon.ico`). The registry protocols are all under `/proxy/{registry}/…` — host-based routing rewrites a registry host's paths into that shape *before* actix routes them — so no protocol traffic can reach it. Verified against a live server: the packument and a real tarball still answer `200` with their own content types, and an unknown version answers `404 application/json` rather than a page. |
 | The server rewriting the document's policy | The narrowing can only **subtract**. There is no path from a config value to a new source: the built policy is the maximum, `narrow_csp` owns removal alone, and a unit test asserts the subset property over every directive rather than over a string. A document from a build that predates it is served unchanged rather than failing, and a source spelled differently from the constant is left alone rather than half-edited. |
 
 ---
@@ -434,6 +435,12 @@ before it appears in a log; it is a `401` with a code, not a silent drop.
 The rendered README's **cache key must include the renderer version**, which it
 already does (`RENDERER_VERSION`) — the `language-*` change alters output for the
 same input, and a stale entry would keep serving anonymous fences.
+
+One deployment note in the other direction: **deep links now resolve without an
+ingress rule.** A reverse proxy already rewriting unknown paths to `index.html`
+keeps working — it simply never reaches the server's own fallback — and one that
+was not doing it stops handing out `404`s for the URLs this RFC spent eleven
+phases making linkable.
 
 **Paginating the package-detail endpoint is the one change with a compatibility
 cost, and it is worth stating plainly.** `GET /api/v1/explore/packages/…` used to
@@ -502,6 +509,12 @@ started deciding what page one is.
   explicit one, and is not echoed back when the package does not have it; a
   pre-release-only package still answers with a row; and `default_version` is
   the newest **held** release rather than the newest that exists.
+- **Deep links resolve, and only the console's do**: `/packages/npm/chalk` with
+  its query answers the document, carrying the same narrowed policy as the front
+  door; a package name with a dot in it (`lodash.merge`, `System.Text.Json`) is a
+  link and not a file; a missing hashed asset, an unknown `/api` path and an
+  unknown proxy artifact stay `404` without a page; a `POST` never gets one; and
+  a file that *is* on disk still comes from the file service.
 - **The policy narrows and only narrows**: the badge origin is dropped when no
   registry would draw one and kept when one would (including a registry with no
   flags block, since absent means on); the same document comes back by `/` and
@@ -557,6 +570,7 @@ started deciding what page one is.
 | 8 | `remote_image_hosts` end to end | `config/schema/registry.rs`, `hot_config.rs`, `readme/{render,image,mod}.rs`, `explore/image.rs`, `server/hot_config.rs` |
 | 9 | The filter and the page in the URL (§11 O1, reversed) | `PackageDetailPage.vue` — one `syncQuery` for all three keys, the page-1 reset moved onto the gesture, and the jump-to-selection taught to yield to `?page=` and to sit still through a Refresh |
 | 10 | The version list is paged, filtered and sorted **server-side** | `config/schema/mod.rs` (`[limits].versions_per_page`), `core/services/hot_config.rs` (the default constant both crates read), `server/hot_config.rs`, `explore/detail.rs` (the five parameters, `versions_page`, `default_version`, `selected_version`, enrichment moved after the slice, pre-release sort order fixed), `PackageDetailPage.vue` (the controls send; debounce, sequence token, silent refetch) |
+| 13 | Deep links resolve — the SPA fallback | `crates/web/src/spa.rs` (`is_console_route` + a `default_handler` behind the file service), `server_factory.rs`. Without it every URL phases 1–11 made linkable was a `404` in any fresh tab: `actix_files` has no notion of a client-side route |
 | 12 | The document's CSP is narrowed to the running config | `crates/web/src/spa.rs` (new: the document is served by this rather than by `actix_files`, and `narrow_csp` subtracts), `server_factory.rs` (registered before the file service), `middleware/security_headers.rs`, `ui/build/csp.ts`, `ui/index.html` — the comments that said the policy was frozen at build time |
 | 11 | The catalog's page size is the operator's | `config/schema/mod.rs` (`[limits].packages_per_page`, one validation loop for both keys), `core/services/hot_config.rs`, `server/hot_config.rs`, `explore/list.rs` (the `serde` default 20 replaced by the configured value as default *and* ceiling), `PackageCatalog.vue` (`const perPage` → the server's, read back and cached with the rows) |
 

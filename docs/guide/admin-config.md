@@ -426,6 +426,34 @@ instead of a literal.
 
 ---
 
+### Serving the console {#serving-the-console}
+
+`[server].static_dir` points at the built SPA, and the server serves it three
+ways:
+
+- **the document** (`/` and `/index.html`), with its policy narrowed to your
+  configuration — see [below](#csp);
+- **the files beside it**, straight off disk;
+- **every other console URL** — `/packages/npm/chalk?version=4.0.2`, `/setup`,
+  `/me/tokens` — with that same document, because a single-page application has
+  one document and many URLs. Without this a pasted link, a reload or a bookmark
+  answered `404`.
+
+The fallback is deliberately narrow, because the way to get it wrong is to hand
+the console to something that is not a browser. It answers **only** `GET`, and
+never for:
+
+| Not the console | Why |
+| --- | --- |
+| `/api`, `/proxy`, `/scalar`, `/metrics`, `/healthz`, `/livez` | this server's own paths — every registry protocol lives under `/proxy/{registry}/…`, and a registry host's paths are rewritten into that shape before routing, so a package manager's request cannot reach the fallback |
+| `/assets/…`, `/fonts/…` | the build's own directories: a stale hashed asset must fail as an asset, not arrive as HTML a browser then tries to run as JavaScript |
+| a dotted name at the root — `/favicon.ico`, `/logo.svg` | asked for by name; if it is not there, it is not there. The rule stops at the root, so `/packages/npm/lodash.merge` is still a link |
+
+If your ingress already rewrites unknown paths to `index.html`, nothing changes —
+those requests never reach the fallback.
+
+---
+
 ### The console's content-security policy {#csp}
 
 The console's document carries its own `Content-Security-Policy`, in a

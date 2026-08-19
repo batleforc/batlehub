@@ -35,7 +35,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use actix_web::{get, http::header, web, HttpResponse, Responder};
+use actix_web::dev::{fn_service, ServiceResponse};
+use actix_web::http::Method;
+use actix_web::{get, http::header, web, Error, HttpResponse, Responder};
 use batlehub_core::services::LocalRegistryService;
 
 use crate::error::AppError;
@@ -190,10 +192,120 @@ async fn spa_index_html(
     serve_index(dir, local_svc).await
 }
 
-/// Register the document routes. Must be configured **before** the static-file
-/// service, which would otherwise answer both of them first.
-pub fn configure_spa(cfg: &mut web::ServiceConfig) {
-    cfg.service(spa_root).service(spa_index_html);
+// ── The deep-link fallback ────────────────────────────────────────────────────
+//
+// A single-page application has one document and many URLs. `/packages/npm/chalk`
+// exists in the console's router and nowhere on disk, so `actix_files` answered
+// it with `404` — which made every URL RFC 0013 spent eleven phases turning into
+// a destination unusable the moment it was pasted into a fresh tab, reloaded, or
+// bookmarked. The `?version=`, `?q=` and `?page=` work only if the path they hang
+// off resolves at all.
+//
+// The fallback is where an SPA server is most likely to do harm, so it is narrow
+// on purpose. **Serving this document to a package manager would be worse than
+// the 404 it replaces**: a client that asked for a missing artifact and got
+// `200 text/html` gets a parse error, or worse, treats markup as a package. Four
+// conditions, each of which can only make the fallback answer less often.
+
+/// Paths this server itself owns. Anything under them must keep answering as it
+/// did — a `404` from the API is an API answer, not a place to put the console.
+///
+/// Enumerated from the routes registered in `crates/web/src/handlers`, and short
+/// by construction: the registry protocols all live under `/proxy/{registry}/…`,
+/// and host-based routing rewrites a registry host's paths into that shape
+/// *before* actix routes them (see `middleware/host_routing.rs`), so a package
+/// manager's request never reaches here under any other prefix.
+const RESERVED_PREFIXES: &[&str] = &[
+    "/api", "/proxy", "/scalar", "/metrics", "/healthz", "/livez",
+];
+
+/// Directories the build owns. A missing hashed asset must stay a `404`: serving
+/// HTML where a `.js` was expected turns a stale cache into a syntax error in the
+/// console rather than a request that plainly failed.
+const ASSET_PREFIXES: &[&str] = &["/assets/", "/fonts/"];
+
+/// Whether this path should be answered with the console's document.
+///
+/// Split out and pure so the decision can be tested exhaustively without a
+/// server: it is the part where being wrong is expensive.
+fn is_console_route(path: &str) -> bool {
+    if RESERVED_PREFIXES
+        .iter()
+        .any(|p| path == *p || path.starts_with(&format!("{p}/")))
+    {
+        return false;
+    }
+    if ASSET_PREFIXES.iter().any(|p| path.starts_with(p)) {
+        return false;
+    }
+    // A single segment carrying a dot is a file someone asked for by name —
+    // `/favicon.ico`, `/logo.svg`, `/robots.txt` — and if it is not on disk the
+    // honest answer is that it is not there. This deliberately does *not* apply
+    // deeper: `/packages/npm/lodash.merge` is a package whose name has a dot in
+    // it, and it is exactly the link this fallback exists to make work.
+    let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    if segments.len() == 1 && segments[0].contains('.') {
+        return false;
+    }
+    true
+}
+
+/// Everything `actix_files` could not resolve.
+///
+/// `GET` only: a `POST` to a path that does not exist is a mistake, and
+/// answering it with a page would hide it. `HEAD` is left to fail for the same
+/// reason it is never used to open a page.
+async fn spa_fallback(req: actix_web::dev::ServiceRequest) -> Result<ServiceResponse, Error> {
+    let (http_req, _payload) = req.into_parts();
+
+    let eligible = http_req.method() == Method::GET && is_console_route(http_req.path());
+    if !eligible {
+        return Ok(ServiceResponse::new(
+            http_req,
+            HttpResponse::NotFound().finish(),
+        ));
+    }
+
+    // The data the document handler takes, read off the request: a
+    // `default_handler` is a service rather than a handler, so there are no
+    // extractors to do it.
+    let (Some(dir), Some(local_svc)) = (
+        http_req.app_data::<web::Data<SpaDir>>().cloned(),
+        http_req
+            .app_data::<web::Data<Arc<LocalRegistryService>>>()
+            .cloned(),
+    ) else {
+        tracing::error!("spa: fallback reached without its app data");
+        return Ok(ServiceResponse::new(
+            http_req,
+            HttpResponse::NotFound().finish(),
+        ));
+    };
+
+    let response = match serve_index(dir, local_svc).await {
+        Ok(ok) => ok.respond_to(&http_req).map_into_boxed_body(),
+        Err(e) => HttpResponse::from_error(e).map_into_boxed_body(),
+    };
+    Ok(ServiceResponse::new(http_req, response))
+}
+
+/// Register the console: its document, then the static files, then the deep-link
+/// fallback behind them.
+///
+/// Order is load-bearing. The two document routes come first because `Files`
+/// mounted at `/` would otherwise answer them off disk with the un-narrowed
+/// policy; the fallback comes last, by construction, because `Files` only calls
+/// it for what it could not resolve itself.
+pub fn configure_spa(cfg: &mut web::ServiceConfig, dir: PathBuf) {
+    cfg.app_data(web::Data::new(SpaDir(dir.clone())))
+        .service(spa_root)
+        .service(spa_index_html)
+        .service(
+            actix_files::Files::new("/", dir)
+                .index_file("index.html")
+                .use_last_modified(true)
+                .default_handler(fn_service(spa_fallback)),
+        );
 }
 
 #[cfg(test)]
@@ -324,5 +436,87 @@ mod tests {
     fn a_policy_without_the_origin_survives_verbatim() {
         let policy = "default-src 'self'; img-src 'self' data:";
         assert_eq!(drop_source(policy, SOCKET_BADGE_ORIGIN), policy);
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::is_console_route;
+
+    /// The links RFC 0013 built. Each of these is a URL somebody pastes.
+    #[test]
+    fn a_console_deep_link_gets_the_document() {
+        for path in [
+            "/",
+            "/packages",
+            "/packages/npm/chalk",
+            "/packages/npm/@babel%2Fcore",
+            "/setup",
+            "/login",
+            "/me/tokens",
+            "/admin/registries",
+            "/tools/access-check",
+        ] {
+            assert!(is_console_route(path), "{path} should reach the console");
+        }
+    }
+
+    /// The one that would be a real defect: a package manager asking for
+    /// something that is not there must be told so, not handed a page.
+    #[test]
+    fn the_servers_own_paths_are_never_the_console() {
+        for path in [
+            "/api",
+            "/api/v1/nope",
+            "/api/v1/explore/packages/npm/chalk",
+            "/proxy/npm1/chalk/-/chalk-5.0.0.tgz",
+            "/proxy",
+            "/scalar",
+            "/metrics",
+            "/healthz",
+            "/livez",
+        ] {
+            assert!(!is_console_route(path), "{path} must not be the console");
+        }
+    }
+
+    /// A prefix match on the string alone would swallow a console route that
+    /// merely starts with the same letters.
+    #[test]
+    fn a_path_that_only_looks_reserved_is_still_the_console() {
+        assert!(is_console_route("/apidocs"));
+        assert!(is_console_route("/proxying"));
+        assert!(is_console_route("/metrics-guide"));
+    }
+
+    /// A stale hashed asset must fail as an asset. Serving HTML where a `.js`
+    /// was expected turns a redeploy into a syntax error in the console.
+    #[test]
+    fn a_missing_build_asset_is_not_the_console() {
+        assert!(!is_console_route("/assets/index-C6HPBRbJ.js"));
+        assert!(!is_console_route("/assets/index-abc.css"));
+        assert!(!is_console_route("/fonts/inter.woff2"));
+    }
+
+    /// Asked for by name at the root: if it is not on disk it is not there.
+    #[test]
+    fn a_root_level_file_is_not_the_console() {
+        for path in [
+            "/favicon.ico",
+            "/logo.svg",
+            "/robots.txt",
+            "/halftone-plate.png",
+        ] {
+            assert!(!is_console_route(path), "{path}");
+        }
+    }
+
+    /// The rule above stops at the root on purpose: npm package names contain
+    /// dots, and `/packages/npm/lodash.merge` is exactly the link this exists
+    /// for.
+    #[test]
+    fn a_package_name_with_a_dot_is_still_a_link() {
+        assert!(is_console_route("/packages/npm/lodash.merge"));
+        assert!(is_console_route("/packages/nuget/System.Text.Json"));
     }
 }

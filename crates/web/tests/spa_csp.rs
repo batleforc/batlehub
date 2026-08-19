@@ -50,14 +50,8 @@ async fn app_with(
 
     let app = actix_web::test::init_service(
         App::new()
-            .app_data(web::Data::new(batlehub_web::SpaDir(path.clone())))
             .app_data(web::Data::new(local_svc))
-            .configure(batlehub_web::configure_spa)
-            .service(
-                actix_files::Files::new("/", &path)
-                    .index_file("index.html")
-                    .use_last_modified(true),
-            ),
+            .configure(|cfg| batlehub_web::configure_spa(cfg, path.clone())),
     )
     .await;
     (dir, app)
@@ -173,4 +167,87 @@ async fn an_asset_is_still_served_by_the_file_service() {
     let js = body_of(&app, "/app.js").await;
 
     assert_eq!(js, "console.log(1)\n");
+}
+
+// ── Deep links ────────────────────────────────────────────────────────────────
+//
+// `is_console_route` is unit-tested exhaustively next to the code. These are
+// about the wiring: that the fallback is actually reached, that it carries the
+// same narrowed policy as the front door, and that the paths it must not answer
+// still fail through the real service stack rather than only in a pure function.
+
+#[actix_web::test]
+async fn a_deep_link_serves_the_console_with_its_narrowed_policy() {
+    let (_dir, app) = app_with(svc_with_badge(false).await).await;
+
+    let html = body_of(&app, "/packages/npm/chalk?version=4.0.2&q=4.0&page=2").await;
+
+    assert!(html.contains("<div id=\"app\">"), "{html}");
+    // The whole point of the fallback: the same document, so the same policy.
+    assert!(!html.contains("badge.socket.dev"), "{html}");
+}
+
+#[actix_web::test]
+async fn a_missing_asset_is_still_a_404() {
+    let (_dir, app) = app_with(svc_with_badge(false).await).await;
+
+    let resp = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/assets/index-deadbeef.js")
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(resp.status(), 404);
+}
+
+/// The failure that would matter: a package manager asking for an artifact this
+/// instance does not have must be told so.
+#[actix_web::test]
+async fn an_unknown_api_path_is_not_answered_with_the_console() {
+    let (_dir, app) = app_with(svc_with_badge(false).await).await;
+
+    for uri in ["/api/v1/nope", "/proxy/npm1/chalk/-/chalk-9.9.9.tgz"] {
+        let resp = call_service(&app, TestRequest::get().uri(uri).to_request()).await;
+        assert_eq!(resp.status(), 404, "{uri}");
+        let body = String::from_utf8(read_body(resp).await.to_vec()).unwrap();
+        assert!(!body.contains("<div id=\"app\">"), "{uri} got the console");
+    }
+}
+
+/// A `POST` to a path that does not exist is a mistake, and a page would hide
+/// it.
+///
+/// The answer is `405` rather than `404` because `actix_files` refuses the
+/// method before it ever consults the fallback — which is the point: the
+/// fallback's own `GET`-only guard is a second lock on a door the file service
+/// already holds shut. What matters is that neither of them answers with a page.
+#[actix_web::test]
+async fn a_post_to_an_unknown_path_is_not_the_console() {
+    let (_dir, app) = app_with(svc_with_badge(false).await).await;
+
+    let resp = call_service(
+        &app,
+        TestRequest::post().uri("/packages/npm/chalk").to_request(),
+    )
+    .await;
+
+    assert_eq!(resp.status(), 405);
+    let body = String::from_utf8(read_body(resp).await.to_vec()).unwrap();
+    assert!(!body.contains("<div id=\"app\">"), "a POST got the console");
+}
+
+/// A file that *is* on disk still comes from the file service — the fallback
+/// only ever sees what `Files` could not resolve.
+#[actix_web::test]
+async fn an_existing_asset_still_wins_over_the_fallback() {
+    let (dir, app) = app_with(svc_with_badge(false).await).await;
+    std::fs::create_dir_all(dir.path().join("assets")).unwrap();
+    std::fs::write(dir.path().join("assets/app.js"), "export const a = 1\n").unwrap();
+
+    assert_eq!(
+        body_of(&app, "/assets/app.js").await,
+        "export const a = 1\n"
+    );
 }
