@@ -253,16 +253,29 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
             .service(batlehub_web::scalar(openapi))
             .configure(move |cfg| {
                 if let Some(ref dir) = static_dir_inner {
-                    // No CSP header here on purpose. It cannot be global — the
-                    // Scalar API-docs page loads its bundle from a CDN, so a
-                    // `script-src 'self'` policy would break `/scalar` — and
-                    // `actix_files::Files` is not a `ServiceFactory`, so it cannot
-                    // be wrapped individually either. The SPA therefore carries
-                    // its own policy in a `<meta http-equiv>` tag, generated at
-                    // build time by `ui/build/csp.ts` so that `connect-src` can
-                    // follow the configured API origin. `frame-ancestors` is
-                    // ignored in meta form, which is why `security_headers()`
-                    // sends `X-Frame-Options: DENY` for every response.
+                    // Still no CSP *header* here, for the two reasons that have
+                    // not changed: it cannot be global — the Scalar API-docs page
+                    // loads its bundle from a CDN, so `script-src 'self'` would
+                    // break `/scalar` — and `actix_files::Files` is not a
+                    // `ServiceFactory`, so it cannot be wrapped individually
+                    // either. The SPA carries its own policy in a
+                    // `<meta http-equiv>` tag, generated at build time by
+                    // `ui/build/csp.ts` so `connect-src` can follow the configured
+                    // API origin. `frame-ancestors` is ignored in meta form, which
+                    // is why `security_headers()` sends `X-Frame-Options: DENY`.
+                    //
+                    // What *is* new: the document itself is served by
+                    // `configure_spa` rather than by `Files`, so the built policy
+                    // can be narrowed to the running config on the way out — see
+                    // `crates/web/src/spa.rs` for why that narrowing can only ever
+                    // subtract. It must be registered **first**: `Files` mounted
+                    // at "/" would otherwise answer `/` and `/index.html` itself,
+                    // straight off disk, and which policy a reader got would
+                    // depend on the URL they arrived by.
+                    cfg.app_data(actix_web::web::Data::new(batlehub_web::SpaDir(
+                        std::path::PathBuf::from(dir),
+                    )));
+                    batlehub_web::configure_spa(cfg);
                     cfg.service(
                         actix_files::Files::new("/", dir)
                             .index_file("index.html")

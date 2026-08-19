@@ -33,7 +33,9 @@
 //!   service alone, because `actix_files::Files` is not a `ServiceFactory` and
 //!   takes no middleware. The SPA therefore declares its own policy in a
 //!   `<meta http-equiv="Content-Security-Policy">` tag, built at build time by
-//!   `ui/build/csp.ts` so `connect-src` can track the configured API origin.
+//!   `ui/build/csp.ts` so `connect-src` can track the configured API origin —
+//!   and *narrowed to the running config* when the document is served, by
+//!   `crate::spa`, which can subtract sources but never add one.
 //!   `frame-ancestors` is ignored in meta form, which is precisely why
 //!   `X-Frame-Options` is sent here for every response.
 //!

@@ -1,3 +1,12 @@
+---
+# The server-configuration reference: 4 100+ words of TOML surface, and it grew
+# past the line when the console's page sizes and its content-security policy
+# became things an operator sets. `docs:structure` asks for this declaration
+# above 4 000 words — not a cap, a sentence someone had to type
+# (RFC 0005-bis §4.5).
+reference: true
+---
+
 # Server configuration
 
 ## Configuration {#configuration}
@@ -239,8 +248,9 @@ image_max_bytes = 2097152   # cap on one proxied image (2 MiB); larger is not se
   there and where it pointed. Rendering it would mean every console page view
   sending a request — with a `Referer` — to a host the package author chose,
   announcing that someone inside your network is reading about this package
-  right now. There is deliberately **no `"allow"`**: the console's CSP is baked
-  into the document at build time, so the setting could only ever produce broken
+  right now. There is deliberately **no `"allow"`**: the console's CSP is built
+  into the document and the server may only ever *narrow* it (see
+  [the console's policy](#csp)), so the setting could only ever produce broken
   images with no error anywhere.
 
   `"proxy"` renders the images, fetched by **this server** and served from this
@@ -412,6 +422,42 @@ whole list now sees at most 100 of them unless it pages; the counts in
 `versions_page` are what tell it there is more. The catalog is unaffected — it
 has always paged, and `packages_per_page` only makes its 20 an operator's number
 instead of a literal.
+:::
+
+---
+
+### The console's content-security policy {#csp}
+
+The console's document carries its own `Content-Security-Policy`, in a
+`<meta http-equiv>` rather than a response header — it must not apply to
+`/scalar`, whose API-docs bundle comes from a CDN, and the static-file service
+cannot carry a header of its own.
+
+The policy is built with the console, and the server **narrows it to your
+configuration** when it serves the document. Narrowing only ever *removes*
+sources; nothing in a config file can add one. Today one source is decided this
+way:
+
+| Source | Kept when |
+| --- | --- |
+| `https://badge.socket.dev` | at least one registry has `[registries.feature_flags] socket_badge` on — which is the default, so it is dropped only when you have turned the badge off everywhere |
+
+That is the difference between what the page *may* load and what it *does*: an
+instance with the badge off everywhere used to ship a document announcing a
+third-party origin it would never call. Turning the flag off now takes it out of
+the policy too, on the next document load — no rebuild, and it follows a hot
+reload.
+
+The document is served with `Cache-Control: no-cache` for this reason: it
+describes an instance whose configuration can change under it. The assets beside
+it are untouched and still served by the file service.
+
+::: info Why the server cannot widen it
+A policy that could grow from config would let a wrong config file open the
+console to an origin the build never allowed. The built policy is the maximum and
+the server owns only subtraction — which is also why a deployment whose
+`index.html` predates this behaviour serves its policy unchanged rather than
+failing.
 :::
 
 ---

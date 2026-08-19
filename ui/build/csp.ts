@@ -23,6 +23,15 @@
  * happen, it only stops one being blocked. An air-gapped instance is in that
  * position by force: the origin is unreachable, and the row falls back to its
  * text.
+ *
+ * Since RFC 0013 phase 12 the two are not merely consistent but connected: the
+ * server narrows this policy to the running config when it serves the document
+ * (`crates/web/src/spa.rs`), so an instance with the badge off everywhere drops
+ * this origin from the policy as well as from the page. That narrowing can only
+ * ever *subtract* — what is built here is the maximum, and nothing in a config
+ * file can widen it. Keep this origin spelled exactly as the Rust constant
+ * `SOCKET_BADGE_ORIGIN`; if the two drift, the narrowing simply stops matching
+ * and the built policy is served intact, which is the safe direction to fail.
  */
 const SOCKET_BADGE_ORIGIN = "https://badge.socket.dev";
 

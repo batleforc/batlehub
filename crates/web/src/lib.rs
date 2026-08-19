@@ -5,6 +5,7 @@ pub mod extractors;
 pub mod handlers;
 pub mod middleware;
 pub mod services;
+pub mod spa;
 
 pub use access::{
     new_access_lock, new_search_lock, AccessConfig, AccessConfigLock, SearchConfigLock,
@@ -461,6 +462,7 @@ pub use middleware::ProxyTrust;
 pub use middleware::RateLimitMiddlewareFactory;
 pub use middleware::RateLimitService;
 pub use middleware::UserBlockMiddlewareFactory;
+pub use spa::{configure_spa, narrow_csp, SpaDir};
 
 #[derive(OpenApi)]
 #[openapi(

@@ -2,12 +2,12 @@
 
 | Field      | Value                                                                                          |
 | ---------- | ---------------------------------------------------------------------------------------------- |
-| Status     | **Accepted** — every phase below is built on `feat/readme` and unmerged; §12 records what each one changed |
+| Status     | **Implemented** — all twelve phases landed; §12 records what each one changed, and §11 O1 records the one decision this RFC reversed against its own first draft |
 | Author     | batleforc                                                                                       |
 | Co-author  | —                                                                                               |
 | Created    | 2026-08-18                                                                                      |
 | Supersedes | —                                                                                               |
-| Touches    | `crates/config`, `crates/core` (readme render/sanitise, hot config), `crates/web` (explore detail/fetch, README, images), `ui`, docs |
+| Touches    | `crates/config`, `crates/core` (readme render/sanitise, hot config), `crates/web` (explore detail/list/fetch, README, images), `ui`, docs |
 
 ---
 
@@ -129,8 +129,15 @@ POST …/fetch (no session) → 401 fetch.unauthenticated, before anything is fe
 - A general download-token mechanism for clients that cannot authenticate; that
   is RFC 0012, and this one only refuses the anonymous case rather than
   replacing it.
-- Making the catalog's own list paginate differently, or touching the admin
-  package table.
+- ~~Making the catalog's own list paginate differently~~ — **crossed, in phase
+  11.** The catalog still pages the way it always did; what changed is that the
+  page *length* stopped being a literal in two places and became
+  `[limits].packages_per_page`. The non-goal was written to keep this RFC off a
+  working list, and sizing it turned out to be the same argument as sizing the
+  version list, one screen over. Recorded here rather than deleted: an RFC that
+  quietly edits its own non-goals is worth less than one that says it changed
+  its mind.
+- Touching the admin package table. That one holds.
 
 ---
 
@@ -266,21 +273,32 @@ wins over the page's own reflexes:
 
 ## 5. Architecture
 
-Three boundaries move, and no new ones appear.
+Four boundaries move, and no new ones appear. The fourth is the one that moved
+*work* rather than a decision: filtering and paging a version list crossed from
+the browser to the endpoint, and two facts that cannot be derived from one page
+— the default selection, and whether a named version exists — went with it.
 
 ```text
 config    registries.readme.remote_image_hosts
+          limits.versions_per_page   default *and* ceiling, one key
+          limits.packages_per_page   the same, for the catalog
              ↓
 core      readme::render      per-image decision: chip or keep
           readme::sanitize    `language-*` on `code`; the image rewrite
           readme::image       image_host_allowed(), the matcher both sides use
+          hot_config          carries both page sizes; hot-reloadable
              ↓
-web       explore/readme      unchanged — the console now asks it for `both`
+web       explore/detail      filters, pages and sorts the version list;
+                              enriches only the rows that survive the slice;
+                              answers default_version / selected_version
+          explore/list        pages the catalog on the operator's number
+          explore/readme      unchanged — the console now asks it for `both`
           explore/image       re-checks the host before dialling
           explore/fetch       401 for an anonymous caller, before the download
              ↓
-ui        PackageCatalog      state ⇄ query string
-          PackageDetailPage   selection, filter, pager, pre-release filter
+ui        PackageCatalog      state ⇄ query string; pager sized by the answer
+          PackageDetailPage   the controls *send*; selection, filter, page and
+                              pre-release mode are query parameters now
           ReadmePanel         two views, Shiki over both
           useShiki            lazy per-language loading; a DOM painter
 ```
@@ -365,7 +383,9 @@ sign in for something signing in will not fix.
 | README source view | Rendered as **text**, through interpolation. It is the one place the bytes must not be parsed, which is also the reason a reader opens it. |
 | Shiki over package text | Tokens to `textContent`; no HTML string is constructed from package bytes anywhere in the client (§6.3). |
 | Anonymous fetch refused | A reduction. The proxy path is untouched: whoever the operator's `anonymous` policy allows still downloads, and still fills the cache as a side effect. What is refused is *causing this instance to go and get something* unattributably. |
-| `img-src` widened to `badge.socket.dev` | **An increase, taken deliberately and against the recommendation in this document's own drafting.** Every package page tells socket.dev which package is being read, at page load rather than on a click. The alternatives were a server-side proxy (which fails air-gapped, where the server cannot reach it either) and dropping the `<img>` for the link. The badge was kept visible. The policy says what the page *may* load; `[registries.feature_flags] socket_badge = false` still says what it *does*. |
+| The version list's new query parameters | `q` is matched in memory against strings this server already assembled — no store is queried with it, and it narrows a list the visibility and RBAC gates have already produced, so it cannot widen what a caller sees. `per_page` is the one that could cost something, which is why `[limits]` bounds it: without a ceiling, `?per_page=100000` is an invitation to build and serialise every version of every package, one request at a time. |
+| `img-src` widened to `badge.socket.dev` | **An increase, taken deliberately and against the recommendation in this document's own drafting.** Every package page tells socket.dev which package is being read, at page load rather than on a click. The alternatives were a server-side proxy (which fails air-gapped, where the server cannot reach it either) and dropping the `<img>` for the link. The badge was kept visible. The policy says what the page *may* load; `socket_badge = false` says what it *does* — and since phase 12 the first follows the second: the server narrows the built policy to the running config when it serves the document, so an instance with the badge off everywhere no longer announces an origin it will never call. |
+| The server rewriting the document's policy | The narrowing can only **subtract**. There is no path from a config value to a new source: the built policy is the maximum, `narrow_csp` owns removal alone, and a unit test asserts the subset property over every directive rather than over a string. A document from a build that predates it is served unchanged rather than failing, and a source spelled differently from the constant is left alone rather than half-edited. |
 
 ---
 
@@ -394,8 +414,17 @@ sign in for something signing in will not fix.
 ## 9. Rollout and compatibility
 
 Nothing here requires an operator to act. `remote_image_hosts` absent is the old
-behaviour; the sanitiser change adds an attribute to rendered output that older
-consoles ignore; the console changes are client-side.
+behaviour, both page-size keys absent are the numbers the two lists already used,
+and the sanitiser change adds an attribute to rendered output that older consoles
+ignore.
+
+The console and the server ship together, and after phase 10 they have to: the
+package page reads `versions_page`, `default_version` and `selected_version` out
+of the answer, and against a server that predates them it would fall back to a
+pager of one page and a selection derived from nothing. This is a repository that
+builds both from one tree and serves the SPA off the same binary, so the coupling
+costs nothing — but it is a coupling, and it did not exist before, when every
+console change here was client-side.
 
 Two behaviours change without a switch, and both are the point of the RFC: an
 anonymous caller can no longer pull, and a package page opens on a release rather
@@ -473,6 +502,14 @@ started deciding what page one is.
   explicit one, and is not echoed back when the package does not have it; a
   pre-release-only package still answers with a row; and `default_version` is
   the newest **held** release rather than the newest that exists.
+- **The policy narrows and only narrows**: the badge origin is dropped when no
+  registry would draw one and kept when one would (including a registry with no
+  flags block, since absent means on); the same document comes back by `/` and
+  by `/index.html`, because `Files` would otherwise answer one of them off disk;
+  it follows a hot config change rather than boot state; assets are untouched; a
+  document with no policy — or one whose `content=` sits on another meta tag — is
+  served verbatim; a lookalike origin is not half-edited; narrowing twice is
+  narrowing once; and no directive ever gains a source.
 - **The catalog pages on the operator's number**: an unconfigured server answers
   20 and says so; a configured one answers that many; asking for more is clamped
   to it and asking for less is honoured; `per_page=0` is still clamped to one row
@@ -498,10 +535,11 @@ started deciding what page one is.
 | --- | --- | --- |
 | O1 | Should the filter and the page live in the URL, like the version? | **Yes — answered against the first draft.** It said *not yet*: a version is a destination someone sends, "page 3 of a filter" is a position in a session. The distinction did not survive contact with a 169-version package, where the position *is* the destination — "the four 4.0.x builds", "the page the 2019 releases are on" — and it was lost to a reload, to the page's own Refresh, and to being pasted to a colleague. It is the same mechanism again, on the catalog's keys: `?q=` and `?page=`. §4.3 records the three precedence rules that fall out of having a second author for the same state. |
 | O2 | Should `remote_image_hosts` default to *deny*? | **No, and this is the uncomfortable one.** Deny-by-default is the better posture and would silently blank the badges of every instance already running `proxy`. The compatible reading ships; a `[registries.readme]` block with `proxy` and no list is a candidate for a config *warning* rather than a changed default. |
-| O6 | Should the console keep its own 25-row page now that the server pages? | **Yes.** The two numbers answer different questions: `[limits].versions_per_page` is how much of a list this server will build for one request, the console's 25 is how many rows fit above the README without turning the page into a table. The console asks for what it draws and reads back what was applied, so an operator who sets the ceiling *below* 25 gets a console that follows rather than one that silently shows a page of the wrong length. |
 | O3 | Should the pre-release toggle's state be shared? | Still no, and no longer for O1's reason. A link naming a pre-release already reveals it, which is the case that matters; the toggle changes what the list *is* rather than where in it you are. If it goes in, it is a third key on the mechanism O1 built. |
 | O4 | Should the README source view be highlighted at all? | Yes — it is a code block, and Shiki paints it without changing a character. It costs the `markdown` grammar chunk, loaded only when someone opens the view. |
-| O5 | Does anything else in the console draw a third-party image? | Unmeasured beyond the socket.dev badge. Worth one pass before the CSP is treated as settled. |
+| O5 | Does anything else in the console draw a third-party image? | Still unmeasured beyond the socket.dev badge — that is a pass over the templates somebody owes this document. What phase 12 changed is the shape of the answer's consequence: the policy is no longer frozen at `pnpm build`, so a source that turns out to be unnecessary can be dropped by configuration rather than by a release. It narrows and never widens, so finding another origin would still be a code change, not a config one. |
+| O6 | Should the console keep its own 25-row page now that the server pages? | **Yes.** The two numbers answer different questions: `[limits].versions_per_page` is how much of a list this server will build for one request, the console's 25 is how many rows fit above the README without turning the page into a table. The console asks for what it draws and reads back what was applied, so an operator who sets the ceiling *below* 25 gets a console that follows rather than one that silently shows a page of the wrong length. |
+| O7 | And should the *catalog* keep one, now that its page size is configurable too? | **No, and the asymmetry is the point.** The version table sits above a README and asks for the 25 rows that fit there; the catalog *is* the list, so the operator's number is the right one and a console asking for its own would make `packages_per_page` inert on the one screen it exists for. Both size their pager from the `per_page` that comes back rather than from what they asked for, which is what makes either choice safe. |
 
 ---
 
@@ -519,6 +557,7 @@ started deciding what page one is.
 | 8 | `remote_image_hosts` end to end | `config/schema/registry.rs`, `hot_config.rs`, `readme/{render,image,mod}.rs`, `explore/image.rs`, `server/hot_config.rs` |
 | 9 | The filter and the page in the URL (§11 O1, reversed) | `PackageDetailPage.vue` — one `syncQuery` for all three keys, the page-1 reset moved onto the gesture, and the jump-to-selection taught to yield to `?page=` and to sit still through a Refresh |
 | 10 | The version list is paged, filtered and sorted **server-side** | `config/schema/mod.rs` (`[limits].versions_per_page`), `core/services/hot_config.rs` (the default constant both crates read), `server/hot_config.rs`, `explore/detail.rs` (the five parameters, `versions_page`, `default_version`, `selected_version`, enrichment moved after the slice, pre-release sort order fixed), `PackageDetailPage.vue` (the controls send; debounce, sequence token, silent refetch) |
+| 12 | The document's CSP is narrowed to the running config | `crates/web/src/spa.rs` (new: the document is served by this rather than by `actix_files`, and `narrow_csp` subtracts), `server_factory.rs` (registered before the file service), `middleware/security_headers.rs`, `ui/build/csp.ts`, `ui/index.html` — the comments that said the policy was frozen at build time |
 | 11 | The catalog's page size is the operator's | `config/schema/mod.rs` (`[limits].packages_per_page`, one validation loop for both keys), `core/services/hot_config.rs`, `server/hot_config.rs`, `explore/list.rs` (the `serde` default 20 replaced by the configured value as default *and* ceiling), `PackageCatalog.vue` (`const perPage` → the server's, read back and cached with the rows) |
 
 ---

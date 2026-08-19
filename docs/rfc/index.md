@@ -13,7 +13,7 @@ is not that a project has never been wrong; it is what it does when it finds
 out.
 
 **Every page here opens with a status banner, and the status is not uniform.**
-Seven of the fifteen below are implemented and eight are not. The banner is
+Eight of the fifteen below are implemented and seven are not. The banner is
 generated from each document's own `Status` field rather than written on the
 page, so it cannot drift from the table it is quoting — an RFC that describes a
 proposal, published under a label saying it shipped, would be a claim about the
@@ -35,7 +35,7 @@ product that is not true.
 | [0009 — Every endpoint the client actually calls](/rfc/0009-protocol-coverage) | Serving the paths each package manager really requests, and two mechanisms so the next invented endpoint fails the build |
 | [0010 — The toolchain layer](/rfc/0010-toolchain-managers) | Proxying the JDK and the Node runtime themselves, not only what they build: SDKMAN and the `nodejs.org/dist` tree as registry kinds, and making a blocked toolchain a refusal rather than a claim |
 | [0012 — Signed URLs for the credential-less request](/rfc/0012-signed-urls-for-terraform) | Letting a client that sends no credential — Terraform's provider archive — download from a registry that is closed to everyone else |
-| [0013 — What the console owes a reader](/rfc/0013-console-answers-for-a-package) | Eleven things the package pages knew and could not act on — a search that survives a click, a version that is a link, a README you can read as source, and the hosts an image may come from |
+| [0013 — What the console owes a reader](/rfc/0013-console-answers-for-a-package) | Eleven things the package pages knew and could not act on — a search that survives a click, a version that is a link, a README you can read as source, the hosts an image may come from, and two lists that page on the operator's numbers rather than on a literal |
 
 0007 and 0008 were deferred behind 0009, and the reason was worth stating plainly:
 0009 found six protocol defects that had all shipped green, and the common cause
