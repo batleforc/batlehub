@@ -51,8 +51,9 @@ task ui:dev:local             # 5174 → API on localhost:8080, for in-pod tools
 cd ui && pnpm run generate    # regenerate TypeScript client from ui/openapi.json
 task dump-spec                # refresh ui/openapi.json from running server
 
-# Fuzz (nightly)
-task fuzz TARGET=fuzz_rbac_evaluate MAX_TIME=30
+# Fuzz
+task fuzz:check                                 # every target compiles — the per-PR CI gate
+task fuzz TARGET=fuzz_rbac_evaluate MAX_TIME=30 # actually fuzz one (nightly)
 ```
 
 ## Architecture
@@ -116,6 +117,9 @@ For **local/hybrid mode**, additionally implement `get_<name>_versions` (and rel
 - **CLI integration tests**: `cli/tests/integration.rs` — builds the CLI binary then invokes it as a subprocess against an in-memory actix-web server (same pattern as the web tests). Uses `env!("CARGO_BIN_EXE_batlehub-cli")` so cargo builds the binary automatically before running. See architecture note below about in-memory store separation.
 - **External integration tests**: `crates/adapters/tests/pg_*.rs`, `s3_storage.rs` — require real Postgres/MinIO (run via `task test:pg-*` / `task test:s3`).
 - **Fuzz targets**: `fuzz/fuzz_targets/` — run with nightly via `task fuzz`.
+  `fuzz/` is a **separate workspace**, so `cargo check/clippy/test --workspace`
+  never compiles it: after changing a type a fuzz target constructs, run
+  `task fuzz:check` (no nightly needed) or CI's `Fuzz targets` job will.
 
 #### CLI test architecture — in-memory store separation
 

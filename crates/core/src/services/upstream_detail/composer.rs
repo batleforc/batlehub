@@ -5,6 +5,7 @@
 //! only its *differences* from the previous one.
 
 use super::{is_prerelease, json, parse_time, UpstreamDetail, UpstreamVersion};
+use crate::entities::MetadataLinks;
 use crate::ports::VersionDocument;
 
 pub(super) fn read(doc: &VersionDocument) -> UpstreamDetail {
@@ -20,6 +21,7 @@ pub(super) fn read(doc: &VersionDocument) -> UpstreamDetail {
     };
 
     let mut versions = Vec::new();
+    let mut links = None;
     for entries in packages.values() {
         let Some(list) = entries.as_array() else {
             continue;
@@ -36,6 +38,20 @@ pub(super) fn read(doc: &VersionDocument) -> UpstreamDetail {
                 .or_else(|| minified.then(|| carried_time.clone()).flatten());
             carried_time = time.clone();
 
+            // The first entry that names one wins, and p2 lists newest first —
+            // so this is the newest release's answer. In the minified encoding
+            // the first entry is the complete one, and a later entry that omits
+            // `source` means "unchanged", which is the same answer.
+            if links.is_none() {
+                links = MetadataLinks::new(
+                    entry
+                        .get("source")
+                        .and_then(|s| s.get("url"))
+                        .and_then(|v| v.as_str()),
+                    entry.get("homepage").and_then(|v| v.as_str()),
+                );
+            }
+
             let Some(version) = entry.get("version").and_then(|v| v.as_str()) else {
                 continue;
             };
@@ -51,5 +67,6 @@ pub(super) fn read(doc: &VersionDocument) -> UpstreamDetail {
     UpstreamDetail {
         versions,
         readmes: Default::default(),
+        links,
     }
 }

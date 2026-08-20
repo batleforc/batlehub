@@ -86,6 +86,27 @@ const selectedVersion = ref<string | null>(null);
  * row rather than `0` or `—`: nobody has downloaded it *through here*, which is
  * not the same as nobody having downloaded it (RFC 0007 §4.2).
  */
+/**
+ * A URL shortened to the part a reader recognises: `github.com/owner/repo`.
+ *
+ * The scheme is noise on every one of these — they are all `https` by the time
+ * the server has finished with them — and a trailing slash makes two links to
+ * the same page look like two pages. The full URL stays in `href`, so hovering
+ * and copying give what was actually declared.
+ *
+ * Falls back to the raw string if `URL` cannot parse it. That should not happen
+ * (the server allow-lists these to http(s)) and it is not a security decision
+ * either way — this is a *label*, and the `href` is what a click follows.
+ */
+function linkLabel(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.host}${parsed.pathname}`.replace(/\/$/, "");
+  } catch {
+    return url;
+  }
+}
+
 function isUpstreamOnly(source: string) {
   return source === "upstream";
 }
@@ -712,6 +733,36 @@ const {
             <span class="text-foreground">{{ data.registry }}</span>
             <span class="px-2 text-border" aria-hidden="true">·</span>
             {{ t("packageDetailPage.knownVersions", unfilteredTotal) }}
+          </p>
+          <!-- The package's own links, when its metadata declared any. Absent
+               rather than disabled when it did not: a greyed-out "Source code"
+               on a package that never named a repository states a fact we do not
+               have. The server has already normalised and allow-listed these to
+               http(s) — see `PackageLinksDto`. -->
+          <p
+            v-if="data.links?.repository || data.links?.homepage"
+            class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm"
+          >
+            <a
+              v-if="data.links?.repository"
+              :href="data.links.repository"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="inline-flex items-center gap-1 underline underline-offset-2 [overflow-wrap:anywhere]"
+            >
+              {{ t("packageDetailPage.sourceCode") }}
+              <span class="text-muted-foreground">{{ linkLabel(data.links.repository) }}</span>
+            </a>
+            <a
+              v-if="data.links?.homepage"
+              :href="data.links.homepage"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="inline-flex items-center gap-1 underline underline-offset-2 [overflow-wrap:anywhere]"
+            >
+              {{ t("packageDetailPage.homepage") }}
+              <span class="text-muted-foreground">{{ linkLabel(data.links.homepage) }}</span>
+            </a>
           </p>
         </div>
         <Button variant="outline" size="sm" @click="fetchDetail">

@@ -22,7 +22,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 
-use crate::entities::{MetadataReadme, RegistryKind};
+use crate::entities::{MetadataLinks, MetadataReadme, RegistryKind};
 use crate::ports::VersionDocument;
 
 pub use coordinator::UpstreamDetailCoordinator;
@@ -81,6 +81,24 @@ pub struct UpstreamDetail {
     /// Per-version READMEs, for the kinds whose listing document carries the
     /// text: npm's packument does, a cargo sparse index does not.
     pub readmes: HashMap<String, MetadataReadme>,
+    /// The package's own links, for the kinds whose listing document carries
+    /// them — npm's packument and Composer's p2 metadata, and no others.
+    ///
+    /// **Package-level, not per-version.** The precise answer is the selected
+    /// version's own entry in the metadata cache, and the page prefers it when
+    /// it is there; this is the answer that is *always* there, because the page
+    /// has already read this document to build its version table. Without it the
+    /// link depended on a `meta:` entry that no request the page itself makes
+    /// ever writes for npm — and that expires after `metadata_ttl` for the kinds
+    /// where the README panel happens to write it, so the block appeared or not
+    /// depending on what had been read in the last five minutes.
+    ///
+    /// `None` for the kinds whose listing genuinely says nothing about a
+    /// repository: a cargo sparse index, a NuGet flat index, a PEP 691 simple
+    /// page, `maven-metadata.xml`, `@v/list`, the RubyGems versions array and
+    /// the Terraform version lists all carry versions and nothing else. Those
+    /// keep answering from the metadata cache alone.
+    pub links: Option<MetadataLinks>,
 }
 
 /// Read `doc` as `kind`'s listing document.
@@ -134,6 +152,56 @@ pub fn listing_carries_readmes(kind: RegistryKind) -> bool {
         | RegistryKind::Goproxy
         | RegistryKind::Maven
         | RegistryKind::Composer
+        | RegistryKind::Rubygems
+        | RegistryKind::Terraform
+        | RegistryKind::Conda
+        | RegistryKind::Openvsx
+        | RegistryKind::VscodeMarketplace
+        | RegistryKind::JetbrainsMarketplace
+        | RegistryKind::Github
+        | RegistryKind::Gitlab
+        | RegistryKind::Forgejo
+        | RegistryKind::Deb
+        | RegistryKind::Rpm
+        | RegistryKind::Pacman
+        | RegistryKind::Jetbrains
+        | RegistryKind::Generic => false,
+    }
+}
+
+/// Whether this kind's *listing* document is also where its links live.
+///
+/// The sibling of [`listing_carries_readmes`], asked for the same reason and
+/// answered by the same rule: a `true` here means the page has already seen
+/// everything the upstream will say about the repository, so a package that
+/// declared none is *known* to have declared none and a per-version resolve
+/// would re-read the document it just read.
+///
+/// A `false` means the answer is in a document the page has not fetched — the
+/// crates.io API record, `/pypi/{name}/{version}/json`, the POM, the gallery's
+/// per-extension query — and is worth one resolve for the **one version
+/// selected**, cached afterwards for the registry's `metadata_ttl`.
+///
+/// The cost of `true` on a kind whose listing is incomplete: an npm package that
+/// declared a repository on an *older* version and none at the root shows no
+/// link. That is accepted — the alternative is an upstream request on every page
+/// view of every package that legitimately declares nothing, which is the
+/// common case and the one this predicate exists to keep free.
+///
+/// Exhaustive with no wildcard arm, for the same reason as its sibling.
+pub fn listing_carries_links(kind: RegistryKind) -> bool {
+    match kind {
+        // The packument's root and its `dist-tags.latest` entry, and Composer's
+        // p2 entries — read by `npm::read` and `composer::read` into
+        // [`UpstreamDetail::links`].
+        RegistryKind::Npm | RegistryKind::Composer => true,
+        // Version lists and nothing else. See each reader's own `links: None`
+        // for which document does carry the answer.
+        RegistryKind::Pypi
+        | RegistryKind::Cargo
+        | RegistryKind::Nuget
+        | RegistryKind::Goproxy
+        | RegistryKind::Maven
         | RegistryKind::Rubygems
         | RegistryKind::Terraform
         | RegistryKind::Conda

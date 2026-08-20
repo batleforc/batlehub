@@ -118,9 +118,19 @@ async fn main() -> Result<()> {
     stores::spawn_db_pool_gauge_sampler(repo.pool());
 
     let storage = setup::initialize_storage(&config, repo.pool()).await?;
-    let (mut auth_providers, oidc_sso_flows) = setup::initialize_auth_providers(&config).await?;
+    let setup::AuthSetup {
+        providers: mut auth_providers,
+        sso_flows: oidc_sso_flows,
+        oidc_provider_names,
+    } = setup::initialize_auth_providers(&config).await?;
     let token_repo = repo.clone() as Arc<dyn UserTokenRepository>;
     setup::add_user_token_provider(&mut auth_providers, token_repo.clone());
+
+    // Postgres-backed rather than Redis: the server always has a database, a
+    // login writes one row and deletes it, and `DELETE … RETURNING` gives the
+    // one-time-use guarantee for free across replicas.
+    let login_states = repo.clone() as Arc<dyn batlehub_core::ports::LoginStateStore>;
+    setup::spawn_login_state_prune(Arc::clone(&login_states));
 
     let cache = stores::create_cache_store(&config, repo.pool()).await?;
     let cargo_index_map = setup::build_initial_cargo_index_map(&config)?;
@@ -415,6 +425,8 @@ async fn main() -> Result<()> {
         vuln_db_map,
         sumdb_map,
         oidc_sso_flows,
+        oidc_provider_names,
+        login_states,
         warming_map,
         eviction_map,
         proxy_metrics,

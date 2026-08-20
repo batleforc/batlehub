@@ -175,6 +175,8 @@ impl LocalProxy {
             registry_map,
             UpstreamMap::default(),
             vec![],
+            batlehub_web::OidcProviderNames::default(),
+            batlehub_adapters::in_memory::InMemoryLoginStateStore::arc(),
             HashMap::new(), // warming_map
             HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),

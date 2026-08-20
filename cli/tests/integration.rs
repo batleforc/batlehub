@@ -245,6 +245,8 @@ impl TestServer {
             registry_map,
             UpstreamMap::default(),
             vec![],
+            batlehub_web::OidcProviderNames::default(),
+            batlehub_adapters::in_memory::InMemoryLoginStateStore::arc(),
             HashMap::new(), // warming_map
             HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
@@ -738,28 +740,25 @@ fn auth_whoami_table_mode() {
     assert!(stdout.contains("static-token"), "stdout: {stdout}");
 }
 
+// Managing personal access tokens takes an interactive OIDC login — creating,
+// listing *and* revoking. `AUTH_TOKEN` here is a static token from config, i.e.
+// a machine credential, and none of the three are open to it. Listing and
+// revoking used to be: a leaked PAT or a copied static token could enumerate its
+// victim's other tokens and revoke them.
+
 #[test]
-fn auth_token_list_empty_json() {
+fn auth_token_list_requires_oidc_fails() {
     let srv = TestServer::start();
-    let (ok, stdout, stderr) = cli_cmd(
+    let (ok, _stdout, stderr) = cli_cmd(
         &["auth", "token", "list", "--json"],
         &srv.base_url(),
         AUTH_TOKEN,
     );
+    assert!(!ok, "token list with a static token session should fail");
     assert!(
-        ok,
-        "auth token list --json should succeed; stderr: {stderr}"
+        stderr.to_lowercase().contains("oidc"),
+        "stderr should mention OIDC, got: {stderr}"
     );
-    let arr: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON array");
-    assert!(arr.is_empty(), "expected empty token list, got: {stdout}");
-}
-
-#[test]
-fn auth_token_list_empty_table() {
-    let srv = TestServer::start();
-    let (ok, stdout, stderr) = cli_cmd(&["auth", "token", "list"], &srv.base_url(), AUTH_TOKEN);
-    assert!(ok, "auth token list should succeed; stderr: {stderr}");
-    assert!(stdout.contains("0 token(s)"), "stdout: {stdout}");
 }
 
 #[test]
@@ -778,7 +777,7 @@ fn auth_token_create_requires_oidc_fails() {
 }
 
 #[test]
-fn auth_token_revoke_not_found_fails() {
+fn auth_token_revoke_requires_oidc_fails() {
     let srv = TestServer::start();
     let id = uuid::Uuid::new_v4().to_string();
     let (ok, _stdout, stderr) = cli_cmd(
@@ -786,10 +785,10 @@ fn auth_token_revoke_not_found_fails() {
         &srv.base_url(),
         AUTH_TOKEN,
     );
-    assert!(!ok, "revoking a non-existent token should fail");
+    assert!(!ok, "token revoke with a static token session should fail");
     assert!(
-        stderr.to_lowercase().contains("not found"),
-        "stderr should mention 'not found', got: {stderr}"
+        stderr.to_lowercase().contains("oidc"),
+        "stderr should mention OIDC, got: {stderr}"
     );
 }
 

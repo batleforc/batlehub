@@ -425,21 +425,6 @@ const absenceMessage = computed(() => {
   font-size: var(--t-meta);
   color: var(--ink-dim);
 }
-/* The chip is an `<a>` when the image has a source worth linking to and the
-   author had not already wrapped it in a link of their own. It should still read
-   as a chip and not as body prose, so the generic link underline comes off — the
-   dashed border is already the affordance, and underlining it too would make a
-   badge row look like a list of footnotes. The hover is what says it is
-   clickable, which is the honest signal: nothing is fetched until you ask. */
-.readme-body :deep(a.readme-stripped-image) {
-  text-decoration: none;
-  cursor: pointer;
-}
-.readme-body :deep(a.readme-stripped-image:hover),
-.readme-body :deep(a.readme-stripped-image:focus-visible) {
-  border-color: var(--rule);
-  color: var(--ink);
-}
 
 /* Under `remote_images = "proxy"` the panel receives real `<img>` tags, pointing
    at this server. It does not know or care which policy produced them — that is

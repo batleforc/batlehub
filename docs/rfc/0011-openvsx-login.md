@@ -7,7 +7,9 @@
 | Co-author  | —                                                                      |
 | Created    | 2026-08-18                                                             |
 | Supersedes | —                                                                      |
-| Touches    | `server` (VSX API auth), `crates/core` (visibility resolution), `crates/adapters` (namespace matcher, PAT groups, migration), `crates/web` (readers API), `ui/` (readers controls), `crates/batlehub-cli` (new), `vscode-ext` (new), `che-code` patch (external), docs |
+| Touches    | `server` (VSX API auth: OIDC, PAT, Kubernetes), `cli/` (**existing** `batlehub-cli`: auth sources, local gallery proxy, TUI credential screen), `vscode-ext` (new), `che-code` patch (external), docs |
+
+Authorization — *which* extensions a caller may see — is [RFC 0011-bis](/rfc/0011-bis-namespace-scoped-visibility). This RFC produces the credential that one reads.
 
 ---
 
@@ -15,14 +17,13 @@
 
 VS Code and its derivatives provide no mechanism to authenticate extension gallery requests: search, query, and `.vsix` download are performed by the editor core, outside the reach of extension APIs. Microsoft's Private Marketplace (2025) authenticates only the service-index discovery request and gates access on GitHub Enterprise/Entra accounts — unusable for Batlehub.
 
-This RFC introduces four cooperating components so the Batlehub VSX registry can require authentication end to end:
+This RFC introduces five cooperating components so the Batlehub VSX registry can require authentication end to end:
 
-1. A **Batlehub CLI** owning credential acquisition and refresh (OAuth2 PKCE against the IDP, plus PAT support).
-2. A **JSON token contract file** under `$HOME`, written by the CLI/extension, read by the editor.
+1. The **Batlehub CLI** — already shipped as `cli/` — owning credential acquisition and refresh: OAuth2 PKCE against the IDP, PATs, and the workspace pod's own Kubernetes service account token (§4.5).
+2. A **JSON contract file** under `$HOME`, written by the CLI, read by other consumers — carrying either a credential or a pointer to where one lives (§4.1).
 3. A **che-code patch** injecting an `Authorization` header on gallery requests, generic enough to be proposed upstream to `che-incubator/che-code`.
-4. A **VS Code extension** (`batlehub-vsx`) acting as token broker when the patch is present, and as a fallback marketplace UI when it is not.
-
-Authentication is the means, not the end. The end is that **an extension is visible to the teams it belongs to and to nobody else**, in the editor's own Extensions view — team `digital` sees its proprietary extensions, team `sales` sees its own, team `ops` shares a selected set with both. §4.4 defines that authorization model; it is what the credential is *for*.
+4. A **local gallery proxy** (`batlehub proxy serve`, §4.4) — a loopback server run by the user's own CLI, for editors whose core we do not build. It holds the credential so the editor never does, and it turns an unauthenticated first start into a sign-in entry in the editor's own Extensions view instead of an empty one.
+5. A **VS Code extension** (`batlehub-vsx`) acting as token broker, and as a fallback marketplace UI for builds whose gallery URL cannot be repointed.
 
 ### Before / after
 
@@ -33,13 +34,13 @@ registry exposes every hosted extension. che-code / VS Code cannot send
 credentials to a custom gallery.
 
 # with this RFC
-VSX endpoints require a Bearer credential (OIDC access token or bh_pat_*).
-Patched che-code reads the contract file and authenticates natively;
-stock VS Code gets an authenticated marketplace view via the extension.
-The credential carries the caller's groups, so the gallery answers with
-that caller's extensions: digital sees digital + what ops shares, sales
-sees sales + what ops shares, neither sees the other. Same URL, same
-Extensions view, different contents — filtered server-side.
+VSX endpoints require a Bearer credential — an OIDC access token, a bh_pat_*,
+or a Kubernetes service account token minted for the Batlehub audience.
+Patched che-code reads the contract file and authenticates natively. Editors
+whose core we do not build point at a loopback proxy the CLI runs, and the
+credential never enters the editor process. A workspace pod signs in with no
+interaction at all. A user with no credential opens the Extensions view and
+finds a "Sign in to Batlehub" entry, not an error.
 ```
 
 ---
@@ -48,9 +49,9 @@ Extensions view, different contents — filtered server-side.
 
 1. **The VSX registry cannot stay anonymous.** Network-level isolation (ClusterIP + NetworkPolicy) was rejected for security reasons, so authentication must happen at the application layer — but `extensionGalleryService` in the editor core offers no credential hook.
 2. **Upstream will not solve it.** The VS Code Private Marketplace presents a bearer token only on service-index discovery; search/query/download stay unauthenticated, and access is tied to GitHub Enterprise/Copilot accounts.
-3. **Credentials must be shared across registries.** Batlehub serves (or will serve) multiple package protocols; a per-tool credential story does not scale. A CLI as single credential authority mutualises login, refresh, and storage for VSX today and npm/cargo/OCI later.
-4. **A single tenant is not the deployment.** The estate has teams with proprietary extensions (`digital`, `sales`) and teams that publish for everyone or for a named subset (`ops`). An authenticated-but-flat registry answers "may you read the gallery", when the question is "which extensions are yours". Without per-namespace visibility, authentication only moves the leak from anonymous to any-employee: every extension of every team stays readable by every other team.
-5. **The mechanism already exists — for every ecosystem but this one.** `Visibility::{Public,Internal,Team}` (`crates/core/src/entities/local_package.rs`), team namespace claims (`crates/core/src/entities/team_namespace.rs`), the download gate `check_visibility`, and the SQL listing predicate `LOCAL_VISIBILITY_PREDICATE` are shipped and tested. The VSX gallery already threads the caller's `Identity` into search and skips packages the caller may not see. What is missing is three concrete gaps (§4.4.1), not a new subsystem.
+3. **Credentials must be shared across registries.** Batlehub serves (or will serve) multiple package protocols; a per-tool credential story does not scale. One CLI as credential authority mutualises login, refresh, and storage for VSX today and npm/cargo/OCI later.
+4. **A first run with no credential must not look like an outage.** The editor's only vocabulary for a gallery failure is an empty view and a generic toast. If the answer to "you are not signed in" is a `401`, the user's experience of authentication landing is that extensions stopped working. The sign-in path has to live inside the protocol the editor already speaks.
+5. **Authentication without scoping is only half a fix.** An authenticated-but-flat registry moves the leak from anonymous to any-employee. The other half is [RFC 0011-bis](/rfc/0011-bis-namespace-scoped-visibility), which this RFC's credentials feed: every credential here resolves to `Identity.groups`, and that is what decides which extensions come back.
 
 ---
 
@@ -58,31 +59,28 @@ Extensions view, different contents — filtered server-side.
 
 **Goals**
 
-- Authenticated search, metadata, and `.vsix` download from both patched che-code and stock VS Code/VSCodium.
-- OIDC access/refresh pairs and Batlehub PATs accepted interchangeably by the server.
-- **Namespace-scoped extension visibility**: an extension published under a team's namespace is listed, searchable, and downloadable only by that team, plus any group the namespace or the extension explicitly grants read to.
-- **Filtering server-side, in the documents every UI renders from**: the editor's native Extensions view, the fallback marketplace view, the OpenVSX REST documents, and the Batlehub catalogue all show the same thing — what the caller may see — because none of them does the filtering itself.
+- Authenticated search, metadata, and `.vsix` download from patched che-code, from VSCodium-family builds, and from stock VS Code.
+- OIDC access/refresh pairs, Batlehub PATs, and Kubernetes service account tokens accepted interchangeably by the server, dispatched on their own issuer.
+- **A workspace pod that authenticates with no user interaction**, from the identity Kubernetes already gives it — no browser, no device code, no provisioned secret.
+- **An unauthenticated editor that says so where the user is looking.** No blank Extensions view, no generic failure toast: a sign-in entry in the gallery response itself.
 - A che-code patch with zero Batlehub-specific coupling, upstreamable as-is.
-- One extension covering both modes (silent broker / fallback marketplace) with automatic detection.
 - All client-side paths dynamic, resolved relative to `$HOME`.
 
 **Non-goals**
 
 - Authenticating the official marketplace or open-vsx.org — out of Batlehub's control.
+- **Repointing a gallery we cannot configure.** `extensionsGallery.serviceUrl` lives in `product.json` and stock VS Code offers no environment or settings override. Editing that file works (§4.4.4 did it) but is overwritten by updates and is not a configuration we can ship. Builds whose gallery URL is fixed are served by the fallback marketplace (§6.5).
 - Extension publishing flows — already covered by OpenVSX PAT publishing.
-- **Per-*version* visibility.** Visibility is a property of the package name and applies to all versions at once, as `TeamNamespacePort` already documents. Withdrawing one version is yank/block, not visibility.
-- **Per-*user* grants.** Grants name auth-provider groups, never individuals. A one-person grant is a one-person group at the IDP.
-- **Visibility on proxied upstream extensions.** Only locally published packages carry a visibility row; an extension mirrored from open-vsx.org is public upstream, and pretending otherwise would be theatre. Registry-level RBAC remains the gate there.
-- **Client-side filtering as a security boundary.** The fallback marketplace may sort and group, but it never receives an entry it is expected to hide.
-- OS keychain storage in the CLI — Che pods have no keychain; file-based storage first, keychain as later enhancement.
+- **Deciding which extensions a caller may see.** That is RFC 0011-bis. This RFC stops at producing an `Identity` with groups.
+- **An OS keychain implementation.** Che pods have no keychain, so v1 is file- and pointer-based. The name `keychain` is reserved as a token source (§4.1.2) so it does not arrive later as a second mechanism.
 
 ---
 
-## 4. User-facing design
+## 4. Design
 
-### 4.1 Configuration
+### 4.1 The contract file
 
-Contract file — `$BATLEHUB_HOME/state/vsx-token.json`, where `BATLEHUB_HOME` defaults to `$HOME/.batlehub`:
+`$BATLEHUB_HOME/state/vsx-token.json`, where `BATLEHUB_HOME` defaults to `$HOME/.batlehub`:
 
 ```json
 {
@@ -91,15 +89,78 @@ Contract file — `$BATLEHUB_HOME/state/vsx-token.json`, where `BATLEHUB_HOME` d
     "https://hub.example.dev": {
       "token": "<bearer credential>",
       "kind": "oidc",
-      "expires_at": "2026-08-18T12:00:00Z"
+      "expires_at": "2026-08-18T12:00:00Z",
+      "refresh": { "source": "cli", "owner": "batlehub-cli" }
+    },
+    "https://hub.other.dev": {
+      "token": { "from": "file", "path": "/var/run/secrets/batlehub/token" },
+      "kind": "kubernetes",
+      "refresh": { "source": "reresolve" }
     }
   }
 }
 ```
 
 - `registries` is keyed by origin; the consumer selects the entry matching the configured gallery origin. One file serves every future registry protocol.
-- `kind` is `"oidc"` or `"pat"`; `expires_at` is optional and absent for PATs. Absent `expires_at` means "treat as non-expiring"; an empty `registries` map is valid and means "no credentials yet".
-- `token` is the raw credential; the consumer never interprets it beyond placing it in the header.
+- `kind` is `"oidc"`, `"pat"` or `"kubernetes"`; `expires_at` is optional and absent for PATs. Absent `expires_at` means "treat as non-expiring"; an empty `registries` map is valid and means "no credentials yet".
+- `token` is either the raw credential as a string, or a **source** describing where to get it (§4.1.2). A consumer never interprets the resolved value beyond placing it in the header.
+- **Consumers ignore fields they do not know, and preserve them on rewrite.** `version` moves only when an existing field changes meaning or disappears; adding one is not a break.
+- **The normative schema is a JSON Schema shipped beside the CLI**, not this section. Four refresh sources times six token sources with one level of nesting is more than prose keeps honest, and the CLI's validation tests run against the schema so the two cannot drift.
+
+#### 4.1.1 The `refresh` block
+
+`refresh` answers one question, and the question is not "what is the refresh token": it is **"when this `token` expires, how does a fresh one appear, and who is allowed to make it appear?"** A consumer that cannot answer it has exactly two behaviours available on expiry — fail, or send the user back through a full login — and both are worse than the truth.
+
+| `source` | Meaning | Other fields |
+| --- | --- | --- |
+| `"cli"` | Refresh material lives in the CLI's own profile store — `~/.config/batlehub/config.toml`, already `0600`, already holding `oidc_refresh_token` / `oidc_expires_at` / `oidc_provider`. The consumer invokes `batlehub auth token` (§4.2 chain step 3) or waits for the owner to rewrite the file | `owner` |
+| `"reresolve"` | There is no refresh token: resolving `token` again yields a fresh one, because something else keeps it fresh. The kubelet rotating a projected token (§4.5) is the reference case; an `exchange` source that can simply be re-run is the other | — |
+| `"inline"` | The refresh token is in this file, with what is needed to redeem it. **The fallback for a consumer with no secret store**, never the default | `token`, `endpoint`, `client_id`, `scope`, optional `expires_at` |
+| `"none"`, or the block absent | Nothing to refresh — a PAT, or an OIDC login without `offline_access`. On expiry the answer is a new login (§4.4.2) | — |
+
+Three rules make this safe, and they are rules rather than recommendations:
+
+1. **Inline is a fallback, not a format.** A writer with a secret store uses it — the CLI's profile store, the extension's `SecretStorage` (§4.2 chain step 4), an OS keychain when one lands. `source: "inline"` exists for the consumer that has none, and the CLI never writes it.
+2. **Exactly one refresher per entry, named in `owner`.** Public-client refresh tokens are usually single-use with rotation, and rotation plus two racing refreshers is not a lost update — it is the IDP seeing a replayed refresh token, treating it as a breach, and revoking the whole chain. Both processes then hold nothing. A refresher takes `state/vsx-token.refresh.lock` before redeeming, re-reads the file under the lock, and writes back atomically per §4.2; a consumer whose name is not `owner` never redeems, it waits and re-reads. When the CLI is present it is the owner.
+3. **The patch never reads `refresh`.** Its contract is `token` in, header out. Teaching the editor core to redeem a refresh token means giving it an IDP client id, a token endpoint and a POST — the Batlehub-specific coupling §11 decision 6 exists to keep out of an upstreamable patch. Refresh belongs to brokers: the CLI, the proxy, the extension.
+
+#### 4.1.2 Where the token comes from
+
+A literal `token` means the file **is** the secret, and every place the file goes the secret goes with it. That is the right shape when the CLI just logged in and owns the value, and the wrong shape everywhere the secret already lives somewhere better — an environment variable a CI system injected, a projected file the kubelet rotates, an STS that will mint one on demand. So `token` accepts either the string, or a source object:
+
+| `from` | Resolves by | Fields | For |
+| --- | --- | --- | --- |
+| `inline` | the literal value | `value` | what the plain string is shorthand for; what the CLI writes after a login |
+| `env` | reading an environment variable | `name` | CI, injected secrets — per registry, unlike the global `VSX_REGISTRY_AUTH_TOKEN` |
+| `file` | reading a file | `path`, optional `format` (`raw`\|`json`) and `pointer` | the projected Kubernetes token (§4.5), a secret mounted by any other operator |
+| `exchange` | RFC 8693 token exchange at an STS | `endpoint`, `audience`, `subject`, `subject_token_type`, optional `client_id`, `scope` | turning an identity you already have into one Batlehub accepts |
+| `keychain` | an OS secret store | `service`, `account` | reserved; not implemented in v1 (§3), named now so it does not arrive as a second mechanism |
+
+`subject` is itself a source, nested one level and no deeper, which is what makes `exchange` worth having:
+
+```json
+"token": {
+  "from": "exchange",
+  "endpoint": "https://idp.example.dev/realms/batlehub/protocol/openid-connect/token",
+  "audience": "batlehub",
+  "subject": { "from": "file", "path": "/var/run/secrets/kubernetes.io/serviceaccount/token" },
+  "subject_token_type": "urn:ietf:params:oauth:token-type:jwt"
+}
+```
+
+That example is the answer to the deployment that cannot add a projected volume with the Batlehub audience: the pod's own API-server token is presented to an STS **as a subject**, and the STS validates it and mints a Batlehub-audience token. It is not the forwarding §4.5 forbids — the audience is re-established by an issuer, not ignored by a consumer — and it is the only shape in which a cluster-audience token may become a Batlehub credential. The same source with a GitHub Actions OIDC token as subject is how CI authenticates without a stored secret.
+
+**There is no `command` source.** An earlier draft had one, gated behind a deployment flag, as the escape hatch for vault clients and keychain helpers. It is dropped: `env`, `file` and `exchange` cover CI, Kubernetes and STS between them, `keychain` is reserved for the remaining case, and a program name in a file that an operator or a workspace template may author turns write access to that file into code execution in the editor's own process. A capability that large should not be in v1 to serve a case that has a narrower answer.
+
+Five rules, in the order a reviewer should check them:
+
+1. **A source is not more trusted than the file it came from.** `exchange.endpoint` is the one field a consumer *acts* on rather than reads. A contract file is now something an operator or a workspace template may author, not only something the CLI generates, so the endpoint is checked against the configured trusted issuer/STS set before use, and never taken on the file's word. This is the same rule already stated for `refresh.endpoint`, and it is one rule, not two.
+2. **The patch understands the literal string and nothing else.** It cannot read another process's environment, should not open a second file, and must not POST anything (§4.1.1 rule 3, decision 6). Anything but a string reads as "no credential", and the patch falls through to `VSX_REGISTRY_AUTH_TOKEN`. Sources are for brokers — the proxy, the extension, the CLI — which is also why the proxy makes them worth having: it resolves, the editor never sees the result.
+3. **Failure to resolve is "no credential", never an error.** A missing variable, an absent file, an STS that refuses — all of them mean the same thing to the editor, and what the editor gets is §4.4.2's sign-in entry, not a stack trace. The reason is logged once, at the broker, with the source named and the value absent.
+4. **An unknown `from` reads as "no credential" and warns once.** That is what lets a later source be added without a `version` bump — but the safe direction, since guessing at an unknown source is how a consumer would end up sending the wrong thing.
+5. **A resolved secret is never written back into the file.** The whole point of `env`, `file` and `exchange` is that the credential is not at rest here; a broker that caches a resolved token caches it in memory, until `expires_at` or a short TTL, and re-resolves rather than materialising. `file` resolution additionally requires an absolute path to a regular file, caps the read, and warns when the mode is group- or world-readable — the file is a credential now, and it should be told so.
+
+#### 4.1.3 Environment and commands
 
 Environment variables (consumer side, i.e. the che-code patch):
 
@@ -109,223 +170,636 @@ VSX_REGISTRY_AUTH_TOKEN      = <token>  # inline credential, lowest precedence, 
 VSX_REGISTRY_AUTH_SUPPORT    = 1        # advertised by patched builds (see 4.2)
 ```
 
-CLI commands:
+CLI commands. **`batlehub-cli` exists** (`cli/`, clap + a ratatui TUI) and already ships `auth login/logout/whoami/refresh`, `auth token list|create|revoke`, `config init|show|set` over `~/.config/batlehub/config.toml` profiles at `0600`, and `setup`. Everything below is an extension of that surface, not a new tool — `+` marks what this RFC adds:
 
 ```
-batlehub auth login [--pat | --oidc] [--registry <url>]   # PKCE (loopback or device code) or PAT entry
-batlehub auth token [--output raw|json] [--min-ttl <dur>] # print a valid credential, refresh if < min-ttl (default 60s)
-batlehub auth write-token-file [--path <p>]               # refresh if needed, atomically update the contract file
-batlehub auth logout                                      # revoke refresh token, delete credentials + contract entry
-batlehub pat create --scope vsx:read [--ttl <dur>]        # PAT management
-                    [--groups <g1,g2> | --all-groups]     # group snapshot, subset of the creator's own (4.4.4)
+  batlehub auth login [--pat | --oidc] [--registry <url>]   # shipped: PKCE / PAT entry
+  batlehub auth login --kubernetes-token-path <p>           # shipped: SA token file, read fresh per request
++ batlehub auth login --kubernetes [--audience <aud>]       # 4.5: audience-aware, auto-detected in a pod
++ batlehub auth login --kubeconfig [--context <c>] --service-account <ns/sa> [--audience <aud>]
+                                                            # mints via TokenRequest; never forwards the kubeconfig token
++ batlehub auth token [--output raw|json] [--min-ttl <dur>] # print a valid credential, refresh under min-ttl
++ batlehub auth write-token-file [--path <p>]               # refresh if needed, atomically update the contract file
+  batlehub auth logout                                      # shipped; also clears the contract entry
+  batlehub auth token create --name <n> --days <d>          # shipped PAT creation
++                            [--scope vsx:read]             # groups on a PAT are RFC 0011-bis
 
-batlehub ns readers <registry>/<prefix> [--set <g1,g2>]   # namespace default readers
-batlehub pkg readers <registry>/<name>  [--set <g1,g2> | --inherit]   # per-extension override
++ batlehub auth status [--json]                             # 4.6: one screen, every registry, does it resolve
++ batlehub auth source show|set|clear <registry>            # 4.6: author a token source without editing JSON
++                   --from env|file|exchange|inline …
++ batlehub auth doctor [--registry <url>] [--json]          # 4.6: resolve, reach the server, check the editor
+
++ batlehub proxy serve [--registry <url>] [--bind 127.0.0.1:0]  # local gallery proxy (4.4)
++                      [--print-gallery-url]                    # capability URL for the editor's product.json
++ batlehub proxy status [--json]                                # is it up, which entry, whose credential
 ```
 
-CLI storage: refresh tokens and PATs in `$BATLEHUB_HOME/credentials.toml`, `0600`.
+`auth login` with no mode flag selects `--kubernetes` when `KUBERNETES_SERVICE_HOST` is set and a token for the configured audience is mounted, and `--oidc` otherwise. A workspace image therefore ships one command in its startup script and it is right in both a pod and a laptop.
+
+**CLI storage is the shipped profile store**, not a new file: `~/.config/batlehub/config.toml`, `0600`, which already holds `token`, `oidc_refresh_token`, `oidc_expires_at`, `oidc_provider` and `kubernetes_token_path` per profile. This RFC adds no second credential store. The contract file remains separate because it has a different job: it is the *consumer* contract, read by processes that are not the CLI. `--min-ttl` aligns with the shipped `is_token_expiring_soon()` threshold of 120 s rather than introducing a second freshness rule.
 
 ### 4.2 Behaviour rules
 
-- **Contract file writes are atomic**: temp file + rename, `0600`, parent dirs `0700`. Writers update only their registry's entry, preserving others (read-modify-write).
-- **Consumer resolution order** (patch): `VSX_REGISTRY_AUTH_TOKEN_FILE` → default contract path → `VSX_REGISTRY_AUTH_TOKEN`. First source yielding a credential for the gallery origin wins.
-- **Extension credential chain** (both modes, first hit wins):
-  1. Contract file, if it holds a still-valid entry for the registry.
+- **Contract file writes are atomic**: temp file + rename, `0600`, parent dirs `0700`. Writers update only their registry's entry, preserving others and preserving unknown fields (read-modify-write).
+- **A refresh is a read-modify-write under the lock, by the entry's `owner` only** (§4.1.1). Redeem, then rewrite `token`, `expires_at` and — where the IDP rotated it — the inline refresh token, in one atomic write.
+- **An expired entry is not a deleted entry.** A consumer that cannot refresh leaves the entry in place and reports "expired", so the owner can still refresh it and so the user is not silently logged out of every registry by whichever process noticed first.
+- **Consumer resolution order** (patch): `VSX_REGISTRY_AUTH_TOKEN_FILE` → default contract path → `VSX_REGISTRY_AUTH_TOKEN`. First source yielding a credential for the gallery origin wins. In the file, the patch reads a literal `token` string only.
+- **Extension credential chain** (first hit wins):
+  1. Contract file, if it holds a still-valid entry — or an expired one the extension owns and can refresh itself (§4.1.1).
   2. `BATLEHUB_TOKEN` environment variable (CI / injected secrets).
   3. Batlehub CLI if on `PATH`: `batlehub auth token --output raw`.
   4. Interactive OAuth2 PKCE via a registered `AuthenticationProvider`; refresh token in `SecretStorage`; access tokens written back to the contract file.
   5. Manual PAT entry (input box), stored in `SecretStorage` and written to the contract file.
 - **Header scoping**: the patch injects `Authorization: Bearer <credential>` only when the request URL origin equals the configured gallery origin; redirects to foreign origins drop the header.
 - **401 handling**: on `401`, the patch re-reads the credential source once and retries the request a single time. Short-lived OIDC tokens work without file watchers or IPC — the broker refreshes the file, the retry picks it up.
-- **Mode detection** (extension, at activation): `vsxRegistryAuthSupport: true` in `product.json` or `VSX_REGISTRY_AUTH_SUPPORT=1` → broker mode (keep the contract file fresh, status-bar auth state only). Otherwise → fallback marketplace mode (custom view, authenticated search/download, install via `workbench.extensions.installExtension`, manual `extensionDependencies`/`extensionPack` resolution depth-first and cycle-guarded, daily update diff against the registry).
-- **Server dispatch**: credentials with prefix `bh_pat_` are validated as PATs (argon2id hashed lookup, scope check `vsx:read`); anything else is validated as a JWT against the IDP JWKS (issuer, audience `batlehub`, expiry). Unauthenticated requests get `401` + `WWW-Authenticate: Bearer realm="batlehub"`.
-- **Every credential resolves to groups, not just to a role.** `vsx:read` is the capability to talk to the gallery at all; *which* extensions come back is decided by the `Identity.groups` the credential carries (§4.4). A JWT gets them from the existing OIDC rule engine; a PAT gets them from the group snapshot taken at creation (§4.4.4). A credential with no groups sees `public` and `internal` extensions only — never a `team` one.
+- **Mode detection** (extension, at activation): `vsxRegistryAuthSupport: true` in `product.json` or `VSX_REGISTRY_AUTH_SUPPORT=1` → broker mode. Otherwise → fallback marketplace mode.
+- **Server dispatch is the existing provider chain**, not a new one: the auth middleware already iterates `Vec<Arc<dyn AuthProvider>>` and takes the first `Identity`. `bh_pat_` is a PAT (argon2id lookup, scope check `vsx:read`); a JWT-shaped credential reaches the OIDC and Kubernetes providers, each of which asserts its own audience; anything a provider cannot recognise is passed on untouched rather than forwarded to it — which is how a PAT stays out of the control plane's request logs (§4.5). What this RFC adds is that the VSX routes go through that chain at all. Unauthenticated requests get `401` + `WWW-Authenticate: Bearer realm="batlehub"`.
+- **The local proxy never returns `401` to the editor** (§4.4.2). It is the client, not the server, of the authenticated hop: it resolves the credential, refreshes it, retries once itself, and represents the outcome as gallery content.
+- **Every credential resolves to groups, not just to a role.** `vsx:read` is the capability to talk to the gallery at all; *which* extensions come back is RFC 0011-bis, decided by the `Identity.groups` the credential carries. A credential with no groups sees `public` and `internal` extensions only.
 
 ### 4.3 Validation
 
-`AppConfig::validate()` rejects:
+Two different programs validate two different things, and an earlier draft conflated them in one table.
+
+**Server, at config load — `AppConfig::validate()` rejects:**
 
 | Condition | Rationale |
 | --------- | --------- |
-| VSX auth enabled without an OIDC issuer URL and without PAT support enabled | No validation path could ever succeed; every request would 401 |
+| VSX auth enabled without an OIDC issuer URL, without PAT support, and without a Kubernetes issuer | No validation path could ever succeed; every request would 401 |
 | Configured JWKS audience empty while OIDC validation enabled | Tokens for any audience would be accepted — confused-deputy risk |
-| A registry declares a namespace separator that is not a single ASCII character | The matcher and the SQL predicate must agree character for character (§4.4.2); anything else is a divergence waiting to happen |
+| A `type = "kubernetes"` provider with an empty `audiences` | Nothing could be confirmed bound, so nothing would authenticate — and an implementation that "helpfully" accepted an empty echo would accept every pod's API-server token (§4.5) |
+| A `type = "kubernetes"` provider whose `audiences` contains the cluster API's own | The one value that must never be asked for, stated as a rejection rather than left to the operator to notice |
 
-Warnings (logged and surfaced to the admin):
+**Server warnings** (logged and surfaced to the admin):
 
 | Condition | Behaviour |
 | --------- | --------- |
-| OIDC access-token TTL at the IDP reported/configured below 10 min | Warn: long `.vsix` downloads may outlive the token; 401-retry covers one rotation only |
-| PAT created without TTL | Warn at creation time; PAT is valid but flagged in the admin listing |
-| Reader groups set on a `public` or `internal` package | Warn: the grant is stored but inert until visibility is `team`. Silently accepting it is how an admin concludes a package is restricted when it is not |
-| A namespace's reader list contains its own owner group | Warn and store as-is; it is redundant, not wrong |
-| A grant names a group no auth rule has ever emitted | Warn only. Groups are provider-defined and a team's first member may not have logged in yet — the same reason namespace claims accept unseen groups today |
-| A reader list contains `*`, `@authenticated`, `all` or another wildcard-shaped entry | Warn: it is stored and matched as a literal group id, because there are no wildcards (§4.4.3). The admin meant `internal` visibility, and this is the moment to say so — the alternative is discovering it during an access review |
+| OIDC access-token TTL at the IDP reported/configured below 10 min | Warn: long `.vsix` downloads may outlive the token; the patch's 401-retry covers one rotation only. Does not apply behind the proxy (§4.4) |
+| TokenReview caching disabled while VSX auth is enabled | Warn: `extensionquery` runs on every editor start, so every start becomes an API-server round trip (§4.5.1) |
+| A `type = "kubernetes"` provider with no `role_mappings` | Warn: every service account authenticates as `Anonymous` and its groups are all provider-prefixed, so it sees `public`/`internal` only. That is the safe default, and it is also exactly what "my team's extensions are missing" looks like |
 
-Client side: the CLI validates the contract file on write (schema version, origin is a valid URL, `expires_at` RFC 3339). The patch treats an unparseable file as "no credential" and logs once — it must never break extension installs for anonymous galleries.
+**Client, on writing or reading the contract file** — the CLI and every broker:
 
-### 4.4 Namespace-scoped extension visibility
+| Condition | Behaviour |
+| --------- | --------- |
+| Schema violation (version, origin not a URL, `expires_at` not RFC 3339, required fields per `from`, `subject` nested more than one level, relative `path`) | Refused on write; read as "no credential". A malformed file must never become a token request against an attacker-named `endpoint` |
+| `kind: "pat"` with a `refresh` block other than `"none"` | Warn and ignore the block. A PAT has nothing to redeem, and a file that claims otherwise is a writer bug worth surfacing |
+| `refresh: "reresolve"` on a `from: "inline"` token | Refused: re-resolving a literal yields the same literal. The entry would silently never refresh |
+| An `inline` refresh block written while the writer has a usable secret store | Warn: it is the fallback, and taking it by default is how a long-lived credential ends up in a file an editor reads (§4.1.1 rule 1) |
+| A `file` token source whose target is group- or world-readable | Warn, naming the mode: the file is a credential now, whoever wrote it may not have meant it to be one |
+| An `exchange` endpoint outside the configured trusted set | Refused, before the request is made, naming where the allowlist lives |
+| Unparseable file | "No credential", logged once. It must never break extension installs for anonymous galleries |
+| `proxy serve` asked to bind a non-loopback address, or to serve without a capability path segment | Startup failure, not a warning: both silently widen who can drive it (§4.4.1) |
 
-The requirement, stated as the estate states it:
+### 4.4 The local gallery proxy
 
-> Team `digital` has extensions proprietary to `digital`. Team `sales` likewise.
-> Team `ops` publishes extensions it wants `digital` and `sales` to have.
-> Everyone sees exactly their own set, in their own editor, without knowing the
-> others exist.
+`batlehub proxy serve` is a loopback HTTP server, run by the user's own CLI process, in front of the Batlehub VSX API. The editor's gallery URL points at it; it attaches the credential the CLI already holds.
 
-#### 4.4.1 What is already there, and the three gaps
+It is not the sidecar rejected in §8. That sidecar was a platform-operated container in the workspace pod, with its own lifetime and its own operational surface, serving whatever else ran alongside it. This is a process with the same uid and the same lifetime as the editor, and it exists for something the patch cannot cover: **it is the only way to authenticate an editor whose core we do not build.**
 
-Reusing the platform's existing model is not an economy measure: a second authorization model for extensions is a second model to keep in agreement with the download gate, and the codebase already carries an explicit warning about what happens when a listing filter and a download gate disagree (`LOCAL_VISIBILITY_PREDICATE`, `crates/adapters/src/db/packages/mod.rs`).
+What it buys beyond convenience:
 
-| Already shipped | Where |
-| --- | --- |
-| `Visibility::{Public,Internal,Team}` per package name | `crates/core/src/entities/local_package.rs` |
-| Namespace claim: `(registry, prefix) → group_id` | `crates/core/src/entities/team_namespace.rs`, admin UI `ui/src/pages/AdminTeamNamespaces.vue` |
-| Download gate `check_visibility` / `check_team_visibility` | `crates/core/src/services/local_registry/` |
-| Listing filter mirroring the gate in SQL | `LOCAL_VISIBILITY_PREDICATE` |
-| Catalogue-side viewer (`is_admin`, `is_authenticated`, `groups`) | `ExploreViewer`, `crates/core/src/entities/explore.rs` |
-| Gallery search already skips what the caller may not see | `get_openvsx_extensions`, `crates/core/src/services/local_registry/eco_openvsx.rs` |
+- **The credential never enters the editor.** The contract file hands a bearer token to a process that runs arbitrary extension code. The proxy hands it nothing.
+- **Token expiry stops being the editor's problem.** The proxy refreshes and retries on its own side of the connection, so the single 401-retry of §4.2 and the ≥ 10 min TTL warning of §4.3 do not apply to a `.vsix` that streams for longer than an access token lives.
+- **It is a place to sign in from** (§4.4.2).
+- **It generalises.** The same process fronts npm, cargo and OCI the day those need credentials, which is motivation 3 realised as an endpoint rather than as a file format.
 
-Three gaps stand between that and the requirement. Each is small and each is load-bearing:
+Two things it does not buy, so reviewers are not told otherwise:
 
-**G1 — PAT identities carry no groups.** `UserTokenAuthProvider` returns `groups: vec![]` (`crates/adapters/src/auth/user_token.rs`), and `UserToken` (`crates/core/src/ports/auth/user_token_repo.rs`) stores `user_id` and `role` only. A `digital` developer whose che-code authenticates with a PAT — the exact flow §4.1 designs — is denied every `team` package, *including their own*. Fixed in §4.4.4.
+- **It does not repoint a gallery.** See the non-goal in §3: `product.json` is the only lever, and it is not one we can ship.
+- **It is a process to supervise.** When the proxy is down the Extensions view is down. That is one more failure mode than a file, and it is the honest price of the four bullets above.
 
-**G2 — the namespace matcher is slash-delimited.** The claim matcher is `package == prefix || package.starts_with("{prefix}/")`, mirrored in SQL as `SUBSTRING(name, 1, LENGTH(prefix)+1) = prefix || '/'`. Extension ids are `publisher.name`: a claim on `digital` never matches `digital.pipeline-tools`. Today, namespace-scoped extensions are not merely unimplemented — they are unrepresentable. Fixed in §4.4.2.
+#### 4.4.1 Transport, and the part that is load-bearing
 
-**G3 — a namespace grants read to exactly one group.** `TeamNamespace.group_id` is a single group, so `ops` shares with everyone (`internal`) or with nobody. Fixed in §4.4.3.
+A unix socket under `$XDG_RUNTIME_DIR` at `0600` would reproduce the contract file's threat model exactly — a uid boundary. The editor cannot use one: the gallery URL is parsed as `http(s)`. So the transport is loopback TCP, and **in a workspace pod loopback is not a user boundary at all**: containers share a network namespace, so any process in the pod can drive the proxy as a confused deputy holding the user's credential. This is the original sidecar objection, and it survives the change of packaging. Answering it is not optional.
 
-#### 4.4.2 The namespace of an extension
-
-The namespace is the publisher segment of the extension id: `digital.pipeline-tools` → `digital`. It is the same string the OpenVSX API already exposes at `GET /api/{namespace}` and the same one `ovsx` checks before publishing, so nothing new is asked of publishers.
-
-Each `RegistryKind` declares its namespace separator — `/` for the ecosystems that have one today, `.` for `openvsx` and `vscode-marketplace`. The matcher becomes:
+The port is therefore not the secret. **The path is**: the proxy binds an ephemeral loopback port and serves everything under a per-session random segment —
 
 ```
-package == prefix  ||  package.starts_with(prefix + separator)
+http://127.0.0.1:<port>/<session>/vsx/…      gallery + assets
+http://127.0.0.1:<port>/<session>/login       PKCE redirect target (4.4.2)
 ```
 
-Two constraints carry over from the existing implementation and must survive the change:
+— written into the workspace's gallery configuration at startup and into the `0600` state directory. Reachability becomes knowledge of a secret held in a file the same uid already owns: the property the contract file had, and the property plain loopback loses. Requests outside the session segment get `404`. **A proxy on a fixed well-known port with no capability path is the rejected sidecar with fewer containers**, and should be reviewed as one.
 
-- **The SQL predicate is edited in the same commit as the Rust matcher.** They are compared character for character today; a separator threaded into one and not the other makes the listing more permissive than the download gate, which is precisely the leak the predicate exists to close.
-- **The separator is compared literally, never as a pattern.** `SUBSTRING(...) = prefix || separator`, not `LIKE`. A `.` in a `LIKE` is harmless, but the rule that kept `%` and `_` literal is the rule that keeps this correct as separators multiply.
+The session secret is regenerated per `proxy serve` invocation, never derived from the credential, and never logged.
 
-Longest prefix still wins outright, including across separators.
+#### 4.4.2 Signing in from the Extensions view
 
-#### 4.4.3 Grants: namespace default, per-extension override
+**Towards the editor, authentication state is data in the response, never a status code.** A `401` on `extensionquery` blanks the Extensions view and reports a generic failure — the worst available place to say "sign in". The proxy always answers `200` with a well-formed gallery document; what is inside depends on the credential state it owns.
 
-`Visibility::Team` stops meaning "the owning group" and starts meaning "the resolved reader set", which is the owning group plus grants:
+With no valid credential, that document holds exactly one synthetic entry, `batlehub.sign-in`, pinned first. Its `Microsoft.VisualStudio.Services.Content.Details` asset is markdown the proxy serves itself, and that markdown **is** the sign-in page: the device code already filled in, the link that opens the browser, and what happens next. The editor fetches and renders the details asset for an entry that is not installed — verified in §4.4.4 — and opens `http`/`https` links externally. The proxy is already an HTTP server on loopback, so it is also the **PKCE redirect target**: one process, one port, gallery on one path and the login callback on another. Device code remains the fallback where the user's browser cannot reach the pod's loopback.
 
-- **Namespace default** — `team_namespaces` gains `reader_groups text[] NOT NULL DEFAULT '{}'`. `ops` claims `ops` and sets readers `{digital, sales}`.
-- **Per-extension override** — `local_packages` gains `reader_groups text[] NULL`. `NULL` means *inherit the namespace default*; a non-NULL value *replaces* it.
+Each rule below is a way to get this wrong. The first is not a style point: without it the entry is **dropped from results entirely**, and the bootstrap silently produces the empty view it exists to prevent.
 
-The distinction between `NULL` and `{}` is the whole point of having both, and it is the part an implementation gets wrong quietly: **`NULL` inherits, `{}` overrides with nothing** — owner group only, even when the namespace shares widely. `ops` can therefore keep one extension to itself inside a namespace it otherwise shares, which is why the override exists. The API takes `{"readers": null}` and `{"readers": []}` as different requests, and the UI shows *Inherited from `ops` (digital, sales)* versus *Owner only (override)* as different states, with an explicit "reset to inherited" action rather than a `[]` that looks like a clear.
-
-Resolution for one extension and one caller, in order — first match wins:
-
-1. `is_admin` → visible. (Unchanged; admins bypass visibility everywhere today.)
-2. `visibility = public` → visible, including anonymously.
-3. `visibility = internal` → visible to any authenticated identity.
-4. `visibility = team`:
-   a. no namespace claim covers the name → **denied**. Unchanged, and deliberate: falling back to "any authenticated user" when a claim is missing or deleted is how a team-private extension becomes readable estate-wide.
-   b. caller is in the owner group → visible.
-   c. caller is in the effective reader set (override if non-NULL, else namespace default) → visible.
-   d. otherwise → denied.
-
-**A reader list holds literal group ids and nothing else.** There is no wildcard, no `*`, no `@authenticated` — "everyone with an account" is `Visibility::Internal`, which already means exactly that (§11 decision 14). A reserved token would add a second rule inside both the Rust comparison and the SQL predicate, in the one place this design depends on the two staying identical, and it would misfire the day an IDP emits a group actually called `*`. Entries are matched by equality after space-stripping; §4.3 warns when a list contains something wildcard-shaped, so an admin who tries it finds out at write time rather than from an access review.
-
-Write access — publish, yank, visibility and grant edits — stays with the owner group and admins. **Reader grants never confer write.** `require_admin_or_namespace_member` (`crates/web/src/handlers/back_office/visibility.rs`) keeps comparing against `group_id` alone; adding readers there is the one-character mistake that would let `digital` yank an `ops` extension.
-
-#### 4.4.4 Groups on a PAT
-
-`UserToken` gains `groups text[]`, snapshotted from the creator's own `Identity.groups` at creation and capped to a subset of them — a PAT cannot grant its creator groups they do not have, and `--all-groups` is sugar for "all of mine, now".
-
-The snapshot is a deliberate trade against re-resolving groups per request:
-
-- **For it**: no IDP round-trip on the gallery hot path (`extensionquery` is called on every editor start and every extension view), no dependence on the IDP being reachable while a `.vsix` streams, and it is the only option that works at all — a PAT has no refresh token and no session, so there is nothing to re-resolve *from*.
-- **Against it**: a developer who leaves `digital` keeps reading `digital` extensions until the PAT expires or is revoked.
-- **Therefore**: PAT TTL is capped (§11, open question 2 — this makes the cap a security control, not a hygiene preference), the token's groups are shown wherever the token is shown (creation output, `TokensPage.vue`, admin listing), and offboarding revokes tokens. OIDC access tokens, which do re-resolve groups on every refresh, stay the recommended posture for interactive users; PATs are for automation and for pods that cannot run a browser flow.
-
-Group comparison is space-stripped on both sides, matching `check_team_visibility` and `ExploreViewer::normalised_groups` — one normalisation rule, applied everywhere, including the new reader-set comparison.
-
-#### 4.4.5 Where the filtering happens
-
-In `source::search_entries` and `source::extension_entry` (`crates/web/src/handlers/proxy/vsx/`), which already receive the caller's identity and are already the single place gallery entries are produced. Every surface renders from them:
-
-| Surface | Gets filtering because |
+| Rule | Why |
 | --- | --- |
-| Native Extensions view in patched che-code | `extensionquery` responses are built from filtered entries |
-| Fallback marketplace view in `batlehub-vsx` | Same endpoints, same filtered entries |
-| `ovsx` / OpenVSX REST (`/api/-/search`, `/api/{namespace}`) | Built from the same entry list — the module already guarantees a version cannot be visible through one route and hidden in another |
-| Batlehub catalogue and package detail | `ExploreViewer` + `LOCAL_VISIBILITY_PREDICATE`, unchanged apart from reader groups |
+| **The entry declares `Microsoft.VisualStudio.Code.Engine`** (e.g. `^1.0.0`) | Without it the editor fetches the `Manifest` asset to read `engines.vscode`; a missing manifest throws, version validation fails, and the extension is omitted. Verified in §4.4.4 |
+| **The entry carries a manifest and an installable `.vsix`** | Install is the primary affordance next to a gallery entry. Without a package, clicking it fails with *Missing manifest for extension* — a dead end on the one action the UI invites. §4.4.4 established that an unsigned `.vsix` from a custom gallery installs, so this costs two asset routes, and the package it serves is `batlehub-vsx` itself (§6.5) |
+| The entry is returned for search and browse queries only, never for a query by extension name | Startup asks the gallery about every installed extension. An unauthenticated proxy answers those with a valid **empty** result; erroring there makes the editor mark installed extensions unavailable. The query carries `filterType: 7` for a name lookup and `filterType: 10` for search — the classifier is that field (§4.4.4) |
+| An authenticated session never receives the entry | Otherwise it sits in everyone's Extensions view permanently |
+| A credential that expires and cannot be refreshed puts the entry back | The cycle closes itself, and the user is told in the view they are already looking at |
+| Asset URIs in the entry point at the proxy's capability base | Same rewriting rule as every other entry (§4.4.3) |
+| The markdown is a static asset of the proxy build | It is rendered in a webview and sanitised by the editor; nothing user- or registry-supplied is interpolated into it. The one dynamic value is the device code, emitted escaped |
 
-**Hidden means absent, not forbidden.** A listing, search, or namespace document omits what the caller may not see, exactly as `get_openvsx_extensions` already does (`AccessDenied → continue`) and as RFC 0006 established for blocked versions. An editor that receives a `403` from a search blanks its whole extension list; an editor that receives a shorter list renders it. A namespace document whose extensions are all invisible to the caller is a `404`, not an empty document — an empty `digital` namespace confirms that `digital` exists.
+While unauthenticated the proxy serves the sign-in entry and nothing else. Serving anonymously-readable proxied extensions alongside it is a server-side decision about anonymous read, not a proxy behaviour, and this RFC's default is that there is none.
 
-**Direct download by exact coordinate keeps returning `403`** via `check_visibility` — today's behaviour, unchanged (§11 decision 13). Absence is the right answer where enumeration is cheap, which is listings; a caller who already holds `digital.pipeline-tools` learns nothing from a `403` that they did not have to know to ask. The two rules are not in tension, they answer two different questions, and keeping the download gate untouched keeps every other ecosystem's behaviour untouched with it.
+#### 4.4.3 Absolute URLs are rewritten, or the download bypasses the proxy
 
-#### 4.4.6 The estate, worked through
+Gallery and OpenVSX documents carry absolute URLs — `assetUri`, `fallbackAssetUri`, `files.download`, `files.manifest`. A pass-through proxy leaves them pointing at the Batlehub origin: the editor then lists correctly and fetches the `.vsix` **directly, with no credential**, and gets a `401` after the user clicked install. The proxy rewrites every absolute URL whose origin is the upstream registry to its own capability base, and rewrites nothing else.
 
-| Extension | Namespace / visibility | Grants | `digital` dev | `sales` dev | `ops` dev | anonymous |
-| --- | --- | --- | --- | --- | --- | --- |
-| `digital.pipeline-tools` | `digital` / team | — (inherit `{}`) | visible | absent | absent | absent |
-| `sales.crm-snippets` | `sales` / team | — | absent | visible | absent | absent |
-| `ops.k8s-helper` | `ops` / team | ns readers `{digital, sales}` | visible | visible | visible | absent |
-| `ops.incident-runbook` | `ops` / team | override `{}` | absent | absent | visible | absent |
-| `ops.editor-theme` | `ops` / internal | — | visible | visible | visible | absent |
-| `redhat.java` (proxied) | upstream | n/a | visible | visible | visible | per registry RBAC |
+Asset URLs are built as `${assetUri}/${assetType}`, with `?redirect=true&install=true` appended on the package fetch (§4.4.4), so rewriting the two URI fields is sufficient — the editor composes the rest.
 
-Three developers, one gallery URL, three different Extensions views. None of them ran a filter.
+It is therefore protocol-aware, not a generic reverse proxy. It rewrites the documents produced by RFC 0011-bis's entry builders rather than re-deriving them, so it inherits the filtering and cannot disagree with it.
+
+#### 4.4.4 Verified against VS Code 1.96.4
+
+The bootstrap rests on claims about an editor we do not control, so they were tested rather than assumed: a fake gallery served the synthetic entry, `product.json` was repointed at it, and the real VS Code CLI (`ELECTRON_RUN_AS_NODE`, own `--user-data-dir`/`--extensions-dir`) was run against it. Source references are to the 1.96.4 tree.
+
+| Claim | Method | Result |
+| --- | --- | --- |
+| The editor fetches a **non-installed** entry's readme from the gallery and renders it | source: `extensionEditor.ts` → `extensionGalleryService.getReadme(gallery, token)`, `openMarkdown` | **Holds.** Falls back to *No README available.* if the asset is missing |
+| Links in that markdown open externally | source: `matchesScheme(http/https/mailto)` → `openerService.open` | **Holds.** Markdown is sanitised for non-system extensions |
+| A minimal entry survives client-side filtering (no icon, no target platform, no statistics) | live | **Holds** |
+| An entry with no `Code.Engine` property survives | source: `getEngine` → `getManifestFromRawExtensionVersion`, throws `Manifest was not found`; `isValidVersion` returns false | **Fails.** The extension is omitted from results. The property is mandatory — this is the finding that changed the design |
+| The sign-in entry can be left non-installable | live | **Fails usefully.** Install reports *Missing manifest for extension*; with a manifest but no package it still fails. The Install button is a dead end unless a package is served |
+| An **unsigned** `.vsix` from a custom gallery installs on stock VS Code | live | **Holds.** `Extension 'batlehub.sign-in' v1.0.0 was successfully installed.` This reverses decision 18 of an earlier draft |
+| A name lookup and a search are distinguishable in the request | live | **Holds.** `filterType: 7` = extension name, `filterType: 8` = target, `filterType: 12` = exclude-with-flags; `flags: 950`, `pageSize: 1`. Search is `filterType: 10` |
+| Asset URL composition | live | `${assetUri}/${assetType}`, `?redirect=true&install=true` on the package |
+| `product.json` is the only gallery lever, and it works | live | **Holds**, and confirms the non-goal in §3: editable, honoured, overwritten by updates |
+
+Not covered, and stated as such: the Extensions **view** itself could not be exercised — the downloaded build's Electron cannot start in this environment. The search path is verified at the protocol and gallery-service level, not visually. A canary workspace (§12) closes that gap.
+
+### 4.5 Kubernetes as a credential source
+
+**Most of this is shipped.** `crates/adapters/src/auth/kubernetes.rs` implements a `type = "kubernetes"` auth provider: TokenReview against the API server, `role_mappings` from Kubernetes usernames and groups to roles, and an `Identity` carrying groups. On the client, `auth login --kubernetes-token-path <p>` stores `Profile.kubernetes_token_path` and re-reads it per request. An earlier draft of this section specified all of that as new work, and specified some of it differently from what exists; what follows is the delta, and the two shipped properties it must not undo.
+
+**The audience is the entire security property, and it is enforced in both directions.** A token minted for the API server is mounted into every pod by default and readable by everything in it; accepting one here would make every pod in the cluster a Batlehub identity. The shipped provider sends `spec.audiences` **and refuses unless `status.audiences` echoes one of them** — because an empty echo means the authenticator ignored the request, and the token it just authenticated is exactly that default mount. That is stricter than the reference webhook authenticator in `k8s.io/apiserver`, which falls back to implicit audiences; as the relying party we have none to fall back to. Nothing in this RFC weakens that check.
+
+So the workload presents a **projected** token, not the default mount:
+
+```yaml
+volumes:
+  - name: batlehub-token
+    projected:
+      sources:
+        - serviceAccountToken:
+            path: token
+            audience: batlehub          # must match one entry in `audiences`
+            expirationSeconds: 3600
+```
+
+**Groups.** The shipped `resolve_groups` keeps a Kubernetes group as-is when it appears in `role_mappings` and otherwise prefixes it with the provider name, so `system:serviceaccounts:digital` from a provider named `k8s` becomes `k8s:system:serviceaccounts:digital`. That prefix is deliberate — it stops one provider's group names from colliding with another's — and it is the string a reader grant must name in RFC 0011-bis. An operator who writes the unprefixed form gets the "grant names a group no auth rule has ever emitted" warning and no access, which is the right failure but an easy one to spend an afternoon on. The cross-reference belongs in both documents.
+
+Because the kubelet rotates the token and the provider re-resolves on every request, **a Kubernetes identity re-resolves its groups the way OIDC does, and unlike a PAT**. The staleness argument that caps PAT lifetimes does not apply: a pod that leaves the `digital` namespace stops being `digital` within one rotation.
+
+#### 4.5.1 What this RFC actually adds
+
+| Gap | Why it is a gap |
+| --- | --- |
+| The client asserts nothing about the token it reads | `--kubernetes-token-path` presents whatever it is pointed at. Pointed at the default mount, it sends the API-server token and the server correctly refuses it — with a TokenReview round trip and a log line the user never sees. `--kubernetes` parses `aud` and `exp` locally first and says *this token is for the API server, not for Batlehub*, naming the audience it did carry |
+| Auto-detection | `auth login` with no mode flag selects `--kubernetes` when `KUBERNETES_SERVICE_HOST` is set and a token for the configured audience is mounted. One line in a workspace startup script, right in a pod and on a laptop |
+| The contract file cannot express a rotating mounted token | It can now: `token: {from: file, path}` with `refresh: {"source": "reresolve"}` (§4.1.2). The CLI writes a pointer, not a copy — the kubelet owns the token and brokers re-read it |
+| `~/.kube/config` | See below: a minting key, never a credential |
+| TokenReview on the gallery hot path | `extensionquery` runs on every editor start, so every start becomes an API-server round trip, and a `.vsix` stream depends on the control plane. **Not a redesign**: a response cache keyed by token hash and bounded by the token's own `exp`, measured before anything more ambitious. Offline JWKS via the cluster's issuer-discovery endpoint is the larger alternative, and it is a separate proposal against a shipped, working, audience-strict implementation — not a decision this RFC gets to take in passing (open question 7) |
+
+**`~/.kube/config` is a cluster credential, and is not treated as a Batlehub one.** A kubeconfig holds a raw token (often legacy), a client certificate — which is not a bearer credential at all — or an `exec` plugin minting a token whose audience is the cluster API. Forwarding any of them is the audience violation above wearing a different hat.
+
+**`~/.kube/config` is a cluster credential, and is not treated as a Batlehub one.** A kubeconfig holds a raw token (often legacy), a client certificate — which is not a bearer credential at all — or an `exec` plugin minting a token whose audience is the cluster API. Forwarding any of them to Batlehub is the audience violation above wearing a different hat.
+
+What `--kubeconfig` does instead is use the kubeconfig to **mint** a correctly-scoped token through the `TokenRequest` API — the equivalent of `kubectl create token <sa> --audience batlehub` — and present that. It needs `create` on `serviceaccounts/token` for the named service account. When the caller lacks it, the CLI says which permission is missing and points at `--oidc`, rather than falling back to a token the server would reject anyway. **A token read out of a kubeconfig is never sent verbatim**, and a `--kubeconfig` login is a laptop-and-CI convenience; in a pod, the projected token is both simpler and stronger.
+
+**Nothing is stored, and nothing is copied.** `--kubernetes` writes no credential into the CLI's profile store beyond the path itself, and it does not paste the token into the contract file either: it writes a `file` source pointing at the mount, with `refresh: {"source": "reresolve"}`. The kubelet owns the token and rotates it, brokers re-read it. `auth logout` has nothing to revoke — the credential dies with the pod.
+
+Where a projected volume with the Batlehub audience cannot be added, the supported escape hatch is the `exchange` source of §4.1.2, not a wider audience check here.
+
+### 4.6 Managing this from the CLI and the TUI
+
+Everything §4.1 adds — sources, refresh descriptors, a proxy, a capability URL — is configuration a human has to be able to see. And the failure mode is specifically bad: when a source does not resolve, nothing errors. The proxy serves the sign-in entry, the editor renders a shorter list, and the user's experience is *extensions are missing*, with no thread to pull. A format that fails silently by design needs a command that says why, or the design has moved the problem instead of solving it.
+
+Three commands, and no new places to configure anything.
+
+**`batlehub auth status`** — the whole credential picture in one screen, values never printed:
+
+```
+REGISTRY                  KIND        TOKEN SOURCE                    STATE     EXPIRES  REFRESH
+https://hub.example.dev   oidc        inline (written by cli)         ok        4m12s    cli (batlehub-cli)
+https://hub.k8s.dev       kubernetes  file /var/run/secrets/…/token   ok        58m      reresolve
+https://hub.ci.dev        oidc        exchange → idp.example.dev      ok        9m40s    reresolve
+https://hub.old.dev       pat         env BATLEHUB_TOKEN              unset     —        none
+```
+
+`STATE` is the resolution attempted now, not a cached opinion: `ok`, `expired`, `unset` (the variable or file is not there), `refused` (the endpoint is outside the trusted set), `unreachable` (the STS did not answer). That distinction is the entire value of the command — `unset` and `refused` look identical from the editor and want opposite fixes.
+
+**`batlehub auth source show|set|clear <registry>`** — authoring a source without hand-editing JSON, with the §4.3 validation applied at write time rather than discovered at read time:
+
+```
+batlehub auth source set https://hub.ci.dev \
+  --from exchange --endpoint https://idp.example.dev/... --audience batlehub \
+  --subject-from file --subject-path /var/run/secrets/kubernetes.io/serviceaccount/token
+```
+
+It refuses an endpoint outside the trusted set and says where the allowlist lives. A hand-written file stays perfectly legal — this is a convenience over a documented format, not a lock on it.
+
+**`batlehub auth doctor`** — the end-to-end check, because every layer above can be individually correct and the editor still show nothing:
+
+1. Contract file parses against the schema, mode is `0600`.
+2. Every source resolves — or names the reason.
+3. The resolved credential is accepted by the server, and `whoami` reports the identity **and its groups** — a credential that authenticates with no groups sees no team extension and looks exactly like a broken one.
+4. The proxy, if configured, is answering on its capability URL.
+5. The editor's configured gallery URL matches the proxy the CLI would start. A stale `product.json` pointing at a dead port is the failure this step exists to catch, and it is invisible from every other layer.
+
+Non-zero exit on any failure, `--json` for CI — the global flag the CLI already has.
+
+**In the TUI, this extends two screens that already exist rather than adding screens.** `Screen::Login` gains the `auth status` table, so the place a user goes to log in is the place that tells them what they are logged in *as*. `Screen::IdeSetup` — which already detects editors and shows how to point their extension ecosystem at a Batlehub registry — gains the proxy's capability URL for the detected editor, whether that editor is currently pointed at it, and the copy-paste to fix it.
+
+Two rules across all of it: **a secret is never printed, logged, or shown in the TUI** — `auth token --output raw` remains the one command whose job is to emit a credential — and **every state shown is a resolution performed now**, since a cached "ok" from before the token file rotated is the failure being debugged.
 
 ---
 
 ## 5. Architecture
 
-### 5.1 Component and credential flow
+### 5.1 Components and credential flow
 
 ```mermaid
 flowchart TD
-    CLI["batlehub CLI<br/>(login / refresh)"] -->|atomic write| CF["contract file<br/>$BATLEHUB_HOME/state/vsx-token.json"]
+    subgraph sources["token sources (4.1.2)"]
+      K8S["projected SA token"]
+      ENVV["env var"]
+      STS["STS exchange"]
+    end
+    sources --> CF
+    CLI["batlehub CLI<br/>login / refresh / resolve"] -->|atomic write| CF["contract file<br/>$BATLEHUB_HOME/state/vsx-token.json"]
     EXT["batlehub-vsx extension"] -->|invoke or write| CLI
-    EXT -->|"fallback mode:<br/>authenticated search + .vsix install"| SRV["Batlehub server<br/>VSX API"]
-    CHE["che-code (patched)<br/>extensionGalleryService"] -->|read per request| CF
-    CHE -->|"Authorization: Bearer<br/>(origin-scoped)"| SRV
-    SRV --> OIDC{"prefix bh_pat_?"}
-    OIDC -->|no| JWKS["JWT validation<br/>IDP JWKS"]
-    OIDC -->|yes| PAT["PAT lookup<br/>argon2id + scope"]
+    CHE["che-code (patched)"] -->|"read literal token"| CF
+    CHE -->|"Authorization: Bearer<br/>(origin-scoped)"| SRV["Batlehub server<br/>VSX API"]
+    ED["editor we do not build"] -->|"no credential"| PX["batlehub proxy serve<br/>127.0.0.1:port/&lt;session&gt;"]
+    PX -->|resolves| CF
+    PX -->|"Bearer + URL rewriting"| SRV
+    EXT -->|"fallback marketplace"| SRV
+    SRV --> DISP{"prefix bh_pat_?"}
+    DISP -->|yes| PAT["PAT lookup<br/>argon2id + scope"]
+    DISP -->|no| ISS{"iss"}
+    ISS -->|IDP| JWKS["IDP JWKS"]
+    ISS -->|cluster| KJWKS["cluster JWKS<br/>+ audience check"]
+    ISS -->|unknown| R401["401"]
+    PAT --> ID["Identity{role, groups}<br/>→ RFC 0011-bis filtering"]
+    JWKS --> ID
+    KJWKS --> ID
 ```
 
-### 5.2 Mode selection in the extension
+### 5.2 Acquiring a credential
+
+Six ways a credential comes into existence. The first two are the only ones that involve a human; the rest are what a pod or a runner does with an identity it already has.
+
+**(a) OIDC with PKCE and a loopback redirect** — the desktop default. The proxy, when it is running, is the redirect target, so the same server serves the gallery and the callback (§4.4.2); `auth login` on its own binds a throwaway loopback listener for the same purpose.
+
+```mermaid
+sequenceDiagram
+    participant U as user
+    participant C as batlehub CLI
+    participant L as loopback listener
+    participant B as browser
+    participant I as IDP
+    participant P as profile store
+    participant F as contract file
+    U->>C: batlehub auth login --oidc
+    C->>C: generate code_verifier + code_challenge
+    C->>L: bind 127.0.0.1 on an ephemeral port
+    C->>B: open authorize URL (challenge, redirect_uri, state)
+    B->>I: authenticate
+    I-->>L: redirect with code + state
+    L->>C: code (state checked, else abort)
+    C->>I: POST token endpoint (code + code_verifier)
+    I-->>C: access_token, refresh_token, expires_in
+    C->>P: store refresh_token, expires_at, provider
+    C->>F: write token, expires_at, refresh source cli
+    C-->>U: signed in as <identity>, groups listed
+```
+
+**(b) OIDC device code** — no browser reachable from where the CLI runs: a Che terminal, an SSH session, a pod whose loopback the user's browser cannot reach. This is also what the bootstrap entry's markdown displays (§4.4.2, case D).
+
+```mermaid
+sequenceDiagram
+    participant U as user
+    participant C as batlehub CLI or proxy
+    participant I as IDP
+    participant B as browser (anywhere)
+    C->>I: POST device_authorization
+    I-->>C: device_code, user_code, verification_uri, interval
+    C-->>U: open <verification_uri> and enter <user_code>
+    U->>B: opens it, authenticates
+    loop every interval, until expiry
+        C->>I: POST token (device_code)
+        I-->>C: authorization_pending
+    end
+    I-->>C: access_token, refresh_token
+    C->>C: store exactly as the PKCE flow does
+    Note over C,I: one storage path, not two — the flow differs, the outcome does not
+```
+
+**(c) Personal access token** — automation, and the fallback where no OIDC provider is configured. Creation requires an OIDC session: a PAT cannot mint another PAT, and neither can a service account.
+
+```mermaid
+sequenceDiagram
+    participant U as user
+    participant C as batlehub CLI
+    participant S as Batlehub server
+    participant D as PAT table
+    U->>C: auth token create --name ci --days 90 --scope vsx:read
+    C->>S: POST /api/v1/auth/tokens (OIDC session bearer)
+    S->>S: caller authenticated by an oidc provider? else 403
+    S->>D: store argon2id hash, scopes, expiry, group snapshot
+    S-->>C: bh_pat_… (shown once)
+    C-->>U: secret + its groups + its expiry
+    Note over U,S: at use time the prefix routes it straight to the PAT lookup
+```
+
+**(d) Kubernetes projected token** — nothing is acquired. The kubelet mints and rotates; the CLI only records where to look.
+
+```mermaid
+sequenceDiagram
+    participant K as kubelet
+    participant M as /var/run/secrets/batlehub/token
+    participant C as batlehub CLI
+    participant F as contract file
+    K->>M: mint (audience batlehub, exp 1h)
+    C->>M: read
+    C->>C: parse aud and exp locally
+    alt aud lacks the Batlehub audience
+        C-->>C: refuse, naming the audience it did carry
+    else
+        C->>F: write token from file path, refresh reresolve
+    end
+    loop before each expiry
+        K->>M: rotate in place
+    end
+    Note over C,F: a pointer is written, never a copy
+```
+
+**(e) `--kubeconfig`** — a laptop or a runner holding a cluster credential. The kubeconfig is a minting key, never the credential presented to Batlehub (§4.5).
+
+```mermaid
+sequenceDiagram
+    participant U as user
+    participant C as batlehub CLI
+    participant A as Kubernetes API server
+    participant F as contract file
+    U->>C: auth login --kubeconfig --service-account ns/sa --audience batlehub
+    C->>A: POST serviceaccounts/ns/sa/token (TokenRequest, audience batlehub)
+    alt caller lacks create on serviceaccounts/token
+        A-->>C: 403
+        C-->>U: name the missing verb, suggest --oidc
+    else
+        A-->>C: token bound to the Batlehub audience
+        C->>F: write the minted token with its exp
+    end
+    Note over C,A: what the kubeconfig held is never forwarded
+```
+
+**(f) RFC 8693 token exchange** — CI, or a cluster whose workspace templates cannot add a projected volume. Resolved at request time, not at login (§5.3).
+
+```mermaid
+sequenceDiagram
+    participant B as broker (CLI or proxy)
+    participant F as contract file
+    participant J as subject source (file or env)
+    participant X as STS
+    participant S as Batlehub server
+    B->>F: read token source (from exchange)
+    B->>B: endpoint in the trusted set? else refuse, no request made
+    B->>J: resolve subject (nested one level, no deeper)
+    B->>X: POST grant-type token-exchange (subject, audience batlehub)
+    X->>X: validate the subject, mint for the requested audience
+    X-->>B: access_token, expires_in
+    B->>S: request with Bearer
+    Note over B,F: the minted token is cached in memory, never written back
+```
+
+### 5.3 Getting a usable token at request time
+
+Acquisition happens once; this happens on every request. A broker resolves the source, decides whether what it got is fresh enough, and refreshes only if it is the entry's owner.
 
 ```mermaid
 flowchart TD
-    A["activation"] --> B{"vsxRegistryAuthSupport<br/>or VSX_REGISTRY_AUTH_SUPPORT=1?"}
-    B -->|yes| C["broker mode:<br/>keep contract file fresh,<br/>native Extensions view does the rest"]
-    B -->|no| D["fallback marketplace mode:<br/>custom view, download, install,<br/>deps + updates handled manually"]
+    R["request needs a bearer"] --> E{"entry for this origin?"}
+    E -->|no| N["no credential<br/>→ sign-in entry (4.4.2)"]
+    E -->|yes| SRC{"token source"}
+    SRC -->|inline| VAL
+    SRC -->|env| EV["read the variable"] --> VAL
+    SRC -->|file| FL["read the mount<br/>absolute path, size-capped"] --> VAL
+    SRC -->|exchange| XC["endpoint trusted?"]
+    XC -->|no| N
+    XC -->|yes| XR["resolve subject, exchange"] --> VAL
+    SRC -->|unknown from| N
+    VAL{"resolved?"} -->|no| N
+    VAL -->|yes| FR{"fresh for min-ttl?"}
+    FR -->|yes| USE["send it"]
+    FR -->|no| RS{"refresh source"}
+    RS -->|reresolve| SRC
+    RS -->|none| N
+    RS -->|cli / inline| OWN{"am I the owner?"}
+    OWN -->|no| WAIT["report expired,<br/>re-read, do not redeem"]
+    OWN -->|yes| LK["take the lock,<br/>re-read under it"]
+    LK --> RD["redeem, store rotation,<br/>atomic write, release"]
+    RD --> USE
+    WAIT --> N
 ```
 
-### 5.3 Visibility resolution for one extension
+Two branches carry the weight. **`reresolve` loops back to the source** rather than to a refresh endpoint — that is the whole Kubernetes case: the fresh token is the same file, read again. And **a non-owner never redeems**, because the alternative is not a lost update:
 
-Applied per entry while the gallery response is built, so the same decision drives listing, search, metadata, and download.
+```mermaid
+sequenceDiagram
+    participant P as proxy
+    participant X as extension
+    participant F as contract file
+    participant I as IDP
+    Note over P,X: without the lock — both hold the same rotating refresh token
+    P->>I: refresh (token R1)
+    I-->>P: new access + R2, R1 now consumed
+    X->>I: refresh (token R1)
+    I-->>X: invalid_grant — replay detected
+    I->>I: revoke the whole chain, R2 included
+    Note over P,X: both brokers now hold nothing, and the user is signed out
+    Note over P,X: with the lock — one owner, one redemption
+    P->>F: take lock, re-read, redeem, write back, release
+    X->>F: read (no lock, no redemption)
+    X->>X: use what the owner just wrote
+```
+
+### 5.4 From credential to identity, server-side
+
+The middleware already iterates `Vec<Arc<dyn AuthProvider>>` and takes the first `Identity`; this RFC routes the VSX endpoints through it. Each provider asserts its own audience, and a provider that cannot recognise a credential passes it on untouched rather than forwarding it — which is how a PAT stays out of the control plane's request logs.
 
 ```mermaid
 flowchart TD
-    A["entry: registry + extension id<br/>caller: Identity{role, groups}"] --> ADM{"admin?"}
-    ADM -->|yes| V["visible"]
-    ADM -->|no| VIS{"visibility"}
-    VIS -->|public| V
-    VIS -->|internal| AUTH{"authenticated?"}
-    AUTH -->|yes| V
-    AUTH -->|no| H["absent from listings,<br/>403 on direct download"]
-    VIS -->|team| NS{"namespace claim<br/>covers the id?"}
-    NS -->|no| H
-    NS -->|yes| OWN{"caller in<br/>owner group?"}
-    OWN -->|yes| V
-    OWN -->|no| OVR{"package readers<br/>NULL?"}
-    OVR -->|"NULL (inherit)"| ND{"caller in namespace<br/>reader groups?"}
-    OVR -->|"set (override)"| PD{"caller in package<br/>reader groups?"}
-    ND -->|yes| V
-    ND -->|no| H
-    PD -->|yes| V
-    PD -->|no| H
+    A["Authorization: Bearer <credential>"] --> P1{"prefix bh_pat_?"}
+    P1 -->|yes| PAT["PAT provider<br/>argon2id lookup, revocation,<br/>scope vsx:read, group snapshot"]
+    P1 -->|no| SH{"three dot-separated parts?"}
+    SH -->|no| NX["not a JWT — passed on,<br/>never sent to the API server"]
+    SH -->|yes| OID["OIDC provider<br/>JWKS, iss, aud, exp<br/>→ groups from claim rules"]
+    OID -->|no match| K8S["Kubernetes provider<br/>TokenReview"]
+    K8S --> AUD{"status.audiences ∩ configured?"}
+    AUD -->|empty| R401["401 — the API server did not<br/>confirm the binding"]
+    AUD -->|non-empty| GRP["role_mappings → role<br/>groups kept, or provider-prefixed"]
+    NX --> R401
+    PAT --> ID["Identity{role, groups}"]
+    OID --> ID
+    GRP --> ID
+    ID --> VIS["RFC 0011-bis:<br/>which extensions this caller sees"]
+```
+
+The empty-intersection branch is the one to keep in view: an authenticator that ignores `spec.audiences` answers with an empty `status.audiences`, and the token that produces that answer is the default service account mount every pod carries.
+
+### 5.5 The final cases
+
+Six end states. Each is a supported configuration; the deployment picks one per editor.
+
+**Case A — patched che-code, contract file, no proxy.** The original path: the credential is in the file, the editor core sends it.
+
+```mermaid
+sequenceDiagram
+    participant U as user
+    participant C as batlehub CLI
+    participant F as contract file
+    participant E as che-code (patched)
+    participant S as Batlehub server
+    U->>C: batlehub auth login --oidc
+    C->>C: PKCE, refresh token → profile store
+    C->>F: write {token, expires_at, refresh: cli}
+    E->>F: read literal token (per request)
+    E->>S: POST /extensionquery + Bearer
+    S-->>E: 200, entries filtered for the caller's groups
+    E->>S: GET .vsix + Bearer
+    S-->>E: 401 (token expired mid-download)
+    E->>F: re-read once
+    E->>S: retry once + Bearer
+    S-->>E: 200 stream
+```
+
+**Case B — any editor behind the local proxy.** The credential stays in the CLI's process; the editor holds a loopback URL.
+
+```mermaid
+sequenceDiagram
+    participant U as user
+    participant P as proxy serve
+    participant F as contract file
+    participant E as editor (gallery = capability URL)
+    participant S as Batlehub server
+    U->>P: batlehub proxy serve --print-gallery-url
+    P->>P: bind 127.0.0.1:0, mint session segment
+    E->>P: POST /<session>/vsx/extensionquery (no credential)
+    P->>F: resolve token source
+    P->>S: same query + Bearer
+    S-->>P: 200 filtered entries (absolute URLs)
+    P->>P: rewrite assetUri/fallbackAssetUri → capability base
+    P-->>E: 200
+    E->>P: GET /<session>/vsx/assets/…VSIXPackage
+    P->>P: token expiring → refresh (owner), retry
+    P->>S: GET .vsix + fresh Bearer
+    S-->>P: 200 stream
+    P-->>E: 200 stream
+```
+
+**Case C — workspace pod, zero interaction.** Nothing is typed, nothing is provisioned.
+
+```mermaid
+sequenceDiagram
+    participant K as kubelet
+    participant M as projected mount
+    participant C as batlehub CLI (startup script)
+    participant F as contract file
+    participant B as broker (proxy or patch)
+    participant S as Batlehub server
+    K->>M: mint SA token, aud=batlehub, exp=1h
+    C->>M: read, assert aud + exp
+    C->>F: write {token: {from: file, path}, refresh: reresolve}
+    B->>M: re-read on demand (kubelet rotates in place)
+    B->>S: request + Bearer
+    S->>S: iss = cluster issuer → cluster JWKS, audience check
+    S->>S: claims (ns, sa) → group rules → Identity.groups
+    S-->>B: 200 filtered for those groups
+```
+
+**Case D — first run, no credential.** The bootstrap. Note the two query kinds answered differently.
+
+```mermaid
+sequenceDiagram
+    participant E as editor
+    participant P as proxy serve
+    participant U as user
+    participant I as IDP
+    E->>P: extensionquery filterType 7 (installed extensions)
+    P-->>E: 200, empty result
+    E->>P: extensionquery filterType 10 / browse
+    P-->>E: 200, one entry batlehub.sign-in<br/>(Engine declared, else it is dropped)
+    U->>E: opens the entry
+    E->>P: GET …/Content.Details
+    P-->>E: markdown: device code + link
+    U->>I: opens the link, authenticates
+    P->>I: poll device code
+    I-->>P: access + refresh token
+    P->>P: write credentials, drop the sign-in entry
+    U->>E: ↻ (or Install → batlehub-vsx re-queries)
+    E->>P: extensionquery
+    P-->>E: 200, the caller's real extensions
+```
+
+**Case E — CI, no stored secret.** The identity CI already has becomes one Batlehub accepts.
+
+```mermaid
+sequenceDiagram
+    participant R as CI runner
+    participant F as contract file
+    participant X as STS
+    participant B as broker
+    participant S as Batlehub server
+    R->>F: token = {from: exchange, subject: {from: file|env}}
+    B->>F: resolve
+    B->>B: endpoint ∈ trusted set? else refuse
+    B->>X: RFC 8693 exchange (subject = CI OIDC token)
+    X-->>B: access token, aud = batlehub
+    B->>S: request + Bearer
+    S-->>B: 200
+    Note over B,F: the resolved token is never written back
+```
+
+**Case F — stock VS Code.** The gallery URL cannot be repointed, so the extension is the surface.
+
+```mermaid
+sequenceDiagram
+    participant U as user
+    participant X as batlehub-vsx
+    participant C as batlehub CLI
+    participant S as Batlehub server
+    participant E as editor
+    X->>X: activation: no vsxRegistryAuthSupport → fallback mode
+    X->>C: batlehub auth token --output raw
+    C-->>X: credential (or PKCE via AuthenticationProvider)
+    U->>X: browse the Batlehub view
+    X->>S: /api/-/search + Bearer
+    S-->>X: entries already filtered server-side
+    U->>X: install
+    X->>S: GET .vsix + Bearer
+    X->>E: workbench.extensions.installExtension
+```
+
+### 5.6 What the proxy answers, by credential state
+
+The editor sees one status code — `200` — in every branch. The branch is the content.
+
+```mermaid
+flowchart TD
+    Q["editor request"] --> S{"credential state"}
+    S -->|"valid"| P["proxy upstream,<br/>rewrite absolute URLs,<br/>return filtered entries"]
+    S -->|"expired, refreshable"| RF["refresh, then proxy<br/>(one retry, proxy-side)"]
+    RF --> P
+    S -->|"absent or unrefreshable"| K{"query kind"}
+    K -->|"search / browse<br/>(filterType 10, or none)"| SI["200: one entry<br/>batlehub.sign-in<br/>+ Engine + manifest + vsix"]
+    K -->|"by name (filterType 7)"| E["200: empty result"]
+    SI --> L["details asset = login page"]
+    L --> RC["re-query after login"]
+    RC --> P
 ```
 
 ---
@@ -335,50 +809,62 @@ flowchart TD
 ### 6.1 `server`
 
 - Bearer middleware on VSX routes: prefix dispatch (`bh_pat_` → PAT path, else JWT path), JWKS cached with rotation handling, no introspection round-trip on the hot path.
-- PAT table: hashed secret (argon2id), scopes, optional expiry, revocation flag, **group snapshot**; CRUD API consumed by the CLI and the admin UI.
+- **The provider chain is not rebuilt.** `KubernetesAuthProvider` and the OIDC provider ship; the work is routing VSX endpoints through the middleware that already consults them, and adding the PAT scope check.
+- Kubernetes (§4.5.1): a TokenReview response cache keyed by token hash and bounded by the token's own `exp`, because `extensionquery` runs on every editor start. The two-directional audience check is untouched.
+- PAT table: hashed secret (argon2id), scopes, optional expiry, revocation flag; CRUD API consumed by the CLI and the admin UI. The group snapshot on a PAT is RFC 0011-bis.
 
-### 6.1-bis Visibility (`crates/core`, `crates/adapters`, `crates/web`, `ui/`)
+### 6.2 `cli/` (`batlehub-cli`, existing)
 
-- **`crates/core`** — one resolution function implementing §4.4.3, called by `check_visibility` and by the entry builders. `RegistryKind::namespace_separator()` (default `/`, `.` for `openvsx`/`vscode-marketplace`) with a drift test asserting every variant declares one, in the shape of the existing `warm_artifact` drift guard. `TeamNamespace` gains `reader_groups`, `PublishedPackage`/`NamespacePackage` gain `reader_groups: Option<Vec<String>>`.
-- **`crates/adapters`** — migration adding `team_namespaces.reader_groups text[] NOT NULL DEFAULT '{}'` and `local_packages.reader_groups text[] NULL` (new `mig!` entry, sequence incremented); `find_namespace` matcher takes the separator; `LOCAL_VISIBILITY_PREDICATE` gains the reader-set arms and the separator, edited in the same commit as the matcher (§4.4.2); `UserTokenAuthProvider` returns the token's stored groups instead of `vec![]`, and `create_token` takes and caps them.
-- **`crates/web`** — `PUT/GET /api/v1/admin/registries/{registry}/namespaces/{prefix}/readers` and `…/packages/{name:.*}/readers`, both behind the existing `require_admin_or_namespace_member` (owner group or admin — **not** readers). `VisibilityResponse` grows `readers: Vec<String>` and `readers_source: "inherited" | "override"` so the console never has to infer which it is looking at. Both writes emit an audit event alongside the existing `AccessAction::SetVisibility`.
-- **`ui/`** — group multi-select on `AdminTeamNamespaces.vue`; a readers control on the package detail/admin package view with the three states of §4.4.3 (inherited / override / owner-only) and an explicit reset; the same control on `MyNamespace.vue` for owners who are not admins. Labels name the behaviour, not the schema: *Who can see this* over *reader_groups*.
+- **Not a new crate.** `cli/` ships `Cli`/`Command` (clap), `cli::auth` with `login/logout/whoami/refresh` and `token list|create|revoke`, `cli::config_cmd` over `ConfigFile`/`Profile`, and `tui::` with `Screen::{Login, IdeSetup, SetupWizard, RegistryList, …}`. This RFC extends that tree.
+- `Profile` already carries `oidc_refresh_token`, `oidc_expires_at`, `oidc_provider` and `kubernetes_token_path`, and `main.rs` already auto-refreshes an expiring OIDC token before building the client. The work is to make those the backing store for `refresh: {"source": "cli"}`, not to reimplement them; `kubernetes_token_path` becomes the `file` source of §4.1.2 and gains an audience assertion.
+- Source resolver (§4.1.2), shared by every consumer: one implementation for `inline`/`env`/`file`/`exchange`, one place the trusted-endpoint set is enforced, one place a resolution failure becomes "no credential" with a single log line. The proxy and the CLI link it; the extension reimplements the two sources it needs (`inline`, `env`).
+- Contract-file writer: read-modify-write keyed by origin, atomic rename, JSON Schema validation, unknown fields preserved. Emits the `refresh` descriptor for the mode it logged in with — `cli` for OIDC, `reresolve` for a mounted token, `none` for a PAT — and never `inline`, since it has the profile store.
+- Refresh path: take `state/vsx-token.refresh.lock`, re-read under it, redeem, store a rotated refresh token, rewrite the entry, release. Refuses to redeem an entry whose `owner` is not the CLI.
+- `cli::auth` gains `status`, `source show|set|clear`, `doctor` (§4.6), built on the same resolver so the state they report is the state a broker would get. `cli::proxy` is a new module: `serve` and `status`.
+- Redaction is a property of the render path, not of each call site: statuses and TUI widgets take a resolved-credential *summary* (source, state, expiry) that has no field capable of carrying the secret. A type that cannot hold it cannot leak it into a log line added later.
 
-### 6.2 `crates/batlehub-cli`
+### 6.3 `batlehub proxy serve` (`cli/`)
 
-- New crate. `auth` subcommand tree per 4.1; PKCE with loopback redirect on desktop, device code flow when no browser is reachable (Che terminals, SSH).
-- Contract-file writer: read-modify-write keyed by origin, atomic rename, schema validation.
-
-### 6.3 `vscode-ext` (`batlehub-vsx`)
-
-- `AuthenticationProvider` registration, `SecretStorage` for refresh tokens/PATs, credential chain per 4.2.
-- Fallback marketplace: TreeView first iteration, webview detail page later; install ledger in workspace state to identify Batlehub-originated extensions for the update diff.
-- Walkthrough + setting nudge steering users away from the native Extensions view when it points at an unauthenticated or absent gallery.
+- Loopback-only bind (refused otherwise), ephemeral port, per-session capability segment, `--print-gallery-url` for the workspace startup script. Session secret and resolved URL written to the `0600` state directory.
+- Request path: capability check → credential resolve (refresh under `--min-ttl` when it is the entry's `owner`, otherwise re-read and wait) → upstream call with `Authorization` → **absolute-URL rewriting** on JSON responses → stream the body. `.vsix` bodies stream; they are never buffered, since the whole point is that they outlive an access token.
+- Unauthenticated branch (§4.4.2): a `filterType` classifier, the synthetic `batlehub.sign-in` entry with its `Code.Engine` property, and asset routes for details markdown, manifest and package. The package served is the `batlehub-vsx` build embedded in the proxy binary.
+- Login surface on the same server: `/{session}/login` as the PKCE redirect target, or the device-code display when no browser can reach it. Completion writes credentials exactly as `auth login` does; one code path for storage, not two.
+- The proxy renders the server's already-filtered documents. **It holds no visibility logic**, and a bug in it cannot widen what a caller sees — only narrow it or break it.
 
 ### 6.4 che-code patch (external repository)
 
-- Touches `src/vs/platform/extensionManagement/common/extensionGalleryService.ts` and the gallery asset download call sites; adds credential resolution (4.2) and origin-scoped header injection; JSON parsing limited to the documented schema.
+- Touches `src/vs/platform/extensionManagement/common/extensionGalleryService.ts` and the gallery asset download call sites; adds credential resolution (§4.2) and origin-scoped header injection; JSON parsing limited to a literal `token` string.
 - Maintained as a rebase-friendly commit series on the Forgejo mirror, built into the workspace editor image; `product.json` of the patched build sets `vsxRegistryAuthSupport: true`.
+
+### 6.5 `vscode-ext` (`batlehub-vsx`)
+
+- `AuthenticationProvider` registration, `SecretStorage` for refresh tokens/PATs, credential chain per §4.2.
+- **Broker mode**: keep the contract file fresh, status-bar auth state, and the re-query after login that the bootstrap entry cannot do for itself.
+- **Fallback marketplace** (stock VS Code): TreeView first, webview detail later; install ledger in workspace state for the update diff; `extensionDependencies`/`extensionPack` resolved depth-first and cycle-guarded. Renders the server's filtered entries; no client-side filtering.
+- The same build is what the proxy serves as the sign-in entry's package (§4.4.2), so installing from the bootstrap and installing from a marketplace produce the same extension.
 
 **Deliberately untouched**, so reviewers do not go looking:
 
-- Publishing endpoints and existing OpenVSX PAT publishing flow — unchanged by this RFC.
-- Anonymous read on any other Batlehub registry. The *credential* work is VSX-only. The visibility work is not, and cannot be: the matcher, the SQL predicate and the PAT group snapshot are shared code. Every ecosystem gains reader groups, and none changes behaviour unless one is set — a namespace with `reader_groups = '{}'` resolves exactly as it does today, which is what the unchanged-suite line in §10 pins.
-- che-code telemetry, product branding, and update channels — the patch stays confined to gallery request construction.
+- Publishing endpoints and existing OpenVSX PAT publishing flow.
+- Anonymous read on any other Batlehub registry — the credential work is VSX-only.
+- che-code telemetry, product branding, and update channels.
 
 ---
 
 ## 7. Security considerations
 
-- **The contract file is the trust boundary on disk.** `0600` under `$HOME`, atomic writes, and no path outside the user's home; a local attacker able to read it already owns the session.
-- **Header injection is origin-scoped.** The credential is attached only to requests whose origin equals the configured gallery origin, and dropped on cross-origin redirects — CDN asset hosts never see it.
-- **PATs are identifiable and scoped.** The `bh_pat_` prefix enables secret scanning; scope `vsx:read` bounds blast radius; secrets are stored argon2id-hashed.
+- **The contract file is the trust boundary on disk.** `0600` under `$HOME`, atomic writes, and no path outside the user's home.
+- **A token source keeps the secret out of the file, and moves the trust into one field.** `env`, `file` and `exchange` mean the contract file stops being a place a credential rests. The price is that `exchange.endpoint` is acted on, not just read, so it is validated against configuration rather than trusted from the file. Dropping the `command` source (§4.1.2) removes the other, larger, instance of the same hazard.
+- **An inline refresh token changes what the file is worth.** An access token expires in minutes; a refresh token beside it mints access tokens until revoked. Hence §4.1.1 rule 1: inline only where no secret store exists, never by the CLI.
+- **Refresh is single-owner because rotation makes concurrency destructive.** Two brokers redeeming a rotating refresh token look exactly like a replay to the IDP, and the correct response to a replay is to revoke the chain. The lock and the `owner` field are what stop two Batlehub processes from logging the user out of Batlehub.
+- **In proxy mode the editor never holds the credential.** It holds a loopback URL — a smaller thing to leak from a process that executes arbitrary extension code, and the main security argument for the proxy rather than a side effect of it.
+- **Loopback is not a boundary in a pod; the capability path is.** Containers share a network namespace, so a fixed-port proxy is drivable by anything running beside the editor. The ephemeral port plus per-session path segment restores the "knows a secret in a `0600` file" property. A review of any implementation should check this first.
+- **A Kubernetes token is accepted only for an audience the API server confirms it is bound to.** `spec.audiences` asks, `status.audiences` answers, and an empty answer is a refusal — because the token that produces an empty answer is the default mount every pod carries. The shipped provider is stricter than the reference webhook authenticator here, and the caching layer of §4.5.1 must cache the decision, never widen it. Everything else about k8s auth is convenience; this is the part that is security.
+- **A Kubernetes identity is a workload identity.** Its groups derive from Kubernetes groups, so a `role_mappings` entry naming `system:serviceaccounts:<ns>` grants a whole namespace at once. A provider with no mappings yields `Anonymous` and provider-prefixed groups — `public`/`internal` only, the safe direction to fail.
+- **The bootstrap entry serves an installable package, so it is a distribution channel.** It is the `batlehub-vsx` build embedded in the proxy binary, served over loopback from a process the user started; it is not fetched at request time and not operator-supplied. §4.4.4 established that the editor will install an unsigned package from a custom gallery, which is a property of the editor rather than a choice here, and the reason this channel is kept as narrow as it is.
+- **Header injection is origin-scoped.** Attached only to requests whose origin equals the configured gallery origin, dropped on cross-origin redirects.
+- **PATs are identifiable and scoped.** `bh_pat_` prefix enables secret scanning; scope `vsx:read` bounds blast radius; secrets stored argon2id-hashed.
 - **The 401-retry loop is bounded.** One re-read and one retry per request prevents hammering the IDP on revoked credentials.
-- **Short-lived tokens are the default posture.** OIDC access tokens preferred over PATs for interactive users; IDP TTL must exceed the longest plausible `.vsix` download (recommendation ≥ 10 min, enforced as a warning in 4.3).
-- **A PAT is a group snapshot, so its TTL is an access-control lifetime.** Group membership on a PAT does not follow the IDP; a capped TTL plus revocation is what bounds a stale grant. This is the argument for the hard cap in §11 open question 2 and against non-expiring PATs.
-- **Listing and download must not disagree.** The SQL predicate and the Rust gate are compared character for character today, and the reader-set arms and the namespace separator are added to both or to neither. A listing more permissive than the gate leaks names, publishers and version counts of extensions the same caller would be `403`'d for — a directory of what other teams are building, which is the exact failure mode namespace scoping exists to prevent.
-- **Absence is the denial signal in listings; `403` remains the denial signal on download.** `404` on a namespace document with nothing visible and omission in search, because a `403` there distinguishes "exists but not yours" from "does not exist" across a space the caller can sweep. On a direct download the caller supplied the coordinate, so `403` discloses nothing they did not already hold, and the shared gate stays untouched (§11 decision 13).
-- **Reader grants are read-only by construction.** Write authorization keeps comparing against the owner group alone; readers appear in no write path.
 
 ---
 
@@ -386,49 +872,56 @@ flowchart TD
 
 | Alternative | Why rejected |
 | ----------- | ------------ |
-| In-workspace authenticating sidecar proxy, `VSX_REGISTRY_URL` → localhost | Rejected for security reasons (deployment constraint); also adds a per-pod component to operate |
-| Network trust only (ClusterIP + Cilium NetworkPolicy) | No user identity; any workload in allowed namespaces reads everything; does not cover desktop |
-| Pure extension, no patch | Loses native Extensions view, auto-updates, and dependency resolution in che-code — acceptable as fallback, not as the primary UX |
+| Platform-operated sidecar proxy in the workspace pod | A container with its own lifetime, shared by everything else in the pod, on a well-known port, operated by the platform rather than the user — and one more component per pod to run and monitor |
+| User-owned local proxy on loopback + capability URL | **Adopted as a second transport** (§4.4), on the conditions in §4.4.1. Cost: a process to supervise, and protocol-aware URL rewriting |
+| Local proxy on a unix socket | The secure transport, and the editor cannot speak it: the gallery URL is parsed as `http(s)`. Revisit if that ever changes |
+| Local proxy on a fixed loopback port, no capability path | The rejected sidecar with fewer containers. In a shared network namespace, reachable is authorised |
+| `401` to the editor when unauthenticated | Blanks the Extensions view behind a generic error, which is where the user is least able to act. Authentication state is content |
+| A sign-in entry with no package | Verified dead end: Install reports *Missing manifest for extension* (§4.4.4). The one action the UI invites fails |
+| A sign-in entry with no `Code.Engine` property | Verified worse: the entry is dropped from results entirely and the view is empty (§4.4.4) |
+| A `command` token source | Turns write access to an operator-authored file into code execution in the editor's process, to serve a case `keychain` covers more narrowly. Dropped |
+| Forwarding the token found in `~/.kube/config` | Its audience is the cluster API. `exchange` re-mints; forwarding ignores |
+| `TokenReview` as the default Kubernetes validation path | An API-server round trip on `extensionquery` — every editor start — and an API-server dependency while a `.vsix` streams |
+| Network trust only (ClusterIP + NetworkPolicy) | No user identity; any workload in allowed namespaces reads everything; does not cover desktop |
+| Pure extension, no patch, no proxy | Loses native Extensions view, auto-updates, and dependency resolution — acceptable as fallback, not as the primary UX |
 | VS Code Private Marketplace | Bearer only on service-index discovery, gallery ops unauthenticated, gated on GitHub Enterprise/Entra accounts |
-| Raw single-line token file (no JSON) | Simpler consumer, but no multi-registry support, no expiry metadata, and a second file format the day npm/cargo need credentials |
-| IPC between extension and patched core (named pipe/socket) | Cross-process protocol to design, version, and secure; the file + 401-retry achieves the same freshness with none of that surface |
-| All-or-nothing `vsx:read`, per-extension authorization deferred to a later RFC (this RFC's original position) | Authentication without scoping only moves the leak from anonymous to any-employee: every team reads every other team's proprietary extensions. It also strands the shipped `Visibility`/namespace model, which every other ecosystem already honours, and would have to be undone the day scoping lands |
-| One registry per team (`vsx-digital`, `vsx-sales`, …), registry-level RBAC only | Works, and is what an operator does today by hand. Every editor points at exactly one gallery URL, so a developer in two teams cannot see both; `ops`-shared extensions must be published N times; and the registry count grows with the org chart |
-| A separate ACL model for extensions | A second authorization model to hold in agreement with `check_visibility` and the SQL predicate. The known failure of two models is the listing/download divergence the existing predicate documents at length |
-| Namespace reader groups only, no per-extension override | Simpler schema and one lookup. Rejected: `ops` cannot keep a single extension private inside a namespace it shares, so the workaround is a second namespace per sharing shape |
-| Per-extension grants only, no namespace default | Maximum flexibility, but every new extension starts ungranted and sharing is re-declared per publish — grants drift apart within a namespace and nobody notices until someone cannot install |
-| A shared-with-everyone visibility instead of grants (`internal` for `ops`) | Covers "share with all" and nothing else; `ops` sharing with `digital` and `sales` but not with contractors is unrepresentable |
+| Raw single-line token file (no JSON) | No multi-registry support, no expiry metadata, and a second file format the day npm/cargo need credentials |
+| `token` as a literal string only | Forces every credential to rest in this file, including ones that already live somewhere better. It also makes the file the thing to steal, when it could have been a pointer |
+| A separate "credential helper" config beside the contract file | Two files to keep in agreement about one credential; the failure mode is a consumer reading the stale one |
+| No refresh information in the contract file | The consumer cannot tell "ask the CLI" from "the kubelet already rewrote it" from "sign in again". All three become a full login |
+| A refresh descriptor without an `owner` or a lock | Concurrent redeem of a rotating token is a replay; the IDP revokes the chain and both brokers hold nothing |
+| IPC between extension and patched core | Cross-process protocol to design, version and secure; the file + 401-retry achieves the same freshness with none of that surface |
+| Keeping namespace visibility in this RFC | Two independently shippable changes behind one review. Split to [RFC 0011-bis](/rfc/0011-bis-namespace-scoped-visibility) |
 
 ---
 
 ## 9. Rollout and compatibility
 
-- **Default behaviour**: auth disabled on VSX endpoints until enabled in server config; unpatched editors against an anonymous registry are unaffected. The patch with no credential available sends no header — patched che-code remains compatible with anonymous galleries.
-- **Config migration**: new server config section for VSX auth (issuer, audience, PAT toggle); additive, `CURRENT_CONFIG_VERSION` moves only if the config loader requires it at implementation time.
-- **Visibility migration is inert by default**: `team_namespaces.reader_groups` defaults to `'{}'` and `local_packages.reader_groups` to `NULL`, so every existing package resolves exactly as it does today — `team` means owner group, in every ecosystem, until an operator grants otherwise. Existing PATs carry an empty group snapshot and therefore lose no access they had (they had none: PAT identities have never carried groups); a user who needs their PAT to reach team extensions re-creates it. Say so in the release notes rather than letting it be discovered.
-- **Namespace separator change is not inert** and deserves its own line in review: a `digital` claim in a VSX registry starts matching `digital.*`, where before it matched nothing. Extensions already published as `team` under such a namespace become visible to the owner group — which is the intent, and is still a widening. Audit existing VSX namespace claims before rollout.
-- **Rollback for visibility**: clear the reader groups (a grant nobody holds denies nobody extra) or revert the migration; the separator revert returns the matcher to `/`-only, which restores today's deny-everything behaviour for dotted ids.
+- **Default behaviour**: auth disabled on VSX endpoints until enabled in server config; unpatched editors against an anonymous registry are unaffected. The patch with no credential sends no header.
+- **Config migration**: new server config section for VSX auth (issuer, audience, PAT toggle, cluster issuers); additive.
+- **Kubernetes prerequisites** (unchanged from the shipped provider): a projected `serviceAccountToken` volume with the Batlehub audience — *not* the default mount — and `system:auth-delegator` on the server's service account for TokenReview. **A provider with no `role_mappings` authenticates every pod in the cluster as `Anonymous` with provider-prefixed groups**: harmless, and exactly what "my team's extensions are missing" looks like. Reader grants in RFC 0011-bis must name the prefixed form (§4.5).
+- **The local proxy is opt-in and additive.** No proxy, no change: patched che-code keeps reading the contract file. Rolling back is pointing the editor's gallery URL back at the server.
 - **Operator prerequisites**: IDP OAuth2 client (public, PKCE, loopback + device code grants), JWKS reachable from the server, patched che-code image published, CLI present in workspace images.
-- **Rollback**: disable auth in server config (endpoints revert to anonymous); patched editors keep working (no header sent when no credential resolves); contract files and PAT table persist but become inert.
+- **Rollback**: disable auth in server config (endpoints revert to anonymous); patched editors keep working; contract files and PAT table persist but become inert.
 
 ---
 
 ## 10. Test plan
 
-- **Unit** (`server`): prefix dispatch, JWT validation (expiry, audience, issuer, key rotation), PAT hash lookup + scope + revocation, 401 challenge format.
-- **Unit** (`crates/core`): the resolution table of §4.4.3 exhaustively — admin bypass, `public` anonymous, `internal` authenticated, owner group, inherited readers, override readers, **`NULL` inherits vs `{}` denies**, missing claim denies, space-stripped group comparison. Separator drift test: every `RegistryKind` declares one; `openvsx`/`vscode-marketplace` declare `.`.
-- **Unit** (`crates/adapters`): `find_namespace` matches `digital.pipeline-tools` for a `digital` claim in a VSX registry and does **not** match it in a slash-separator registry; longest prefix still wins; `%` and `_` in a prefix stay literal.
-- **Equivalence** (`crates/adapters`, Postgres): the SQL predicate and the Rust gate agree on a fixture covering every row of §4.4.6 for every caller — the listing must never be more permissive than the download gate. This is the test that fails if only one of the two is edited.
-- **Unit** (`crates/core`): a reader list containing `*` grants read to a group literally named `*` and to nobody else — the no-wildcard rule of §4.4.3, asserted rather than assumed, in the Rust gate and in the SQL predicate alike.
-- **Unit** (`crates/adapters`): PAT groups round-trip through creation; a PAT cannot be created with a group its creator lacks; a groups-less PAT sees `public`/`internal` only.
-- **Unit** (`crates/batlehub-cli`): contract read-modify-write preserves foreign origins; atomic write; refresh triggered under `--min-ttl`; device code fallback selection.
-- **Unit** (patch, upstream test layout): resolution order; origin scoping incl. redirect drop; single 401-retry; unparseable file treated as no-credential.
+- **Unit** (`server`): prefix dispatch, JWT validation (expiry, audience, issuer, key rotation), PAT hash lookup + scope + revocation, 401 challenge format. A service account token minted for the cluster API audience is rejected; a non-JWT-shaped credential is never sent to the API server; VSX routes reject an unauthenticated request with the documented `WWW-Authenticate` challenge.
+- **Unit** (`cli/`, contract file): read-modify-write preserves foreign origins and unknown fields; atomic write; a `refresh` block round-trips for each `source`; a `token` source round-trips for each `from`, and the plain string reads as `inline`; `reresolve` on an `inline` token is refused; a non-`owner` consumer never redeems and reports "expired" instead of deleting the entry; two refreshers contend on the lock and exactly one redeems; a rotated refresh token replaces the stored one in the same atomic write. Every case is asserted against the shipped JSON Schema, not against a second copy of the rules.
+- **Unit** (`cli/`, source resolver): every `from` resolves; every failure mode — missing variable, absent file, refusing STS — yields "no credential" and one log line; an unknown `from` warns once; an `exchange` endpoint outside the trusted set is refused **before** the request is made; `subject` nested two levels is rejected at parse; a resolved value is never written back; `file` rejects a relative path and caps the read.
+- **Unit** (`cli/`, Kubernetes): `--kubernetes` auto-selection when `KUBERNETES_SERVICE_HOST` is set; a token whose `aud` lacks the Batlehub audience is rejected **client-side, before any TokenReview round trip**, with a message naming the audience it did carry; `--kubeconfig` never emits the token it read.
+- **Existing suite** (`crates/adapters`, `auth/kubernetes.rs`): must pass unchanged. In particular the case that refuses a token the API server authenticated but did not confirm bound to a requested audience — that test is the audience property, and a caching layer added in phase 2 must not be able to serve around it.
+- **Unit** (`cli/`, proxy): a request without the session segment is `404`; a bind to a non-loopback address is refused at startup; `assetUri`/`fallbackAssetUri` are rewritten to the capability base and foreign origins are left alone; a `.vsix` body streams rather than buffers.
+- **Unit** (`cli/`, bootstrap) — each row of §4.4.2, and the first two are regression tests for findings, not hypotheses: the synthetic entry always carries `Microsoft.VisualStudio.Code.Engine`; it always carries manifest and package assets; a `filterType: 7` query returns an empty `200` and a `filterType: 10` query returns exactly one entry; neither returns `401`; with a credential the entry is absent from both; an expired unrefreshable credential brings it back; the details asset escapes the device code.
+- **Unit** (`cli/`, status and doctor): `auth status` distinguishes `ok`/`expired`/`unset`/`refused`/`unreachable` as the underlying source changes; **no output path can emit a credential** — the summary type has no field for one; `doctor` exits non-zero on each failed step in turn, and its editor-URL step fails when the configured gallery URL does not match the proxy the CLI would start.
+- **Integration** (`cli/tests/integration.rs`, existing subprocess pattern): `auth status --json` against a seeded contract file; `auth source set` then `auth status` reflects the new source without a restart.
+- **Integration** (proxy + server): unauthenticated start → sign-in entry → device code login → re-query returns the caller's set; a token that expires mid-`.vsix` is refreshed by the proxy without the download failing — the case the 401-retry patch cannot cover.
 - **Integration** (`server` + CLI): full PKCE login → `write-token-file` → authenticated search/download; PAT lifecycle create → use → revoke → 401.
-- **Integration** (canary workspace): patched che-code against short-TTL tokens; install a `.vsix` larger than one token lifetime to exercise the retry.
-- **Integration** (`crates/web`, new `local_openvsx_visibility.rs`): the §4.4.6 estate published once, then queried as `digital`, `sales`, `ops`, an authenticated no-group user, and anonymously — through `extensionquery`, `/api/-/search`, `/api/{namespace}` and the direct download route. Asserts the exact visible sets, that a hidden extension is **absent rather than 403** in every listing, that `/api/digital` is `404` for `sales`, and that direct download is `403`.
-- **Integration** (`crates/web`): a reader-group member cannot yank, delete, set visibility, or edit grants on the extension they can read — the read/write split of §4.4.3.
-- **Real client** (per the project's standing practice that route tests are not client tests): `code --install-extension ops.k8s-helper` succeeds as `digital` and fails as a contractor, and the Extensions view lists exactly the expected set for each of the three developers.
-- **Existing suites** that must pass unchanged: VSX API conformance tests with auth disabled — proves the anonymous path is untouched; extension publishing suite — proves publishing flow isolation; the full existing visibility/namespace suites with no reader groups set — proves the grant model is inert until used, in every ecosystem.
+- **Unit** (patch, upstream test layout): resolution order; origin scoping incl. redirect drop; single 401-retry; unparseable file treated as no-credential; a `token` source object yields no credential and falls through to the environment variable.
+- **Real client** (per the project's standing practice that route tests are not client tests, and per §4.4.4 which could not exercise the view): a canary workspace with a real Extensions view — the sign-in entry appears in search and browse, its README renders, Install succeeds, and after login the view lists the caller's extensions. Plus `code --install-extension` against short-TTL tokens, with a `.vsix` larger than one token lifetime.
+- **Existing suites** that must pass unchanged: VSX API conformance with auth disabled — proves the anonymous path is untouched; the extension publishing suite — proves publishing flow isolation.
 
 ---
 
@@ -438,39 +931,49 @@ flowchart TD
 
 | # | Question | Decision |
 | --- | -------- | -------- |
-| 1 | Sidecar proxy vs application-layer auth | **Application-layer.** Sidecar rejected for security reasons. |
-| 2 | Contract file format | **JSON, versioned, keyed by registry origin.** Multi-registry from day one; expiry metadata included. |
+| 1 | Sidecar proxy vs application-layer auth | **Application-layer, plus a user-owned local proxy as a second transport.** The platform-operated sidecar stays rejected. `batlehub proxy serve` has the editor's own uid and lifetime, binds an ephemeral loopback port behind a capability path, and is the only way to authenticate an editor whose core we do not build. The original rejection was of the packaging, and it does not transfer unexamined. |
+| 2 | Contract file format | **JSON, versioned, keyed by registry origin**, with a shipped JSON Schema as the normative definition. Unknown fields ignored and preserved, so an added field is not a version bump. |
 | 3 | Contract file location | **Dynamic, `$HOME`-relative**: `$BATLEHUB_HOME/state/vsx-token.json`, `BATLEHUB_HOME` defaulting to `$HOME/.batlehub`. |
 | 4 | Extension chain: env vs existing file | **Contract file first, then env.** |
-| 5 | Token formats | **Both** OIDC access/refresh and PATs, prefix-dispatched server-side. |
-| 6 | Patch ↔ extension coupling | **None.** The file is the contract; patch stays generic and upstreamable. |
-| 7 | CLI existence | **To be created in this workstream**, with OAuth2 built in. |
-| 8 | Scope of authorization: all-or-nothing `vsx:read` vs per-namespace visibility | **Per-namespace, in this RFC.** Authentication alone leaves every team's proprietary extensions readable by every other team. Reversed from the original draft's non-goal. |
-| 9 | Grant granularity | **Both**: namespace default (`team_namespaces.reader_groups`) with a per-extension override (`local_packages.reader_groups`, `NULL` = inherit). Namespace-only cannot express "one private extension in a shared namespace"; extension-only makes grants drift within a namespace. |
-| 10 | New ACL model vs the shipped `Visibility` + namespace model | **Reuse the shipped model.** A second model is a second thing to keep in agreement with the download gate and the SQL listing predicate. |
-| 11 | Where filtering happens | **Server-side, in the entry builders every protocol renders from.** No client filters; clients receive only what the caller may see. |
-| 12 | How a PAT gets groups | **Snapshot at creation**, capped to the creator's own groups. A PAT has no session to re-resolve from; the cost is staleness, bounded by TTL and revocation. |
-| 13 | Direct download of a `team` extension by a non-member: `403` or `404` | **`403`**, keeping today's `check_visibility` behaviour. The caller already holds the exact coordinate, so the existence oracle is weak; changing it means touching a gate every ecosystem shares, to hide something the requester already knew. Listings stay on absence (§4.4.5) — that is where enumeration is actually cheap. |
-| 14 | "Share with all authenticated users": reserved group token in a reader list, or `internal` visibility | **`internal`.** One way to say a thing. A reserved token (`*`, `@authenticated`) would put a second, invisible rule inside the reader-set comparison and inside the SQL predicate, and would collide the day a real IDP group is named the same. A namespace that wants everyone sets `internal` on the package. |
+| 5 | Token formats | **Three**: OIDC access/refresh, PATs, Kubernetes service account tokens — resolved by the existing `AuthProvider` chain, each provider asserting its own audience. |
+| 6 | Patch ↔ extension coupling | **None.** The file is the contract; the patch reads a literal string and stays upstreamable. |
+| 7 | CLI existence | **It already exists** — `cli/` (`batlehub-cli`), clap plus a ratatui TUI, with `auth login/logout/whoami/refresh`, `auth token` CRUD, profile storage at `0600`, OIDC refresh with auto-renewal, and `auth login --kubernetes-token-path`. An earlier draft called for creating it. This workstream extends it, adds no second credential store, and adds no TUI screen. |
+| 8 | Local proxy transport | **Loopback TCP behind a capability URL.** A unix socket is the transport whose permissions mean something, and the editor cannot speak it. Ephemeral port plus a per-session path segment restores the "knows a secret in a `0600` file" property; a fixed port with no capability path does not. |
+| 9 | What the proxy answers with no credential | **`200` with a single `batlehub.sign-in` entry whose details asset is the login page.** A `401` blanks the Extensions view behind a generic error. Authentication state is content, not a status code. |
+| 10 | Whether the sign-in entry is installable | **Yes — it carries `Code.Engine`, a manifest, and the `batlehub-vsx` package.** An earlier draft said no, on the grounds that manifest validation, engine matching and signature policy were too much surface. §4.4.4 tested all three: the engine property is *mandatory* or the entry vanishes, the manifest is one JSON, and an unsigned package from a custom gallery installs. Refusing to serve a package leaves the Install button as a dead end and forfeits the re-query after login. Reversed on evidence. |
+| 11 | Fully silent workspace startup: device code vs a provisioned per-user PAT | **Neither — the pod's own Kubernetes identity** (§4.5). No browser, no provisioning pipeline, no long-lived secret, and it re-resolves groups on every rotation. Device code remains the fallback outside a pod. |
+| 12 | Kubernetes token validation path | **Keep the shipped TokenReview provider, and cache it.** An earlier draft made offline JWKS the default and TokenReview the opt-in; `crates/adapters/src/auth/kubernetes.rs` already does TokenReview with a two-directional audience check that is stricter than the reference authenticator. Replacing a working, audience-strict implementation to save a round trip is a proposal of its own, not a clause in this one (open question 7). |
+| 13 | `~/.kube/config` as a credential source | **Only as a minting key, never as a credential.** `--kubeconfig` calls `TokenRequest` for an audience-scoped token and says which RBAC verb is missing when it cannot. |
+| 14 | How the contract file represents refresh | **A `refresh` descriptor, not a refresh token**: `cli`, `reresolve`, `inline`, `none`, plus who may redeem. The refresh token itself is inline only where the writer has no secret store. |
+| 15 | Concurrent refresh | **One `owner` per entry, plus a lock, plus atomic read-modify-write.** With rotating public-client refresh tokens, two redeemers are a replay. |
+| 16 | Literal token vs indirection | **`token` is a string or a source**: `inline`, `env`, `file`, `exchange`, with `keychain` reserved. A credential that already lives somewhere should be pointed at, not copied into a file several processes read. |
+| 17 | A `command` token source | **Dropped.** It turns write access to an operator-authored file into code execution in the editor's process, to cover a case `keychain` covers more narrowly. An earlier draft kept it behind a deployment gate; a gate is a weak control for that size of capability. |
+| 18 | A cluster-audience token as a Batlehub credential | **Only through `exchange`.** An STS validating the subject and minting a Batlehub-audience token re-establishes the audience; forwarding ignores it. Same token, opposite security properties, and the difference is which party asserted the audience. |
+| 19 | Where this configuration is managed | **In the shipped CLI and TUI** (§4.6): `auth status`, `auth source`, `auth doctor`, `proxy status`, plus the existing `Screen::Login` and `Screen::IdeSetup`. A format whose failure mode is a silently shorter extension list needs a command that says why. |
+| 20 | Scope: authentication vs authorization | **Split.** [RFC 0011-bis](/rfc/0011-bis-namespace-scoped-visibility) owns which extensions a caller may see; it touches every ecosystem's SQL predicate and needs no editor to test. This RFC stops at producing an `Identity` with groups. |
 
 ### Still open
 
-1. Fully silent Che workspace startup: device code flow on first use vs a user-scoped PAT provisioned through the secrets pipeline. Trade-off: first-run friction vs a long-lived secret per user. Recommendation: device code by default, PAT provisioning as an opt-in per deployment.
-2. PAT policy: maximum TTL and whether expiry is mandatory. Now an access-control question, not hygiene (§4.4.4): the TTL bounds how long a stale group snapshot grants read. Recommendation: default 90 days, hard cap 1 year, no non-expiring PATs.
-3. Fallback marketplace offline behaviour: cache search results for degraded network, or fail visibly. Recommendation: fail visibly in v1. If caching lands, the cache is keyed by identity — a shared cache would serve one team's filtered list to another.
-4. RFC number and `Touches` paths to be aligned with the repository layout at merge time.
-5. Group nesting/transitivity: grants match flat group ids as the IDP emits them. If the IDP nests groups, expansion is the IDP's job. Recommendation: leave flat, revisit only if a deployment needs it.
+1. **Who supervises `proxy serve` in a workspace.** A DevWorkspace container command, a user-run process, or a supervisor entry: when it dies the Extensions view dies with it. Recommendation: workspace container command with restart, and a status line in the CLI when the editor's configured gallery URL points at a proxy that is not answering.
+2. **How the capability URL reaches each editor build.** che-code is ours; VSCodium and derivatives each have their own gallery-URL mechanism, and `--print-gallery-url` assumes a startup script exists to consume it. Recommendation: document one recipe per supported build rather than invent a generic injector.
+3. **Whether an unauthenticated proxy also serves anonymously-readable proxied extensions** alongside the sign-in entry. A server-side anonymous-read decision; this RFC's default is no.
+4. **Fallback marketplace offline behaviour**: cache search results for degraded network, or fail visibly. Recommendation: fail visibly in v1. If caching lands, the cache is keyed by identity — a shared cache would serve one team's filtered list to another. The same rule applies to any cache the proxy grows.
+5. **Whether the proxy embeds the `batlehub-vsx` package or fetches it from the registry.** Embedding makes the bootstrap work before any extension is published and keeps the channel narrow (§7); fetching keeps one copy. Recommendation: embed, and treat the size as the cost of a bootstrap that works offline.
+6. Where the VS Code extension lives in the repository layout.
+7. **Whether Kubernetes validation should move off TokenReview** to offline JWKS via the cluster's issuer-discovery endpoint. It removes an API-server round trip from a hot path; it also replaces a shipped implementation whose audience check is stricter than the reference authenticator's, and offline validation has no equivalent of `status.audiences` — it asserts `aud` from the token itself rather than having the API server confirm the binding. Recommendation: cache first, measure, and only then decide. Not this RFC.
 
 ---
 
 ## 12. Implementation phases
 
-| Phase | Content |
-| ----- | ------- |
-| 1     | `server`: Bearer middleware (OIDC + PAT), PAT management API **with group snapshot** (G1). `crates/batlehub-cli`: `auth login/token/write-token-file/logout`, `pat create`. |
-| 1-bis | Visibility: namespace separator per `RegistryKind` (G2), reader groups on namespace and package (G3), migration, matcher + SQL predicate in one commit, readers API, resolution tests and the equivalence test. Independent of the client work — **ships and is testable through `ovsx` and `curl` before any editor is patched**, which is also the order that keeps the two workstreams unblocked. |
-| 2     | che-code patch: credential resolution, origin-scoped injection, 401-retry; patched image in CI; canary workspace with short-TTL tokens. |
-| 2-bis | `ui/`: readers multi-select on `AdminTeamNamespaces.vue`, per-extension override control with the inherited/override/owner-only states, owner-facing control on `MyNamespace.vue`, PAT groups shown on `TokensPage.vue`. |
-| 3     | `batlehub-vsx` broker mode: mode detection, credential chain, contract-file upkeep, status-bar state. |
-| 4     | `batlehub-vsx` fallback marketplace: view, install, dependency resolution, update diff; desktop VS Code/VSCodium validation. Renders the server's filtered entries; no client-side filtering. |
-| 5     | Upstream PR against `che-incubator/che-code`; adjust per review; fallback mode retained regardless of outcome. |
+| Phase | Content | Depends on |
+| ----- | ------- | ---------- |
+| 1 | `server`: Bearer middleware (OIDC + PAT), multi-issuer JWT path, PAT management API. `cli/`: `auth token`, `auth write-token-file`, and `auth status`/`source`/`doctor` — the last three land here rather than later, because they are how every subsequent phase is debugged. | — |
+| 2 | Kubernetes delta (§4.5.1): client-side `aud`/`exp` assertion with a message that names the audience, `--kubernetes` auto-detection, `--kubeconfig` minting via `TokenRequest`, the `file` + `reresolve` contract entry, and a TokenReview response cache. The provider itself ships. Testable with `curl` and a mounted token before any editor is involved. | 1 |
+| 3 | `batlehub proxy serve` (§4.4): loopback bind + capability URL, credential attachment, absolute-URL rewriting, streaming. | 1 |
+| 4 | The unauthenticated bootstrap (§4.4.2) and the login surface on the same server, including the `Code.Engine` property and the package assets that §4.4.4 showed to be mandatory. | 3 |
+| 5 | che-code patch: credential resolution, origin-scoped injection, 401-retry; patched image in CI; canary workspace with short-TTL tokens **and a real Extensions view**, which is the gap §4.4.4 could not close. | 1 |
+| 6 | `cli/` TUI: `Screen::Login` shows credential state per registry, `Screen::IdeSetup` shows and applies the proxy's gallery URL for the detected editor. | 3 |
+| 7 | `batlehub-vsx` broker mode: mode detection, credential chain, contract-file upkeep, status-bar state, re-query after login. Becomes the package the bootstrap serves. | 4 |
+| 8 | `batlehub-vsx` fallback marketplace for builds whose gallery URL cannot be repointed — stock VS Code above all. | 7 |
+| 9 | Upstream PR against `che-incubator/che-code`; adjust per review; the proxy and fallback remain regardless of outcome. | 5 |

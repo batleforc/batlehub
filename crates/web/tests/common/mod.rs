@@ -158,6 +158,10 @@ impl RegistryClient for FixedRegistry {
                 };
                 Ok(VersionDocument::json(serde_json::json!({
                     "name": package,
+                    // In npm's canonical spelling, which is not a URL a browser
+                    // opens — the page must show the rewritten form.
+                    "repository": { "type": "git", "url": format!("git+https://github.com/acme/{package}.git") },
+                    "homepage": format!("https://acme.example/{package}"),
                     "dist-tags": { "latest": "1.1.0", "next": "2.0.0-beta.1" },
                     "versions": {
                         "1.0.0": tarball("1.0.0"),
@@ -781,6 +785,17 @@ pub struct ConfigureAppDefaults {
     /// existing explore assertion keeps meaning what it meant; a file that is
     /// about prose search turns it on for its own app.
     pub readme_search: bool,
+    /// The configured OIDC provider names `POST /api/v1/auth/tokens` accepts.
+    /// **Empty by default** — no OIDC configured means nobody mints a PAT, which
+    /// is what an app that isn't about token creation should model. The token
+    /// suite sets it to whatever its OIDC-style provider calls itself.
+    pub oidc_provider_names: batlehub_web::OidcProviderNames,
+    /// One-time store for in-flight OIDC logins. Process-local by default; the
+    /// SSO suite keeps its own handle so it can seed and inspect entries.
+    pub login_states: Arc<dyn batlehub_core::ports::LoginStateStore>,
+    /// Browser-login flows. Empty by default, so `/auth/oidc/*` answers 503 in
+    /// every suite that is not about SSO; the SSO suite points one at a mock IdP.
+    pub sso_flows: Vec<batlehub_adapters::auth::OidcSsoFlow>,
 }
 
 impl Default for ConfigureAppDefaults {
@@ -797,6 +812,9 @@ impl Default for ConfigureAppDefaults {
             user_block_repo: Arc::new(InMemoryUserBlockRepository::new()),
             ip_block_store: Arc::new(InMemoryIpBlockStore::new()),
             readme_search: false,
+            oidc_provider_names: batlehub_web::OidcProviderNames::default(),
+            login_states: batlehub_adapters::in_memory::InMemoryLoginStateStore::arc(),
+            sso_flows: Vec::new(),
         }
     }
 }
@@ -816,7 +834,9 @@ pub fn configure_test_app(
         access_config,
         registry_map,
         defaults.upstream_map,
-        vec![],
+        defaults.sso_flows,
+        defaults.oidc_provider_names,
+        defaults.login_states,
         defaults.warming_map,
         defaults.eviction_map,
         defaults.proxy_metrics,
@@ -1272,6 +1292,46 @@ pub async fn build_local_registry_app(
     Error = actix_web::Error,
 > {
     build_local_registry_app_with(parts, cargo_indexes, sbom_svc, false).await
+}
+
+/// [`build_local_registry_app`], with the whole `ConfigureAppDefaults` supplied.
+///
+/// For suites that need to configure something the two narrower entry points do
+/// not expose — the SSO suite wiring a browser-login flow at a mock identity
+/// provider, for instance. Everything else should keep using the narrow ones,
+/// so a new default reaches every suite without each of them restating it.
+pub async fn build_local_registry_app_with_defaults(
+    parts: LocalRegistryAppParts,
+    cargo_indexes: batlehub_web::CargoIndexMap,
+    defaults: ConfigureAppDefaults,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let LocalRegistryAppParts {
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        mode_map,
+    } = parts;
+
+    finish_test_app(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        mode_map,
+        cargo_indexes,
+        defaults,
+        test_auth_providers(),
+    )
+    .await
 }
 
 /// [`build_local_registry_app`], with `[search] readmes` set explicitly.

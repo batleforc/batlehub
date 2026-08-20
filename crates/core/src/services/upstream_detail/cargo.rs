@@ -36,5 +36,9 @@ pub(super) fn read(doc: &VersionDocument) -> UpstreamDetail {
     UpstreamDetail {
         versions,
         readmes: Default::default(),
+        // The index carries `vers`, `deps`, `cksum` and `yanked` — no
+        // `repository`. That is in the crates.io API document the client reads
+        // on a resolve, so the link comes from the metadata cache or not at all.
+        links: None,
     }
 }

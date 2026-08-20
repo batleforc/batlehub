@@ -17,6 +17,9 @@ pub(super) fn read(doc: &VersionDocument) -> UpstreamDetail {
             .map(UpstreamVersion::bare)
             .collect(),
         readmes: Default::default(),
+        // `<scm>` is in the POM, one document per version, not in
+        // `maven-metadata.xml`.
+        links: None,
     }
 }
 

@@ -21,6 +21,7 @@ pub mod ops;
 pub mod storage;
 
 pub use artifact_meta::NoopArtifactMetaRepository;
+pub use auth::login_states::InMemoryLoginStateStore;
 pub use auth::user_tokens::NullUserTokenRepository;
 pub use governance::beta_channel::InMemoryBetaChannelStore;
 pub use governance::ownership::InMemoryOwnershipStore;

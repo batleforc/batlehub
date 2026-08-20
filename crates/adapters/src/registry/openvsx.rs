@@ -5,7 +5,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 use batlehub_core::{
-    entities::{MetadataReadme, PackageId, PackageMetadata, ReadmeFormat},
+    entities::{MetadataLinks, MetadataReadme, PackageId, PackageMetadata, ReadmeFormat},
     error::CoreError,
     ports::{FetchedArtifact, RegistryClient, UpstreamPackage},
 };
@@ -70,6 +70,13 @@ struct OpenVsxExtension {
     #[serde(rename = "downloadCount", default)]
     download_count: u64,
     verified: Option<bool>,
+    /// The extension's own repository, as its `package.json` declared it — so
+    /// usually a clone URL keeping its `.git`, which `MetadataLinks` turns back
+    /// into the page it names.
+    #[serde(default)]
+    repository: Option<String>,
+    #[serde(default)]
+    homepage: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -132,6 +139,7 @@ impl RegistryClient for OpenVsxRegistryClient {
                 MetadataReadme::linked(url, ReadmeFormat::Markdown)
             }),
             "all_versions_count": ext.all_versions.len(),
+            "links": MetadataLinks::new(ext.repository.as_deref(), ext.homepage.as_deref()),
         });
 
         Ok(PackageMetadata {
@@ -708,6 +716,68 @@ mod tests {
         assert_eq!(found.content, None);
         // Markdown by protocol, decided before anything is fetched.
         assert_eq!(found.format, ReadmeFormat::Markdown);
+    }
+
+    /// An extension's `repository` reaches the console as a page, not as a
+    /// clone URL.
+    ///
+    /// OpenVSX republishes what the extension's `package.json` declared, which
+    /// is `…/vscode-yarn.git` for essentially every extension there — the exact
+    /// string a reader cannot open.
+    #[tokio::test]
+    async fn the_repository_and_homepage_become_openable_links() {
+        let mut server = Server::new_async().await;
+        let body = r#"{"namespace":"ms-python","name":"python","version":"2023.20.0",
+            "repository":"https://github.com/microsoft/vscode-python.git",
+            "homepage":"https://code.visualstudio.com/docs/python/python-tutorial",
+            "files":{}}"#;
+        let _mock = server
+            .mock("GET", "/api/ms-python/python/2023.20.0")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let meta = client
+            .resolve_metadata(&pkg("ms-python.python", "2023.20.0"))
+            .await
+            .unwrap();
+
+        let links = MetadataLinks::from_extra(&meta.extra).expect("links captured");
+        assert_eq!(
+            links.repository.as_deref(),
+            Some("https://github.com/microsoft/vscode-python"),
+            "the `.git` is the clone URL, not the page"
+        );
+        assert_eq!(
+            links.homepage.as_deref(),
+            Some("https://code.visualstudio.com/docs/python/python-tutorial")
+        );
+    }
+
+    /// An extension that declared neither gets no links at all, rather than an
+    /// object of nulls the console would have to special-case.
+    #[tokio::test]
+    async fn an_extension_declaring_neither_carries_no_links() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/api/ms-python/python/2023.20.0")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"namespace":"ms-python","name":"python","version":"2023.20.0","files":{}}"#,
+            )
+            .create_async()
+            .await;
+
+        let client = OpenVsxRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let meta = client
+            .resolve_metadata(&pkg("ms-python.python", "2023.20.0"))
+            .await
+            .unwrap();
+        assert_eq!(MetadataLinks::from_extra(&meta.extra), None);
     }
 
     /// The read is bounded: an upstream must not be able to make this buffer a

@@ -39,5 +39,8 @@ pub(super) fn read(doc: &VersionDocument) -> UpstreamDetail {
     UpstreamDetail {
         versions,
         readmes: Default::default(),
+        // The versions API answers about versions; `source_code_uri` and
+        // `homepage_uri` are on `/api/v1/gems/{name}.json`, a different read.
+        links: None,
     }
 }

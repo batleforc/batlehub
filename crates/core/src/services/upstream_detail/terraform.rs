@@ -22,6 +22,8 @@ pub(super) fn read(doc: &VersionDocument) -> UpstreamDetail {
     UpstreamDetail {
         versions,
         readmes: Default::default(),
+        // `source` is on the module *detail* document, not on the version list.
+        links: None,
     }
 }
 

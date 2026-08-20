@@ -55,10 +55,18 @@ async function setAuth(identity: MeResponse | null, token: string): Promise<void
 }
 
 /** Navigate and resolve to the final path (after any guard redirect). */
-async function go(to: string | { path: string; query?: Record<string, string> }): Promise<string> {
+async function go(
+  to: string | { path: string; query?: Record<string, string>; hash?: string },
+): Promise<string> {
   await router.push(to);
   await router.isReady();
   return router.currentRoute.value.path;
+}
+
+/** Build the `#…` the backend now redirects to. Tokens ride in the fragment so
+ *  they never reach the server hosting this SPA — see `handleOidcCallback`. */
+function oidcFragment(params: Record<string, string>): string {
+  return `#${new URLSearchParams(params)}`;
 }
 
 describe("router navigation guards (integration)", () => {
@@ -182,13 +190,13 @@ describe("router navigation guards (integration)", () => {
     const state = generateOidcState();
     const path = await go({
       path: "/login",
-      query: {
+      hash: oidcFragment({
         oidc_access_token: "access-xyz",
         oidc_refresh_token: "refresh-xyz",
         oidc_expires_in: "3600",
         oidc_state: state,
         oidc_provider: "keycloak",
-      },
+      }),
     });
     expect(path).toBe("/packages");
     expect(localStorage.getItem("batlehub_access_token")).toBe("access-xyz");
@@ -200,7 +208,7 @@ describe("router navigation guards (integration)", () => {
     generateOidcState(); // a different expected state is stored
     const path = await go({
       path: "/login",
-      query: { oidc_access_token: "access-xyz", oidc_state: "forged-state" },
+      hash: oidcFragment({ oidc_access_token: "access-xyz", oidc_state: "forged-state" }),
     });
     expect(path).toBe("/login");
     /* The guard forwards a catalogue *key*, not a sentence: it has no `setup`,
@@ -217,7 +225,21 @@ describe("router navigation guards (integration)", () => {
     sessionStorage.clear(); // nothing was generated → no expected state
     const path = await go({
       path: "/login",
-      query: { oidc_access_token: "access-xyz", oidc_state: "whatever" },
+      hash: oidcFragment({ oidc_access_token: "access-xyz", oidc_state: "whatever" }),
+    });
+    expect(path).toBe("/login");
+    expect(localStorage.getItem("batlehub_access_token")).toBeNull();
+  });
+
+  it("ignores tokens offered in the query string", async () => {
+    /* The fragment is the whole point of the change: a query string reaches the
+       server hosting this SPA and lands in its access log. If a callback ever
+       arrives shaped the old way, it must not authenticate anyone. */
+    await setAuth(ANON, "");
+    const state = generateOidcState();
+    const path = await go({
+      path: "/login",
+      query: { oidc_access_token: "access-xyz", oidc_state: state },
     });
     expect(path).toBe("/login");
     expect(localStorage.getItem("batlehub_access_token")).toBeNull();

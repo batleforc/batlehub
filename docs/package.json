@@ -12,8 +12,11 @@
   },
   "devDependencies": {
     "axe-core": "4.13.0",
+    "jsdom": "^30.0.1",
+    "mermaid": "^11.17.0",
     "puppeteer-core": "25.7.0",
-    "vitepress": "^1.6.4"
+    "vitepress": "^1.6.4",
+    "vitepress-plugin-mermaid": "^2.0.17"
   },
   "dependencies": {
     "hash-wasm": "^4.12.0"

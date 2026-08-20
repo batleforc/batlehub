@@ -79,13 +79,11 @@ pub fn render_capturing_images(
         ReadmeFormat::Markdown => markdown_to_html(source, opts),
         // Not re-rendered, only filtered — except that its images become chips
         // like a markdown document's do, for the reason in `chip_html_images`.
-        // An `Html`-format README is one document, so its anchor depth starts at
-        // zero and is tracked across the whole of it in a single call.
-        ReadmeFormat::Html if strips_images(opts) => chip_html_images(source, &[], &mut 0),
+        ReadmeFormat::Html if strips_images(opts) => chip_html_images(source, &[]),
         // Proxying from named hosts only: an HTML README's images take the same
         // per-image decision a markdown one's do.
         ReadmeFormat::Html if !opts.image_hosts.is_empty() => {
-            chip_html_images(source, &opts.image_hosts, &mut 0)
+            chip_html_images(source, &opts.image_hosts)
         }
         ReadmeFormat::Html => source.to_owned(),
         // No markup means no images, and an early return keeps that a fact about
@@ -236,12 +234,6 @@ fn strip_images<'a>(parser: Parser<'a>, keep_hosts: &[String]) -> Vec<Event<'a>>
     events, not a string — survives intact. */
     let mut buffered: Vec<Event<'a>> = Vec::new();
     let mut keep = false;
-    // The image's own URL, for the chip to link to when it is not being kept.
-    let mut src = String::new();
-    // Whether the image being chipped is already inside the author's own link —
-    // see `chip_href`. A counter, not a bool: markdown nests, and an image in
-    // the alt text of an image inside a link is not impossible.
-    let mut link_depth = 0usize;
 
     for event in parser {
         match event {
@@ -249,7 +241,6 @@ fn strip_images<'a>(parser: Parser<'a>, keep_hosts: &[String]) -> Vec<Event<'a>>
                 if depth == 0 {
                     alt.clear();
                     host = url_host(dest_url);
-                    src = dest_url.to_string();
                     keep = !keep_hosts.is_empty() && image_host_allowed(dest_url, keep_hosts);
                     buffered.clear();
                 }
@@ -257,17 +248,6 @@ fn strip_images<'a>(parser: Parser<'a>, keep_hosts: &[String]) -> Vec<Event<'a>>
                 if keep {
                     buffered.push(event);
                 }
-            }
-            // Counted, then passed through unchanged. The author's link is not
-            // this function's business except as the thing a chip must not nest
-            // inside.
-            Event::Start(Tag::Link { .. }) if depth == 0 => {
-                link_depth += 1;
-                out.push(event);
-            }
-            Event::End(TagEnd::Link) if depth == 0 => {
-                link_depth = link_depth.saturating_sub(1);
-                out.push(event);
             }
             Event::End(TagEnd::Image) => {
                 depth = depth.saturating_sub(1);
@@ -279,11 +259,7 @@ fn strip_images<'a>(parser: Parser<'a>, keep_hosts: &[String]) -> Vec<Event<'a>>
                         out.append(&mut buffered);
                         keep = false;
                     } else {
-                        out.push(Event::Html(CowStr::from(chip(
-                            &alt,
-                            host.as_deref(),
-                            chip_href(&src, link_depth > 0),
-                        ))));
+                        out.push(Event::Html(CowStr::from(chip(&alt, host.as_deref()))));
                     }
                 }
             }
@@ -292,10 +268,10 @@ fn strip_images<'a>(parser: Parser<'a>, keep_hosts: &[String]) -> Vec<Event<'a>>
             // than `![…]()` would otherwise reach the sanitiser as an element
             // that is not in the allow-list, and vanish entirely.
             Event::Html(html) if depth == 0 => out.push(Event::Html(CowStr::from(
-                chip_html_images(&html, keep_hosts, &mut link_depth),
+                chip_html_images(&html, keep_hosts),
             ))),
             Event::InlineHtml(html) if depth == 0 => out.push(Event::InlineHtml(CowStr::from(
-                chip_html_images(&html, keep_hosts, &mut link_depth),
+                chip_html_images(&html, keep_hosts),
             ))),
             // Inside an image, everything is alt text — collected for the chip,
             // and buffered too when the image is being kept.
@@ -350,15 +326,7 @@ fn strip_images<'a>(parser: Parser<'a>, keep_hosts: &[String]) -> Vec<Event<'a>>
 /// a missing chip, which is exactly the behaviour being fixed, never a tag that
 /// survives: anything this pass leaves behind faces the same allow-list it would
 /// have faced anyway.
-/// `link_depth` is the caller's, and is **carried across calls**. It has to be:
-/// `pulldown-cmark` hands a run of inline HTML over as separate events, so
-/// `<a href="…">`, the `<img>` inside it and `</a>` arrive in three calls. A
-/// counter local to one call is zero when the `<img>` shows up, and the chip
-/// then links — nesting an anchor inside the author's, which `html5ever`
-/// unnests by emptying theirs. That is the failure this parameter exists to
-/// prevent, and the raw-HTML half of
-/// `a_chip_never_nests_inside_the_authors_own_link` is what catches it.
-fn chip_html_images(html: &str, keep_hosts: &[String], link_depth: &mut usize) -> String {
+fn chip_html_images(html: &str, keep_hosts: &[String]) -> String {
     let bytes = html.as_bytes();
     let mut out = String::with_capacity(html.len());
     let mut i = 0usize;
@@ -366,21 +334,15 @@ fn chip_html_images(html: &str, keep_hosts: &[String], link_depth: &mut usize) -
     while i < bytes.len() {
         let Some(start) = find_img_tag(html, i) else {
             out.push_str(&html[i..]);
-            *link_depth = link_depth.saturating_add_signed(anchor_delta(&html[i..]));
             return out;
         };
         let Some(end) = tag_end(bytes, start) else {
             // An unterminated tag is not a tag. Left as it is, for the
             // sanitiser's parser to make of what it will.
             out.push_str(&html[i..]);
-            *link_depth = link_depth.saturating_add_signed(anchor_delta(&html[i..]));
             return out;
         };
-        let skipped = &html[i..start];
-        out.push_str(skipped);
-        // Every `<a>` opened and closed in the text we just copied, so the chip
-        // below knows whether it would be nesting inside the author's own link.
-        *link_depth = link_depth.saturating_add_signed(anchor_delta(skipped));
+        out.push_str(&html[i..start]);
         let tag = &html[start..end];
         let src = tag_attribute(tag, "src").unwrap_or_default();
         if !keep_hosts.is_empty() && image_host_allowed(&src, keep_hosts) {
@@ -389,53 +351,11 @@ fn chip_html_images(html: &str, keep_hosts: &[String], link_depth: &mut usize) -
             out.push_str(tag);
         } else {
             let alt = tag_attribute(tag, "alt").unwrap_or_default();
-            out.push_str(&chip(
-                &alt,
-                url_host(&src).as_deref(),
-                chip_href(&src, *link_depth > 0),
-            ));
+            out.push_str(&chip(&alt, url_host(&src).as_deref()));
         }
         i = end;
     }
     out
-}
-
-/// Net change in open-`<a>` depth across a fragment.
-///
-/// A scan rather than a parse, for the same reason the rest of this function is
-/// one: the sanitiser owns correctness, and the worst a miscount can do here is
-/// give a chip a link it should not have had (which `html5ever` then unnests) or
-/// withhold one it could have had. Neither is a security boundary.
-///
-/// `<a` must be followed by something that ends the name, or `<abbr>` would
-/// count as a link.
-fn anchor_delta(fragment: &str) -> isize {
-    let bytes = fragment.as_bytes();
-    let mut delta = 0isize;
-    let mut i = 0usize;
-    while let Some(offset) = fragment[i..].find('<') {
-        let at = i + offset;
-        let rest = &bytes[at..];
-        if rest.len() >= 2 && rest[1] == b'/' {
-            if rest.len() >= 3
-                && rest[2].eq_ignore_ascii_case(&b'a')
-                && rest
-                    .get(3)
-                    .is_none_or(|c| c.is_ascii_whitespace() || *c == b'>')
-            {
-                delta -= 1;
-            }
-        } else if rest.len() >= 2
-            && rest[1].eq_ignore_ascii_case(&b'a')
-            && rest
-                .get(2)
-                .is_none_or(|c| c.is_ascii_whitespace() || *c == b'>' || *c == b'/')
-        {
-            delta += 1;
-        }
-        i = at + 1;
-    }
-    delta
 }
 
 /// The offset of the next `<img` that actually opens an `img` tag.
@@ -584,7 +504,7 @@ pub(super) fn url_host(url: &str) -> Option<String> {
 /// the package. The sanitiser would catch it either way — this markup goes
 /// through the same pass as the author's own — but building an injection and
 /// relying on the next stage to remove it is not a thing to write on purpose.
-fn chip(alt: &str, host: Option<&str>, href: Option<&str>) -> String {
+fn chip(alt: &str, host: Option<&str>) -> String {
     let escape = |s: &str| {
         s.replace('&', "&amp;")
             .replace('<', "&lt;")
@@ -596,42 +516,13 @@ fn chip(alt: &str, host: Option<&str>, href: Option<&str>) -> String {
     } else {
         escape(alt.trim())
     };
-    let title = match host {
-        Some(host) => format!(r#" title="{}""#, escape(host)),
-        None => String::new(),
-    };
-    match href {
-        // A link is a *click*, not a page load: the reason images are charted at
-        // all is that rendering one makes every console page view announce to a
-        // third party that somebody is reading about this package (RFC 0007
-        // §7.3). An anchor makes no request until a reader asks for it, and asking
-        // is the one case where reaching the host is what they want. The
-        // sanitiser adds `rel="nofollow ugc noopener noreferrer"` and
-        // `target="_blank"`, so this gets the same hardening every README link
-        // gets, and `url_schemes` is what guarantees the href is http(s).
-        Some(href) => format!(
-            r#"<a class="{STRIPPED_IMAGE_CLASS}" href="{}"{title}>{label}</a>"#,
-            escape(href)
+    match host {
+        Some(host) => format!(
+            r#"<span class="{STRIPPED_IMAGE_CLASS}" title="{}">{label}</span>"#,
+            escape(host)
         ),
-        None => format!(r#"<span class="{STRIPPED_IMAGE_CLASS}"{title}>{label}</span>"#),
+        None => format!(r#"<span class="{STRIPPED_IMAGE_CLASS}">{label}</span>"#),
     }
-}
-
-/// The chip's `href`, or `None` when it must not be a link.
-///
-/// Two reasons it must not. **Already inside a link** — the overwhelmingly common
-/// shape is `<a href="…"><img …></a>`, a badge that links somewhere related, and
-/// nesting an anchor is invalid HTML that `html5ever` unnests: the author's link
-/// would be emptied and the chip's would surface beside it, silently replacing
-/// one destination with another. The author's link wins; it is the one they
-/// chose. **Not an absolute http(s) URL** — a relative `src` or a `data:` URI has
-/// no destination a reader could usefully be sent to, and the sanitiser would
-/// drop the href anyway, leaving an `<a>` that looks clickable and is not.
-fn chip_href(src: &str, inside_link: bool) -> Option<&str> {
-    if inside_link {
-        return None;
-    }
-    (src.starts_with("http://") || src.starts_with("https://")).then_some(src)
 }
 
 #[cfg(test)]
@@ -690,17 +581,9 @@ mod tests {
 
         assert!(out.contains("https://console.example/img/0"), "{out}");
         assert!(out.contains("cdn.example"), "{out}");
-        // The refused host may be a destination, never a source. That is the
-        // whole distinction the chip preserves: an `<img src>` is a request the
-        // reader's browser makes on page load, an `<a href>` is one it makes
-        // only if they ask.
         assert!(
-            !out.contains(r#"src="https://cdn.example/s.png""#),
+            !out.contains("https://cdn.example/s.png"),
             "no src for the refused host: {out}"
-        );
-        assert!(
-            out.contains(r#"href="https://cdn.example/s.png""#),
-            "the chip links to what it refused to load: {out}"
         );
     }
 
@@ -783,56 +666,11 @@ mod tests {
     #[test]
     fn a_markdown_image_becomes_a_chip_naming_its_alt_text_and_host() {
         let out = md("![build status](https://img.shields.io/badge/build-passing.svg)");
-        // No `<img>` at all is the guarantee — nothing is fetched on page load.
         assert!(!out.contains("<img"), "{out}");
+        assert!(!out.contains("shields.io/badge"), "{out}");
         assert!(out.contains(STRIPPED_IMAGE_CLASS), "{out}");
         assert!(out.contains("build status"), "{out}");
         assert!(out.contains("img.shields.io"), "{out}");
-        // …and the reader can still get to it, by asking.
-        assert!(
-            out.contains(r#"href="https://img.shields.io/badge/build-passing.svg""#),
-            "{out}"
-        );
-    }
-
-    /// A chip inside the author's own link stays a `<span>`.
-    ///
-    /// `<a href="…"><img …></a>` is how essentially every badge is written.
-    /// Nesting an anchor is invalid HTML that `html5ever` unnests, which would
-    /// empty the author's link and surface the chip's beside it — quietly
-    /// swapping the destination they chose for one we picked.
-    #[test]
-    fn a_chip_never_nests_inside_the_authors_own_link() {
-        let markdown = md("[![build](https://img.shields.io/b.svg)](https://ci.example/job)");
-        assert!(markdown.contains("<span"), "{markdown}");
-        assert!(
-            !markdown.contains(r#"href="https://img.shields.io/b.svg""#),
-            "the author's link must be the only one: {markdown}"
-        );
-        assert!(markdown.contains("https://ci.example/job"), "{markdown}");
-
-        // The same shape written as raw HTML takes the same decision.
-        let raw = md(
-            r#"<a href="https://ci.example/job"><img src="https://img.shields.io/b.svg" alt="build"></a>"#,
-        );
-        assert!(raw.contains("<span"), "{raw}");
-        assert!(
-            !raw.contains(r#"href="https://img.shields.io/b.svg""#),
-            "the author's link must be the only one: {raw}"
-        );
-        assert!(raw.contains("https://ci.example/job"), "{raw}");
-    }
-
-    /// A chip with nothing worth linking to stays a `<span>`: a relative `src`
-    /// has no destination, and an `<a>` that looked clickable and was not would
-    /// be worse than no link.
-    #[test]
-    fn a_chip_with_no_absolute_url_is_not_a_link() {
-        for source in ["![x](images/logo.png)", "![x](data:image/png;base64,AAAA)"] {
-            let out = md(source);
-            assert!(out.contains("<span"), "{source}: {out}");
-            assert!(!out.contains("<a "), "{source}: {out}");
-        }
     }
 
     #[test]
@@ -949,7 +787,7 @@ mod tests {
             // A valueless attribute before the ones that matter.
             r#"<img loading src="https://e.example/x.png" alt="logo">"#,
         ] {
-            let out = chip_html_images(tag, &[], &mut 0);
+            let out = chip_html_images(tag, &[]);
             assert!(out.contains("e.example"), "{tag} → {out}");
             assert!(
                 !out.contains("<img") && !out.contains("<IMG"),
@@ -964,7 +802,7 @@ mod tests {
             "text with < and no tag",
             "<img src=x",
         ] {
-            assert_eq!(chip_html_images(untouched, &[], &mut 0), untouched);
+            assert_eq!(chip_html_images(untouched, &[]), untouched);
         }
     }
 

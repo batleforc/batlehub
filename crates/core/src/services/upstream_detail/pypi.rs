@@ -31,6 +31,9 @@ pub(super) fn read(doc: &VersionDocument) -> UpstreamDetail {
             return UpstreamDetail {
                 versions,
                 readmes: Default::default(),
+                // The simple page carries no `project_urls`; those live in the
+                // per-version document, which is where the link comes from.
+                links: None,
             };
         }
     }
@@ -51,6 +54,7 @@ pub(super) fn read(doc: &VersionDocument) -> UpstreamDetail {
     UpstreamDetail {
         versions: seen.into_iter().map(UpstreamVersion::bare).collect(),
         readmes: Default::default(),
+        links: None,
     }
 }
 

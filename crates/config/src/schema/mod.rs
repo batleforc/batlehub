@@ -36,8 +36,8 @@ pub use rules::{
     VersionGateConfig,
 };
 pub use server::{
-    default_service_name, parse_trusted_proxies, CacheConfig, DatabaseConfig, OtelConfig,
-    ServerConfig,
+    default_service_name, is_secure_issuer_url, parse_trusted_proxies, CacheConfig, DatabaseConfig,
+    OtelConfig, ServerConfig,
 };
 pub use warnings::ConfigWarning;
 
@@ -853,6 +853,35 @@ impl AppConfig {
         }
     }
 
+    /// Every JWT-validating provider must fetch its keys over a channel that
+    /// cannot be rewritten in flight.
+    ///
+    /// `issuer_url` is where the discovery document comes from, and that document
+    /// names both the `iss` the provider will go on to enforce and the `jwks_uri`
+    /// whose keys it will trust. Over plain HTTP, anyone on the path chooses both
+    /// — which is to say, chooses who is allowed to authenticate.
+    ///
+    /// Loopback is allowed unencrypted, because that is how the test suites and a
+    /// local Keycloak run and there is no network to be on the path of.
+    fn validate_auth_issuers(&self) -> Result<()> {
+        for auth in &self.auth {
+            let (kind, name, issuer_url) = match auth {
+                AuthConfig::Oidc(cfg) => ("oidc", &cfg.name, &cfg.issuer_url),
+                AuthConfig::ActionsOidc(cfg) => ("actions-oidc", &cfg.name, &cfg.issuer_url),
+                AuthConfig::Token(_) | AuthConfig::Kubernetes(_) => continue,
+            };
+            if !is_secure_issuer_url(issuer_url) {
+                bail!(
+                    "[[auth]] type = \"{kind}\" name = \"{name}\": issuer_url '{issuer_url}' must \
+                     use https. The discovery document it serves decides which issuer and which \
+                     signing keys this server trusts, so it cannot travel over plain HTTP. \
+                     (http:// is accepted for localhost and 127.0.0.1 only.)"
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Fail-fast checks for host-based routing (RFC 0001 §4.3).
     ///
     /// Every condition here is one where the deployment would come up looking
@@ -994,6 +1023,7 @@ impl AppConfig {
         // an upgrade into a boot failure for a config that never changed; the
         // entry is dropped as before and surfaced as
         // `PROXY_TRUST_INVALID_DEPRECATED_ENTRY` instead.
+        self.validate_auth_issuers()?;
         self.validate_host_routing()?;
 
         // A page size of zero is a list that can never answer, and the failure

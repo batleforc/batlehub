@@ -37,9 +37,11 @@ use crate::services::hot_config::RemoteImagePolicy;
 /// keeps `align` on block elements (see [`ALIGNABLE_TAGS`]) and stops dropping a
 /// kept image's alt text — two output changes, and the render cache holds its
 /// entries with **no TTL**, so without this bump every README already rendered
-/// would go on serving the old markup indefinitely. `5` makes the chip an `<a>`
-/// to the image's own URL when it has one and is not already inside a link.
-pub const RENDERER_VERSION: u32 = 5;
+/// would go on serving the old markup indefinitely. `5` made the chip an `<a>`
+/// to the image's own URL; `6` reverts that — the chip is a `<span>` again, and
+/// the number moves *forward* rather than back to `4`, because what has to be
+/// invalidated is every rendering made under `5`.
+pub const RENDERER_VERSION: u32 = 6;
 
 /// The class the renderer puts on the chip that replaces a stripped image.
 ///
@@ -237,11 +239,6 @@ fn builder(
     // through and make this allow-list decorative.
     b.allowed_classes(HashMap::from([
         ("span", HashSet::from([STRIPPED_IMAGE_CLASS])),
-        // The chip is an `<a>` when it has a source to link to and is not
-        // already inside the author's own link — see `render::chip_href`. Same
-        // class, so it is styled as one thing; the anchor gets the `rel` and
-        // `target` hardening every other README link gets.
-        ("a", HashSet::from([STRIPPED_IMAGE_CLASS])),
         // The fence language, and nothing else a README author writes on a
         // `code` element — see `HIGHLIGHT_LANGUAGES`.
         ("code", HIGHLIGHT_LANGUAGE_CLASSES.iter().copied().collect()),

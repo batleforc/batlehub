@@ -102,6 +102,81 @@ jobs:
             exit 1
           fi
 
+  fuzz:
+    # `fuzz/**` has been in this workflow's path filters since the targets
+    # landed, but only as a *trigger*: nothing built them. They live in their own
+    # workspace, so `cargo check --workspace` never sees them and neither does
+    # clippy — four of the six had been failing to compile against types that
+    # moved underneath them, and the first thing to notice was somebody running
+    # `task fuzz` by hand. A target that does not build is not a weaker guard
+    # than one that does; it is no guard, while still reading like one in the
+    # module docs that name it.
+    #
+    # Two tiers, matching what this workflow already does with the heavy client
+    # jobs: every PR pays for the compile, which is what catches drift; the
+    # nightly run pays for the actual fuzzing, which is what finds bugs.
+    name: Fuzz targets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: "nightly"
+          components: rust-src
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ". -> target\nfuzz -> target"
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
+      # The cheap half, and the one that would have caught this: a type error in
+      # a target is a type error whether or not libFuzzer ever links. `cargo
+      # check` rather than `cargo fuzz build` because the sanitiser-instrumented
+      # release build costs minutes and catches nothing extra for this class.
+      - name: Every fuzz target still compiles
+        run: cargo check --manifest-path fuzz/Cargo.toml --bins --all-targets
+
+      # The expensive half. Nightly and manual only — a per-PR fuzz run is a
+      # flaky gate that fails on whichever job got the slow runner, and the
+      # targets assert invariants that a 60-second budget explores shallowly
+      # anyway. `-max_total_time` bounds each; `-runs` is deliberately not set,
+      # so a fast target gets the executions rather than the clock.
+      #
+      # `detect_leaks=0`: LeakSanitizer cannot start under this runner's
+      # `ptrace_scope` and reports the refusal as a 0-byte crash artefact, which
+      # is a false positive that looks exactly like a finding.
+      - uses: taiki-e/install-action@b6b84cf49ebfe0176417bdce007c624f0db37f20 # v2.86.2
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        with:
+          tool: cargo-fuzz
+      - name: Fuzz each target
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        working-directory: fuzz
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: |
+          set -euo pipefail
+          # Enumerated from the manifest rather than hard-coded, so a new target
+          # is fuzzed by existing here rather than by somebody remembering to
+          # add it to a list in a second place.
+          targets=$(cargo fuzz list)
+          echo "targets: $targets"
+          for t in $targets; do
+            echo "::group::$t"
+            cargo +nightly fuzz run "$t" -- -max_total_time=60
+            echo "::endgroup::"
+          done
+      # The input that broke it is the whole value of a fuzz failure, and it is
+      # written to a file the job would otherwise throw away.
+      - name: Upload crash artefacts
+        if: failure() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+
   unit:
     name: Unit tests (+ coverage)
     runs-on: ubuntu-latest

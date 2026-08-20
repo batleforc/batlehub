@@ -7,7 +7,7 @@ use uuid::Uuid;
 use batlehub_core::{
     entities::Role,
     error::CoreError,
-    ports::{UserToken, UserTokenRepository},
+    ports::{TokenOwner, UserToken, UserTokenRepository},
 };
 
 /// A [`UserTokenRepository`] that rejects token creation and returns empty
@@ -31,7 +31,7 @@ impl UserTokenRepository for NullUserTokenRepository {
     async fn create_token(
         &self,
         _id: Uuid,
-        _user_id: &str,
+        _owner: &TokenOwner,
         _name: &str,
         _token_hash: &str,
         _role: Role,
@@ -46,11 +46,15 @@ impl UserTokenRepository for NullUserTokenRepository {
         Ok(None)
     }
 
-    async fn list_for_user(&self, _user_id: &str) -> Result<Vec<UserToken>, CoreError> {
+    async fn list_for_user(&self, _owner: &TokenOwner) -> Result<Vec<UserToken>, CoreError> {
         Ok(vec![])
     }
 
-    async fn revoke(&self, _id: Uuid, _user_id: &str) -> Result<bool, CoreError> {
+    async fn touch_last_used(&self, _id: Uuid) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    async fn revoke(&self, _id: Uuid, _owner: &TokenOwner) -> Result<bool, CoreError> {
         Ok(false)
     }
 }
@@ -66,7 +70,7 @@ mod tests {
         let result = repo
             .create_token(
                 Uuid::new_v4(),
-                "alice",
+                &TokenOwner::new("oidc", "alice"),
                 "my-token",
                 "hash",
                 Role::User,
@@ -85,12 +89,19 @@ mod tests {
     #[tokio::test]
     async fn list_for_user_returns_empty() {
         let repo = NullUserTokenRepository::arc();
-        assert!(repo.list_for_user("alice").await.unwrap().is_empty());
+        assert!(repo
+            .list_for_user(&TokenOwner::new("oidc", "alice"))
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
     async fn revoke_returns_false() {
         let repo = NullUserTokenRepository::arc();
-        assert!(!repo.revoke(Uuid::new_v4(), "alice").await.unwrap());
+        assert!(!repo
+            .revoke(Uuid::new_v4(), &TokenOwner::new("oidc", "alice"))
+            .await
+            .unwrap());
     }
 }

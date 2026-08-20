@@ -740,7 +740,9 @@
     "supplyChainReportOn": "Rapport supply-chain sur socket.dev",
     "upstreamHasNoneEither": "Rien n'est passé par le proxy, et l'amont ne la connaît pas non plus.",
     "upstreamUnreachable": "Rien n'est passé par le proxy, et l'amont est injoignable.",
-    "why": "Pourquoi ?"
+    "why": "Pourquoi ?",
+    "sourceCode": "Code source",
+    "homepage": "Site du projet"
   },
   "packageEventsTable": {
     "noEventsRecordedYet": "Aucun événement enregistré.",

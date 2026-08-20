@@ -334,12 +334,14 @@ role_claim = "groups"                  # default: "role"
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `name` | string | `"oidc"` | Provider name; becomes the group prefix (e.g. `"oidc:team-a"`). Must be unique across providers. |
-| `issuer_url` | string | — | Base URL of the OIDC provider; `/.well-known/openid-configuration` is appended for endpoint discovery |
+| `required` | bool | `true` | Whether an identity provider that is unreachable at startup is fatal. Starting without it looks healthy and is not: every request that would have carried an identity becomes anonymous instead. Set `false` to warn and continue, which raises `batlehub_auth_provider_down`. |
+| `issuer_url` | string | — | Base URL of the OIDC provider; `/.well-known/openid-configuration` is appended for endpoint discovery. Must be `https` (except on localhost), and the `issuer` the document declares must match it. |
 | `client_id` | string | — | OAuth2 client identifier |
 | `client_secret` | string | — | Required for confidential clients; optional for public clients |
 | `redirect_uri` | string | — | When set, enables browser SSO at `/api/v1/auth/oidc/callback` (default provider) or `/api/v1/auth/oidc/{name}/callback` (named providers). Must be registered with the OIDC provider. |
-| `frontend_url` | string | `""` | After a successful SSO callback the browser is redirected to `{frontend_url}/?oidc_access_token=...`. Leave empty in production (same origin). Set to `http://localhost:5173` when running the Vite dev server separately. |
+| `frontend_url` | string | `""` | After a successful SSO callback the browser is redirected to `{frontend_url}/#oidc_access_token=...`. The tokens ride in the URL **fragment**, so they never reach the server hosting the SPA. Leave empty in production (same origin). Set to `http://localhost:5173` when running the Vite dev server separately. |
 | `scopes` | string[] | `["openid","profile","email"]` | OAuth2 scopes to request |
+| `audiences` | string[] | `[client_id]` | Values the token's `aud` claim is accepted for. Set explicitly when the provider issues tokens for a separate API audience (Auth0 `audience`, an Okta authorization server). Never unchecked. |
 | `user_id_claim` | string | `"sub"` | JWT claim used as the user identifier. `"preferred_username"` gives human-readable names from Authentik/Keycloak. |
 | `role_claim` | string | `"role"` | JWT claim inspected for role mapping. May be a string or array of strings; the highest matching role wins. |
 | `role_mappings` | map | `{}` | Maps JWT claim values to proxy roles (`"admin"`, `"user"`, `"anonymous"`). Values not present default to `anonymous`. |
@@ -347,6 +349,8 @@ role_claim = "groups"                  # default: "role"
 **Group namespacing:** Claim values that appear as keys in `role_mappings` are stored as-is in the identity's group list. Claim values not in `role_mappings` are prefixed with `{name}:` (e.g. `"oidc:team-a"`). This allows the RBAC `groups` table to use `"*:team-a"` as a cross-provider wildcard.
 
 **Running multiple OIDC providers:** Set a unique `name` on each. Their callback URLs will be `/api/v1/auth/oidc/{name}/callback`.
+
+**Token creation is scoped to these providers.** `POST /api/v1/auth/tokens` accepts a session from any provider declared here, whatever its `name` and whether or not it has a `redirect_uri`. No other credential can mint a personal access token: a static token, a Kubernetes service account, an Actions OIDC job or another PAT all get `403`, so a machine credential can never issue a longer-lived one. With no `type = "oidc"` provider configured, nobody can create a PAT.
 
 #### 3.3.3 Kubernetes auth (`type = "kubernetes"`)
 
@@ -375,10 +379,31 @@ type = "kubernetes"
 | `api_server` | string | from `KUBERNETES_SERVICE_HOST` / `KUBERNETES_SERVICE_PORT` env | Kubernetes API server URL |
 | `ca_cert_path` | string | `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt` | CA cert for API server TLS verification |
 | `token_path` | string | `/var/run/secrets/kubernetes.io/serviceaccount/token` | batlehub's own service account token for TokenReview calls; re-read each request to handle automatic rotation |
-| `audiences` | string[] | `["batlehub"]` | Audiences sent in the TokenReview request |
+| `audiences` | string[] | `["batlehub"]` | Audiences sent in the TokenReview request, **and required back in its response** — see below |
 | `role_mappings` | map | `{}` | Maps Kubernetes usernames or group names to proxy roles |
 
 **Role mapping keys:** Kubernetes sets `username: "system:serviceaccount:<namespace>:<name>"` and `groups: ["system:serviceaccounts", "system:serviceaccounts:<namespace>", ...]`. When a token matches multiple keys, the highest role wins.
+
+**Audience binding is enforced in both directions.** `audiences` is sent as `spec.audiences`, and the TokenReview response is only accepted when its `status.audiences` contains at least one of them. A token the API server authenticates but does not confirm as bound to one of these audiences is refused, and the rejection is logged at `warn` with both lists.
+
+This matters because the default service account token mounted into every pod in the cluster is bound to the API server, not to BatleHub. Without the response-side check, an authenticator that ignores `spec.audiences` would let any pod in the cluster authenticate here.
+
+So the workload must present a **projected** token minted for this audience, not the default mounted one:
+
+```yaml
+volumes:
+  - name: batlehub-token
+    projected:
+      sources:
+        - serviceAccountToken:
+            path: token
+            audience: batlehub        # must match one entry in `audiences`
+            expirationSeconds: 3600
+```
+
+Point the client at `/var/run/secrets/batlehub/token` (`batlehub-cli auth login --kubernetes-token-path`). If authentication starts failing with `TokenReview authenticated a token the API server did not confirm is bound to a requested audience` in the logs, the workload is sending the default token and needs the projected volume above.
+
+**Only JWT-shaped credentials are sent to the API server.** A bearer token that is not three dot-separated parts cannot be a service account token, so it is passed to the next provider untouched rather than forwarded in a TokenReview body — this keeps personal access tokens out of the control plane's request logs.
 
 #### 3.3.4 Actions OIDC auth (`type = "actions-oidc"`)
 
@@ -389,6 +414,7 @@ Validates short-lived OIDC JWTs issued by GitHub Actions or Forgejo Actions to w
 type = "actions-oidc"
 name = "forgejo-action"                    # default: "actions-oidc"
 issuer_url = "https://forgejo.example.com" # GitHub: "https://token.actions.githubusercontent.com"
+audience = "https://batlehub.example.com"  # REQUIRED — see below
 # user_id_claim = "sub"                    # default
 
   # Static group: deployers on the main branch
@@ -429,9 +455,25 @@ issuer_url = "https://forgejo.example.com" # GitHub: "https://token.actions.gith
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `name` | string | `"actions-oidc"` | Provider name. Appears in log output and in `Identity.auth_provider`. Must be unique across all `[[auth]]` entries. |
-| `issuer_url` | string | — | OIDC issuer base URL. GitHub: `"https://token.actions.githubusercontent.com"`. Forgejo: your instance URL. |
+| `issuer_url` | string | — | OIDC issuer base URL. GitHub: `"https://token.actions.githubusercontent.com"`. Forgejo: your instance URL. Must be `https` (except on localhost). |
+| `required` | bool | `false` | Whether an unreachable issuer at startup is fatal. Defaults to `false` here, unlike `type = "oidc"`: a CI provider being down stops publishing, not signing in. |
+| `audience` | string | — | **Required.** Value the token's `aud` claim must equal. |
 | `user_id_claim` | string | `"sub"` | JWT claim used as `user_id` in the resolved identity. |
 | `rules` | array | `[]` | Ordered list of group rules evaluated against each JWT. All matching rules contribute — they are not exclusive. |
+
+**`audience` is what makes this provider safe, and it has no default.** The issuer is shared: `https://token.actions.githubusercontent.com` signs a token for *any* workflow in *any* repository on GitHub, so validating `iss` proves only that the caller is a GitHub Actions job somewhere. `aud` is the one claim the calling workflow chooses, so it is what says "this token was minted for *this* deployment". Server startup fails if it is missing or blank.
+
+Pick something specific to the deployment — its URL is the conventional choice — and have workflows request it:
+
+```yaml
+# GitHub Actions
+- uses: actions/github-script@v7
+  id: token
+  with:
+    script: return await core.getIDToken('https://batlehub.example.com')
+```
+
+The `rules` below still decide what the caller may *do*; `audience` decides whether it is heard at all. A deployment with loose rules and no audience check was reachable by any repository on the forge.
 
 **Rule fields (`[[auth.rules]]`):**
 

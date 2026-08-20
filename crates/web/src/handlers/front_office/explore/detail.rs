@@ -190,6 +190,31 @@ pub struct ExplorePackageDetailResponse {
     /// Whether the console may offer **Fetch this version** on an
     /// upstream-only row (RFC 0007-bis §4.4).
     pub fetch: FetchOfferDto,
+    /// Where this package's code and site live, as its own metadata names them.
+    ///
+    /// `None` whenever we cannot say: a registry kind whose client does not read
+    /// these fields, a package the metadata cache has never held, or a locally
+    /// published one (asking a public index about a private name on a page view
+    /// would leak that the software exists — the same suppression the derived
+    /// README applies).
+    pub links: Option<PackageLinksDto>,
+}
+
+/// A package's own links, normalised to something a browser can open.
+///
+/// Every URL here was written by whoever published the package and lands in an
+/// `href` on an authenticated console page, so it has been through
+/// `batlehub_core::entities::normalize_url` — an allow-list of `http`/`https`
+/// applied *after* the ecosystem-specific rewrites (`git+…`, `.git`,
+/// `github:o/r`, scp-like addresses). Anything that did not survive is absent
+/// rather than rendered, because a link that cannot be opened is worse than no
+/// link.
+#[derive(Serialize, ToSchema)]
+pub struct PackageLinksDto {
+    /// Where the source code lives.
+    pub repository: Option<String>,
+    /// The package's own site, when it declared one.
+    pub homepage: Option<String>,
 }
 
 /// Whether the fetch button is offered here, and why not when it is not.
@@ -737,6 +762,11 @@ pub async fn explore_package_detail(
     )
     .await;
 
+    // The row the reader is actually looking at, which is what its links should
+    // describe: npm carries `repository` per version, and a package that changed
+    // forge between releases named the old one in the old version.
+    let selected_version_for_links = selected_version.clone().or_else(|| default_version.clone());
+
     Ok(web::Json(ExplorePackageDetailResponse {
         registry: registry.clone(),
         name: name.clone(),
@@ -758,7 +788,157 @@ pub async fn explore_package_detail(
         upstream_unavailable,
         upstream: upstream.dto,
         fetch: fetch_offer(&local_svc, &registry_map, registry.as_str(), &identity.0).await,
+        links: package_links(LinkInput {
+            proxy_svc: &proxy_svc,
+            local_svc: &local_svc,
+            mode_map: &mode_map,
+            registry,
+            name,
+            version: selected_version_for_links.as_deref(),
+            kind,
+            // The document the version table above was built from. Reading it
+            // again costs nothing and is the difference between a link that is
+            // there and one that depends on what else has been requested.
+            listing: upstream.detail.as_ref().and_then(|d| d.links.as_ref()),
+            identity: &identity.0,
+        })
+        .await,
     }))
+}
+
+/// Everything [`package_links`] consults, in one place — the `ResolveInput`
+/// shape the README path already uses, for the same reason: this answer is drawn
+/// from four sources and threading them as positional arguments makes the call
+/// site unreadable.
+struct LinkInput<'a> {
+    proxy_svc: &'a ProxyService,
+    local_svc: &'a LocalRegistryService,
+    mode_map: &'a RegistryModeMap,
+    registry: &'a str,
+    name: &'a str,
+    /// The row the reader is looking at. `None` on a package with no versions at
+    /// all, where there is no coordinate to ask about.
+    version: Option<&'a str>,
+    /// Decides whether the listing's silence is an answer or an absence — see
+    /// `listing_carries_links`.
+    kind: Option<RegistryKind>,
+    /// What the discovery read's own document said, already paid for.
+    listing: Option<&'a batlehub_core::entities::MetadataLinks>,
+    /// The reader, because the resolve below is rule-evaluated like any other.
+    identity: &'a Identity,
+}
+
+/// The package's own links: the cache, then the listing, then — only where
+/// neither can answer — **one** resolve for the version selected.
+///
+/// The order is cheapest-and-most-precise first. The selected version's entry in
+/// the metadata cache is the exact answer when something has already resolved
+/// it. The discovery read's listing document is free, because the page has
+/// already read it to build the version table, and for npm and Composer it is
+/// complete. Only when [`listing_carries_links`] says the listing cannot know is
+/// a request made, and then for one coordinate.
+///
+/// **Why a request is made here at all.** The rule this endpoint is held to is
+/// not "no upstream request on a page view" — the discovery read above is one.
+/// It is the rule `explore_upstream_detail.rs` states in its own words:
+/// *filling it for every row would be N upstream requests per page view*. The
+/// forbidden thing is the N. One resolve for the single row the reader has
+/// selected is the same O(1) shape as the listing read already on this path, and
+/// it is cached afterwards for the registry's `metadata_ttl`.
+///
+/// For PyPI, OpenVSX and the galleries it is not even a new request: the README
+/// panel resolves that exact coordinate for the same page. It was simply landing
+/// *after* this handler had answered, which is what made the link appear on the
+/// next reload and vanish when the entry expired.
+///
+/// Every failure is `None`: a kind whose client writes no `links`, a listing
+/// that carries none, a resolve the registry's rules deny, an upstream that is
+/// down. A missing link is the correct rendering of "we do not know", and no
+/// part of this page should fail because a package did not declare a repository.
+async fn package_links(input: LinkInput<'_>) -> Option<PackageLinksDto> {
+    let LinkInput {
+        proxy_svc,
+        local_svc,
+        mode_map,
+        registry,
+        name,
+        version,
+        kind,
+        listing,
+        identity,
+    } = input;
+
+    // A local-only registry has no upstream to ask, and a locally published
+    // package must not be named to a public index on a page view — that would
+    // leak the existence of internal software to a third party (§4.4, §7.7).
+    if mode_map.get(registry) == RegistryMode::Local {
+        return None;
+    }
+    if !local_svc
+        .backend
+        .get_versions(registry, name)
+        .await
+        .unwrap_or_default()
+        .is_empty()
+    {
+        return None;
+    }
+
+    // What a legitimate resolve already put there — a package manager's request,
+    // the README panel, an earlier view of this page.
+    let package_id =
+        version.map(|version| batlehub_core::entities::PackageId::new(registry, name, version));
+    let cached = match &package_id {
+        Some(package_id) => proxy_svc
+            .cached_metadata_for(package_id)
+            .await
+            .as_ref()
+            .and_then(|metadata| {
+                batlehub_core::entities::MetadataLinks::from_extra(&metadata.extra)
+            }),
+        None => None,
+    };
+
+    let links = match cached.or_else(|| listing.cloned()) {
+        Some(links) => Some(links),
+        // The one request, and only where the listing is known not to hold the
+        // answer. `resolve_metadata_for` is cache-first, so this is a *miss* on
+        // the same key `cached_metadata_for` just read — the double read costs a
+        // second cache lookup and buys the guarantee that nothing here fetches
+        // what the page already has.
+        None => match (package_id, kind) {
+            (Some(package_id), Some(kind))
+                if !batlehub_core::services::upstream_detail::listing_carries_links(kind) =>
+            {
+                let req = batlehub_core::services::proxy::ProxyRequest {
+                    package_id,
+                    identity: identity.clone(),
+                    resource_type: batlehub_core::rules::resource_type::RELEASES_READ.to_owned(),
+                    ip_address: None,
+                    user_agent: None,
+                };
+                // Denied by a rule, unreachable, unparseable: all the same
+                // answer. This is one field on a page about versions.
+                proxy_svc
+                    .resolve_metadata_for(&req)
+                    .await
+                    .ok()
+                    .as_ref()
+                    .and_then(|metadata| {
+                        batlehub_core::entities::MetadataLinks::from_extra(&metadata.extra)
+                    })
+            }
+            _ => None,
+        },
+    }?;
+
+    // The listing's links have been through `MetadataLinks::new` in the reader,
+    // and every other route through `from_extra`, which re-normalises on the way
+    // out. All three arrive here already allow-listed to `http`/`https`.
+    Some(PackageLinksDto {
+        repository: links.repository,
+        homepage: links.homepage,
+    })
 }
 
 /// The version a reader who has asked for none should be shown: **the newest

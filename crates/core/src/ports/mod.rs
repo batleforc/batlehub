@@ -13,8 +13,8 @@ pub mod vulnerability;
 
 pub use auth::{
     ActionsGroupRule, ActionsOidcAuthConfig, AuthProvider, Condition, ConditionMatchType,
-    KubernetesAuthConfig, OidcAuthConfig, RawAuthRequest, RuleMatch, UserToken,
-    UserTokenRepository,
+    KubernetesAuthConfig, LoginState, LoginStateStore, OidcAuthConfig, RawAuthRequest, RuleMatch,
+    TokenOwner, UserToken, UserTokenRepository,
 };
 pub use banner::BannerPort;
 pub use config_change::{ConfigChangeRecord, ConfigChangeRepository};

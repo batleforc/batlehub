@@ -3168,8 +3168,8 @@
         "tags": [
           "front-office"
         ],
-        "summary": "Handle the OIDC provider's redirect back; exchange the code for tokens and\nredirect the browser to the SPA with tokens in query parameters.",
-        "description": "The SPA is responsible for validating `oidc_state` against its stored value\nand immediately removing the parameters from the address bar.",
+        "summary": "Handle the OIDC provider's redirect back: validate the state, exchange the\ncode for tokens, and redirect the browser to the SPA with the tokens in the\nURL fragment.",
+        "description": "The returned `state` must match an entry this server created and has not yet\nconsumed, or nothing is exchanged. The caller then compares the echoed\n`oidc_state` against the value it kept locally — see `oidc_login` for why\nboth checks exist.",
         "operationId": "oidc_callback",
         "responses": {
           "302": {
@@ -3187,7 +3187,7 @@
           "front-office"
         ],
         "summary": "Redirect the browser to the OIDC provider's authorization endpoint.",
-        "description": "The caller must supply a `state` query parameter containing a random value\nit has stored in `sessionStorage`; the same value is threaded through the\nprovider and returned to the SPA so it can verify the flow wasn't hijacked.\n\nOmitting `state` (e.g. a HEAD probe) returns 200 when OIDC is configured,\n503 when it is not — useful for the frontend to decide whether to show the\n\"Sign in with OIDC\" button.",
+        "description": "The caller supplies a `state` query parameter holding a random value it has\nkept locally (`sessionStorage` in the SPA, memory in the CLI). That value is\n**not** what goes to the identity provider: the server generates its own\nunguessable handle, records the caller's value against it along with the PKCE\nverifier and nonce, and sends only the handle. The caller's value comes back\nat the end of the flow so it can confirm this callback belongs to the login\nit started.\n\nThe two halves protect different things and neither replaces the other. The\nserver-side entry gives PKCE verifier custody, one-time redemption, expiry\nand provider binding; the caller's value is what ties the flow to a\nparticular browser or CLI process, which the server cannot observe.\n\nOmitting `state` (e.g. a HEAD probe) returns 200 when OIDC is configured,\n503 when it is not — useful for the frontend to decide whether to show the\n\"Sign in with OIDC\" button.",
         "operationId": "oidc_login",
         "parameters": [
           {
@@ -3291,6 +3291,9 @@
           },
           "404": {
             "description": "Named provider not found"
+          },
+          "429": {
+            "description": "Too many refresh attempts from this client"
           },
           "503": {
             "description": "OIDC not configured"
@@ -14969,6 +14972,17 @@
           "gate": {
             "$ref": "#/components/schemas/GateDto"
           },
+          "links": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PackageLinksDto",
+                "description": "Where this package's code and site live, as its own metadata names them.\n\n`None` whenever we cannot say: a registry kind whose client does not read\nthese fields, a package the metadata cache has never held, or a locally\npublished one (asking a public index about a private name on a page view\nwould leak that the software exists — the same suppression the derived\nREADME applies)."
+              }
+            ]
+          },
           "name": {
             "type": "string"
           },
@@ -15985,6 +15999,26 @@
           },
           "version": {
             "type": "string"
+          }
+        }
+      },
+      "PackageLinksDto": {
+        "type": "object",
+        "description": "A package's own links, normalised to something a browser can open.\n\nEvery URL here was written by whoever published the package and lands in an\n`href` on an authenticated console page, so it has been through\n`batlehub_core::entities::normalize_url` — an allow-list of `http`/`https`\napplied *after* the ecosystem-specific rewrites (`git+…`, `.git`,\n`github:o/r`, scp-like addresses). Anything that did not survive is absent\nrather than rendered, because a link that cannot be opened is worse than no\nlink.",
+        "properties": {
+          "homepage": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The package's own site, when it declared one."
+          },
+          "repository": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the source code lives."
           }
         }
       },
@@ -17279,6 +17313,14 @@
           "id": {
             "type": "string",
             "format": "uuid"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When this token was last presented, or `null` if not since the server\nstarted recording. What tells a user which of their tokens is dormant and\nsafe to revoke, and an operator which one moved after a leak."
           },
           "name": {
             "type": "string"

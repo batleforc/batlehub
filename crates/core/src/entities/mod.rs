@@ -2,6 +2,7 @@ pub mod access_log;
 pub mod banner;
 pub mod explore;
 pub mod identity;
+pub mod links;
 pub mod local_package;
 pub mod notification;
 pub mod package;
@@ -19,6 +20,7 @@ pub use explore::{
     ReleaseAgeGateParams, ResolutionPolicy, ResolutionState,
 };
 pub use identity::{Identity, Role};
+pub use links::{normalize_url, MetadataLinks};
 pub use local_package::{CargoDep, CargoIndexEntry, PublishedPackage, Visibility};
 pub use notification::{
     InboundWebhookEvent, NotificationEvent, NotificationEventType, NotificationSubscription,

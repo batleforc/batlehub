@@ -449,6 +449,7 @@ use batlehub_core::{
 };
 use metrics_exporter_prometheus::PrometheusHandle;
 
+pub use handlers::auth::OidcProviderNames;
 pub use handlers::front_office::cli_download::CliBinaryPath;
 pub use handlers::healthz::{healthz, livez};
 pub use handlers::metrics::prometheus_metrics;
@@ -1085,6 +1086,13 @@ pub fn configure_app(
     registry_map: RegistryMap,
     upstream_map: UpstreamMap,
     oidc_sso_flows: Vec<OidcSsoFlow>,
+    // Names of the configured OIDC providers — the allow-list `create_token`
+    // checks the caller against. Distinct from `oidc_sso_flows`, which holds
+    // only the providers that also have `redirect_uri` set for browser login.
+    oidc_provider_names: OidcProviderNames,
+    // One-time store for in-flight authorization requests: PKCE verifier, nonce,
+    // provider and the caller's own CSRF value.
+    login_states: Arc<dyn batlehub_core::ports::LoginStateStore>,
     warming_map: WarmingServiceMap,
     eviction_map: EvictionServiceMap,
     proxy_metrics: Arc<ProxyMetrics>,
@@ -1102,6 +1110,9 @@ pub fn configure_app(
         .user_agent("batlehub/0.1")
         .build()
         .expect("audit HTTP client");
+    // Per-process, and built here rather than passed in: it holds no
+    // configuration and nothing outside the refresh endpoint reads it.
+    let refresh_limiter = Arc::new(handlers::auth::oidc::RefreshRateLimiter::default());
     move |cfg| {
         cfg.app_data(web::Data::new(proxy_svc.clone()));
         cfg.app_data(web::Data::new(admin_svc.clone()));
@@ -1112,6 +1123,9 @@ pub fn configure_app(
         cfg.app_data(web::Data::new(upstream_map.clone()));
         cfg.app_data(web::Data::new(audit_client.clone()));
         cfg.app_data(web::Data::new(oidc_sso_flows.clone()));
+        cfg.app_data(web::Data::new(oidc_provider_names.clone()));
+        cfg.app_data(web::Data::new(login_states.clone()));
+        cfg.app_data(web::Data::new(Arc::clone(&refresh_limiter)));
         cfg.app_data(web::Data::new(warming_map.clone()));
         cfg.app_data(web::Data::new(eviction_map.clone()));
         cfg.app_data(web::Data::new(proxy_metrics.clone()));

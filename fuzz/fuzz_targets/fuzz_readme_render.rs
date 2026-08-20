@@ -41,6 +41,15 @@ fuzz_target!(|data: &[u8]| {
     let Ok(proxy_images): arbitrary::Result<bool> = u.arbitrary() else {
         return;
     };
+    // Taken from the fuzz input rather than fixed, so libFuzzer can find a host
+    // string that matches a URL it also generated. `image_hosts` decides, per
+    // image, between rewriting the `src` and emitting a chip — two different
+    // output paths, and a hard-coded list would only ever exercise one of them.
+    // `None` is the empty list, which is what `proxy` meant before the list
+    // existed (RFC 0013 §4.2) and still the default.
+    let Ok(image_host): arbitrary::Result<Option<String>> = u.arbitrary() else {
+        return;
+    };
 
     let format = match format_idx % 4 {
         0 => ReadmeFormat::Markdown,
@@ -48,13 +57,23 @@ fuzz_target!(|data: &[u8]| {
         2 => ReadmeFormat::Rst,
         _ => ReadmeFormat::Plain,
     };
+    // Exhaustive literals in both arms, never `..Default::default()`: a new
+    // field on `RenderOptions` must stop this target compiling rather than
+    // silently default itself out of the fuzzed surface. That is exactly how
+    // `image_hosts` went unfuzzed — the field landed, this file kept building
+    // nowhere, and nothing said so until a build was attempted by hand.
     let opts = if proxy_images {
         RenderOptions {
             remote_images: RemoteImagePolicy::Proxy,
             image_proxy_prefix: Some("https://hub.invalid/api/v1/readme-image/".to_owned()),
+            image_hosts: image_host.into_iter().collect(),
         }
     } else {
-        RenderOptions::default()
+        RenderOptions {
+            remote_images: RemoteImagePolicy::Strip,
+            image_proxy_prefix: None,
+            image_hosts: image_host.into_iter().collect(),
+        }
     };
 
     let out = render(&source, format, &opts);

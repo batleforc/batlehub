@@ -81,6 +81,11 @@ pub(super) struct ServerParams {
     pub registry_map: RegistryMap,
     pub upstream_map: UpstreamMap,
     pub oidc_sso_flows: Vec<OidcSsoFlow>,
+    /// Every configured OIDC provider name, SSO-enabled or not — the allow-list
+    /// `POST /api/v1/auth/tokens` checks the caller against.
+    pub oidc_provider_names: batlehub_web::OidcProviderNames,
+    /// One-time store for in-flight OIDC authorization requests.
+    pub login_states: Arc<dyn batlehub_core::ports::LoginStateStore>,
     pub warming_map: WarmingServiceMap,
     pub eviction_map: EvictionServiceMap,
     pub proxy_metrics: Arc<ProxyMetrics>,
@@ -134,6 +139,8 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
         registry_map,
         upstream_map,
         oidc_sso_flows,
+        oidc_provider_names,
+        login_states,
         warming_map,
         eviction_map,
         proxy_metrics,
@@ -177,6 +184,8 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
             registry_map.clone(),
             upstream_map.clone(),
             oidc_sso_flows.clone(),
+            oidc_provider_names.clone(),
+            Arc::clone(&login_states),
             warming_map.clone(),
             eviction_map.clone(),
             Arc::clone(&proxy_metrics),

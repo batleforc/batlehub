@@ -7,7 +7,7 @@ use super::super::http_client::{
 use super::models::{PypiPackageJson, PypiSearchInfo, PypiVersionJson};
 use super::PypiRegistryClient;
 use batlehub_core::{
-    entities::{MetadataReadme, PackageId, PackageMetadata},
+    entities::{MetadataLinks, MetadataReadme, PackageId, PackageMetadata},
     error::CoreError,
     ports::{DocumentKind, FetchedArtifact, RegistryClient, UpstreamPackage, VersionDocument},
     services::readme::detect::format_from_content_type,
@@ -296,6 +296,12 @@ impl RegistryClient for PypiRegistryClient {
             ))
         });
 
+        // Also before `info` goes out of scope with the rest of the document.
+        let links = version_json
+            .info
+            .as_ref()
+            .and_then(|info| MetadataLinks::new(info.repository(), info.homepage()));
+
         // Find the specific file matching pkg.artifact, or use the first file.
         let file = match &pkg.artifact {
             Some(filename) => version_json
@@ -323,7 +329,7 @@ impl RegistryClient for PypiRegistryClient {
             download_url,
             checksum,
             is_signed: None,
-            extra: serde_json::json!({ "readme": readme }),
+            extra: serde_json::json!({ "readme": readme, "links": links }),
             cache_control,
         })
     }

@@ -23,5 +23,7 @@ pub(super) fn read(doc: &VersionDocument) -> UpstreamDetail {
     UpstreamDetail {
         versions,
         readmes: Default::default(),
+        // A list of strings has nothing else in it.
+        links: None,
     }
 }

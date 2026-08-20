@@ -301,6 +301,10 @@ impl ProxyService {
         let detail = UpstreamDetail {
             versions: versions.into_iter().map(UpstreamVersion::bare).collect(),
             readmes: Default::default(),
+            // `list_versions` answers with version strings and nothing else, so
+            // these kinds keep answering the page's link from the metadata
+            // cache — which their README panel warms, one page view later.
+            links: None,
         };
         let (detail, truncated) = capped(detail, cfg);
         Ok(Some(DiscoveryOutcome {

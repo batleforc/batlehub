@@ -3,9 +3,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{decode, decode_header, DecodingKey, Validation};
+use rand::Rng as _;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 
 use batlehub_core::ports::OidcAuthConfig;
@@ -32,6 +36,19 @@ struct OidcDiscovery {
 /// Tokens returned by the OIDC provider after a successful code exchange or refresh.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct OidcTokens {
+    /// The credential the SPA and CLI send back as a bearer, and the one this
+    /// server authenticates.
+    ///
+    /// This is the **ID token** when the provider issued one, and the access
+    /// token otherwise. The ID token is the assertion about *who the user is*:
+    /// it is a JWT by specification, its `aud` is this client, and it carries the
+    /// `nonce` that ties it to the authorization request. An access token is a
+    /// credential for calling an API and is not required to be a JWT at all —
+    /// several major providers issue opaque ones, against which this server's JWT
+    /// validation cannot work.
+    pub session_token: String,
+    /// The raw access token, kept for calls to the identity provider itself.
+    /// Never used to establish identity.
     pub access_token: String,
     pub refresh_token: Option<String>,
     /// Lifetime of the access token in seconds as reported by the provider.
@@ -55,9 +72,82 @@ pub struct OidcSsoFlow {
     http: reqwest::Client,
 }
 
+/// A PKCE verifier/challenge pair plus the nonce for one authorization request.
+///
+/// Generated per login and kept server-side (`LoginStateStore`) until the code
+/// comes back. The verifier is the secret half: if it ever reaches the browser
+/// or the identity provider before redemption, PKCE stops protecting anything.
+pub struct PkceChallenge {
+    pub verifier: String,
+    pub challenge: String,
+    pub nonce: String,
+}
+
+impl PkceChallenge {
+    /// 32 bytes of CSPRNG per value, base64url-encoded without padding — the
+    /// high end of the 43–128 character verifier range RFC 7636 §4.1 allows.
+    pub fn generate() -> Self {
+        let verifier = random_urlsafe();
+        let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+        Self {
+            verifier,
+            challenge,
+            nonce: random_urlsafe(),
+        }
+    }
+}
+
+/// 32 CSPRNG bytes, base64url without padding. Used for the PKCE verifier, the
+/// nonce, and the `state` handle — all values that must be unguessable and safe
+/// to put in a URL untouched.
+pub fn random_urlsafe() -> String {
+    let mut bytes = [0u8; 32];
+    rand::rng().fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// The endpoints and client credentials for one provider's SSO flow.
+///
+/// A separate struct because `OidcSsoFlow` also carries a shared
+/// `reqwest::Client`, which callers should not have to supply.
+pub struct OidcSsoFlowParams {
+    pub name: String,
+    pub client_id: String,
+    pub client_secret: Option<String>,
+    pub redirect_uri: String,
+    pub scopes: Vec<String>,
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    pub frontend_url: String,
+}
+
 impl OidcSsoFlow {
-    /// Build the provider's authorization URL for a given CSRF `state` value.
-    pub fn authorization_url(&self, state: &str) -> String {
+    /// Build a flow from already-resolved endpoints.
+    ///
+    /// The normal path is `OidcAuthProvider::new`, which discovers the endpoints
+    /// from the provider's `.well-known` document and produces the flow as a
+    /// by-product. This constructor exists for callers that already know them —
+    /// notably integration tests standing the flow up against a mock identity
+    /// provider, which cannot reach the private fields otherwise.
+    pub fn new(params: OidcSsoFlowParams) -> Self {
+        Self {
+            name: params.name,
+            client_id: params.client_id,
+            client_secret: params.client_secret,
+            redirect_uri: params.redirect_uri,
+            scopes: params.scopes,
+            authorization_endpoint: params.authorization_endpoint,
+            token_endpoint: params.token_endpoint,
+            frontend_url: params.frontend_url,
+            http: reqwest::Client::new(),
+        }
+    }
+
+    /// Build the provider's authorization URL.
+    ///
+    /// `state` is the server-generated handle into `LoginStateStore`, not
+    /// anything the caller supplied — see `LoginState`.
+    pub fn authorization_url(&self, state: &str, pkce: &PkceChallenge) -> String {
         let scope = self.scopes.join(" ");
         let params = [
             ("response_type", "code"),
@@ -65,6 +155,9 @@ impl OidcSsoFlow {
             ("redirect_uri", &self.redirect_uri),
             ("scope", &scope),
             ("state", state),
+            ("nonce", &pkce.nonce),
+            ("code_challenge", &pkce.challenge),
+            ("code_challenge_method", "S256"),
         ];
         let qs = params
             .iter()
@@ -74,18 +167,79 @@ impl OidcSsoFlow {
         format!("{}?{}", self.authorization_endpoint, qs)
     }
 
-    /// Exchange an authorization `code` for tokens.
-    pub async fn exchange_code(&self, code: &str) -> anyhow::Result<OidcTokens> {
+    /// Exchange an authorization `code` for tokens, proving possession of the
+    /// PKCE verifier that produced the challenge sent with the request.
+    ///
+    /// `code_verifier` is always sent, including when a `client_secret` is
+    /// configured: RFC 9700 §2.1.1 asks for PKCE on confidential clients too,
+    /// and an authorization server that does not recognise the parameter
+    /// ignores it.
+    pub async fn exchange_code(
+        &self,
+        code: &str,
+        code_verifier: &str,
+    ) -> anyhow::Result<OidcTokens> {
         let mut params = vec![
             ("grant_type", "authorization_code"),
             ("code", code),
             ("client_id", &self.client_id),
             ("redirect_uri", &self.redirect_uri),
+            ("code_verifier", code_verifier),
         ];
         if let Some(ref secret) = self.client_secret {
             params.push(("client_secret", secret.as_str()));
         }
         self.token_request(&params).await
+    }
+
+    /// Whether `token` is shaped like a JWT at all.
+    ///
+    /// The one diagnostic that matters after a code exchange: if the provider
+    /// returned no `id_token` *and* its access token is opaque, nothing this
+    /// server does downstream can work, and the failure would otherwise surface
+    /// as every request silently degrading to anonymous — which reads as "my
+    /// permissions are wrong", not "this identity provider is unsupported".
+    pub fn session_token_is_a_jwt(token: &str) -> bool {
+        let mut parts = token.split('.');
+        let three = matches!(
+            (parts.next(), parts.next(), parts.next()),
+            (Some(h), Some(p), Some(s)) if !h.is_empty() && !p.is_empty() && !s.is_empty()
+        );
+        three && parts.next().is_none()
+    }
+
+    /// Check the `nonce` claim of an ID token against the one sent with the
+    /// authorization request.
+    ///
+    /// Required by OpenID Connect Core §3.1.3.7 step 11, and the reason the
+    /// nonce is generated per login and held server-side: it is what stops an ID
+    /// token captured from one authorization request being replayed into
+    /// another.
+    ///
+    /// Returns `Ok(())` when the token carries no `nonce` *and* no `nonce` was
+    /// expected. A token that omits the claim when one was sent is rejected.
+    pub fn verify_nonce(session_token: &str, expected_nonce: &str) -> anyhow::Result<()> {
+        if expected_nonce.is_empty() {
+            return Ok(());
+        }
+        // Reading claims without verifying the signature is safe here and only
+        // here: the token was just received over TLS directly from the token
+        // endpoint, in response to a request only this server could make. It is
+        // the *authentication* path that must verify signatures, and it does.
+        let claims: serde_json::Map<String, serde_json::Value> =
+            jsonwebtoken::dangerous::insecure_decode(session_token)
+                .map_err(|e| anyhow::anyhow!("reading nonce from the ID token: {e}"))?
+                .claims;
+
+        match claims.get("nonce").and_then(|v| v.as_str()) {
+            Some(actual) if actual == expected_nonce => Ok(()),
+            Some(_) => Err(anyhow::anyhow!(
+                "ID token nonce does not match the authorization request"
+            )),
+            None => Err(anyhow::anyhow!(
+                "ID token carries no nonce, but one was sent with the authorization request"
+            )),
+        }
     }
 
     /// Use a refresh token to obtain a fresh access token (and possibly a new refresh token).
@@ -117,7 +271,14 @@ impl OidcSsoFlow {
             .map(str::to_owned)
             .ok_or_else(|| anyhow::anyhow!("token response missing access_token"))?;
 
+        let id_token = resp["id_token"].as_str().map(str::to_owned);
+
         Ok(OidcTokens {
+            // Prefer the ID token; fall back to the access token so a provider
+            // that returns none (or a refresh that omits it) still works, as it
+            // did before. `session_token_is_a_jwt` is what tells an operator
+            // when that fallback has landed them on an opaque credential.
+            session_token: id_token.clone().unwrap_or_else(|| access_token.clone()),
             access_token,
             refresh_token: resp["refresh_token"].as_str().map(str::to_owned),
             expires_in: resp["expires_in"].as_u64(),
@@ -139,6 +300,9 @@ pub struct OidcAuthProvider {
     user_id_claim: String,
     role_claim: String,
     role_mappings: HashMap<String, String>,
+    /// Accepted `aud` values. Never empty: it falls back to `[client_id]`, so
+    /// there is no configuration in which audience goes unchecked.
+    audiences: Vec<String>,
     http: reqwest::Client,
     jwks_uri: String,
     cache: Arc<RwLock<JwksCache>>,
@@ -167,6 +331,21 @@ impl OidcAuthProvider {
             .await
             .map_err(|e| anyhow::anyhow!("parsing OIDC discovery document: {e}"))?;
 
+        // OpenID Connect Discovery §4.3 requires this comparison. Without it,
+        // the `iss` this provider goes on to enforce is whatever the document
+        // said it was — so a document served from the wrong place defines its
+        // own notion of who it is, and `jwks_uri` names the keys that will be
+        // trusted.
+        if !issuer_matches(&cfg.issuer_url, &discovery.issuer) {
+            anyhow::bail!(
+                "OIDC discovery document at '{discovery_url}' declares issuer '{}', \
+                 which is not the configured issuer_url '{}'. \
+                 Set issuer_url to the value the provider publishes.",
+                discovery.issuer,
+                cfg.issuer_url,
+            );
+        }
+
         let keys = fetch_jwks(&http, &discovery.jwks_uri).await.map_err(|e| {
             anyhow::anyhow!("fetching initial JWKS from {}: {e}", discovery.jwks_uri)
         })?;
@@ -189,6 +368,14 @@ impl OidcAuthProvider {
             user_id_claim: cfg.user_id_claim.clone(),
             role_claim: cfg.role_claim.clone(),
             role_mappings: cfg.role_mappings.clone(),
+            // An ID token issued to this client carries `aud = client_id`, so
+            // that is the right default and it is never empty — `authenticate`
+            // has no "audience unchecked" branch to fall into.
+            audiences: if cfg.audiences.is_empty() {
+                vec![cfg.client_id.clone()]
+            } else {
+                cfg.audiences.clone()
+            },
             http,
             jwks_uri: discovery.jwks_uri,
             cache: Arc::new(RwLock::new(JwksCache {
@@ -249,6 +436,12 @@ impl OidcAuthProvider {
     }
 }
 
+/// The audience every test provider accepts and every test token carries.
+/// Audience is always checked now — there is no "unchecked" configuration — so a
+/// token without a matching `aud` is simply not for us.
+#[cfg(test)]
+const TEST_AUDIENCE: &str = "batlehub-test-client";
+
 /// Test-only constructor that skips the network bootstrap.
 #[cfg(test)]
 impl OidcAuthProvider {
@@ -259,12 +452,31 @@ impl OidcAuthProvider {
         role_mappings: HashMap<String, String>,
         jwks: JwkSet,
     ) -> Self {
+        Self::for_testing_with_audiences(
+            name,
+            user_id_claim,
+            role_claim,
+            role_mappings,
+            jwks,
+            vec![TEST_AUDIENCE.to_owned()],
+        )
+    }
+
+    fn for_testing_with_audiences(
+        name: impl Into<String>,
+        user_id_claim: impl Into<String>,
+        role_claim: impl Into<String>,
+        role_mappings: HashMap<String, String>,
+        jwks: JwkSet,
+        audiences: Vec<String>,
+    ) -> Self {
         Self {
             name: name.into(),
             issuer: String::new(), // no issuer validation in tests
             user_id_claim: user_id_claim.into(),
             role_claim: role_claim.into(),
             role_mappings,
+            audiences,
             http: reqwest::Client::new(),
             jwks_uri: String::new(),
             cache: Arc::new(RwLock::new(JwksCache {
@@ -274,6 +486,31 @@ impl OidcAuthProvider {
             sso: None,
         }
     }
+}
+
+/// The claims a token must actually carry, not merely satisfy if present.
+///
+/// `jsonwebtoken`'s `set_audience`/`set_issuer` validate their claim **only when
+/// it appears in the token** — a token omitting `aud` passes an audience check
+/// that a token with the wrong `aud` fails. Listing them here is what turns
+/// "must match if present" into "must match".
+///
+/// Shared by both JWT providers so the two cannot drift.
+pub(crate) fn required_spec_claims(with_issuer: bool) -> Vec<&'static str> {
+    let mut claims = vec!["exp", "aud"];
+    if with_issuer {
+        claims.push("iss");
+    }
+    claims
+}
+
+/// Whether the discovery document's `issuer` is the one that was configured.
+///
+/// Compared with a trailing slash normalised away on both sides, since that is
+/// the one difference providers and operators routinely disagree about and it
+/// carries no meaning. Everything else must match exactly.
+fn issuer_matches(configured: &str, discovered: &str) -> bool {
+    configured.trim_end_matches('/') == discovered.trim_end_matches('/')
 }
 
 fn find_key(jwks: &JwkSet, kid: Option<&str>) -> Option<DecodingKey> {
@@ -308,12 +545,19 @@ impl AuthProvider for OidcAuthProvider {
         // Validate the issuer so each provider only accepts tokens from its own issuer.
         // This prevents two providers that share JWKS keys (e.g. same identity server,
         // different client apps) from processing each other's tokens.
-        // Audience validation is skipped — it's deployment-specific and not standardised.
+        //
+        // And validate the audience, which `iss` alone does not cover: one issuer
+        // signs for all of its clients, so without `aud` a token minted for a
+        // different application at the same identity server authenticates here.
         let mut validation = Validation::new(header.alg);
-        validation.validate_aud = false;
+        validation.set_audience(&self.audiences);
         if !self.issuer.is_empty() {
             validation.set_issuer(&[&self.issuer]);
         }
+        // `set_audience` alone only checks `aud` **when the claim is present** —
+        // a token carrying no `aud` at all would sail through it. Requiring the
+        // claim is what closes that, and the same applies to `iss`.
+        validation.set_required_spec_claims(&required_spec_claims(!self.issuer.is_empty()));
 
         let token_data = match decode::<serde_json::Map<String, serde_json::Value>>(
             token,
@@ -323,6 +567,24 @@ impl AuthProvider for OidcAuthProvider {
             Ok(data) => data,
             Err(e) if matches!(e.kind(), jsonwebtoken::errors::ErrorKind::ExpiredSignature) => {
                 tracing::debug!(provider = %self.name, "JWT expired");
+                return Ok(None);
+            }
+            // Not ours: wrong audience or issuer, or missing one of them
+            // entirely. Per the `AuthProvider` contract that is `Ok(None)` — the
+            // next provider still gets its turn, and the auth-failure counter
+            // stays for genuine provider faults. A missing `exp` is *not*
+            // included: that is a malformed token, not someone else's.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    jsonwebtoken::errors::ErrorKind::InvalidAudience
+                        | jsonwebtoken::errors::ErrorKind::InvalidIssuer
+                ) || matches!(
+                    e.kind(),
+                    jsonwebtoken::errors::ErrorKind::MissingRequiredClaim(c) if c == "aud" || c == "iss"
+                ) =>
+            {
+                tracing::debug!(provider = %self.name, error = %e, "JWT is not for this provider");
                 return Ok(None);
             }
             Err(e) => return Err(CoreError::Auth(format!("JWT validation failed: {e}"))),
@@ -457,6 +719,21 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         encode(&header, &claims, &key).unwrap()
     }
 
+    /// A JWT-shaped string with the given claims and a signature that is not one.
+    ///
+    /// Enough for `verify_nonce`, which reads claims without verifying — see the
+    /// comment there for why that is safe on the token-endpoint path. The header
+    /// still names a real algorithm, because `insecure_decode` parses it even
+    /// though it verifies nothing.
+    fn unsigned_jwt(claims: &serde_json::Value) -> String {
+        format!(
+            "{}.{}.{}",
+            URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","typ":"JWT"}"#),
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(claims).unwrap()),
+            URL_SAFE_NO_PAD.encode("not-a-real-signature"),
+        )
+    }
+
     fn bearer(token: &str) -> RawAuthRequest {
         RawAuthRequest {
             headers: [("authorization".to_owned(), format!("Bearer {token}"))].into(),
@@ -506,7 +783,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let p = default_provider();
         let token = signed_token(
             Some("test-kid"),
-            json!({ "sub": "alice", "role": "developer", "exp": future_exp() }),
+            json!({ "sub": "alice", "role": "developer", "exp": future_exp(), "aud": TEST_AUDIENCE }),
         );
         let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
         assert_eq!(id.role, Role::User);
@@ -518,7 +795,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let p = default_provider();
         let token = signed_token(
             Some("test-kid"),
-            json!({ "sub": "bob", "role": ["viewer", "developer", "admin"], "exp": future_exp() }),
+            json!({ "sub": "bob", "role": ["viewer", "developer", "admin"], "exp": future_exp(), "aud": TEST_AUDIENCE }),
         );
         let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
         assert_eq!(id.role, Role::Admin);
@@ -529,7 +806,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let p = default_provider();
         let token = signed_token(
             Some("test-kid"),
-            json!({ "sub": "carol", "role": ["unknown-group", "developer"], "exp": future_exp() }),
+            json!({ "sub": "carol", "role": ["unknown-group", "developer"], "exp": future_exp(), "aud": TEST_AUDIENCE }),
         );
         let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
         assert_eq!(id.role, Role::User);
@@ -540,7 +817,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let p = default_provider();
         let token = signed_token(
             Some("test-kid"),
-            json!({ "sub": "dave", "role": "superuser", "exp": future_exp() }),
+            json!({ "sub": "dave", "role": "superuser", "exp": future_exp(), "aud": TEST_AUDIENCE }),
         );
         let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
         assert_eq!(id.role, Role::Anonymous);
@@ -551,7 +828,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let p = default_provider();
         let token = signed_token(
             Some("test-kid"),
-            json!({ "sub": "dave", "role": ["unknown1", "unknown2"], "exp": future_exp() }),
+            json!({ "sub": "dave", "role": ["unknown1", "unknown2"], "exp": future_exp(), "aud": TEST_AUDIENCE }),
         );
         let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
         assert_eq!(id.role, Role::Anonymous);
@@ -562,7 +839,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let p = default_provider();
         let token = signed_token(
             Some("test-kid"),
-            json!({ "sub": "eve", "exp": future_exp() }),
+            json!({ "sub": "eve", "exp": future_exp(), "aud": TEST_AUDIENCE }),
         );
         let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
         assert_eq!(id.role, Role::Anonymous);
@@ -578,7 +855,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         );
         let token = signed_token(
             Some("test-kid"),
-            json!({ "email": "alice@example.com", "role": "admin", "exp": future_exp() }),
+            json!({ "email": "alice@example.com", "role": "admin", "exp": future_exp(), "aud": TEST_AUDIENCE }),
         );
         let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
         assert_eq!(id.user_id.as_deref(), Some("alice@example.com"));
@@ -590,10 +867,293 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let p = default_provider();
         let token = signed_token(
             Some("test-kid"),
-            json!({ "role": "admin", "exp": future_exp() }),
+            json!({ "role": "admin", "exp": future_exp(), "aud": TEST_AUDIENCE }),
         );
         let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
         assert_eq!(id.user_id, None);
+    }
+
+    // ── ID token, nonce, opaque-token diagnosis ───────────────────────────────
+    // The flow used to read only `access_token` from the token response and hand
+    // that back as the session credential. An access token is a credential for
+    // calling an API, not an assertion about who the user is: it carries no
+    // `nonce`, and several major providers issue it opaque, against which this
+    // server's JWT validation cannot work at all.
+
+    #[tokio::test]
+    async fn the_id_token_becomes_the_session_token() {
+        let mut server = mockito::Server::new_async().await;
+        let _token = server
+            .mock("POST", "/token")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"access_token":"opaque-at","id_token":"h.p.s","expires_in":300}"#)
+            .create_async()
+            .await;
+
+        let mut flow = test_flow();
+        flow.token_endpoint = format!("{}/token", server.url());
+        let tokens = flow.exchange_code("code", "verifier").await.unwrap();
+
+        assert_eq!(
+            tokens.session_token, "h.p.s",
+            "identity comes from id_token"
+        );
+        assert_eq!(
+            tokens.access_token, "opaque-at",
+            "the access token is kept for calls to the IdP, not thrown away"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_access_token_is_the_fallback_when_no_id_token_is_returned() {
+        let mut server = mockito::Server::new_async().await;
+        let _token = server
+            .mock("POST", "/token")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"access_token":"jwt.access.token"}"#)
+            .create_async()
+            .await;
+
+        let mut flow = test_flow();
+        flow.token_endpoint = format!("{}/token", server.url());
+        let tokens = flow.exchange_code("code", "verifier").await.unwrap();
+        assert_eq!(tokens.session_token, "jwt.access.token");
+    }
+
+    #[test]
+    fn verify_nonce_accepts_a_matching_claim() {
+        let token = unsigned_jwt(&json!({ "sub": "alice", "nonce": "n-123" }));
+        assert!(OidcSsoFlow::verify_nonce(&token, "n-123").is_ok());
+    }
+
+    #[test]
+    fn verify_nonce_rejects_a_different_claim() {
+        // The replay this exists to stop: an ID token captured from one
+        // authorization request, presented against another.
+        let token = unsigned_jwt(&json!({ "sub": "alice", "nonce": "from-another-login" }));
+        assert!(OidcSsoFlow::verify_nonce(&token, "n-123").is_err());
+    }
+
+    #[test]
+    fn verify_nonce_rejects_a_missing_claim_when_one_was_sent() {
+        let token = unsigned_jwt(&json!({ "sub": "alice" }));
+        let err = OidcSsoFlow::verify_nonce(&token, "n-123").unwrap_err();
+        assert!(err.to_string().contains("no nonce"), "got: {err}");
+    }
+
+    #[test]
+    fn verify_nonce_is_a_no_op_when_none_was_sent() {
+        // The refresh path: no authorization request to be tied to, and OIDC
+        // Core §12.2 lets an ID token from a refresh omit the claim.
+        let token = unsigned_jwt(&json!({ "sub": "alice" }));
+        assert!(OidcSsoFlow::verify_nonce(&token, "").is_ok());
+    }
+
+    #[test]
+    fn verify_nonce_rejects_a_token_it_cannot_read() {
+        assert!(OidcSsoFlow::verify_nonce("not-a-jwt", "n-123").is_err());
+    }
+
+    #[test]
+    fn session_token_is_a_jwt_recognises_opaque_credentials() {
+        assert!(OidcSsoFlow::session_token_is_a_jwt("header.payload.sig"));
+
+        // What Okta and Auth0 hand out by default, and the case that used to
+        // degrade every request to anonymous with nothing said about it.
+        assert!(!OidcSsoFlow::session_token_is_a_jwt(
+            "00aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789abcdef"
+        ));
+        assert!(!OidcSsoFlow::session_token_is_a_jwt(""));
+        assert!(!OidcSsoFlow::session_token_is_a_jwt("two.parts"));
+        assert!(!OidcSsoFlow::session_token_is_a_jwt("a.b.c.d"));
+        assert!(!OidcSsoFlow::session_token_is_a_jwt("a..c"));
+    }
+
+    // ── Audience ──────────────────────────────────────────────────────────────
+    // One issuer signs for all of its clients. Validating only `iss` therefore
+    // lets a token minted for any *other* application at the same identity
+    // server authenticate here, with this deployment's role mapping applied to
+    // its claims. `validate_aud` used to be off with a comment calling audience
+    // "deployment-specific and not standardised".
+
+    #[tokio::test]
+    async fn a_token_for_another_audience_is_not_ours() {
+        let p = default_provider();
+        let token = signed_token(
+            Some("test-kid"),
+            json!({
+                "sub": "alice",
+                "role": "admin",
+                "exp": future_exp(),
+                "aud": "some-other-application",
+            }),
+        );
+        assert!(
+            p.authenticate(&bearer(&token)).await.unwrap().is_none(),
+            "a valid signature from the right issuer is not enough"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_token_with_no_audience_at_all_is_not_ours() {
+        let p = default_provider();
+        let token = signed_token(
+            Some("test-kid"),
+            json!({ "sub": "alice", "role": "admin", "exp": future_exp() }),
+        );
+        assert!(p.authenticate(&bearer(&token)).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn any_configured_audience_is_accepted() {
+        let p = OidcAuthProvider::for_testing_with_audiences(
+            "oidc",
+            "sub",
+            "role",
+            [("admin".to_owned(), "admin".to_owned())].into(),
+            test_jwks(),
+            vec!["api://one".to_owned(), "api://two".to_owned()],
+        );
+        for aud in ["api://one", "api://two"] {
+            let token = signed_token(
+                Some("test-kid"),
+                json!({ "sub": "alice", "role": "admin", "exp": future_exp(), "aud": aud }),
+            );
+            assert_eq!(
+                p.authenticate(&bearer(&token)).await.unwrap().unwrap().role,
+                Role::Admin,
+                "aud={aud} is configured and must be accepted"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_audience_array_containing_ours_is_accepted() {
+        // `aud` is allowed to be an array; a token listing us among several
+        // audiences is for us.
+        let p = default_provider();
+        let token = signed_token(
+            Some("test-kid"),
+            json!({
+                "sub": "alice",
+                "role": "admin",
+                "exp": future_exp(),
+                "aud": ["another-app", TEST_AUDIENCE],
+            }),
+        );
+        assert_eq!(
+            p.authenticate(&bearer(&token)).await.unwrap().unwrap().role,
+            Role::Admin
+        );
+    }
+
+    #[tokio::test]
+    async fn a_foreign_audience_yields_none_not_an_error() {
+        // `Ok(None)`, not `Err`: with several providers configured the next one
+        // must still get its turn, and the auth-failure counter is for genuine
+        // provider faults.
+        let p = default_provider();
+        let token = signed_token(
+            Some("test-kid"),
+            json!({ "sub": "a", "exp": future_exp(), "aud": "elsewhere" }),
+        );
+        assert!(matches!(p.authenticate(&bearer(&token)).await, Ok(None)));
+    }
+
+    #[test]
+    fn audiences_default_to_the_client_id() {
+        // The `aud` of an ID token issued to this client *is* the client_id, so
+        // an operator who configures nothing still gets a real check.
+        let cfg = OidcAuthConfig {
+            name: "oidc".to_owned(),
+            required: false,
+            issuer_url: "https://idp.test".to_owned(),
+            client_id: "my-client".to_owned(),
+            client_secret: None,
+            redirect_uri: None,
+            frontend_url: String::new(),
+            scopes: vec![],
+            audiences: vec![],
+            user_id_claim: "sub".to_owned(),
+            role_claim: "role".to_owned(),
+            role_mappings: HashMap::new(),
+        };
+        let resolved = if cfg.audiences.is_empty() {
+            vec![cfg.client_id.clone()]
+        } else {
+            cfg.audiences.clone()
+        };
+        assert_eq!(resolved, vec!["my-client".to_owned()]);
+    }
+
+    // ── Discovery issuer ──────────────────────────────────────────────────────
+
+    #[test]
+    fn issuer_matches_ignores_only_a_trailing_slash() {
+        assert!(issuer_matches("https://idp.test", "https://idp.test"));
+        assert!(issuer_matches("https://idp.test/", "https://idp.test"));
+        assert!(issuer_matches("https://idp.test", "https://idp.test/"));
+
+        assert!(!issuer_matches("https://idp.test", "https://evil.test"));
+        assert!(
+            !issuer_matches("https://idp.test", "https://idp.test/realms/a"),
+            "a path is not a trailing slash"
+        );
+        assert!(
+            !issuer_matches("https://idp.test", "http://idp.test"),
+            "scheme must match"
+        );
+    }
+
+    #[tokio::test]
+    async fn construction_fails_when_discovery_declares_a_different_issuer() {
+        let mut server = mockito::Server::new_async().await;
+        let base = server.url();
+
+        // The document claims to be someone else — which, unchecked, would
+        // define both the `iss` we go on to enforce and the JWKS we trust.
+        let _discovery = server
+            .mock("GET", "/.well-known/openid-configuration")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "issuer": "https://somewhere-else.example",
+                    "jwks_uri": format!("{base}/jwks"),
+                    "authorization_endpoint": format!("{base}/auth"),
+                    "token_endpoint": format!("{base}/token"),
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let cfg = OidcAuthConfig {
+            name: "oidc".to_owned(),
+            required: false,
+            issuer_url: base.clone(),
+            client_id: "my-client".to_owned(),
+            client_secret: None,
+            redirect_uri: None,
+            frontend_url: String::new(),
+            scopes: vec!["openid".to_owned()],
+            audiences: vec![],
+            user_id_claim: "sub".to_owned(),
+            role_claim: "role".to_owned(),
+            role_mappings: HashMap::new(),
+        };
+
+        let Err(err) = OidcAuthProvider::new(&cfg).await else {
+            panic!("a mismatched issuer must not produce a working provider");
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("somewhere-else.example"), "got: {msg}");
+        assert!(
+            msg.contains("issuer_url"),
+            "the message names the fix: {msg}"
+        );
     }
 
     // ── JWT validation errors ─────────────────────────────────────────────────
@@ -603,7 +1163,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let p = default_provider();
         let token = signed_token(
             Some("test-kid"),
-            json!({ "sub": "frank", "role": "admin", "exp": past_exp() }),
+            json!({ "sub": "frank", "role": "admin", "exp": past_exp(), "aud": TEST_AUDIENCE }),
         );
         assert!(p.authenticate(&bearer(&token)).await.unwrap().is_none());
     }
@@ -613,7 +1173,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let p = default_provider();
         let token = signed_token(
             Some("unknown-key-id"),
-            json!({ "sub": "grace", "exp": future_exp() }),
+            json!({ "sub": "grace", "exp": future_exp(), "aud": TEST_AUDIENCE }),
         );
         let err = p.authenticate(&bearer(&token)).await.unwrap_err();
         assert!(matches!(err, CoreError::Auth(_)));
@@ -625,7 +1185,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         // No kid in header — falls back to jwks.keys[0]
         let token = signed_token(
             None,
-            json!({ "sub": "henry", "role": "developer", "exp": future_exp() }),
+            json!({ "sub": "henry", "role": "developer", "exp": future_exp(), "aud": TEST_AUDIENCE }),
         );
         let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
         assert_eq!(id.role, Role::User);
@@ -649,7 +1209,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let p = make_provider("oidc1", "sub", "role", HashMap::new());
         let token = signed_token(
             Some("test-kid"),
-            json!({ "sub": "iris", "exp": future_exp() }),
+            json!({ "sub": "iris", "exp": future_exp(), "aud": TEST_AUDIENCE }),
         );
         let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
         assert_eq!(id.auth_provider.as_deref(), Some("oidc1"));
@@ -660,7 +1220,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let p = default_provider(); // name="oidc", role_mappings: admin/developer/viewer
         let token = signed_token(
             Some("test-kid"),
-            json!({ "sub": "alice", "role": ["team-a", "team-b"], "exp": future_exp() }),
+            json!({ "sub": "alice", "role": ["team-a", "team-b"], "exp": future_exp(), "aud": TEST_AUDIENCE }),
         );
         let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
         // Neither "team-a" nor "team-b" is in role_mappings → prefixed with provider name
@@ -673,7 +1233,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let p = make_provider("oidc2", "sub", "role", HashMap::new());
         let token = signed_token(
             Some("test-kid"),
-            json!({ "sub": "alice", "role": "team-a", "exp": future_exp() }),
+            json!({ "sub": "alice", "role": "team-a", "exp": future_exp(), "aud": TEST_AUDIENCE }),
         );
         let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
         assert_eq!(id.groups, vec!["oidc2:team-a".to_owned()]);
@@ -684,7 +1244,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let p = default_provider(); // "admin" is in role_mappings
         let token = signed_token(
             Some("test-kid"),
-            json!({ "sub": "alice", "role": ["admin", "team-a"], "exp": future_exp() }),
+            json!({ "sub": "alice", "role": ["admin", "team-a"], "exp": future_exp(), "aud": TEST_AUDIENCE }),
         );
         let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
         assert!(
@@ -702,7 +1262,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let p = default_provider();
         let token = signed_token(
             Some("test-kid"),
-            json!({ "sub": "alice", "role": "team-a", "exp": future_exp() }),
+            json!({ "sub": "alice", "role": "team-a", "exp": future_exp(), "aud": TEST_AUDIENCE }),
         );
         let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
         assert_eq!(id.groups, vec!["oidc:team-a".to_owned()]);
@@ -713,7 +1273,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let p = default_provider();
         let token = signed_token(
             Some("test-kid"),
-            json!({ "sub": "alice", "exp": future_exp() }),
+            json!({ "sub": "alice", "exp": future_exp(), "aud": TEST_AUDIENCE }),
         );
         let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
         assert!(id.groups.is_empty());
@@ -726,7 +1286,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let p = default_provider();
         let token = signed_token(
             Some("test-kid"),
-            json!({ "sub": "alice", "role": "admin", "exp": future_exp() }),
+            json!({ "sub": "alice", "role": "admin", "exp": future_exp(), "aud": TEST_AUDIENCE }),
         );
         let req = RawAuthRequest {
             headers: [("authorization".to_owned(), format!("bearer {token}"))].into(),
@@ -738,9 +1298,8 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
 
     // ── OidcSsoFlow::authorization_url ────────────────────────────────────────
 
-    #[test]
-    fn authorization_url_contains_required_params() {
-        let flow = OidcSsoFlow {
+    fn test_flow() -> OidcSsoFlow {
+        OidcSsoFlow {
             name: "oidc".to_owned(),
             client_id: "my-client".to_owned(),
             client_secret: None,
@@ -750,14 +1309,86 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
             token_endpoint: "https://idp.example.com/token".to_owned(),
             frontend_url: "https://app.example.com".to_owned(),
             http: reqwest::Client::new(),
-        };
-        let url = flow.authorization_url("csrf-state-123");
+        }
+    }
+
+    #[test]
+    fn authorization_url_contains_required_params() {
+        let flow = test_flow();
+        let url = flow.authorization_url("csrf-state-123", &PkceChallenge::generate());
         assert!(url.starts_with("https://idp.example.com/auth?"));
         assert!(url.contains("client_id=my-client"));
         assert!(url.contains("response_type=code"));
         assert!(url.contains("state=csrf-state-123"));
         assert!(url.contains("redirect_uri="));
         assert!(url.contains("scope="));
+    }
+
+    // ── PKCE ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn authorization_url_carries_the_s256_challenge_and_nonce() {
+        let flow = test_flow();
+        let pkce = PkceChallenge::generate();
+        let url = flow.authorization_url("state", &pkce);
+
+        assert!(
+            url.contains("code_challenge_method=S256"),
+            "plain PKCE is not acceptable; the method must be pinned to S256"
+        );
+        assert!(url.contains(&format!(
+            "code_challenge={}",
+            percent_encode(&pkce.challenge)
+        )));
+        assert!(url.contains(&format!("nonce={}", percent_encode(&pkce.nonce))));
+        assert!(
+            !url.contains(&pkce.verifier),
+            "the verifier is the secret half and must never leave the server"
+        );
+    }
+
+    #[test]
+    fn pkce_challenge_is_the_base64url_sha256_of_the_verifier() {
+        let pkce = PkceChallenge::generate();
+        let expected = URL_SAFE_NO_PAD.encode(Sha256::digest(pkce.verifier.as_bytes()));
+        assert_eq!(pkce.challenge, expected);
+        // RFC 7636 §4.1 allows 43–128 characters; 32 bytes base64url is 43.
+        assert!((43..=128).contains(&pkce.verifier.len()));
+        // base64url alphabet only — no padding, nothing needing escaping in a URL.
+        assert!(pkce
+            .verifier
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    }
+
+    #[test]
+    fn each_challenge_is_unique() {
+        let a = PkceChallenge::generate();
+        let b = PkceChallenge::generate();
+        assert_ne!(a.verifier, b.verifier);
+        assert_ne!(a.challenge, b.challenge);
+        assert_ne!(a.nonce, b.nonce);
+    }
+
+    #[tokio::test]
+    async fn exchange_code_sends_the_verifier() {
+        let mut server = mockito::Server::new_async().await;
+        let token = server
+            .mock("POST", "/token")
+            .match_body(mockito::Matcher::UrlEncoded(
+                "code_verifier".to_owned(),
+                "the-verifier".to_owned(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"access_token":"at"}"#)
+            .create_async()
+            .await;
+
+        let mut flow = test_flow();
+        flow.token_endpoint = format!("{}/token", server.url());
+        flow.exchange_code("code", "the-verifier").await.unwrap();
+        token.assert_async().await;
     }
 
     // ── sso_flow() accessor ───────────────────────────────────────────────────
@@ -804,12 +1435,14 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         use batlehub_core::ports::OidcAuthConfig;
         let cfg = OidcAuthConfig {
             name: "test".to_owned(),
+            required: false,
             issuer_url: base.clone(),
             client_id: "my-client".to_owned(),
             client_secret: None,
             redirect_uri: None,
             frontend_url: String::new(),
             scopes: vec!["openid".to_owned()],
+            audiences: vec![TEST_AUDIENCE.to_owned()],
             user_id_claim: "sub".to_owned(),
             role_claim: "role".to_owned(),
             role_mappings: HashMap::new(),
@@ -845,12 +1478,14 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         use batlehub_core::ports::OidcAuthConfig;
         let cfg = OidcAuthConfig {
             name: "oidc".to_owned(),
+            required: false,
             issuer_url: base.clone(),
             client_id: "my-client".to_owned(),
             client_secret: Some("secret".to_owned()),
             redirect_uri: Some("https://app.example.com/callback".to_owned()),
             frontend_url: "https://app.example.com".to_owned(),
             scopes: vec!["openid".to_owned()],
+            audiences: vec![TEST_AUDIENCE.to_owned()],
             user_id_claim: "sub".to_owned(),
             role_claim: "role".to_owned(),
             role_mappings: HashMap::new(),
@@ -862,7 +1497,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         let sso = provider
             .sso_flow()
             .expect("sso_flow should be Some with redirect_uri");
-        let auth_url = sso.authorization_url("test-state");
+        let auth_url = sso.authorization_url("test-state", &PkceChallenge::generate());
         assert!(auth_url.contains("state=test-state"));
     }
 
@@ -898,12 +1533,14 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         use batlehub_core::ports::OidcAuthConfig;
         let cfg = OidcAuthConfig {
             name: "oidc".to_owned(),
+            required: false,
             issuer_url: base.clone(),
             client_id: "my-client".to_owned(),
             client_secret: Some("secret".to_owned()),
             redirect_uri: Some("https://app.example.com/callback".to_owned()),
             frontend_url: String::new(),
             scopes: vec!["openid".to_owned()],
+            audiences: vec![TEST_AUDIENCE.to_owned()],
             user_id_claim: "sub".to_owned(),
             role_claim: "role".to_owned(),
             role_mappings: HashMap::new(),
@@ -911,7 +1548,10 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
 
         let provider = OidcAuthProvider::new(&cfg).await.unwrap();
         let sso = provider.sso_flow().unwrap();
-        let tokens = sso.exchange_code("auth-code-abc").await.unwrap();
+        let tokens = sso
+            .exchange_code("auth-code-abc", "verifier")
+            .await
+            .unwrap();
         assert_eq!(tokens.access_token, "at-123");
         assert_eq!(tokens.refresh_token.as_deref(), Some("rt-xyz"));
         assert_eq!(tokens.expires_in, Some(3600));
@@ -949,12 +1589,14 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         use batlehub_core::ports::OidcAuthConfig;
         let cfg = OidcAuthConfig {
             name: "oidc".to_owned(),
+            required: false,
             issuer_url: base,
             client_id: "my-client".to_owned(),
             client_secret: None,
             redirect_uri: Some("https://app.example.com/callback".to_owned()),
             frontend_url: String::new(),
             scopes: vec!["openid".to_owned()],
+            audiences: vec![TEST_AUDIENCE.to_owned()],
             user_id_claim: "sub".to_owned(),
             role_claim: "role".to_owned(),
             role_mappings: HashMap::new(),
@@ -989,6 +1631,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
             user_id_claim: "sub".to_owned(),
             role_claim: "role".to_owned(),
             role_mappings: HashMap::new(),
+            audiences: vec![TEST_AUDIENCE.to_owned()],
             http: reqwest::Client::new(),
             jwks_uri: jwks_url,
             cache: Arc::new(RwLock::new(JwksCache {
@@ -1001,7 +1644,7 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         // Token signed with test-kid — not in the stale empty cache but in the fresh JWKS.
         let token = signed_token(
             Some("test-kid"),
-            json!({ "sub": "alice", "exp": future_exp() }),
+            json!({ "sub": "alice", "exp": future_exp(), "aud": TEST_AUDIENCE }),
         );
         let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
         assert_eq!(id.user_id.as_deref(), Some("alice"));

@@ -97,6 +97,43 @@ impl ProxyService {
     /// the JetBrains Marketplace per-plugin endpoints). Because it goes through
     /// `resolve_metadata_cached`, anything resolved once keeps resolving from
     /// cache (or stale cache, when `serve_stale` allows) after upstream loss.
+    /// The metadata for a coordinate **if it is already cached**, never fetching.
+    ///
+    /// The sibling of [`Self::resolve_metadata_for`] for callers that must not
+    /// cause egress. The console's package page is the motivating one: it renders
+    /// on a page view, and `explore_upstream_detail.rs` asserts it performs
+    /// **zero** per-version resolves — "filling it for every row would be N
+    /// upstream requests per page view". A cache-*first* read still fetches on a
+    /// cold cache, which is the same defect one request at a time.
+    ///
+    /// So this answers only from what a legitimate resolve already put there: a
+    /// download, a README read, a package manager's request. `None` means *we
+    /// have not looked*, which the caller renders as absence rather than as a
+    /// claim.
+    ///
+    /// No rule evaluation, deliberately. There is no upstream call to authorise
+    /// and nothing is served from it but display metadata the caller has already
+    /// gated by its own visibility check — this returns what is in the cache, and
+    /// deciding who may see the page is the caller's job, as it is for every
+    /// other field on it.
+    pub async fn cached_metadata_for(
+        &self,
+        package_id: &crate::entities::PackageId,
+    ) -> Option<crate::entities::PackageMetadata> {
+        // The same edge chokepoint `request_prelude` applies, for the same
+        // reason: this interpolates the coordinate into a cache key.
+        crate::services::validate_coordinate(
+            &package_id.name,
+            &package_id.version,
+            package_id.artifact.as_deref(),
+        )
+        .ok()?;
+        // Spelled as `request_prelude` spells it — the two must not drift, or
+        // this reads a key nothing ever writes and silently answers `None`.
+        let cache_key = format!("meta:{}", package_id.cache_key());
+        Some(self.cache.get(&cache_key).await.ok()??.metadata)
+    }
+
     pub async fn resolve_metadata_for(
         &self,
         req: &ProxyRequest,

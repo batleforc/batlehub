@@ -650,3 +650,38 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* ── Mermaid diagrams ─────────────────────────────────────────────────────────
+   `vitepress-plugin-mermaid` paints edge labels with mermaid's own palette:
+   #cccccc on #585858 in the dark rendition, which is 4.43:1 and fails AA for
+   12pt text. `docs:design:rendered` found it on every page carrying a diagram —
+   220 findings from one pair of hex values, and the reason diagrams could not
+   simply be switched on and left alone.
+
+   Repainting them in the site's own tokens fixes both renditions with one rule,
+   because the tokens are what flip: --ink on --ground measures 16.88:1 dark and
+   16.64:1 light. `!important` is not decoration here — mermaid injects a
+   <style> block inside each SVG, and these rules have to outrank it.
+
+   Only the edge labels are touched. Node fills and their text come from
+   mermaid's theme and passed the gate as they are; restyling them would be a
+   second palette to keep in agreement with the first. */
+.mermaid .edgeLabel,
+.mermaid .edgeLabel p,
+.mermaid .edgeLabel foreignObject div {
+  color: var(--ink) !important;
+  background-color: transparent !important;
+}
+
+.mermaid .edgeLabel .labelBkg,
+.mermaid .labelBkg {
+  background-color: var(--ground) !important;
+  opacity: 1 !important;
+}
+
+/* A diagram is wider than a phone. Scroll it inside its own box rather than
+   letting the page scroll sideways — the rule the rest of this stylesheet
+   applies to tables and code blocks. */
+.mermaid {
+  overflow-x: auto;
+}

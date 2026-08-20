@@ -60,6 +60,17 @@ impl RegistryClient for CountingRegistry {
     async fn resolve_metadata(&self, pkg: &PackageId) -> Result<PackageMetadata, CoreError> {
         *self.resolves.lock().unwrap() += 1;
         let mut meta = self.inner.resolve_metadata(pkg).await?;
+        // The links a client writes onto `extra` from the per-version document
+        // — the crates.io record, `/pypi/{name}/{version}/json`, the gallery's
+        // per-extension query. **The version is in the URL** so a test can tell
+        // *which* coordinate was resolved from the answer alone.
+        let links = batlehub_core::entities::MetadataLinks::new(
+            Some(&format!(
+                "https://forge.invalid/{}/{}",
+                pkg.name, pkg.version
+            )),
+            None,
+        );
         // PyPI's description lives in `/pypi/{name}/{version}/json`, one request
         // per version — so unlike npm's packument, the *listing* document
         // carries no README and only a per-version resolve has one.
@@ -91,6 +102,14 @@ impl RegistryClient for CountingRegistry {
                 };
                 meta.extra = serde_json::json!({ "readme": found });
             }
+        }
+        // Merged rather than assigned: `extra` carries whatever the inner
+        // fixture put there and the rules read it.
+        if let Some(extra) = meta.extra.as_object_mut() {
+            extra.insert(
+                "links".to_owned(),
+                serde_json::to_value(&links).unwrap_or(serde_json::Value::Null),
+            );
         }
         Ok(meta)
     }
@@ -705,6 +724,131 @@ async fn a_second_view_of_the_same_pypi_version_resolves_once() {
     );
 }
 
+/// Where the listing cannot know — PyPI's simple page carries no `project_urls`
+/// — the link costs **one** resolve, for the one version selected.
+///
+/// This test asserted `resolves == 0` and the link was absent, on the reasoning
+/// that a page view must not become an upstream request. The zero was the wrong
+/// bound. The rule this file actually defends is the one the test below states
+/// in its own words — *filling it for every row would be N upstream requests per
+/// page view* — and the forbidden thing is the **N**. The discovery read on this
+/// same path is already one request; a resolve for the single row the reader
+/// selected is the same shape.
+///
+/// The zero also did not buy what it looked like it bought. Nothing the page
+/// itself does writes `meta:{registry}/{name}/{version}`: an artifact download
+/// writes `…/{version}/tarball` (`PackageId::with_artifact`), and the README
+/// panel's resolve — the same coordinate, on the same page view — lands *after*
+/// this handler has answered. So the link appeared on the reload after the one
+/// that earned it and vanished when the entry expired, which is what a reader
+/// reported.
+///
+/// The URL carries the version, so this asserts *which* coordinate was resolved
+/// rather than only how many.
+#[actix_web::test]
+async fn the_source_link_costs_one_resolve_for_the_selected_version() {
+    let f = fixture("pypi", RegistryMode::Proxy, None).await;
+    let resolves = Arc::clone(&f.resolves);
+    let app = build(f.parts).await;
+
+    let body = detail(&app, "/api/v1/explore/packages/reg1/requests?version=1.1.0").await;
+    assert_eq!(
+        body["links"]["repository"], "https://forge.invalid/requests/1.1.0",
+        "the link must describe the row the reader selected"
+    );
+    assert_eq!(
+        *resolves.lock().unwrap(),
+        1,
+        "one resolve for the selected version, never one per row"
+    );
+}
+
+/// And the second view is free: `resolve_metadata_for` is cache-first, so the
+/// bound is one request per coordinate per `metadata_ttl`, not one per page
+/// view.
+#[actix_web::test]
+async fn a_second_view_of_the_same_version_resolves_nothing() {
+    let f = fixture("pypi", RegistryMode::Proxy, None).await;
+    let resolves = Arc::clone(&f.resolves);
+    let app = build(f.parts).await;
+
+    let uri = "/api/v1/explore/packages/reg1/requests?version=1.1.0";
+    let first = detail(&app, uri).await;
+    let second = detail(&app, uri).await;
+
+    assert_eq!(
+        first["links"], second["links"],
+        "the answer must not change"
+    );
+    assert_eq!(
+        *resolves.lock().unwrap(),
+        1,
+        "the second view re-resolved a coordinate the cache already held"
+    );
+}
+
+/// A version nobody selected is a version nobody resolves. The endpoint asks
+/// about the row it is showing as selected and about no other — this is the N
+/// the whole file exists to forbid.
+#[actix_web::test]
+async fn the_other_rows_are_never_resolved() {
+    let f = fixture("pypi", RegistryMode::Proxy, None).await;
+    let resolves = Arc::clone(&f.resolves);
+    let app = build(f.parts).await;
+
+    let body = detail(&app, "/api/v1/explore/packages/reg1/requests").await;
+    let rows = body["versions"].as_array().unwrap().len();
+    assert!(rows > 1, "the fixture must list more than one version");
+    assert_eq!(
+        *resolves.lock().unwrap(),
+        1,
+        "{rows} rows cost more than the one resolve the selected row is worth"
+    );
+}
+
+/// But where the **listing document** names the repository, the link is there
+/// on the first view and stays there — still without a per-version resolve.
+///
+/// This is the defect the fallback exists for. On the metadata cache alone the
+/// link was not a property of the package, it was a property of what had been
+/// requested in the last `metadata_ttl`: no request the page itself makes writes
+/// `meta:{registry}/{name}/{version}` for npm, an artifact download writes
+/// `…/{version}/tarball` instead (`PackageId::with_artifact`), and where the
+/// README panel does write it — OpenVSX, PyPI — it lands after this handler has
+/// already answered. A reader saw the block appear on one reload and vanish on
+/// the next.
+///
+/// npm's packument is read once for the version table, and it carries this.
+#[actix_web::test]
+async fn the_source_link_comes_from_the_listing_the_page_already_read() {
+    let f = fixture("npm", RegistryMode::Proxy, None).await;
+    let resolves = Arc::clone(&f.resolves);
+    let fetches = Arc::clone(&f.fetches);
+    let app = build(f.parts).await;
+
+    let body = detail(&app, "/api/v1/explore/packages/reg1/left-pad").await;
+    assert_eq!(
+        body["links"]["repository"], "https://github.com/acme/left-pad",
+        "the packument's `git+https://….git` must reach the page as a URL a \
+         browser opens"
+    );
+    assert_eq!(
+        body["links"]["homepage"], "https://acme.example/left-pad",
+        "the packument's homepage"
+    );
+    assert_eq!(
+        *resolves.lock().unwrap(),
+        0,
+        "the link cost a per-version resolve"
+    );
+    assert_eq!(
+        *fetches.lock().unwrap(),
+        1,
+        "the link cost a second listing fetch rather than reading the one the \
+         version table was built from"
+    );
+}
+
 /// And the version table still says `unknown` rather than `available` for a
 /// PyPI row nothing has been selected on: filling it for every row would be N
 /// upstream requests per page view, and a boolean guess is worse than saying
@@ -717,13 +861,19 @@ async fn the_pypi_version_table_reports_unknown_until_a_row_is_selected() {
 
     let body = detail(&app, "/api/v1/explore/packages/reg1/requests").await;
     assert_eq!(body["upstream"]["attempted"], true);
-    for version in body["versions"].as_array().unwrap() {
+    let rows = body["versions"].as_array().unwrap();
+    for version in rows {
         assert_eq!(version["readme"], "unknown", "{version}");
     }
+    // One, for the selected row's link — never one per row, which is the count
+    // this assertion has always been about. See
+    // `the_source_link_costs_one_resolve_for_the_selected_version` for why the
+    // bound is one rather than zero.
     assert_eq!(
         *resolves.lock().unwrap(),
-        0,
-        "the table fetched a description per row"
+        1,
+        "the table fetched a description per row ({} rows)",
+        rows.len()
     );
 }
 

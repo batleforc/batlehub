@@ -1,12 +1,70 @@
-use actix_web::{get, post, web, HttpResponse, Responder};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use batlehub_adapters::auth::OidcSsoFlow;
+use batlehub_adapters::auth::{random_urlsafe, OidcSsoFlow, PkceChallenge};
+use batlehub_core::ports::{LoginState, LoginStateStore};
 
-use super::{spa_error_redirect, split_combined_state, url_encode, CallbackQuery, LoginQuery};
+use super::{spa_error_redirect, url_encode, CallbackQuery, LoginQuery};
 use crate::error::AppError;
 use crate::handlers::schemas::OkResponse;
+
+/// How long a started login stays redeemable.
+///
+/// Long enough for a human to authenticate, re-enter a password manager and
+/// clear an MFA prompt; short enough that an abandoned login is not sitting in
+/// the table an hour later. The identity provider's own code lifetime is
+/// typically shorter still (60 s for many), so this is the outer bound, not the
+/// operative one.
+const LOGIN_STATE_TTL_SECS: u32 = 600;
+
+/// Refresh attempts allowed per client IP per window, and the window.
+///
+/// `POST /auth/oidc/refresh` is unauthenticated by necessity — a client whose
+/// access token has expired has nothing else to present — and it relays to the
+/// identity provider with this deployment's `client_secret` attached. That makes
+/// it both an oracle for refresh-token validity and a way to aim traffic at the
+/// IdP from behind this server's address. Legitimate use is roughly one call per
+/// token lifetime, so a generous ceiling still cuts abuse by orders of
+/// magnitude.
+const REFRESH_MAX_PER_WINDOW: u32 = 30;
+const REFRESH_WINDOW: Duration = Duration::from_secs(60);
+
+/// Per-IP fixed-window counter for the refresh endpoint.
+///
+/// Process-local on purpose. A shared store would bound the total across
+/// replicas more tightly, but it would also put a network dependency in front of
+/// the one endpoint a client hits when its session is already failing — an
+/// outage there would lock everyone out rather than merely fail to throttle.
+/// Each replica capping its own share bounds the amplification, which is what
+/// this is for.
+#[derive(Default)]
+pub struct RefreshRateLimiter {
+    windows: Mutex<HashMap<String, (Instant, u32)>>,
+}
+
+impl RefreshRateLimiter {
+    /// Count one attempt from `client`; `false` when it is over the ceiling.
+    fn allow(&self, client: &str) -> bool {
+        let now = Instant::now();
+        let mut windows = self.windows.lock().expect("refresh limiter mutex");
+
+        // Drop windows that have rolled over, so a burst of distinct source
+        // addresses cannot grow the map without bound.
+        windows.retain(|_, (started, _)| now.duration_since(*started) < REFRESH_WINDOW);
+
+        let entry = windows.entry(client.to_owned()).or_insert((now, 0));
+        if now.duration_since(entry.0) >= REFRESH_WINDOW {
+            *entry = (now, 0);
+        }
+        entry.1 += 1;
+        entry.1 <= REFRESH_MAX_PER_WINDOW
+    }
+}
 
 // ── Provider list ──────────────────────────────────────────────────────────────
 
@@ -44,9 +102,18 @@ pub async fn list_oidc_providers(flows: web::Data<Vec<OidcSsoFlow>>) -> impl Res
 
 /// Redirect the browser to the OIDC provider's authorization endpoint.
 ///
-/// The caller must supply a `state` query parameter containing a random value
-/// it has stored in `sessionStorage`; the same value is threaded through the
-/// provider and returned to the SPA so it can verify the flow wasn't hijacked.
+/// The caller supplies a `state` query parameter holding a random value it has
+/// kept locally (`sessionStorage` in the SPA, memory in the CLI). That value is
+/// **not** what goes to the identity provider: the server generates its own
+/// unguessable handle, records the caller's value against it along with the PKCE
+/// verifier and nonce, and sends only the handle. The caller's value comes back
+/// at the end of the flow so it can confirm this callback belongs to the login
+/// it started.
+///
+/// The two halves protect different things and neither replaces the other. The
+/// server-side entry gives PKCE verifier custody, one-time redemption, expiry
+/// and provider binding; the caller's value is what ties the flow to a
+/// particular browser or CLI process, which the server cannot observe.
 ///
 /// Omitting `state` (e.g. a HEAD probe) returns 200 when OIDC is configured,
 /// 503 when it is not — useful for the frontend to decide whether to show the
@@ -69,6 +136,7 @@ pub async fn list_oidc_providers(flows: web::Data<Vec<OidcSsoFlow>>) -> impl Res
 #[get("/api/v1/auth/oidc/login")]
 pub async fn oidc_login(
     flows: web::Data<Vec<OidcSsoFlow>>,
+    login_states: web::Data<Arc<dyn LoginStateStore>>,
     query: web::Query<LoginQuery>,
 ) -> Result<impl Responder, AppError> {
     if flows.is_empty() {
@@ -77,7 +145,7 @@ pub async fn oidc_login(
         ));
     }
 
-    let Some(ref state) = query.state else {
+    let Some(ref spa_state) = query.state else {
         // Probe request — confirm the endpoint exists and OIDC is configured.
         return Ok(HttpResponse::Ok().json(OkResponse::new()));
     };
@@ -92,21 +160,44 @@ pub async fn oidc_login(
         return Err(AppError::not_found("OIDC provider not found"));
     };
 
-    // Embed the provider name in the state so the callback can look up the right flow.
-    let combined_state = format!("{}:{}", sso.name, state);
-    let location = sso.authorization_url(&combined_state);
+    // The provider is recorded server-side rather than encoded into the state
+    // string. The previous design sent `"<provider>:<caller state>"` and parsed
+    // it back on return, which meant the value deciding *which token endpoint a
+    // code is redeemed at* arrived from the network.
+    let pkce = PkceChallenge::generate();
+    let state = random_urlsafe();
+    login_states
+        .put(
+            &state,
+            LoginState {
+                provider: sso.name.clone(),
+                code_verifier: pkce.verifier.clone(),
+                nonce: pkce.nonce.clone(),
+                spa_state: spa_state.clone(),
+            },
+            LOGIN_STATE_TTL_SECS,
+        )
+        .await?;
+
+    let location = sso.authorization_url(&state, &pkce);
     Ok(HttpResponse::Found()
         .insert_header(("Location", location))
+        // A started login is single-use; a cached 302 would send a second visit
+        // to an authorization URL whose state has already been redeemed.
+        .insert_header(("Cache-Control", "no-store"))
         .finish())
 }
 
 // ── Callback ───────────────────────────────────────────────────────────────────
 
-/// Handle the OIDC provider's redirect back; exchange the code for tokens and
-/// redirect the browser to the SPA with tokens in query parameters.
+/// Handle the OIDC provider's redirect back: validate the state, exchange the
+/// code for tokens, and redirect the browser to the SPA with the tokens in the
+/// URL fragment.
 ///
-/// The SPA is responsible for validating `oidc_state` against its stored value
-/// and immediately removing the parameters from the address bar.
+/// The returned `state` must match an entry this server created and has not yet
+/// consumed, or nothing is exchanged. The caller then compares the echoed
+/// `oidc_state` against the value it kept locally — see `oidc_login` for why
+/// both checks exist.
 #[utoipa::path(
     get,
     path = "/api/v1/auth/oidc/callback",
@@ -119,6 +210,7 @@ pub async fn oidc_login(
 #[get("/api/v1/auth/oidc/callback")]
 pub async fn oidc_callback(
     flows: web::Data<Vec<OidcSsoFlow>>,
+    login_states: web::Data<Arc<dyn LoginStateStore>>,
     query: web::Query<CallbackQuery>,
 ) -> impl Responder {
     if flows.is_empty() {
@@ -142,60 +234,112 @@ pub async fn oidc_callback(
         }
     };
 
-    // The state is encoded as "<provider>:<user-csrf>" by oidc_login.
-    let raw_state = query.state.as_deref().unwrap_or("");
-    let (provider_name, user_state) = split_combined_state(raw_state);
+    // Consume the state before anything else. `take` deletes as it reads, so a
+    // replayed callback — the same code and state delivered twice — finds
+    // nothing the second time. A state this server never issued, or one that
+    // expired, lands here too.
+    let Some(raw_state) = query.state.as_deref().filter(|s| !s.is_empty()) else {
+        return spa_error_redirect(&fallback_base, "Sign-in state missing from callback.");
+    };
+    let login = match login_states.take(raw_state).await {
+        Ok(Some(login)) => login,
+        Ok(None) => {
+            tracing::warn!("OIDC callback with an unknown, expired or already-redeemed state");
+            return spa_error_redirect(
+                &fallback_base,
+                "This sign-in link has expired or was already used. Please sign in again.",
+            );
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "reading OIDC login state failed");
+            return spa_error_redirect(
+                &fallback_base,
+                "Failed to complete sign-in. Please try again.",
+            );
+        }
+    };
 
-    let sso = flows
-        .iter()
-        .find(|f| f.name == provider_name)
-        .or_else(|| flows.first());
-
-    let Some(sso) = sso else {
+    // The provider comes from the stored entry, so a code can only ever be
+    // redeemed at the token endpoint that issued the authorization request.
+    let Some(sso) = flows.iter().find(|f| f.name == login.provider) else {
+        tracing::warn!(
+            provider = %login.provider,
+            "OIDC login state names a provider that is no longer configured"
+        );
         return spa_error_redirect(&fallback_base, "OIDC provider not found.");
     };
 
     let base = sso.frontend_url.trim_end_matches('/').to_owned();
 
-    match sso.exchange_code(&code).await {
-        Ok(tokens) => {
-            // SECURITY: tokens are passed as URL query params, which are visible in
-            // browser history and server logs. Mitigations in place:
-            //   1. The frontend (router/index.ts) immediately removes them from the
-            //      address bar and moves them to localStorage before any navigation.
-            //   2. CSRF is prevented by the `state` parameter validated above.
-            //   3. The redirect carries `Referrer-Policy: no-referrer` (so the
-            //      token-bearing URL is never sent as a `Referer` when the landing
-            //      page loads sub-resources) and `Cache-Control: no-store` (so it is
-            //      not cached by intermediaries).
-            // A proper fix would use a server-side one-time code exchange instead of
-            // query params, but that requires a stateful session layer.
-            let mut location = format!(
-                "{base}/?oidc_access_token={}&oidc_state={}&oidc_provider={}",
-                url_encode(&tokens.access_token),
-                url_encode(user_state),
-                url_encode(&sso.name),
-            );
-            if let Some(ref rt) = tokens.refresh_token {
-                location.push_str(&format!("&oidc_refresh_token={}", url_encode(rt)));
-            }
-            if let Some(exp) = tokens.expires_in {
-                location.push_str(&format!("&oidc_expires_in={exp}"));
-            }
-            HttpResponse::Found()
-                .insert_header(("Location", location))
-                .insert_header(("Referrer-Policy", "no-referrer"))
-                .insert_header(("Cache-Control", "no-store"))
-                .finish()
-        }
+    let tokens = match sso.exchange_code(&code, &login.code_verifier).await {
+        Ok(tokens) => tokens,
         Err(e) => {
             // Log the full anyhow chain (which can include the upstream token
             // endpoint URL) server-side only; the browser-visible redirect gets a
             // generic message so it never leaks upstream connectivity details.
             tracing::warn!(error = %e, "OIDC token exchange failed");
-            spa_error_redirect(&base, "Failed to complete sign-in. Please try again.")
+            return spa_error_redirect(&base, "Failed to complete sign-in. Please try again.");
         }
+    };
+
+    // OpenID Connect Core §3.1.3.7 step 11. The nonce was minted for this one
+    // authorization request and kept server-side, so a matching one proves the
+    // ID token was issued in response to *this* login and not replayed from
+    // another.
+    if let Err(e) = OidcSsoFlow::verify_nonce(&tokens.session_token, &login.nonce) {
+        tracing::warn!(error = %e, provider = %login.provider, "OIDC nonce check failed");
+        return spa_error_redirect(&base, "Failed to complete sign-in. Please try again.");
     }
+
+    // A provider that returns no `id_token` and an opaque access token cannot
+    // work here: `OidcAuthProvider::authenticate` validates a JWT. Said once,
+    // loudly, at the point of failure — otherwise every later request quietly
+    // resolves to anonymous and the operator goes looking at their RBAC rules.
+    if !OidcSsoFlow::session_token_is_a_jwt(&tokens.session_token) {
+        tracing::error!(
+            provider = %login.provider,
+            "the identity provider returned no id_token and an opaque access token; \
+             batlehub authenticates JWTs, so this provider needs an `openid` scope \
+             (or, on Auth0/Okta, an API audience that yields a JWT access token)"
+        );
+        return spa_error_redirect(
+            &base,
+            "This identity provider is not returning a usable token. Ask an administrator \
+             to check the server log.",
+        );
+    }
+
+    // Tokens ride in the URL **fragment**, not the query string. A fragment is
+    // never sent to a server, so it stays out of the SPA host's access logs and
+    // out of any proxy in front of it; a query string would be written to both.
+    // It is still visible in browser history, which is why `router/index.ts`
+    // clears it before the first navigation.
+    //
+    // `Referrer-Policy: no-referrer` keeps the token-bearing URL out of the
+    // `Referer` of sub-resource loads on the landing page, and
+    // `Cache-Control: no-store` keeps the redirect out of intermediary caches.
+    //
+    // The parameter is still called `oidc_access_token` — it is what the SPA and
+    // CLI read, and renaming it would break every client mid-upgrade for no
+    // security gain. What changed is its *value*: the ID token, when the
+    // provider issued one.
+    let mut location = format!(
+        "{base}/#oidc_access_token={}&oidc_state={}&oidc_provider={}",
+        url_encode(&tokens.session_token),
+        url_encode(&login.spa_state),
+        url_encode(&sso.name),
+    );
+    if let Some(ref rt) = tokens.refresh_token {
+        location.push_str(&format!("&oidc_refresh_token={}", url_encode(rt)));
+    }
+    if let Some(exp) = tokens.expires_in {
+        location.push_str(&format!("&oidc_expires_in={exp}"));
+    }
+    HttpResponse::Found()
+        .insert_header(("Location", location))
+        .insert_header(("Referrer-Policy", "no-referrer"))
+        .insert_header(("Cache-Control", "no-store"))
+        .finish()
 }
 
 // ── Refresh ────────────────────────────────────────────────────────────────────
@@ -227,14 +371,31 @@ pub struct RefreshResponse {
         (status = 200, description = "New tokens", body = RefreshResponse),
         (status = 400, description = "Refresh failed"),
         (status = 404, description = "Named provider not found"),
+        (status = 429, description = "Too many refresh attempts from this client"),
         (status = 503, description = "OIDC not configured"),
     ),
 )]
 #[post("/api/v1/auth/oidc/refresh")]
 pub async fn oidc_refresh(
+    req: HttpRequest,
     flows: web::Data<Vec<OidcSsoFlow>>,
+    limiter: web::Data<Arc<RefreshRateLimiter>>,
     body: web::Json<RefreshRequest>,
 ) -> Result<impl Responder, AppError> {
+    // Same proxy-trust verdict as every other IP-consuming path, so a caller
+    // behind an untrusted peer cannot spoof `X-Forwarded-For` to get a fresh
+    // bucket per request.
+    let client = crate::middleware::proxy_trust::client_ip(
+        &req,
+        crate::middleware::proxy_trust::peer_trust(&req),
+    );
+    if !limiter.allow(&client) {
+        tracing::warn!(client = %client, "OIDC refresh rate limit exceeded");
+        return Err(AppError::too_many_requests(
+            "too many refresh attempts; try again shortly",
+        ));
+    }
+
     if flows.is_empty() {
         return Err(AppError::service_unavailable(
             "OIDC SSO is not configured on this server",
@@ -252,8 +413,14 @@ pub async fn oidc_refresh(
     };
 
     match sso.refresh(&body.refresh_token).await {
+        // `session_token`, matching the callback: the client stores this under
+        // `access_token` and sends it back as a bearer, so it has to be the same
+        // kind of credential the callback handed out or the session dies at the
+        // first refresh. No nonce check here — a refresh has no authorization
+        // request to be tied to, and OIDC Core §12.2 says an ID token from a
+        // refresh may omit the claim.
         Ok(tokens) => Ok(HttpResponse::Ok().json(RefreshResponse {
-            access_token: tokens.access_token,
+            access_token: tokens.session_token,
             refresh_token: tokens.refresh_token,
             expires_in: tokens.expires_in,
         })),

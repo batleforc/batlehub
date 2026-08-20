@@ -5,7 +5,7 @@
 //! argues the discovery read is worth having at all.
 
 use super::{is_prerelease, json, parse_time, UpstreamDetail, UpstreamVersion};
-use crate::entities::{MetadataReadme, ReadmeFormat};
+use crate::entities::{MetadataLinks, MetadataReadme, ReadmeFormat};
 use crate::ports::VersionDocument;
 
 /// npm's placeholder for "the tarball had no README" — a string, so a presence
@@ -65,7 +65,38 @@ pub(super) fn read(doc: &VersionDocument) -> UpstreamDetail {
         }
     }
 
+    // The links, read from `dist-tags.latest`'s entry and falling back to the
+    // document root. Package-level either way — this is the answer for the
+    // package, and the selected version's own entry is what the metadata cache
+    // holds when something has resolved it.
+    //
+    // `latest` first because a packument's root fields are a copy of the latest
+    // publish's `package.json` and go stale when a package moves forge without
+    // cutting a release; the two agree for every package where nothing moved.
+    let latest_meta = latest.and_then(|latest| versions.get(latest));
+    detail.links = MetadataLinks::new(
+        repository_url(latest_meta).or_else(|| repository_url(Some(root))),
+        string(latest_meta.and_then(|m| m.get("homepage")))
+            .or_else(|| string(root.get("homepage"))),
+    );
+
     detail
+}
+
+/// npm spells `repository` two ways and both are in the wild: a bare string
+/// (often the `github:user/repo` shorthand) or `{ "type": "git", "url": … }`.
+/// `MetadataLinks::new` untangles the *spelling* of the URL; this only has to
+/// accept both shapes of the field.
+fn repository_url(meta: Option<&serde_json::Value>) -> Option<&str> {
+    let repository = meta?.get("repository")?;
+    match repository {
+        serde_json::Value::String(url) => Some(url.as_str()),
+        _ => repository.get("url").and_then(|v| v.as_str()),
+    }
+}
+
+fn string(value: Option<&serde_json::Value>) -> Option<&str> {
+    value.and_then(|v| v.as_str())
 }
 
 fn usable(value: Option<&serde_json::Value>) -> Option<String> {

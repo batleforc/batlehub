@@ -5,7 +5,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 use batlehub_core::{
-    entities::{MetadataReadme, PackageId, PackageMetadata, ReadmeFormat},
+    entities::{MetadataLinks, MetadataReadme, PackageId, PackageMetadata, ReadmeFormat},
     error::CoreError,
     ports::{DocumentKind, FetchedArtifact, RegistryClient, UpstreamPackage, VersionDocument},
 };
@@ -63,6 +63,34 @@ struct NpmPackument {
     /// claim from a package-level field would be a guess presented as a fact.
     #[serde(default)]
     readme: Option<String>,
+    /// The package's repository, at the document root — the fallback when the
+    /// version's own entry omits it, which is common for older publishes.
+    #[serde(default)]
+    repository: Option<NpmRepository>,
+    #[serde(default)]
+    homepage: Option<String>,
+}
+
+/// npm spells this two ways and both are in the wild: a bare string (often the
+/// `github:user/repo` shorthand) or `{ "type": "git", "url": "git+https://…" }`.
+/// `MetadataLinks` untangles the spelling; this only has to accept both shapes.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum NpmRepository {
+    Url(String),
+    Object {
+        #[serde(default)]
+        url: Option<String>,
+    },
+}
+
+impl NpmRepository {
+    fn url(&self) -> Option<&str> {
+        match self {
+            Self::Url(url) => Some(url),
+            Self::Object { url } => url.as_deref(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -79,6 +107,13 @@ struct NpmVersionMeta {
     /// npm's `readme_support()` is `MetadataThenArchive` and not `Metadata`.
     #[serde(default)]
     readme: Option<String>,
+    /// This version's own repository. Preferred over the document root's: a
+    /// package that moved forge between releases named the old one in the old
+    /// version, and that is the honest answer for *that* version.
+    #[serde(default)]
+    repository: Option<NpmRepository>,
+    #[serde(default)]
+    homepage: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -129,6 +164,18 @@ impl RegistryClient for NpmRegistryClient {
             "tarball": version_meta.dist.tarball,
             "publisher": version_meta.npm_user.as_ref().and_then(|u| u.name.as_deref()),
             "readme": packument_readme(&packument, version_meta, &resolved_version),
+            // The version's own, falling back to the document root's.
+            "links": MetadataLinks::new(
+                version_meta
+                    .repository
+                    .as_ref()
+                    .or(packument.repository.as_ref())
+                    .and_then(NpmRepository::url),
+                version_meta
+                    .homepage
+                    .as_deref()
+                    .or(packument.homepage.as_deref()),
+            ),
         });
 
         let published_at = packument

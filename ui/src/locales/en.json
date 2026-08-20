@@ -740,7 +740,9 @@
     "supplyChainReportOn": "Supply-chain report on socket.dev",
     "upstreamHasNoneEither": "Nothing has been pulled through, and the upstream does not have it either.",
     "upstreamUnreachable": "Nothing has been pulled through, and the upstream could not be reached.",
-    "why": "Why?"
+    "why": "Why?",
+    "sourceCode": "Source code",
+    "homepage": "Project site"
   },
   "packageEventsTable": {
     "noEventsRecordedYet": "No events recorded yet.",

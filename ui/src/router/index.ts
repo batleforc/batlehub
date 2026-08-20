@@ -12,13 +12,31 @@ const OIDC_STATE_KEY = "oidc_state";
 
 type AuthState = ReturnType<typeof useAuth>;
 
-function handleOidcCallback(to: RouteLocationNormalized): RouteLocationRaw | null {
-  if (!to.query.oidc_access_token) return null;
+/* The backend delivers the tokens in the URL **fragment**, not the query string:
+   a fragment is never transmitted to a server, so it stays out of the access log
+   of whatever serves this SPA and out of any proxy in front of it. Returning a
+   route without the hash is what then clears it from the address bar, so it
+   survives only until the first navigation. */
+function oidcCallbackParams(to: RouteLocationNormalized): URLSearchParams | null {
+  const raw = to.hash.startsWith("#") ? to.hash.slice(1) : to.hash;
+  if (!raw) return null;
+  const params = new URLSearchParams(raw);
+  return params.has("oidc_access_token") ? params : null;
+}
 
-  const incomingState = String(to.query.oidc_state ?? "");
+function handleOidcCallback(to: RouteLocationNormalized): RouteLocationRaw | null {
+  const params = oidcCallbackParams(to);
+  if (!params) return null;
+
+  const incomingState = params.get("oidc_state") ?? "";
   const expectedState = sessionStorage.getItem(OIDC_STATE_KEY) ?? "";
   sessionStorage.removeItem(OIDC_STATE_KEY);
 
+  /* The server has already checked that this state is one it issued, has not
+     expired and has not been redeemed before. What it cannot check is that the
+     login started in *this* browser — it has no way to tell two browsers apart.
+     That is what this comparison is for, and why removing it would leave a real
+     gap even though the server-side check exists. */
   if (!incomingState || incomingState !== expectedState) {
     /* A catalogue *key*, not a sentence. The router has no `setup` and the
        destination does — and putting a rendered sentence in a query string also
@@ -29,12 +47,12 @@ function handleOidcCallback(to: RouteLocationNormalized): RouteLocationRaw | nul
     return { path: "/login", query: { error: "loginPage.oidcStateMismatch" } };
   }
 
-  const provider = to.query.oidc_provider ? String(to.query.oidc_provider) : null;
+  const expiresIn = params.get("oidc_expires_in");
   storeTokens(
-    String(to.query.oidc_access_token),
-    to.query.oidc_refresh_token ? String(to.query.oidc_refresh_token) : null,
-    to.query.oidc_expires_in ? Number(to.query.oidc_expires_in) : null,
-    provider,
+    String(params.get("oidc_access_token")),
+    params.get("oidc_refresh_token"),
+    expiresIn ? Number(expiresIn) : null,
+    params.get("oidc_provider"),
   );
   return { path: "/packages" };
 }

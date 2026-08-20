@@ -446,6 +446,16 @@ tasks:
     cmds:
       - cargo +nightly fuzz run {{.TARGET}} -- -max_total_time={{.MAX_TIME}}
 
+  fuzz:check:
+    desc: "Every fuzz target still compiles — what CI gates on each PR"
+    cmds:
+      # `fuzz/` is its own workspace, so `cargo check --workspace` and clippy
+      # never see it. Four of the six targets had been failing to compile against
+      # types that moved underneath them, and nothing said so: a target that does
+      # not build reads like a guard in the module docs that name it, and is
+      # none. Needs no nightly — a type error is a type error.
+      - cargo check --manifest-path fuzz/Cargo.toml --bins --all-targets
+
   lint:
     desc: Run clippy lints across the workspace
     cmds:
@@ -1238,6 +1248,17 @@ tasks:
       - task: docs:links
       - task: docs:structure
       - task: docs:audience
+      - task: docs:mermaid
+
+  docs:mermaid:
+    desc: Every ```mermaid fence parses — the plugin renders on the client, so the build cannot
+    dir: docs
+    cmds:
+      # `vitepress-plugin-mermaid` renders in the browser: a broken diagram
+      # builds green and draws an error box for the reader. Before the plugin
+      # landed the fences were highlighted as source and nothing read them at
+      # all. See the header of the script.
+      - node build/check-mermaid.mjs
 
   docs:links:
     desc: Every documentation cross-reference resolves, and no published page is orphaned

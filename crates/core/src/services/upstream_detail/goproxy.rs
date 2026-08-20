@@ -19,5 +19,7 @@ pub(super) fn read(doc: &VersionDocument) -> UpstreamDetail {
     UpstreamDetail {
         versions,
         readmes: Default::default(),
+        // One version per line, and nothing else.
+        links: None,
     }
 }

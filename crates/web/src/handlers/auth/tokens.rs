@@ -7,7 +7,13 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use batlehub_adapters::auth::generate_token;
-use batlehub_core::{entities::Role, ports::UserTokenRepository};
+use batlehub_core::{
+    entities::Role,
+    ports::{TokenOwner, UserTokenRepository},
+};
+
+use super::OidcProviderNames;
+use batlehub_core::entities::Identity;
 
 use crate::{error::AppError, extractors::AuthIdentity};
 
@@ -51,18 +57,11 @@ pub struct CreateTokenResponse {
 pub async fn create_token(
     identity: AuthIdentity,
     repo: web::Data<Arc<dyn UserTokenRepository>>,
+    oidc_providers: web::Data<OidcProviderNames>,
     body: web::Json<CreateTokenRequest>,
 ) -> Result<impl Responder, AppError> {
-    if identity.auth_provider.as_deref() != Some("oidc") {
-        return Err(AppError::forbidden(
-            "only OIDC sessions can create API tokens",
-        ));
-    }
-    let Some(ref user_id) = identity.user_id else {
-        return Err(AppError::forbidden(
-            "cannot create token for anonymous identity",
-        ));
-    };
+    let owner = oidc_session_owner(&identity, &oidc_providers)
+        .ok_or_else(|| AppError::forbidden("only OIDC sessions can create API tokens"))?;
 
     if body.expires_in_days == 0 || body.expires_in_days > 90 {
         return Err(AppError::bad_request(
@@ -92,7 +91,7 @@ pub async fn create_token(
     let tok = repo
         .create_token(
             id,
-            user_id,
+            &owner,
             name,
             &token_hash,
             requested_role.clone(),
@@ -100,6 +99,20 @@ pub async fn create_token(
         )
         .await
         .map_err(AppError::from)?;
+
+    // Minting and revoking a long-lived credential are the two events worth
+    // reconstructing after an incident. At `info` so they survive the default
+    // filter, and without the token or its hash — the id and the owner are what
+    // an investigation needs.
+    tracing::info!(
+        token_id = %tok.id,
+        provider = %owner.provider,
+        user_id = %owner.user_id,
+        role = %tok.role,
+        name = %tok.name,
+        expires_at = %tok.expires_at,
+        "personal access token created"
+    );
 
     Ok(HttpResponse::Created().json(CreateTokenResponse {
         id: tok.id,
@@ -120,6 +133,10 @@ pub struct TokenListItem {
     pub role: String,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
+    /// When this token was last presented, or `null` if not since the server
+    /// started recording. What tells a user which of their tokens is dormant and
+    /// safe to revoke, and an operator which one moved after a leak.
+    pub last_used_at: Option<DateTime<Utc>>,
 }
 
 #[utoipa::path(
@@ -136,12 +153,12 @@ pub struct TokenListItem {
 pub async fn list_tokens(
     identity: AuthIdentity,
     repo: web::Data<Arc<dyn UserTokenRepository>>,
+    oidc_providers: web::Data<OidcProviderNames>,
 ) -> Result<impl Responder, AppError> {
-    let Some(ref user_id) = identity.user_id else {
-        return Err(AppError::forbidden("must be authenticated to list tokens"));
-    };
+    let owner = oidc_session_owner(&identity, &oidc_providers)
+        .ok_or_else(|| AppError::forbidden("only OIDC sessions can list API tokens"))?;
 
-    let tokens = repo.list_for_user(user_id).await?;
+    let tokens = repo.list_for_user(&owner).await?;
 
     let items: Vec<TokenListItem> = tokens
         .into_iter()
@@ -151,6 +168,7 @@ pub async fn list_tokens(
             role: t.role.to_string(),
             expires_at: t.expires_at,
             created_at: t.created_at,
+            last_used_at: t.last_used_at,
         })
         .collect();
 
@@ -176,17 +194,21 @@ pub async fn revoke_token(
     path: web::Path<Uuid>,
     identity: AuthIdentity,
     repo: web::Data<Arc<dyn UserTokenRepository>>,
+    oidc_providers: web::Data<OidcProviderNames>,
 ) -> Result<impl Responder, AppError> {
-    let Some(ref user_id) = identity.user_id else {
-        return Err(AppError::forbidden(
-            "must be authenticated to revoke tokens",
-        ));
-    };
+    let owner = oidc_session_owner(&identity, &oidc_providers)
+        .ok_or_else(|| AppError::forbidden("only OIDC sessions can revoke API tokens"))?;
 
     let id = path.into_inner();
-    let revoked = repo.revoke(id, user_id).await?;
+    let revoked = repo.revoke(id, &owner).await?;
 
     if revoked {
+        tracing::info!(
+            token_id = %id,
+            provider = %owner.provider,
+            user_id = %owner.user_id,
+            "personal access token revoked"
+        );
         Ok(HttpResponse::NoContent().finish())
     } else {
         Err(AppError::not_found("token not found or not owned by you"))
@@ -194,6 +216,35 @@ pub async fn revoke_token(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// The principal whose tokens this caller may manage, or `None` if it may
+/// manage none.
+///
+/// Two conditions, and every token endpoint applies both.
+///
+/// **The session must be an interactive OIDC login.** No machine credential
+/// mints a PAT — that would let a static token, a service account or a CI job
+/// issue a longer-lived credential — and none may list or revoke either, so a
+/// stolen PAT cannot enumerate the rest of its owner's tokens or revoke them out
+/// of spite. Matched against the *configured* provider names rather than the
+/// literal `"oidc"`: the name is operator-chosen, and comparing the literal
+/// locked token management out of every deployment that renamed its provider.
+///
+/// **Ownership is `(provider, user_id)`, never `user_id` alone.** That id is a
+/// bare string each provider picks for itself, so a static `[[auth.tokens]]`
+/// entry with `user_id = "alice"`, or a service account whose username equals
+/// Alice's OIDC `sub`, would otherwise address her tokens.
+fn oidc_session_owner(
+    identity: &Identity,
+    oidc_providers: &OidcProviderNames,
+) -> Option<TokenOwner> {
+    let provider = identity.auth_provider.as_deref()?;
+    if !oidc_providers.contains(provider) {
+        return None;
+    }
+    let user_id = identity.user_id.as_deref()?;
+    Some(TokenOwner::new(provider, user_id))
+}
 
 fn parse_role(s: &str) -> Option<Role> {
     match s {

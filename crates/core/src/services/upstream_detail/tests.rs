@@ -232,6 +232,57 @@ fn a_latest_version_with_its_own_readme_keeps_it() {
     assert!(!detail.readmes["1.0.0"].package_level);
 }
 
+/// The packument's links, normalised — the answer the package page shows when
+/// nothing has resolved the selected version.
+///
+/// `git+https://…​.git` is npm's canonical spelling for `repository` and is not
+/// something a browser opens, so what the reader gets has to be the rewritten
+/// form, not the field.
+#[test]
+fn an_npm_packument_yields_the_packages_links() {
+    let doc = json_doc(serde_json::json!({
+        "dist-tags": { "latest": "2.0.0" },
+        "repository": { "type": "git", "url": "git+https://github.com/o/r.git" },
+        "homepage": "https://o.github.io/r",
+        "versions": { "1.0.0": {}, "2.0.0": {} }
+    }));
+    let links = dispatch(RegistryKind::Npm, &doc).links.expect("links");
+    assert_eq!(links.repository.as_deref(), Some("https://github.com/o/r"));
+    assert_eq!(links.homepage.as_deref(), Some("https://o.github.io/r"));
+}
+
+/// `dist-tags.latest`'s own entry wins over the document root: the root fields
+/// are a copy of the latest *publish*, and a package that moved forge without
+/// cutting a release names the new home in the version and the old one at the
+/// root.
+#[test]
+fn the_latest_versions_own_repository_wins_over_the_roots() {
+    let doc = json_doc(serde_json::json!({
+        "dist-tags": { "latest": "2.0.0" },
+        "repository": "github:old/home",
+        "versions": {
+            "1.0.0": {},
+            "2.0.0": { "repository": "https://gitlab.com/new/home" }
+        }
+    }));
+    let links = dispatch(RegistryKind::Npm, &doc).links.expect("links");
+    assert_eq!(
+        links.repository.as_deref(),
+        Some("https://gitlab.com/new/home")
+    );
+}
+
+/// The overwhelmingly common case, and the one the page renders as absence
+/// rather than as an empty link.
+#[test]
+fn a_packument_that_declares_no_links_yields_none() {
+    let doc = json_doc(serde_json::json!({
+        "dist-tags": { "latest": "1.0.0" },
+        "versions": { "1.0.0": {} }
+    }));
+    assert!(dispatch(RegistryKind::Npm, &doc).links.is_none());
+}
+
 /// npm writes a placeholder string rather than omitting the field, so a
 /// presence check alone would show an error message as documentation.
 #[test]
@@ -366,6 +417,34 @@ fn a_minified_p2_document_carries_its_fields_forward() {
     assert!(
         detail.versions[1].published_at.is_some(),
         "the carried-forward time was dropped"
+    );
+}
+
+/// p2 lists newest first and carries `source.url` per entry, so the newest
+/// release's repository is the package's — and the `.git` suffix comes off,
+/// because a browser opening it lands on the same forge page either way.
+#[test]
+fn composer_p2_yields_the_newest_releases_links() {
+    let doc = json_doc(serde_json::json!({
+        "packages": {
+            "vendor/pkg": [
+                {
+                    "version": "2.0.0",
+                    "source": { "type": "git", "url": "https://github.com/vendor/pkg.git" },
+                    "homepage": "https://vendor.example/pkg"
+                },
+                { "version": "1.0.0", "source": { "url": "https://github.com/old/pkg.git" } }
+            ]
+        }
+    }));
+    let links = dispatch(RegistryKind::Composer, &doc).links.expect("links");
+    assert_eq!(
+        links.repository.as_deref(),
+        Some("https://github.com/vendor/pkg")
+    );
+    assert_eq!(
+        links.homepage.as_deref(),
+        Some("https://vendor.example/pkg")
     );
 }
 

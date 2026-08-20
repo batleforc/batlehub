@@ -108,6 +108,14 @@ impl AppError {
         }
     }
 
+    pub fn too_many_requests(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: msg.into(),
+            code: None,
+        }
+    }
+
     pub fn service_unavailable(msg: impl Into<String>) -> Self {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
