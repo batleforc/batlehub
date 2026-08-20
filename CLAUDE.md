@@ -17,6 +17,9 @@ cargo test --package batlehub-web nuget            # single package, filter by n
 cargo test --package batlehub-adapters --lib rbac  # lib-only tests (no integration)
 cargo test -p batlehub-cli --test integration      # CLI integration tests (subprocess binary)
 
+# Housekeeping — cargo never garbage-collects target/
+task clean:stale     # cargo sweep --time 1: drop artefacts not touched since yesterday
+
 # Linting (CI fails on any warning)
 cargo clippy --workspace -- -D warnings
 cargo fmt --all --check

@@ -392,6 +392,30 @@ const absenceMessage = computed(() => {
   padding-left: var(--s3);
   color: var(--ink-dim);
 }
+/* `align` survives the sanitiser on block elements (see `ALIGNABLE_TAGS` in
+   `crates/core/src/services/readme/sanitize.rs`), because a centred badge row
+   written as `<p align="center">` is the commonest raw HTML in a README and
+   dropping it renders the document differently from how its author wrote it.
+
+   Mapped here rather than left to the browser: `align` is an obsolete
+   presentational attribute that the HTML rendering spec still defines, but
+   "still defined" is a weaker guarantee than a rule of our own, and this is one
+   declaration. `text-align` is the whole of the effect — it centres inline
+   content and cannot position or layer anything, which is why the attribute is
+   allowed at all where `style` is not. */
+.readme-body :deep([align="center"]) {
+  text-align: center;
+}
+.readme-body :deep([align="right"]) {
+  text-align: right;
+}
+.readme-body :deep([align="left"]) {
+  text-align: left;
+}
+.readme-body :deep([align="justify"]) {
+  text-align: justify;
+}
+
 /* The chip that replaces a stripped image: the reader sees that an image was
    there and where it pointed, which is the whole of what a badge row says. */
 .readme-body :deep(.readme-stripped-image) {
@@ -400,6 +424,21 @@ const absenceMessage = computed(() => {
   padding: 0 var(--s1);
   font-size: var(--t-meta);
   color: var(--ink-dim);
+}
+/* The chip is an `<a>` when the image has a source worth linking to and the
+   author had not already wrapped it in a link of their own. It should still read
+   as a chip and not as body prose, so the generic link underline comes off — the
+   dashed border is already the affordance, and underlining it too would make a
+   badge row look like a list of footnotes. The hover is what says it is
+   clickable, which is the honest signal: nothing is fetched until you ask. */
+.readme-body :deep(a.readme-stripped-image) {
+  text-decoration: none;
+  cursor: pointer;
+}
+.readme-body :deep(a.readme-stripped-image:hover),
+.readme-body :deep(a.readme-stripped-image:focus-visible) {
+  border-color: var(--rule);
+  color: var(--ink);
 }
 
 /* Under `remote_images = "proxy"` the panel receives real `<img>` tags, pointing

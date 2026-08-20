@@ -549,12 +549,25 @@ fn decode_cached_image(value: &serde_json::Value) -> Option<image::FetchedImage>
 /// The renderer version and the options are in the key because both change the
 /// output — a rendering made under `remote_images = "strip"` must never be
 /// served to a registry configured to proxy them.
+///
+/// `image_hosts` is in the key for the same reason and is easy to leave out of
+/// it: it decides, per image, chip or `<img>`, so two renderings of one document
+/// under two lists are two different documents. Without it, widening
+/// `remote_image_hosts` would serve the pre-widening rendering — and these
+/// entries are written with **no TTL** (they are content-addressed and were
+/// therefore taken to be timeless), so "until the cache evicts it" means until
+/// something else needs the room. An operator who adds a host and sees no change
+/// has no way to tell that from the setting not working.
 fn render_cache_key(digest: &str, format: ReadmeFormat, opts: &render::RenderOptions) -> String {
     let variant = readme_digest(&format!(
-        "{}|{}|{}",
+        "{}|{}|{}|{}",
         format.as_str(),
         opts.remote_images.as_str(),
-        opts.image_proxy_prefix.as_deref().unwrap_or("")
+        opts.image_proxy_prefix.as_deref().unwrap_or(""),
+        // Joined rather than hashed piecewise: `\u{1f}` is a unit separator and
+        // cannot occur in a hostname, so no two lists can collide by juggling
+        // where one entry ends and the next begins.
+        opts.image_hosts.join("\u{1f}")
     ));
     format!(
         "readme-html:{}:{}:{digest}",

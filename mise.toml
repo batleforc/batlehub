@@ -18,6 +18,10 @@ gitleaks = "latest"                 # secret scanning
 semgrep = "latest"                  # static analysis (Rust / TS / secrets rulesets)
 "cargo:cargo-cyclonedx" = "latest"  # CycloneDX SBOM of the Rust workspace
 "cargo:cargo-audit" = "latest"      # RUSTSEC advisories
+# Housekeeping, not a scanner: `task clean:stale`. Cargo never removes anything
+# from `target/`, so every dependency bump leaves a whole generation of artefacts
+# behind — measured at ~10 GB a time on this workspace.
+"cargo:cargo-sweep" = "latest"
 # Dependency supply chain: source-repo reputation + vulns, from the lockfiles.
 # Pinned, not "latest": the same version is pinned in the CI action's `version`
 # input (.github/workflows/postmortem.yaml), so both run the identical gate.

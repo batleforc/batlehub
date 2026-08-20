@@ -31,6 +31,26 @@ tasks:
     cmds:
       - cargo check --workspace
 
+  clean:stale:
+    desc: "Drop build artefacts not touched since yesterday (cargo-sweep --time 1)"
+    # Cargo never removes anything from `target/`: when a metadata hash changes —
+    # a dependency bump, a feature flip, a new toolchain — the new artefact is
+    # written *beside* the old one and the old one stays forever. Measured on
+    # this workspace: editing a source file and rebuilding the same way adds
+    # nothing, while one change of build shape added 152 files and 167 MB that
+    # nothing would ever reclaim.
+    #
+    # `--time 1` is the answer to that and not to the incremental cache: anything
+    # today's work has touched is kept, anything left over from yesterday's is
+    # not. Run it after a dependency bump, or on a schedule.
+    #
+    # It is safe by construction — everything here is reproducible from source,
+    # and the only cost of sweeping something still wanted is rebuilding it
+    # (~11 min for the full workspace, far less for a subset).
+    cmds:
+      - cargo sweep --time 1
+      - 'du -sh target || true'
+
   test:
     desc: Run all workspace tests
     cmds:

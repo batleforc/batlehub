@@ -175,3 +175,32 @@ already present for the hyper/reqwest path — but `actix-http` still requires t
 than rediscover — the reasoning lives next to the declaration in `Cargo.toml`, and `h2 <0.4` is in
 `deny.toml`'s `[bans].deny`, so re-enabling the feature fails CI instead of silently restoring the
 advisory. Check whether a feature can be dropped before concluding an advisory is unfixable.
+
+### Duplicate versions
+
+`[bans].multiple-versions` is `deny`, with every known duplicate enumerated in `skip`. The list is
+not a suppression in the sense above — nothing is being silenced, each entry names the third-party
+crate that holds the older line — but it is maintenance, and it works one way: **a duplicate the
+list does not already account for fails the build**.
+
+That was measured before it was switched on. Twenty crates resolve to more than one version out of
+440 on a Linux host and not one is reachable from this repository: `rpm 0.27.1` is the latest
+release and still wants `enum-display-derive` (syn 1) and the `digest 0.10` family; `argon2 0.6`
+exists only as a release candidate and this is password hashing; the rest belong to actix, sqlx,
+jsonwebtoken, ring and the AWS SDK. `cargo update` moves five unrelated packages and resolves none
+of them. `cargo-deny` sees sixteen more than `cargo tree` does, because it reads the graph for every
+target — which is correct here, since the CLI is released for `x86_64-pc-windows-msvc` and
+restricting `[graph].targets` to Linux would also stop advisories being reported for that artefact.
+
+**Security outranks tidiness, and the file enforces the order rather than asking you to remember
+it.** A red `bans` check is pressure, and pressure is where the wrong fix gets made — so:
+
+1. If upgrading a crate to close a RUSTSEC advisory creates a duplicate, the upgrade stands and the
+   `skip` is added in the same commit. An advisory is never resolved by keeping an old line because
+   the tree looks tidier, and a duplicate is never resolved by downgrading.
+2. `skip` has no power over `[bans].deny`. cargo-deny refuses to load the file at all when a crate
+   appears in both — *"a crate was specified in both `skip` and `deny`"* — so the vulnerable lines
+   named there (`rsa`, `rustls 0.21`, `h2 <0.4`, …) cannot be silenced by adding them to the skip
+   list, by accident or under deadline. That is a property of the tool, not a convention.
+3. Only then: name who holds the old line, and check whether it can be upgraded away before adding
+   a `skip` for it.

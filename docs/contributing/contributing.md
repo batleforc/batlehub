@@ -17,6 +17,56 @@ cd batlehub
 cargo build
 ```
 
+### Disk, and what the dev profile gives up for it
+
+A full `cargo build --workspace --all-targets` used to leave a **46 GB**
+`target/`. The cause is structural rather than accidental: 102 test executables,
+each statically linking the whole dependency graph, each carrying its own copy of
+the DWARF for it — 81 % of every binary was `.debug_*`.
+
+The root `Cargo.toml` sizes that down to about **15 GB** with two settings, and
+they are a trade you should know about before reaching for a debugger:
+
+| Setting | Effect |
+| --- | --- |
+| `[profile.dev] debug = "line-tables-only"` | our crates keep the file:line a panic backtrace prints, and lose the variable/type information a debugger would show |
+| `[profile.dev.package."*"] debug = false` | dependencies keep none at all; symbol names still come from the symbol table, so a backtrace frame in `tokio` still names the function |
+
+`RUST_BACKTRACE=1` is unaffected in the way that matters — every frame still
+reports `file.rs:line:col`. If you need to step through code in lldb, delete both
+blocks for the session; a rebuild is the whole cost and nothing else in the repo
+depends on them.
+
+`target/debug/incremental` (another few GB) is pure cache and can be deleted at
+any time.
+
+### Keeping it from growing back
+
+The profile settings fix the size of each artefact; they do nothing about how
+many there are. **Cargo never removes anything from `target/`**: when a metadata
+hash changes — a dependency bump, a feature flip, a new toolchain — the new
+artefact is written *beside* the old one, and the old one stays forever.
+
+Measured on this workspace, which is the useful part: editing a source file and
+rebuilding the same way adds **nothing** to `target/debug/deps` (the artefact is
+overwritten in place; only the incremental cache grows, ~60 MB a cycle). One
+change of *build shape* added 152 files and 167 MB that nothing would ever
+reclaim. A dependency bump invalidates the 102 test binaries at once, so it
+leaves a whole generation — on the order of 10 GB — behind.
+
+```bash
+task clean:stale     # cargo sweep --time 1
+```
+
+Everything today's work has touched is kept; everything left over from
+yesterday's is not. It is safe by construction — every artefact is reproducible
+from source — and the only cost of sweeping something still wanted is rebuilding
+it. Expect a partial rebuild on the next `cargo build` even when the sweep
+reports a small number: removing one `.rmeta` invalidates its dependents.
+
+Run it after a dependency bump, which is the moment the biggest stale generation
+appears, or on a schedule.
+
 Le repo Git est disponible dans deux provider Git:
 
 - https://git.batleforc.fr/batleforc/batlehub : Instance SelfHosted de Forgejo

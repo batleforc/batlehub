@@ -217,6 +217,32 @@ anonymous = ["releases:read", "source:read"]
 user = ["releases:read", "source:read"]
 admin = ["*"]
 
+# Render the images a README points at, GitHub's asset hosts included.
+#
+# The default is `remote_images = "strip"`: an <img> becomes an inline chip
+# naming its alt text and host, so nobody's browser announces to a third party
+# that someone inside this network is reading about this package. `"proxy"`
+# keeps that property — *this server* fetches the bytes and serves them from
+# this origin, type-checked, size-capped and (for SVG) sanitised — while the
+# reader actually sees the image.
+#
+# `remote_image_hosts` narrows the fetch to a named set. An entry matches the
+# host itself or any subdomain, so `githubusercontent.com` covers
+# `raw.githubusercontent.com`, `objects.`, `user-images.`, `avatars.` and
+# `camo.`, and `shields.io` covers `img.shields.io` — which is the form almost
+# every badge is written in. The leading dot is required, so neither entry
+# covers `notgithubusercontent.com` or `notshields.io`. `github.com` is here for
+# the modern `github.com/user-attachments/assets/…` form GitHub emits when an
+# author pastes an image into a README — it 302s to a githubusercontent host,
+# and the redirect is followed under the same SSRF guard artifact downloads use.
+#
+# Anything not on this list still renders as the chip `"strip"` would show.
+# Leaving the list empty would mean *every* host — narrowing is this one line.
+# Other badge CDNs go here the same way, e.g. "badgen.net", "codecov.io".
+[registries.readme]
+remote_images      = "proxy"
+remote_image_hosts = ["githubusercontent.com", "github.com", "shields.io"]
+
 [[registries]]
 type = "cargo"
 name = "cargo"
@@ -233,6 +259,12 @@ metadata_ttl_secs = 300
 anonymous = ["releases:read", "source:read"]
 user = ["releases:read", "source:read"]
 admin = ["*"]
+
+# See the npm registry above for what this does and why the hosts are spelled
+# this way.
+[registries.readme]
+remote_images      = "proxy"
+remote_image_hosts = ["githubusercontent.com", "github.com", "shields.io"]
 
 # Release age gate: block downloads for releases published less than 1 hour ago,
 # unless the caller holds an admin token.
@@ -319,6 +351,11 @@ anonymous = ["releases:read", "source:read"]
 user = ["releases:read", "source:read"]
 admin = ["*"]
 
+# See the npm registry above.
+[registries.readme]
+remote_images      = "proxy"
+remote_image_hosts = ["githubusercontent.com", "github.com", "shields.io"]
+
 
 [[registries]]
 type = "openvsx"
@@ -331,6 +368,26 @@ name = "openvsx"
 anonymous = ["releases:read", "source:read"]
 user = ["releases:read", "source:read"]
 admin = ["*"]
+
+# See the npm registry above. An extension's README is linked from the
+# marketplace metadata rather than carried in it, and its screenshots are very
+# often raw.githubusercontent.com URLs.
+#
+# `from_archive` is off because it defaults on and would be inert here — this
+# kind's README arrives in a document the proxy already fetches, so the .vsix is
+# never opened for it. Writing the block down is what makes the default visible;
+# saying `false` is how it stops being a notice on the admin panel.
+[registries.readme]
+from_archive       = false
+remote_images      = "proxy"
+# `vsmarketplacebadge.apphb.com` is deliberately NOT here: AppHarbor shut down,
+# so the host resolves to a parked address and never answers. Allowing it turns a
+# visible chip into a 30-second connect timeout and an invisible empty box —
+# strictly worse for the reader than saying "a badge from that host was here".
+# `marketplace.visualstudio.com` serves no images in practice (extension READMEs
+# link to it, they do not embed from it), so it is inert; kept because it costs
+# nothing and is what an author would reach for if that ever changed.
+remote_image_hosts = ["githubusercontent.com", "github.com", "shields.io", "marketplace.visualstudio.com"]
 
 # Configure the Go toolchain to use this proxy:
 #   export GONOSUMCHECK="*"
@@ -348,6 +405,12 @@ name = "terraform"
 anonymous = ["releases:read", "source:read"]
 user = ["releases:read", "source:read"]
 admin = ["*"]
+
+# See the npm registry above. Modules carry a README; providers have none, and
+# the extractor answers for that by finding no file.
+[registries.readme]
+remote_images      = "proxy"
+remote_image_hosts = ["githubusercontent.com", "github.com", "shields.io"]
 
 # Configure Terraform to use this proxy for providers:
 #   # ~/.terraformrc  (or %APPDATA%/terraform.rc on Windows)
@@ -421,6 +484,11 @@ name   = "my-gems"
 mode   = "hybrid"
 upstreams = ["https://rubygems.org"]
 
+# See the npm registry above.
+[registries.readme]
+remote_images      = "proxy"
+remote_image_hosts = ["githubusercontent.com", "github.com", "shields.io"]
+
 # ── PHP Composer registry ────────────────────────────────────────────────────
 #
 # Proxy mode: mirrors Packagist metadata and dist artifacts.
@@ -442,6 +510,11 @@ type   = "composer"
 name   = "my-composer"
 mode   = "hybrid"
 upstreams = ["https://repo.packagist.org"]
+
+# See the npm registry above.
+[registries.readme]
+remote_images      = "proxy"
+remote_image_hosts = ["githubusercontent.com", "github.com", "shields.io"]
 
 # --- Maven Central registry --------------------------------------------------
 #

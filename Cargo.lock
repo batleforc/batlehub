@@ -1031,7 +1031,6 @@ dependencies = [
  "sha2 0.11.0",
  "sqlx",
  "tar",
- "thiserror 2.0.20",
  "tokio",
  "tokio-rustls",
  "toml",
@@ -1085,7 +1084,6 @@ dependencies = [
  "ipnet",
  "regex",
  "serde",
- "thiserror 2.0.20",
  "toml",
  "utoipa",
 ]
@@ -1152,7 +1150,6 @@ name = "batlehub-server"
 version = "1.1.0"
 dependencies = [
  "actix-cors",
- "actix-files",
  "actix-web",
  "anyhow",
  "batlehub-adapters",
@@ -1179,7 +1176,6 @@ dependencies = [
  "tracing-subscriber",
  "utoipa",
  "utoipa-actix-web",
- "utoipa-scalar",
 ]
 
 [[package]]
@@ -1224,7 +1220,6 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
- "tracing-actix-web",
  "utoipa",
  "utoipa-actix-web",
  "utoipa-scalar",

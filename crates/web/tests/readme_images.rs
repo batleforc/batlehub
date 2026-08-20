@@ -100,6 +100,23 @@ async fn app_with(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
+    app_with_hosts(readme_markdown, policy, fetcher, Vec::new()).await
+}
+
+/// [`app_with`], with a `remote_image_hosts` allow-list.
+///
+/// Empty means every host, which is what `app_with` passes and what every test
+/// written before the list existed assumes.
+async fn app_with_hosts(
+    readme_markdown: &str,
+    policy: RemoteImagePolicy,
+    fetcher: Arc<ScriptedFetcher>,
+    hosts: Vec<String>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
     let repo = InMemoryReadmeRepository::new();
     repo.upsert(PackageReadme {
         registry: REG.to_owned(),
@@ -139,6 +156,7 @@ async fn app_with(
             REG.to_owned(),
             ReadmeConfig {
                 remote_images: policy,
+                remote_image_hosts: hosts,
                 registry_type: "npm".to_owned(),
                 ..Default::default()
             },
@@ -445,6 +463,141 @@ async fn an_unauthenticated_caller_gets_the_same_answer_from_both_endpoints() {
     assert_eq!(readme.status(), image.status());
     assert_eq!(image.status(), 404);
     assert_eq!(fetcher.calls(), 0);
+}
+
+/// Three images on allowed hosts. The first is not in `scripted()`'s answers, so
+/// it fails the way a dead URL does; the other two are fine.
+const CHAIN: &str = "![dead](https://img.shields.io/dead.svg) then \
+                     ![build](https://img.shields.io/build.svg) and \
+                     ![logo](https://cdn.example/logo.png)";
+
+/// One image failing must not take the ones after it with it, and a kept image
+/// must keep its alt text.
+///
+/// Two regressions in one document, because they were reported as one symptom —
+/// "the image after a broken one doesn't show".
+///
+/// The alt half: `strip_images` buffers a kept image's events and replays them,
+/// but dropped the alt-text events on the way, so every proxied image rendered
+/// as `alt=""`. The panel styles an image it could not fetch to read like the
+/// chip — dashed, dim, *showing its alt text* — so with no alt text a failed
+/// image showed nothing at all, which looks exactly like "it didn't render".
+/// Unreachable until `render_options` passed a real host list: with an empty one
+/// nothing is ever buffered.
+#[actix_web::test]
+async fn a_failed_image_leaves_the_rest_of_the_row_intact() {
+    let fetcher = scripted();
+    let app = app_with_hosts(
+        CHAIN,
+        RemoteImagePolicy::Proxy,
+        Arc::clone(&fetcher),
+        vec!["shields.io".to_owned(), "cdn.example".to_owned()],
+    )
+    .await;
+
+    let resp = call_service(
+        &app,
+        TestRequest::get()
+            .uri(&format!(
+                "/api/v1/explore/packages/{REG}/{PKG}/readme?version={VER}"
+            ))
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    let body: serde_json::Value = actix_web::test::read_body_json(resp).await;
+    let html = body["rendered_html"].as_str().expect("html").to_owned();
+
+    // Every image gets a slot, and every slot keeps the alt text the panel
+    // falls back to when it cannot show the image itself.
+    assert_eq!(html.matches("/readme-image/").count(), 3, "{html}");
+    for alt in ["alt=\"dead\"", "alt=\"build\"", "alt=\"logo\""] {
+        assert!(html.contains(alt), "alt text must survive: {html}");
+    }
+
+    // The dead one is a 404 — and the two after it still serve their bytes.
+    for (index, expected) in [(0usize, None), (1, Some(CLEAN_SVG)), (2, Some(PNG))] {
+        let served = call_service(
+            &app,
+            TestRequest::get()
+                .uri(&image_uri(index))
+                .insert_header(("Authorization", bearer(USER_TOKEN)))
+                .to_request(),
+        )
+        .await;
+        match expected {
+            None => assert_eq!(served.status(), 404, "index {index}"),
+            Some(bytes) => {
+                assert_eq!(served.status(), 200, "index {index}");
+                let got = actix_web::test::read_body(served).await;
+                assert_eq!(&got[..], bytes, "index {index} served the wrong image");
+            }
+        }
+    }
+}
+
+/// Under an allow-list, the page's numbering and the endpoint's numbering must
+/// still be **one** numbering.
+///
+/// The regression: the handler rendered with an empty host list while `image_at`
+/// resolved indices with the registry's real one. On `BADGE` — a disallowed
+/// shields.io badge followed by an allowed `cdn.example` logo — the rendering
+/// numbered both (badge 0, logo 1) and the resolution numbered only the allowed
+/// one (logo 0), so the page's *badge* slot fetched and displayed the *logo*'s
+/// bytes, and its logo slot 404'd. Wrong image, no error, in a panel showing
+/// somebody else's document.
+///
+/// Asserted through the rendered HTML rather than against fixed indices,
+/// because the numbering is precisely what is under test.
+#[actix_web::test]
+async fn an_allow_list_renumbers_the_page_and_the_endpoint_together() {
+    let fetcher = scripted();
+    let app = app_with_hosts(
+        BADGE,
+        RemoteImagePolicy::Proxy,
+        Arc::clone(&fetcher),
+        vec!["cdn.example".to_owned()],
+    )
+    .await;
+
+    let resp = call_service(
+        &app,
+        TestRequest::get()
+            .uri(&format!(
+                "/api/v1/explore/packages/{REG}/{PKG}/readme?version={VER}"
+            ))
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = actix_web::test::read_body_json(resp).await;
+    let html = body["rendered_html"].as_str().expect("html").to_owned();
+
+    // The disallowed image is a chip, so the page offers exactly one slot.
+    assert_eq!(
+        html.matches("/readme-image/").count(),
+        1,
+        "only the allowed host should get a slot: {html}"
+    );
+    assert!(html.contains("/readme-image/0"), "{html}");
+
+    // And that slot serves the allowed image — the logo, never the badge.
+    let served = call_service(
+        &app,
+        TestRequest::get()
+            .uri(&image_uri(0))
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(served.status(), 200);
+    assert_eq!(served.headers().get("content-type").unwrap(), "image/png");
+    let bytes = actix_web::test::read_body(served).await;
+    assert_eq!(&bytes[..], PNG, "index 0 must be the logo, not the badge");
+
+    // The disallowed host was never dialled, by either walk.
+    assert_eq!(fetcher.seen(), vec!["https://cdn.example/logo.png"]);
 }
 
 /// The `src` the panel receives points at this server and carries an index, and

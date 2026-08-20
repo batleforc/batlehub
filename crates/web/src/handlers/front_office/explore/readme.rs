@@ -450,7 +450,19 @@ async fn render_options(
     RenderOptions {
         remote_images: cfg.remote_images,
         image_proxy_prefix: Some(image_prefix(req, registry, name, version)),
-        image_hosts: Vec::new(),
+        // **The registry's own list, not an empty one.** `image_at` resolves an
+        // incoming index with `image_urls(.., &cfg.allowed_hosts)`, and an empty
+        // list here made the two walks disagree: the rendering numbered *every*
+        // image, the resolution numbered only the allowed ones, so on a document
+        // mixing allowed and disallowed hosts index N in the page and index N at
+        // fetch time were different images — the page's first badge served the
+        // bytes of the first allowed image instead. `image_urls`' own contract
+        // says the list must be the one the rendering used; this is that.
+        //
+        // It also makes the setting do what it is documented to do at render
+        // time: a disallowed host becomes the chip `strip` produces, rather than
+        // an `<img>` pointing here that can only ever 404.
+        image_hosts: cfg.remote_image_hosts.clone(),
     }
 }
 

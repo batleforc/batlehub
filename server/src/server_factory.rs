@@ -256,9 +256,9 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
                     // Still no CSP *header* here, for the two reasons that have
                     // not changed: it cannot be global — the Scalar API-docs page
                     // loads its bundle from a CDN, so `script-src 'self'` would
-                    // break `/scalar` — and `actix_files::Files` is not a
-                    // `ServiceFactory`, so it cannot be wrapped individually
-                    // either. The SPA carries its own policy in a
+                    // break `/scalar` — and the `actix_files::Files` service
+                    // behind `configure_spa` is not a `ServiceFactory`, so it
+                    // cannot be wrapped individually either. The SPA carries its own policy in a
                     // `<meta http-equiv>` tag, generated at build time by
                     // `ui/build/csp.ts` so `connect-src` can follow the configured
                     // API origin. `frame-ancestors` is ignored in meta form, which

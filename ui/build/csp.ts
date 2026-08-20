@@ -53,6 +53,20 @@ const SOCKET_BADGE_ORIGIN = "https://badge.socket.dev";
  * than "the CSP refused it". Deriving both from one variable keeps the policy
  * and the client from disagreeing.
  *
+ * `img-src` gets that same origin, and for a reason that is easy to miss because
+ * it only appears on a split-origin deployment. Under
+ * `[registries.readme] remote_images = "proxy"` the server does not hand the
+ * page a third-party URL — it rewrites every `<img>` to point back at
+ * `/api/v1/explore/packages/…/readme-image/{n}` on **its own** origin
+ * (`image_prefix` in `crates/web/src/handlers/front_office/explore/readme.rs`
+ * builds it absolute, from the request's trusted origin). When the API is the
+ * same origin as the SPA that is `'self'` and nothing is needed; when it is not
+ * — the two-dev-server setup, and any deployment serving the console and the API
+ * on separate hostnames — every proxied README image is blocked, and the console
+ * reports a CSP violation for a URL pointing at this project's own backend.
+ * This is the one directive where 'self' and "the API" are different things and
+ * the page needs both.
+ *
  * `style-src` needs `'unsafe-inline'`: the Vue/Tailwind build emits inline style
  * attributes and shiki injects inline styles for highlighting. Scripts get no
  * such exemption — the bundle is entirely external files, and that is the half
@@ -72,20 +86,28 @@ const SOCKET_BADGE_ORIGIN = "https://badge.socket.dev";
  * refuses in a production build.
  */
 export function buildCsp(apiBaseUrl: string, livePort?: number | null): string {
-  const connectSrc = ["'self'"];
+  // Resolved once and used by two directives: `connect-src` for the SDK's
+  // `fetch`, `img-src` for the README images the server proxies from this
+  // origin. `null` when the base is relative or unparseable — both mean
+  // same-origin, which `'self'` already covers in either directive.
+  let apiOrigin: string | null = null;
   const trimmed = apiBaseUrl.trim();
   if (trimmed) {
     try {
       // Only an origin is a valid CSP source expression; leaving a path on it
       // would invalidate the directive rather than narrow it.
-      connectSrc.push(new URL(trimmed).origin);
+      apiOrigin = new URL(trimmed).origin;
     } catch {
       // Relative base (e.g. "/api") — same-origin, already covered by 'self'.
     }
   }
 
+  const connectSrc = ["'self'"];
+  if (apiOrigin) connectSrc.push(apiOrigin);
+
   const scriptSrc = ["'self'"];
   const imgSrc = ["'self'", "data:", SOCKET_BADGE_ORIGIN];
+  if (apiOrigin) imgSrc.push(apiOrigin);
   if (isUsablePort(livePort)) {
     const liveOrigin = `http://localhost:${livePort}`;
     scriptSrc.push(liveOrigin);
@@ -99,7 +121,7 @@ export function buildCsp(apiBaseUrl: string, livePort?: number | null): string {
     "default-src 'self'",
     `script-src ${scriptSrc.join(" ")}`,
     "style-src 'self' 'unsafe-inline'",
-    `img-src ${imgSrc.join(" ")}`,
+    `img-src ${[...new Set(imgSrc)].join(" ")}`,
     "font-src 'self' data:",
     `connect-src ${[...new Set(connectSrc)].join(" ")}`,
     "object-src 'none'",

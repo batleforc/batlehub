@@ -26,6 +26,34 @@ lto = true
 codegen-units = 1
 strip = true
 
+# ── Debuginfo, sized to what it is actually used for ──────────────────────────
+#
+# Measured on this workspace: `cargo build --workspace --all-targets` produced a
+# 46 GB `target/`, of which 35.6 GB was 102 test executables averaging 350 MB
+# each — **81 % of every one of them `.debug_*` sections**. Each test binary
+# statically links the whole graph, so the same DWARF is written out a hundred
+# times over. The two settings below took that to 46 → 30 → ~14 GB.
+#
+# What is kept is what this project actually reads: `line-tables-only` is exactly
+# the file:line a panic backtrace prints, and 3 425 tests are how a regression is
+# found here. What is given up is a debugger's view of variables and types. If
+# you are reaching for lldb, delete these two blocks for the session — a rebuild
+# is the whole cost, and nothing else in the repo depends on them.
+[profile.dev]
+debug = "line-tables-only"
+
+#
+# Dependencies get none at all. `"*"` is dependencies only — it does not touch
+# workspace crates, which take the line tables above. Dependency DWARF is the
+# larger half of the two: tokio, actix, sqlx and ~600 others, and nothing here
+# steps into their source. Symbol *names* come from the symbol table and survive
+# either way, so a backtrace through a dependency frame still names the function.
+#
+# Coverage is untouched: `cargo llvm-cov` instruments workspace crates, and its
+# line mapping comes from that instrumentation rather than from dependency DWARF.
+[profile.dev.package."*"]
+debug = false
+
 [workspace.metadata.llvm-cov]
 # Exclude server startup wiring from coverage — it's integration-tested separately.
 exclude = ["server/src/main.rs"]

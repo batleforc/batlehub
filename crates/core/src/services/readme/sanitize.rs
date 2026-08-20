@@ -33,8 +33,13 @@ use crate::services::hot_config::RemoteImagePolicy;
 /// History: `2` chips raw-HTML `<img>` — and therefore `<picture>` — instead of
 /// letting it render to nothing (RFC 0007-bis §13.1). `3` rewrites a proxied
 /// image's `src` to `{prefix}{index}` rather than to a query-encoded URL, which
-/// is what lets the image endpoint take no URL at all (RFC 0007-bis §5.1).
-pub const RENDERER_VERSION: u32 = 3;
+/// is what lets the image endpoint take no URL at all (RFC 0007-bis §5.1). `4`
+/// keeps `align` on block elements (see [`ALIGNABLE_TAGS`]) and stops dropping a
+/// kept image's alt text — two output changes, and the render cache holds its
+/// entries with **no TTL**, so without this bump every README already rendered
+/// would go on serving the old markup indefinitely. `5` makes the chip an `<a>`
+/// to the image's own URL when it has one and is not already inside a link.
+pub const RENDERER_VERSION: u32 = 5;
 
 /// The class the renderer puts on the chip that replaces a stripped image.
 ///
@@ -152,6 +157,28 @@ const ALLOWED_TAGS: &[&str] = &[
     "input",
 ];
 
+/// Elements whose `align` a README may keep.
+///
+/// A centred badge row written as `<p align="center">` is the single most common
+/// piece of raw HTML in a README, and dropping the attribute renders it
+/// left-aligned — the document displayed differently from how its author wrote
+/// it, for no stated reason. `td`/`th` already carried `align` for the same
+/// reason on a smaller scale.
+///
+/// **Why this is not the `style` exception in disguise.** `style` is refused
+/// because CSS in this threat model is the mechanism for overlaying the
+/// console's own controls, and attribute selectors are an exfiltration channel.
+/// `align` is neither: it is an *enumerated* attribute whose entire effect is the
+/// `text-align` presentational hint, so it cannot position, layer, size or
+/// select anything. A value the browser does not recognise is ignored rather
+/// than applied, and ammonia escapes what it writes, so there is no value here
+/// that means more than "put the text left, right, centre or justified".
+///
+/// The panel does not rely on that hint being honoured: `ReadmePanel.vue` maps
+/// the attribute to `text-align` itself, so the rendering is the same whatever a
+/// browser does with obsolete presentational attributes.
+const ALIGNABLE_TAGS: &[&str] = &["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "td", "th"];
+
 /// Build the sanitiser for one registry's policy.
 ///
 /// A fresh `Builder` per call rather than a lazily-initialised static: the
@@ -185,7 +212,7 @@ fn builder(
     // allowed only so that `id_prefix` below can namespace it — an id that were
     // dropped outright would break every in-document anchor a long README has.
     b.generic_attributes(HashSet::from(["title", "id"]));
-    b.tag_attributes(HashMap::from([
+    let mut attributes: HashMap<&str, HashSet<&str>> = HashMap::from([
         ("a", HashSet::from(["href"])),
         ("img", HashSet::from(["src", "alt", "width", "height"])),
         ("td", HashSet::from(["align", "colspan", "rowspan"])),
@@ -195,7 +222,11 @@ fn builder(
         // only, and `disabled` is forced below — an enabled input inside a
         // README is a form control an operator could be tricked into using.
         ("input", HashSet::from(["type", "checked"])),
-    ]));
+    ]);
+    for tag in ALIGNABLE_TAGS {
+        attributes.entry(tag).or_default().insert("align");
+    }
+    b.tag_attributes(attributes);
     // *Set*, not merely allow: `add_tag_attribute_values` would permit the
     // value if the author wrote it, which is the opposite of what is wanted.
     b.set_tag_attribute_value("input", "disabled", "");
@@ -206,6 +237,11 @@ fn builder(
     // through and make this allow-list decorative.
     b.allowed_classes(HashMap::from([
         ("span", HashSet::from([STRIPPED_IMAGE_CLASS])),
+        // The chip is an `<a>` when it has a source to link to and is not
+        // already inside the author's own link — see `render::chip_href`. Same
+        // class, so it is styled as one thing; the anchor gets the `rel` and
+        // `target` hardening every other README link gets.
+        ("a", HashSet::from([STRIPPED_IMAGE_CLASS])),
         // The fence language, and nothing else a README author writes on a
         // `code` element — see `HIGHLIGHT_LANGUAGES`.
         ("code", HIGHLIGHT_LANGUAGE_CLASSES.iter().copied().collect()),
@@ -368,6 +404,34 @@ mod tests {
         assert!(!out.contains("onclick"), "{out}");
         assert!(!out.contains("onmouseover"), "{out}");
         assert!(out.contains("text"), "{out}");
+    }
+
+    /// A centred badge row is the commonest raw HTML in a README, and it stays
+    /// centred. `align` is allowed on block elements because its whole effect is
+    /// the `text-align` hint — see `ALIGNABLE_TAGS`.
+    #[test]
+    fn align_survives_on_the_blocks_a_readme_centres() {
+        for tag in ["p", "div", "h1", "h2", "h3", "h4", "h5", "h6"] {
+            let out = clean(&format!(r#"<{tag} align="center">badges</{tag}>"#));
+            assert!(
+                out.contains(r#"align="center""#),
+                "{tag} should keep align: {out}"
+            );
+        }
+    }
+
+    /// Allowing `align` must not have opened the door it is carefully distinct
+    /// from: `style` is the overlay mechanism, and it stays out — on the very
+    /// elements that just gained an attribute.
+    #[test]
+    fn align_did_not_bring_style_with_it() {
+        let out = clean(
+            r#"<p align="center" style="position:fixed;top:0">x</p>
+               <div align="center" style="opacity:0">y</div>"#,
+        );
+        assert!(!out.contains("style"), "{out}");
+        assert!(!out.contains("position"), "{out}");
+        assert!(out.contains(r#"align="center""#), "{out}");
     }
 
     #[test]

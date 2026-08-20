@@ -93,16 +93,46 @@ describe("buildCsp", () => {
   });
 
   /**
-   * The API origin is allowed to widen `connect-src` and nothing else. Without
-   * this, a future change that appended it to every directive — or to
-   * `script-src` — would still satisfy the connect-src test above.
+   * Under `[registries.readme] remote_images = "proxy"` the server rewrites a
+   * README's `<img>` tags to absolute URLs on **its own** origin — not the
+   * third party's, and not necessarily the SPA's. On a split-origin deployment
+   * that is not `'self'`, so without this every proxied README image is blocked
+   * and the console reports a CSP violation naming this project's own backend.
+   *
+   * This test replaced one asserting the API origin widened `connect-src` and
+   * nothing else. That assertion was the bug, pinned: it was written when the
+   * API origin only ever served `fetch` responses, and it stayed green while
+   * README images — added later, served from the same origin — were refused.
    */
-  it("widens only connect-src for the API origin", () => {
+  it("allows the API origin on img-src, for server-proxied README images", () => {
+    expect(directives(buildCsp(API_ORIGIN))["img-src"]).toEqual([
+      "'self'",
+      "data:",
+      SOCKET_BADGE,
+      API_ORIGIN,
+    ]);
+  });
+
+  /**
+   * The API origin widens those two directives and nothing else. Without this,
+   * a future change that appended it to every directive — or to `script-src` —
+   * would still satisfy the two tests above.
+   */
+  it("widens only connect-src and img-src for the API origin", () => {
     const parsed = directives(buildCsp(API_ORIGIN));
     const widened = Object.entries(parsed)
       .filter(([, sources]) => sources.some((source) => source === API_ORIGIN))
       .map(([name]) => name);
-    expect(widened).toEqual(["connect-src"]);
+    expect(widened).toEqual(["img-src", "connect-src"]);
+  });
+
+  /**
+   * A same-origin deployment is the common case and must not grow a redundant
+   * token: `'self'` already covers it, and a duplicated source in a policy is a
+   * sign the two code paths disagree about what the origin is.
+   */
+  it("adds nothing when the API base is relative", () => {
+    expect(directives(buildCsp("/api"))["img-src"]).toEqual(["'self'", "data:", SOCKET_BADGE]);
   });
 
   /**
@@ -218,9 +248,14 @@ describe("resolveLivePort", () => {
  */
 describe("buildCsp — the socket.dev badge", () => {
   it("admits the badge origin on img-src and nowhere else", () => {
-    const parsed = directives(buildCsp(API_ORIGIN));
+    // Built with no API base URL, so this list is the badge's own contribution
+    // and nothing else. The API origin joins `img-src` too — for the proxied
+    // README images, asserted above — and building with one here would turn
+    // this exact-list assertion into a test of two features at once, failing
+    // whenever either changed.
+    expect(directives(buildCsp(""))["img-src"]).toEqual(["'self'", "data:", SOCKET_BADGE]);
 
-    expect(parsed["img-src"]).toEqual(["'self'", "data:", SOCKET_BADGE]);
+    const parsed = directives(buildCsp(API_ORIGIN));
     const elsewhere = Object.entries(parsed)
       .filter(([name, sources]) => name !== "img-src" && sources.includes(SOCKET_BADGE))
       .map(([name]) => name);
