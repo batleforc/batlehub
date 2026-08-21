@@ -14,7 +14,14 @@ task = "latest"
 "aqua:EmbarkStudios/cargo-deny" = "latest" # advisories + banned crates + licenses + sources
 trivy = "latest"                    # container image / filesystem / SBOM CVE scanner
 syft = "latest"                     # SBOM generation for built images
-gitleaks = "latest"                 # secret scanning
+# Pinned, not "latest": the same version is pinned as `GITLEAKS_VERSION` in
+# .github/workflows/secret-scan.yaml, so
+#   GITLEAKS_CONFIG=$PWD/gitleaks.toml gitleaks git .
+# run here reproduces the gate exactly. A drifting `latest` here did not: the
+# action defaulted to 8.24.3 whose `generic-api-key` rule matched a test fixture
+# 8.30.1's does not, so the gate failed on a commit already in history and no
+# local run could see it.
+gitleaks = "8.30.1"                 # secret scanning
 semgrep = "latest"                  # static analysis (Rust / TS / secrets rulesets)
 "cargo:cargo-cyclonedx" = "latest"  # CycloneDX SBOM of the Rust workspace
 "cargo:cargo-audit" = "latest"      # RUSTSEC advisories

@@ -5,8 +5,9 @@
 # workspace does; the dex sidecar declared in devfile.yaml waits for that file
 # before it starts, so nothing here is read until the task has run.
 #
-#   __ISSUER__    where dex is reached from — see the note on the issuer
-#   __CALLBACK__  redirect_uri — one for every provider, see staticClients below
+#   __ISSUER__         where dex is reached from — see the note on the issuer
+#   __CALLBACK__       redirect_uri — one for every provider, see staticClients below
+#   __PASSWORD_HASH__  bcrypt of the dev password, hashed at render time
 #
 # On the issuer: it is one value, and every party has to agree on it. The
 # browser is redirected to it, the backend fetches `{issuer}/.well-known/…` from
@@ -56,8 +57,18 @@ staticClients:
 
 enablePasswordDB: true
 staticPasswords:
-  # Both passwords are "password" (bcrypt, cost 10). Regenerate with:
-  #   htpasswd -bnBC 10 "" 'newpassword' | tr -d ':\n'
+  # Both passwords are "password" (bcrypt, cost 10), and the hash is computed by
+  # `task dex:config` rather than written here.
+  #
+  # Not obfuscation — the password is on this line, and the rendered
+  # `config.yaml` carries the hash in the clear. It is that a literal `$2b$10$…`
+  # in a *tracked* file is a finding for every secret scanner this repo runs
+  # (semgrep's `detected-bcrypt-hash`, gitleaks), and three of them failed the
+  # PR gate on it. A scanner that cannot tell a dev fixture from a live
+  # credential is doing its job; the fix is to not commit the artefact, not to
+  # add the file to an allowlist that then has to stay correct forever.
+  #
+  # `task dex:config DEX_PASSWORD=hunter2` for something else; the hash follows.
   #
   # Roles are mapped off `email`, not `groups`: dex's password DB has no group
   # membership to emit — groups only come from a real connector (LDAP, GitHub) —
@@ -68,8 +79,8 @@ staticPasswords:
   - email: admin@example.com
     username: admin
     userID: admin
-    hash: "$2b$10$uo7rlFrt0nyU9Zp1AxJhkuzUYvMbeplzMi519Sy4/64/ZOpIT3CTa"
+    hash: "__PASSWORD_HASH__"
   - email: dev@example.com
     username: dev
     userID: dev
-    hash: "$2b$10$uo7rlFrt0nyU9Zp1AxJhkuzUYvMbeplzMi519Sy4/64/ZOpIT3CTa"
+    hash: "__PASSWORD_HASH__"

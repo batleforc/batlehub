@@ -1,0 +1,22 @@
+# Findings that have been looked at and are not secrets.
+#
+# One line per finding, as `commit:file:rule:line` — gitleaks' own fingerprint,
+# which is what `--report-format json` prints in the `Fingerprint` field. Scoped
+# to a single occurrence on purpose: unlike a path entry in `gitleaks.toml`, an
+# entry here cannot hide a *future* secret in the same file.
+#
+# Use this only for a finding that is already in history and therefore cannot be
+# removed by editing the working tree. Anything still in the tree gets fixed in
+# the tree — see `crates/web/tests/oidc_sso.rs`, where the fixture below was
+# renamed rather than allowlisted.
+#
+# The scan walks full history (`fetch-depth: 0` in
+# .github/workflows/secret-scan.yaml), so a fixture that has ever been committed
+# stays visible to it forever.
+
+# A mock OIDC token endpoint's response body: a 40-character opaque access token
+# for the test that proves an opaque (non-JWT) token fails the login rather than
+# every later request. `generic-api-key` matches it on entropy next to the
+# `access_token` keyword. Never valid anywhere; the working-tree fixture is now
+# `opaque-access-token-not-a-jwt`.
+c740035920b5f4465dca040fcf5a07e1c9a693ae:crates/web/tests/oidc_sso.rs:generic-api-key:508

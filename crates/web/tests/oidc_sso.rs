@@ -505,7 +505,13 @@ async fn an_opaque_access_token_fails_the_login_rather_than_the_next_request() {
         .mock("POST", "/token")
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(r#"{"access_token":"00aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"}"#)
+        // Named, not randomised. What the assertion needs is a token with no
+        // dots in it — `session_token_is_a_jwt` wants three non-empty
+        // dot-separated parts — and a realistic-looking 40-character opaque
+        // string bought nothing except a `generic-api-key` hit from the secret
+        // scanner, which cannot tell a fixture from an Okta token and should not
+        // have to.
+        .with_body(r#"{"access_token":"opaque-access-token-not-a-jwt"}"#)
         .create_async()
         .await;
     let (app, _states) = make_sso_app(&server.url()).await;
