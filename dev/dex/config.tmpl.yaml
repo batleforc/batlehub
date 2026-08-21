@@ -1,0 +1,75 @@
+# Dex — the OIDC provider for an Eclipse Che workspace.
+#
+# This is the template. `task dex:config` renders it into dev/dex/config.yaml,
+# substituting the three placeholders below with URLs that only exist once the
+# workspace does; the dex sidecar declared in devfile.yaml waits for that file
+# before it starts, so nothing here is read until the task has run.
+#
+#   __ISSUER__    where dex is reached from — see the note on the issuer
+#   __CALLBACK__  redirect_uri — one for every provider, see staticClients below
+#
+# On the issuer: it is one value, and every party has to agree on it. The
+# browser is redirected to it, the backend fetches `{issuer}/.well-known/…` from
+# it, and the `iss` claim it mints is checked against the `issuer_url` in the
+# server config. In a workspace that means the gateway FQDN (`url dex`) — the
+# pod can reach its own ingress, so the backend is happy with the same URL the
+# browser uses. `task dex:config LOCAL=1` renders `http://localhost:9000`
+# instead, which the backend and the che-browser sidecar can both reach (one pod,
+# one network namespace) but your own browser cannot.
+issuer: __ISSUER__
+
+# Nothing here outlives the workspace, and that is the point: every restart is a
+# clean provider with the two users below and no registration state to repair.
+storage:
+  type: memory
+
+web:
+  # 0.0.0.0, not 127.0.0.1 — the Che gateway connects from outside the pod.
+  # Port 9000 is what the compose Authentik uses, so `localhost:9000` means the
+  # same thing whether the IdP of the day is this or `task compose:auth`.
+  http: 0.0.0.0:9000
+
+oauth2:
+  # Straight from "Log in" to the callback. A consent screen tells a developer
+  # signing in as themselves, to their own IdP, nothing.
+  skipApprovalScreen: true
+  # Enables the password grant against the static users below, which is what
+  # `task dex:token` uses to hand you a JWT for curl without opening a browser.
+  # Dex refuses grant_type=password outright unless this names a connector.
+  passwordConnector: local
+
+staticClients:
+  # client_id / client_secret as the [[auth]] blocks in config.example.toml
+  # already spell them, so switching IdP is an issuer_url change and nothing
+  # else. The secret reaches the server as ${OIDC_CLIENT_SECRET} — `task
+  # run:space` already exports exactly this value.
+  # One redirect URI, not one per provider. BatleHub serves a single callback
+  # route — /api/v1/auth/oidc/callback — and reads which provider a code belongs
+  # to from the login state it stored, so `oidc` and `oidc2` come back to the
+  # same place. Registering /api/v1/auth/oidc2/callback here would authorize a
+  # redirect to a 404.
+  - id: proxy-auth
+    secret: proxy-auth-secret
+    name: BatleHub
+    redirectURIs:
+      - __CALLBACK__
+
+enablePasswordDB: true
+staticPasswords:
+  # Both passwords are "password" (bcrypt, cost 10). Regenerate with:
+  #   htpasswd -bnBC 10 "" 'newpassword' | tr -d ':\n'
+  #
+  # Roles are mapped off `email`, not `groups`: dex's password DB has no group
+  # membership to emit — groups only come from a real connector (LDAP, GitHub) —
+  # so `role_claim = "groups"` would find no claim and `map_role` would fall
+  # through to Role::Anonymous for every login. `email` is always present with
+  # the "email" scope and is matched the same way, a string against the keys of
+  # [auth.role_mappings].
+  - email: admin@example.com
+    username: admin
+    userID: admin
+    hash: "$2b$10$uo7rlFrt0nyU9Zp1AxJhkuzUYvMbeplzMi519Sy4/64/ZOpIT3CTa"
+  - email: dev@example.com
+    username: dev
+    userID: dev
+    hash: "$2b$10$uo7rlFrt0nyU9Zp1AxJhkuzUYvMbeplzMi519Sy4/64/ZOpIT3CTa"

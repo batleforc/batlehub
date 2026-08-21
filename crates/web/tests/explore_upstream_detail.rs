@@ -39,6 +39,11 @@ struct CountingRegistry {
     /// Linked-README reads, so the extension galleries' outbound fetch is
     /// counted rather than assumed.
     linked_reads: Arc<Mutex<usize>>,
+    /// `list_versions` calls. The kinds with no listing document — the
+    /// extension galleries, conda — discover through this instead of through
+    /// `fetch_version_document`, so `fetches` says nothing about them and the
+    /// coalescing assertions need their own counter.
+    listings: Arc<Mutex<usize>>,
     /// When set, every fetch fails this way instead — a `404` is a fact about
     /// the package, a connection error is not, and the two must be cached
     /// differently.
@@ -145,7 +150,16 @@ impl RegistryClient for CountingRegistry {
     }
 
     async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {
-        self.inner.list_versions(package).await
+        *self.listings.lock().unwrap() += 1;
+        match self.fail {
+            Some(FailureMode::NotFound) => {
+                Err(CoreError::NotFound(format!("no such package: {package}")))
+            }
+            Some(FailureMode::Unreachable) => {
+                Err(CoreError::Registry("connection refused".to_owned()))
+            }
+            None => self.inner.list_versions(package).await,
+        }
     }
 }
 
@@ -158,6 +172,7 @@ struct Fixture {
     fetches: Arc<Mutex<usize>>,
     resolves: Arc<Mutex<usize>>,
     linked_reads: Arc<Mutex<usize>>,
+    listings: Arc<Mutex<usize>>,
     readme_repo: Arc<InMemoryReadmeRepository>,
 }
 
@@ -186,6 +201,7 @@ async fn fixture_with(
     let fetches = Arc::new(Mutex::new(0));
     let resolves = Arc::new(Mutex::new(0));
     let linked_reads = Arc::new(Mutex::new(0));
+    let listings = Arc::new(Mutex::new(0));
     {
         let mut hot = parts.proxy_svc.hot.write().await;
         hot.registries.insert(
@@ -195,6 +211,7 @@ async fn fixture_with(
                 fetches: Arc::clone(&fetches),
                 resolves: Arc::clone(&resolves),
                 linked_reads: Arc::clone(&linked_reads),
+                listings: Arc::clone(&listings),
                 fail,
             }) as Arc<dyn RegistryClient>,
         );
@@ -208,6 +225,7 @@ async fn fixture_with(
         fetches,
         resolves,
         linked_reads,
+        listings,
         readme_repo,
     }
 }
@@ -482,6 +500,70 @@ async fn a_second_page_view_within_the_ttl_makes_no_upstream_call() {
     assert_eq!(*fetches.lock().unwrap(), after_first);
 }
 
+/// The same rung 1, for the kinds that discover through `list_versions` rather
+/// than through a listing document.
+///
+/// **This is the regression.** That branch returned before the negative cache,
+/// before the single-flight claim and before the freshness stamp, so every page
+/// view of an Open VSX, VS Code Marketplace, JetBrains Marketplace or conda
+/// package was one upstream gallery query — reported as `fresh`, which it
+/// always was, because nothing cached it. Conda is the worst of the four: one
+/// call fans out over a `repodata.json` per channel platform.
+#[actix_web::test]
+async fn a_second_page_view_of_a_list_versions_kind_makes_no_upstream_call() {
+    for kind in [
+        "openvsx",
+        "vscode-marketplace",
+        "jetbrains-marketplace",
+        "conda",
+    ] {
+        let f = fixture(kind, RegistryMode::Proxy, None).await;
+        let listings = Arc::clone(&f.listings);
+        let app = build(f.parts).await;
+
+        let first = detail(&app, "/api/v1/explore/packages/reg1/never-pulled").await;
+        assert_eq!(first["upstream"]["freshness"], "fresh", "{kind}: {first}");
+        assert_eq!(*listings.lock().unwrap(), 1, "{kind}");
+
+        let second = detail(&app, "/api/v1/explore/packages/reg1/never-pulled").await;
+        assert_eq!(
+            second["upstream"]["freshness"], "cached",
+            "{kind}: {second}"
+        );
+        assert_eq!(
+            *listings.lock().unwrap(),
+            1,
+            "{kind}: the second view must not query upstream again"
+        );
+        // And the answer survived the round trip through the cache.
+        assert_eq!(
+            first["versions"].as_array().map(Vec::len),
+            second["versions"].as_array().map(Vec::len),
+            "{kind}: the cached read must answer with the same rows"
+        );
+    }
+}
+
+/// The negative cache, for the same branch: an upstream `404` from
+/// `list_versions` is a fact about the package and is remembered.
+#[actix_web::test]
+async fn an_upstream_404_from_list_versions_is_remembered() {
+    let f = fixture("openvsx", RegistryMode::Proxy, Some(FailureMode::NotFound)).await;
+    let listings = Arc::clone(&f.listings);
+    let app = build(f.parts).await;
+
+    for _ in 0..3 {
+        let body = detail(&app, "/api/v1/explore/packages/reg1/no-such-thing").await;
+        assert_eq!(body["upstream"]["attempted"], false);
+        assert!(body["upstream"]["error"].is_null());
+    }
+    assert_eq!(
+        *listings.lock().unwrap(),
+        1,
+        "the absence must be remembered, not re-asked on every reload"
+    );
+}
+
 /// An upstream `404` is a fact — upstream *answered* — so it is remembered, and
 /// a reload loop or a crawler cannot turn every page view into a request.
 #[actix_web::test]
@@ -634,6 +716,49 @@ async fn an_upstream_only_version_serves_a_derived_readme() {
     // Derived, not stored: nothing was written for a version this instance
     // holds no bytes for.
     assert!(readme_repo.all().is_empty());
+}
+
+/// `?upstream=skip` on the README endpoint means what it means everywhere else:
+/// no egress.
+///
+/// It was accepted and ignored. `serde_urlencoded` drops unknown keys without
+/// complaint, and the handler's query struct declared only `version` and
+/// `format` — so the CLI's `--no-upstream`, whose entire purpose is "do not
+/// touch the network", still ran the upstream resolve and, for the linked kinds,
+/// a second request to whatever URL the package named. On an air-gapped host
+/// that is a hang where a local-only `404` was asked for.
+#[actix_web::test]
+async fn upstream_skip_refuses_to_derive_a_readme_from_upstream() {
+    let f = fixture("npm", RegistryMode::Proxy, None).await;
+    let app = build(f.parts).await;
+
+    // The same coordinate the test above serves a derived README for. The only
+    // difference is the flag.
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/packages/reg1/never-pulled/readme?version=1.1.0&upstream=skip")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+    let body: serde_json::Value = read_body_json(resp).await;
+    assert_eq!(body["code"], "readme.none-stored");
+}
+
+/// …and the default is unchanged, so nothing that did not ask for `skip` loses
+/// the derived answer.
+#[actix_web::test]
+async fn upstream_auto_is_the_default_and_still_derives() {
+    let f = fixture("npm", RegistryMode::Proxy, None).await;
+    let app = build(f.parts).await;
+
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/packages/reg1/never-pulled/readme?version=1.1.0&upstream=auto")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = read_body_json(resp).await;
+    assert_eq!(body["stored"], false);
 }
 
 /// An upstream-only **cargo** version has its README inside bytes we do not

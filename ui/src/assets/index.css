@@ -227,6 +227,32 @@
   }
 }
 
+/* ── The one focus ring ──────────────────────────────────────────────────────
+   `2px solid var(--focus)` at `2px` offset, on everything focusable — DESIGN.md
+   states it once and it was drawn two other ways: links took the browser's own
+   `outline: auto 1px` at `1px` offset, and buttons and inputs suppressed the
+   outline entirely and painted a `box-shadow` ring at *zero* offset instead.
+   Measured in a browser, 32 of 32 tab stops showed a ring and none of them was
+   the ring this system declares.
+
+   A shadow is the wrong material for it as well as the wrong size: this world
+   has no shadows at rest, and a ring that is one is invisible to the forced-
+   colours mode a `outline` survives.
+
+   `:focus-visible`, never `:focus` — a mouse click on a button should not paint
+   a ring, and every browser that matters has agreed on that heuristic.
+   ────────────────────────────────────────────────────────────────────────── */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
 /* ── Shiki highlighted code blocks ───────────────────────────────────────── */
 .shiki-wrapper .shiki {
   border-radius: var(--radius);

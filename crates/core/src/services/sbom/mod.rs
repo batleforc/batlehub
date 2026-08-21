@@ -239,6 +239,22 @@ impl SbomService {
             .await
     }
 
+    /// Which SBOM formats are actually available for a coordinate.
+    ///
+    /// The question a page asks before it offers a download, rather than the
+    /// one it asks by trying: see
+    /// [`SbomRepository::sbom_formats_for_coordinate`].
+    pub async fn formats_for_coordinate(
+        &self,
+        registry: &str,
+        package_name: &str,
+        version: &str,
+    ) -> Result<Vec<SbomFormat>, CoreError> {
+        self.repo
+            .sbom_formats_for_coordinate(registry, package_name, version)
+            .await
+    }
+
     /// Merge all SBOMs in the given time range into a single org-level document.
     pub async fn export_org_sbom(
         &self,

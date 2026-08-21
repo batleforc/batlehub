@@ -292,9 +292,16 @@ async fn fetch_document_body(
 /// The three guards RFC 0007 §7.4 requires of every linked-README fetch, in one
 /// place so the two kinds that have one cannot implement them differently:
 ///
-/// - `ensure_same_origin` against the registry's own base URL, the guard
+/// - [`ensure_linked_origin`] against the registry's own base URL, the guard
 ///   `npm.rs` already applies to tarball URLs, so a compromised or misconfigured
-///   upstream cannot point BatleHub at an internal host;
+///   upstream cannot point BatleHub at an internal host — checked on the URL
+///   asked for **and on the one that answered**. The clients these callers build
+///   carry `redirect::Policy::limited(10)`, so reqwest follows a `Location`
+///   itself with no second look: checking only the first URL let an upstream
+///   answer its own README URL with `302 Location: http://169.254.169.254/…`
+///   and have the body stored as the package's README. `extra_host_suffixes`
+///   widens that origin for a caller whose protocol *specifies* a second host —
+///   see [`ensure_linked_origin`];
 /// - the body read **incrementally** to `max_bytes` rather than `bytes()`-then-
 ///   truncate, so an upstream cannot make this buffer a gigabyte to keep 256 KiB
 ///   of it;
@@ -307,16 +314,24 @@ pub async fn fetch_linked_text(
     req: reqwest::RequestBuilder,
     url: &str,
     base_url: &str,
+    extra_host_suffixes: &[&str],
     max_bytes: usize,
 ) -> Result<Option<String>, CoreError> {
     use futures::StreamExt;
 
-    ensure_same_origin(url, base_url)?;
+    ensure_linked_origin(url, base_url, extra_host_suffixes)?;
 
     let resp = req
         .send()
         .await
         .map_err(|e| CoreError::Registry(format!("readme request failed: {e}")))?;
+
+    // The origin that actually answered, which is not necessarily the one asked:
+    // the caller's client follows redirects on its own. A README is not worth a
+    // second HTTP client with its own redirect policy, so the chain is allowed to
+    // happen and its *result* is refused — nothing off-origin is ever read into a
+    // stored document.
+    ensure_linked_origin(resp.url().as_str(), base_url, extra_host_suffixes)?;
 
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
@@ -339,6 +354,32 @@ pub async fn fetch_linked_text(
         body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
         if body.len() >= max_bytes {
             break;
+        }
+    }
+    // "The cap stopped this read", not "a chunk overran the cap". Tracking the
+    // overrun instead missed the case where the chunk that fills the buffer ends
+    // exactly on the boundary — `chunk.len() > remaining` is false there, and
+    // that is not rare: a power-of-two cap and the uniform chunks a TLS stream
+    // delivers line up on it routinely. A document cut mid-character then went
+    // untrimmed and was reported as *no README* rather than as a long one, which
+    // is the failure the trim below exists to prevent.
+    let cut = body.len() >= max_bytes;
+
+    // The cap counts bytes, and a character is not one byte. Cutting at
+    // `max_bytes` can land inside a multi-byte sequence — one emoji, one
+    // accented letter, any CJK character at the boundary — and the decode below
+    // would then answer `None` for a README that is perfectly valid and merely
+    // long, while the log blamed the upstream for sending bad bytes.
+    //
+    // `error_len() == None` is precisely "the input ended mid-sequence", the
+    // only breakage truncation can create, so only that is trimmed; a genuinely
+    // invalid byte still fails the decode. Same treatment, for the same reason,
+    // as `sbom::extractor::readme::read_bounded`.
+    if cut {
+        if let Err(e) = std::str::from_utf8(&body) {
+            if e.error_len().is_none() {
+                body.truncate(e.valid_up_to());
+            }
         }
     }
 
@@ -455,18 +496,56 @@ pub fn same_origin(a: &reqwest::Url, b: &reqwest::Url) -> bool {
 }
 
 pub fn ensure_same_origin(url: &str, base_url: &str) -> Result<(), CoreError> {
+    ensure_linked_origin(url, base_url, &[])
+}
+
+/// [`ensure_same_origin`], widened by host suffixes the *protocol* requires.
+///
+/// Same-origin is the right default and the wrong absolute: the VS Code
+/// Marketplace answers `extensionquery` from `marketplace.visualstudio.com` and
+/// serves every asset it names — the `Content.Details` README among them — from
+/// `{publisher}.gallerycdn.vsassets.io`. Checked strictly against the base URL,
+/// *every* linked-README read for that kind failed, so no VS Code Marketplace
+/// README was ever stored while the support table advertised `MetadataLinked`.
+///
+/// The widening is deliberately narrow:
+///
+/// - **suffix, not substring** — `host == suffix` or `host.ends_with(".{suffix}")`,
+///   so `gallerycdn.vsassets.io.evil.example` does not match;
+/// - **`https` only**, so a redirect that downgrades the scheme is still
+///   refused;
+/// - **caller-supplied**, and the only caller that supplies anything passes its
+///   list only when its base URL *is* the public marketplace — a self-hosted
+///   mirror serves its own assets from its own origin and inherits no exception.
+pub fn ensure_linked_origin(
+    url: &str,
+    base_url: &str,
+    extra_host_suffixes: &[&str],
+) -> Result<(), CoreError> {
     let parsed = reqwest::Url::parse(url)
         .map_err(|e| CoreError::Registry(format!("invalid upstream URL '{url}': {e}")))?;
     let base = reqwest::Url::parse(base_url)
         .map_err(|e| CoreError::Registry(format!("invalid base URL '{base_url}': {e}")))?;
 
     if same_origin(&parsed, &base) {
-        Ok(())
-    } else {
-        Err(CoreError::Registry(format!(
-            "refusing to fetch cross-origin upstream URL '{url}' (expected origin of '{base_url}')"
-        )))
+        return Ok(());
     }
+
+    if parsed.scheme() == "https" {
+        if let Some(host) = parsed.host_str() {
+            let host = host.to_ascii_lowercase();
+            if extra_host_suffixes.iter().any(|suffix| {
+                let suffix = suffix.to_ascii_lowercase();
+                host == suffix || host.ends_with(&format!(".{suffix}"))
+            }) {
+                return Ok(());
+            }
+        }
+    }
+
+    Err(CoreError::Registry(format!(
+        "refusing to fetch cross-origin upstream URL '{url}' (expected origin of '{base_url}')"
+    )))
 }
 
 /// Percent-encode a query string value, encoding all characters except
@@ -531,6 +610,73 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, CoreError::Registry(_)));
+    }
+
+    /// The widening the VS Code Marketplace needs: its assets live on a
+    /// per-publisher sub-domain of a CDN the API host does not share.
+    #[test]
+    fn an_extra_host_suffix_admits_the_asset_cdn_and_its_subdomains() {
+        for url in [
+            "https://ms-python.gallerycdn.vsassets.io/extensions/x/Details",
+            "https://gallerycdn.vsassets.io/extensions/x/Details",
+        ] {
+            assert!(
+                ensure_linked_origin(
+                    url,
+                    "https://marketplace.visualstudio.com",
+                    &["gallerycdn.vsassets.io"]
+                )
+                .is_ok(),
+                "{url} should be admitted"
+            );
+        }
+    }
+
+    /// Suffix, not substring — or the exception is a wildcard for anyone who can
+    /// register a domain ending in the right letters.
+    #[test]
+    fn an_extra_host_suffix_is_not_a_substring_match() {
+        for url in [
+            // The suffix as a *prefix* of somebody else's domain.
+            "https://gallerycdn.vsassets.io.evil.example/payload",
+            // The suffix without the dot separator.
+            "https://evilgallerycdn.vsassets.io/payload",
+        ] {
+            assert!(
+                ensure_linked_origin(
+                    url,
+                    "https://marketplace.visualstudio.com",
+                    &["gallerycdn.vsassets.io"]
+                )
+                .is_err(),
+                "{url} must be refused"
+            );
+        }
+    }
+
+    /// A redirect that downgrades the scheme does not get the exception: the
+    /// widening is about *which host*, never about reading a stored document off
+    /// a plaintext connection.
+    #[test]
+    fn an_extra_host_suffix_does_not_admit_plaintext() {
+        assert!(ensure_linked_origin(
+            "http://ms-python.gallerycdn.vsassets.io/extensions/x/Details",
+            "https://marketplace.visualstudio.com",
+            &["gallerycdn.vsassets.io"]
+        )
+        .is_err());
+    }
+
+    /// With no suffixes, this is exactly `ensure_same_origin` — including for
+    /// the host the widened caller trusts.
+    #[test]
+    fn no_extra_host_suffixes_is_plain_same_origin() {
+        assert!(ensure_linked_origin(
+            "https://ms-python.gallerycdn.vsassets.io/extensions/x/Details",
+            "https://marketplace.visualstudio.com",
+            &[]
+        )
+        .is_err());
     }
 
     #[test]

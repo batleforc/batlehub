@@ -50,6 +50,31 @@ async fn app_with_readme_store(
     (app, repo)
 }
 
+/// [`app_with_readme_store`] for a registry the console may not browse: full
+/// proxy access, `rbac.explore` off for every role.
+async fn app_with_readme_store_explore_denied(
+    name: &str,
+    registry_type: &str,
+    mode: RegistryMode,
+) -> (
+    impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+    Arc<InMemoryReadmeRepository>,
+) {
+    let repo = InMemoryReadmeRepository::new();
+    let svc = Arc::new(ReadmeService::new(
+        Arc::clone(&repo) as Arc<dyn ReadmeRepository>
+    ));
+    let mut parts =
+        local_registry_app_parts_with_readme(name, registry_type, mode, None, Some(svc));
+    parts.access_config = access_config_explore_denied(&[name]);
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    (app, repo)
+}
+
 fn npm_publish_payload(name: &str, version: &str, readme: serde_json::Value) -> serde_json::Value {
     let tarball_b64 = base64::engine::general_purpose::STANDARD.encode(b"fake-tarball-content");
     serde_json::json!({
@@ -593,6 +618,58 @@ async fn a_blocked_version_is_403_with_its_reason() {
             .contains("known-malicious"),
         "{body}"
     );
+}
+
+/// A registry the catalogue will not admit serves no README, to anybody, even
+/// though every caller here can still proxy from it.
+///
+/// The listing filters on `explore_accessible_registries_for` and the stats
+/// count over it, so `rbac.explore = false` means the registry has no rows, no
+/// counts and no page. The README endpoint used to answer anyway — a document
+/// that names the package, its homepage and its dependencies, served for a
+/// registry an operator took out of the console on purpose.
+///
+/// The `404` is the package's own, not a `403` and not a "no README stored":
+/// denied and absent look identical from outside, which is the same rule the
+/// visibility gate follows one level down.
+#[actix_web::test]
+async fn a_registry_the_catalogue_hides_serves_no_readme() {
+    let (app, repo) =
+        app_with_readme_store_explore_denied("local-npm", "npm", RegistryMode::Local).await;
+    publish_npm(
+        &app,
+        "hidden",
+        npm_publish_payload("hidden", "1.0.0", "# internal notes".into()),
+    )
+    .await;
+
+    // The publish went through — proxy access is untouched by `rbac.explore`,
+    // and the row exists. So the refusal below is the gate, not an absence.
+    assert!(repo
+        .get("local-npm", "hidden", "1.0.0")
+        .await
+        .unwrap()
+        .is_some());
+
+    for uri in [
+        "/api/v1/explore/packages/local-npm/hidden/readme?version=1.0.0",
+        // Without a version either: the fallback path must not answer where the
+        // named-version one refuses.
+        "/api/v1/explore/packages/local-npm/hidden/readme",
+    ] {
+        let (status, body) = get_readme(&app, uri).await;
+        assert_eq!(status, 404, "{uri}: {body}");
+        // Not `readme.none-stored`: that code tells a reader the package is
+        // there and its text is not, which is precisely what this must not say.
+        assert!(body["code"].is_null(), "{uri}: {body}");
+        assert!(
+            body["message"].as_str().unwrap().contains("not found"),
+            "{uri}: {body}"
+        );
+    }
+    // The images go the same way, through the same `resolve_readme` — asserted
+    // in `readme_images.rs`, where the suite configures `proxy` and a resolving
+    // index so the refusal cannot pass for the default `strip`.
 }
 
 /// A yanked version serves its README normally: a yank withdraws a

@@ -53,13 +53,16 @@ pub struct ReadmeImagePath {
         (status = 200, description = "The image bytes", body = crate::handlers::schemas::ArtifactBytes,
          content_type = "application/octet-stream"),
         (status = 403, description = "The version is blocked; the body carries the reason"),
-        (status = 404, description = "No such image, or the package is not visible to this caller"),
+        (status = 404, description = "No such image, or the registry is not browsable by this \
+                                     caller, or the package is not visible to them"),
     ),
     security(("bearer_token" = [])),
 )]
-// Seven extractors, for the same reason `explore_package_readme` has eight: each
+// Eight extractors, for the same reason `explore_package_readme` has nine: each
 // one gates or shapes the answer, and every gate here is the README endpoint's
-// own — deliberately, because an image is part of a README.
+// own — deliberately, because an image is part of a README. `access` is in that
+// list for exactly that reason: `resolve_readme` refuses a registry this caller
+// may not browse, and an image must not be reachable when its document is not.
 //
 // Notably absent: the request itself. This endpoint generates no URL, so it has
 // no need of `trusted_origin` and no way for a forwarded header to influence
@@ -69,6 +72,7 @@ pub struct ReadmeImagePath {
 pub async fn explore_readme_image(
     path: web::Path<ReadmeImagePath>,
     identity: AuthIdentity,
+    access: web::Data<crate::AccessConfigLock>,
     admin_svc: web::Data<Arc<AdminService>>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
     proxy_svc: web::Data<Arc<ProxyService>>,
@@ -94,7 +98,13 @@ pub async fn explore_readme_image(
         registry,
         name,
         version: Some(&path.version),
+        // The image endpoint always resolves the same README the panel is
+        // showing, derived one included — an image that 404s only because the
+        // README it belongs to was derived would be a broken picture on a page
+        // that renders fine.
+        upstream: super::detail::UpstreamMode::Auto,
         identity: &identity,
+        access: &access,
         admin_svc: &admin_svc,
         local_svc: &local_svc,
         proxy_svc: &proxy_svc,

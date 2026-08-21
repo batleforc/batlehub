@@ -247,7 +247,7 @@ async function bulkUnblock() {
       <CardTitle class="text-base">{{ t("packageVersionsTable.versionsArtifacts") }}</CardTitle>
     </CardHeader>
     <CardContent class="p-0">
-      <Table>
+      <Table :label="t('a11y.versionsTableLabel')">
         <TableHeader>
           <TableRow>
             <TableHead class="w-8">

@@ -30,6 +30,22 @@ pub struct VsCodeMarketplaceRegistryClient {
     base_url: String,
 }
 
+/// The host the public gallery API answers on.
+///
+/// The asset exception below is granted only when this *is* the configured
+/// base: a self-hosted mirror serves its own assets from its own origin, and
+/// has no business being pointed at Microsoft's CDN by a response it proxies.
+const PUBLIC_GALLERY_HOST: &str = "marketplace.visualstudio.com";
+
+/// The gallery's asset CDN, one sub-domain per publisher —
+/// `ms-python.gallerycdn.vsassets.io`, and so on.
+///
+/// `files[].source` — the `Content.Details` README included — always points
+/// here, never at the API host, so checking the asset URL strictly against
+/// `base_url` refused *every* linked README this kind has: none was ever stored,
+/// while `readme_support()` advertised `MetadataLinked`.
+const GALLERY_CDN_HOST_SUFFIX: &str = "gallerycdn.vsassets.io";
+
 impl VsCodeMarketplaceRegistryClient {
     pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Result<Self, CoreError> {
         let http = new_http_client(Some(10), opts)?;
@@ -37,6 +53,21 @@ impl VsCodeMarketplaceRegistryClient {
             http,
             base_url: base_url.into(),
         })
+    }
+
+    /// Hosts a linked asset may be read from besides the base URL's own origin.
+    ///
+    /// Empty for anything but the public gallery — see [`PUBLIC_GALLERY_HOST`].
+    fn asset_host_suffixes(&self) -> &'static [&'static str] {
+        let is_public_gallery = reqwest::Url::parse(&self.base_url)
+            .ok()
+            .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+            .is_some_and(|host| host == PUBLIC_GALLERY_HOST);
+        if is_public_gallery {
+            &[GALLERY_CDN_HOST_SUFFIX]
+        } else {
+            &[]
+        }
     }
 
     fn parse_id(name: &str) -> Result<(&str, &str), CoreError> {
@@ -208,7 +239,14 @@ impl RegistryClient for VsCodeMarketplaceRegistryClient {
         url: &str,
         max_bytes: usize,
     ) -> Result<Option<String>, CoreError> {
-        fetch_linked_text(self.http.get(url), url, &self.base_url, max_bytes).await
+        fetch_linked_text(
+            self.http.get(url),
+            url,
+            &self.base_url,
+            self.asset_host_suffixes(),
+            max_bytes,
+        )
+        .await
     }
 
     async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
@@ -320,6 +358,43 @@ mod tests {
     }
 
     const EMPTY_RESULTS: &str = r#"{"results":[{"extensions":[]}]}"#;
+
+    /// The gallery names its README on a CDN the API host does not share, so a
+    /// strict same-origin check refused every one of them — no VS Code
+    /// Marketplace README was ever stored, while the support table advertised
+    /// `MetadataLinked`. The exception is granted only to the public gallery: a
+    /// mirror serves its own assets from its own origin.
+    #[test]
+    fn the_asset_cdn_is_trusted_only_when_the_base_is_the_public_gallery() {
+        let public = VsCodeMarketplaceRegistryClient::new(
+            "https://marketplace.visualstudio.com",
+            &UpstreamHttpOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(public.asset_host_suffixes(), &[GALLERY_CDN_HOST_SUFFIX]);
+
+        let readme_url =
+            "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/1.0.0/Details";
+        assert!(crate::registry::http_client::ensure_linked_origin(
+            readme_url,
+            "https://marketplace.visualstudio.com",
+            public.asset_host_suffixes(),
+        )
+        .is_ok());
+
+        let mirror = VsCodeMarketplaceRegistryClient::new(
+            "https://gallery.corp.example",
+            &UpstreamHttpOptions::default(),
+        )
+        .unwrap();
+        assert!(mirror.asset_host_suffixes().is_empty());
+        assert!(crate::registry::http_client::ensure_linked_origin(
+            readme_url,
+            "https://gallery.corp.example",
+            mirror.asset_host_suffixes(),
+        )
+        .is_err());
+    }
 
     #[test]
     fn parse_id_valid() {

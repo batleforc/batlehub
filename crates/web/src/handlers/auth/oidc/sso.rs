@@ -22,6 +22,24 @@ use crate::handlers::schemas::OkResponse;
 /// operative one.
 const LOGIN_STATE_TTL_SECS: u32 = 600;
 
+/// Longest caller-supplied `state` a started login will carry back.
+///
+/// `GET /api/v1/auth/oidc/login` is unauthenticated by necessity — it is the
+/// first request of a sign-in — and it writes a row that lives for
+/// [`LOGIN_STATE_TTL_SECS`] with the caller's `state` stored verbatim. Nothing
+/// throttles the route: `RateLimitMiddleware` only buckets `/proxy/{registry}/…`
+/// and [`RefreshRateLimiter`] guards the refresh endpoint alone. Without a cap,
+/// one unauthenticated client can write megabyte rows as fast as it can issue
+/// requests and fill the table (and the in-memory store) with entries the prune
+/// task cannot reclaim before their TTL.
+///
+/// The value is a CSRF nonce: the console sends a UUID and the CLI a UUID, so
+/// this is two orders of magnitude more than any real caller needs, and a
+/// request over it is refused rather than truncated — silently storing a
+/// different `state` than the caller kept would fail its own round-trip check
+/// with no explanation.
+const MAX_SPA_STATE_LEN: usize = 512;
+
 /// Refresh attempts allowed per client IP per window, and the window.
 ///
 /// `POST /auth/oidc/refresh` is unauthenticated by necessity — a client whose
@@ -149,6 +167,15 @@ pub async fn oidc_login(
         // Probe request — confirm the endpoint exists and OIDC is configured.
         return Ok(HttpResponse::Ok().json(OkResponse::new()));
     };
+
+    // Refused before anything is written: this route is unauthenticated and
+    // unthrottled, and the row it creates outlives the request by
+    // `LOGIN_STATE_TTL_SECS`. See `MAX_SPA_STATE_LEN`.
+    if spa_state.len() > MAX_SPA_STATE_LEN {
+        return Err(AppError::bad_request(format!(
+            "`state` must be at most {MAX_SPA_STATE_LEN} bytes"
+        )));
+    }
 
     let sso = if let Some(ref name) = query.provider {
         flows.iter().find(|f| &f.name == name)
@@ -282,19 +309,18 @@ pub async fn oidc_callback(
         }
     };
 
-    // OpenID Connect Core §3.1.3.7 step 11. The nonce was minted for this one
-    // authorization request and kept server-side, so a matching one proves the
-    // ID token was issued in response to *this* login and not replayed from
-    // another.
-    if let Err(e) = OidcSsoFlow::verify_nonce(&tokens.session_token, &login.nonce) {
-        tracing::warn!(error = %e, provider = %login.provider, "OIDC nonce check failed");
-        return spa_error_redirect(&base, "Failed to complete sign-in. Please try again.");
-    }
-
+    // Order matters, and it is this way round rather than the reverse.
+    //
     // A provider that returns no `id_token` and an opaque access token cannot
     // work here: `OidcAuthProvider::authenticate` validates a JWT. Said once,
     // loudly, at the point of failure — otherwise every later request quietly
     // resolves to anonymous and the operator goes looking at their RBAC rules.
+    //
+    // Running the nonce check first made this diagnostic unreachable:
+    // `login.nonce` is never empty, so `verify_nonce` would `insecure_decode`
+    // the opaque token, fail to parse it, and answer with the generic "try
+    // again" — leaving the operator with the exact silent failure the message
+    // below exists to prevent.
     if !OidcSsoFlow::session_token_is_a_jwt(&tokens.session_token) {
         tracing::error!(
             provider = %login.provider,
@@ -307,6 +333,26 @@ pub async fn oidc_callback(
             "This identity provider is not returning a usable token. Ask an administrator \
              to check the server log.",
         );
+    }
+
+    // OpenID Connect Core §3.1.3.7 step 11. The nonce was minted for this one
+    // authorization request and kept server-side, so a matching one proves the
+    // ID token was issued in response to *this* login and not replayed from
+    // another.
+    //
+    // Only when the session token *is* the ID token. §3.1.3.7 is a rule about
+    // ID tokens, and a provider that issued none has nothing to carry the claim:
+    // `token_request` fell back to the access token, and requiring a `nonce` of
+    // that rejects every JWT-access-token deployment — the configuration the
+    // message above tells operators to reach for. What ties *that* case to this
+    // login is PKCE plus the one-time `state`, both already checked, and the
+    // fallback never becomes a way to skip the check because the token it
+    // reaches for is one the provider minted for this exchange either way.
+    if tokens.has_id_token {
+        if let Err(e) = OidcSsoFlow::verify_nonce(&tokens.session_token, &login.nonce) {
+            tracing::warn!(error = %e, provider = %login.provider, "OIDC nonce check failed");
+            return spa_error_redirect(&base, "Failed to complete sign-in. Please try again.");
+        }
     }
 
     // Tokens ride in the URL **fragment**, not the query string. A fragment is
@@ -419,11 +465,32 @@ pub async fn oidc_refresh(
         // first refresh. No nonce check here — a refresh has no authorization
         // request to be tied to, and OIDC Core §12.2 says an ID token from a
         // refresh may omit the claim.
-        Ok(tokens) => Ok(HttpResponse::Ok().json(RefreshResponse {
-            access_token: tokens.session_token,
-            refresh_token: tokens.refresh_token,
-            expires_in: tokens.expires_in,
-        })),
+        Ok(tokens) => {
+            // The same shape check the callback makes, for the same reason and
+            // with more at stake. An ID token in a refresh response is optional
+            // (OIDC Core §12.2) and `refresh` sends no `scope`, so a provider
+            // that omits one lands `session_token` on the access token — opaque
+            // on Okta and Auth0. Handing that back would replace a working
+            // credential with one `OidcAuthProvider::authenticate` answers
+            // `Ok(None)` to: the client stores it, keeps sending it, and every
+            // request from then on resolves to *anonymous* with no error
+            // anywhere. Failing the refresh instead is recoverable — the client
+            // still holds the credential that works and the user is asked to
+            // sign in again.
+            if !OidcSsoFlow::session_token_is_a_jwt(&tokens.session_token) {
+                tracing::error!(
+                    provider = %sso.name,
+                    "OIDC refresh returned no id_token and an opaque access token; \
+                     refusing to downgrade the session to an unusable credential"
+                );
+                return Err(AppError::bad_request("failed to refresh OIDC token"));
+            }
+            Ok(HttpResponse::Ok().json(RefreshResponse {
+                access_token: tokens.session_token,
+                refresh_token: tokens.refresh_token,
+                expires_in: tokens.expires_in,
+            }))
+        }
         Err(e) => {
             tracing::warn!(error = %e, "OIDC token refresh failed");
             Err(AppError::bad_request("failed to refresh OIDC token"))

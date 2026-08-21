@@ -61,6 +61,7 @@ make decisions.
 | Bound | Effect |
 | --- | --- |
 | Cache-first | The document lands in the metadata cache under the key the proxy path already uses, so it obeys the registry's `metadata_ttl_secs`. N page views within one TTL produce one request. |
+| …including the gallery kinds | Open VSX, the VS Code and JetBrains marketplaces and conda have no listing document to fetch and answer by *query* instead. That answer is cached in the same place, under the same TTL, behind the same single flight — which it was not before: every page view of one of those was an upstream query, and for conda one `repodata.json` per channel platform. |
 | Single-flight | Ten people opening the same new package at once produce one upstream request, not ten. |
 | Negative cache | An upstream `404` is remembered for `negative_ttl_secs` (300 by default), so a bad URL or a crawler cannot make every reload a request. A *connection failure* is not remembered — it is not a fact about the package. |
 | Registry access | The read only happens for a registry the caller can already explore. Somebody who cannot see a registry cannot make it emit traffic. |

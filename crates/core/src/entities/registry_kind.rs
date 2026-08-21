@@ -552,27 +552,61 @@ impl RegistryKind {
     /// does not compile until somebody decides.
     pub fn fetchable_by_version(&self) -> FetchSupport {
         match self {
-            Self::Npm
-            | Self::Cargo
-            | Self::Pypi
-            | Self::Nuget
-            | Self::Goproxy
-            | Self::Composer
-            | Self::Rubygems
-            | Self::Conda => FetchSupport::ByVersion,
+            // Every one of these addresses its artifact with a sub-coordinate on
+            // the *download* path, and the coordinate alone is not the key.
+            // This table used to say `ByVersion` with no sub-coordinate for all
+            // of them, which made the button write `artifact:{reg}/lodash/4.17.21`
+            // while `npm install` reads `artifact:{reg}/lodash/4.17.21/tarball`:
+            // the fetch reported success, filled a slot nothing reads, and the
+            // next real install still went upstream. The same mismatch made the
+            // `409 already-held` check unable to match a genuinely cached
+            // version. Exactly the bug [`Self::warm_artifact`] documents for
+            // vsix, one table over.
+            //
+            // Worse than a dead key for two of them: with no sub-coordinate the
+            // goproxy client serves `@v/{version}.info` (a JSON stamp, not the
+            // module) and the RubyGems client serves `api/v1/gems/{name}.json`
+            // (the metadata document, not the gem), so the button downloaded the
+            // wrong thing and cached it under the name of the right one.
+            Self::Npm => FetchSupport::ByVersion(FetchArtifact::Fixed("tarball")),
+            Self::Cargo => FetchSupport::ByVersion(FetchArtifact::Fixed("dl")),
+            Self::Composer => FetchSupport::ByVersion(FetchArtifact::Fixed("dist")),
+            Self::Rubygems => FetchSupport::ByVersion(FetchArtifact::Fixed("gem")),
+            // `.zip` — the module source. `.mod` is the other half of what `go
+            // mod download` reads, but it is a few hundred bytes next to the
+            // archive, and "fetch this version" means the bytes.
+            Self::Goproxy => FetchSupport::ByVersion(FetchArtifact::Fixed("zip")),
+            // Addressed by filename, but the filename is derivable — see
+            // [`FetchArtifact::NugetFlat`].
+            Self::Nuget => FetchSupport::ByVersion(FetchArtifact::NugetFlat),
             // The extension and plugin galleries address their artifact with a
-            // sub-coordinate. `warm_artifact` already names it, and this reuses
-            // that answer rather than restating it — two lists of the same fact
-            // is one list that goes stale.
-            Self::Openvsx | Self::VscodeMarketplace | Self::JetbrainsMarketplace => {
-                match self.warm_artifact() {
-                    Some(artifact) => FetchSupport::ByVersionWithArtifact(artifact),
-                    // Unreachable while `warm_artifact` answers for these three,
-                    // and a refusal rather than a panic if it ever stops: the
-                    // console shows a reason and nothing is fetched.
-                    None => FetchSupport::None("this kind's artifact has no addressable name"),
-                }
+            // sub-coordinate too; these two are the ones that always said so.
+            Self::Openvsx | Self::VscodeMarketplace => {
+                FetchSupport::ByVersion(FetchArtifact::Fixed("vsix"))
             }
+            Self::JetbrainsMarketplace => FetchSupport::ByVersion(FetchArtifact::Fixed("plugin")),
+            // A PyPI version is a set of distribution files — an sdist and one
+            // wheel per interpreter/platform tag — and the proxy addresses each
+            // by its full filename, which is not derivable from the coordinate
+            // (the tags are not in it). The same reasoning as Maven below, and
+            // the same answer. Said plainly rather than left as a button that
+            // could not work: with no filename the PyPI client looks for a file
+            // named `""` in the version's `urls` and returns `NotFound`, so this
+            // row's button was a `404` generator.
+            Self::Pypi => FetchSupport::None(
+                "a PyPI version is a set of distribution files — an sdist and one wheel per \
+                 interpreter and platform — each addressed by its own filename, so \"fetch this \
+                 version\" has no single meaning",
+            ),
+            // Conda is refused for a second, sharper reason: this proxy carries
+            // the *platform* in `PackageId::version` (see the conda client's
+            // `resolve_metadata`), and the artifact filename additionally
+            // carries the build string. A fetch of `numpy 1.24.0` would issue
+            // `GET {base}/1.24.0/repodata.json` — a path that cannot exist.
+            Self::Conda => FetchSupport::None(
+                "a conda artifact is addressed by channel platform and build string as well as \
+                 version, so \"fetch this version\" has no single meaning",
+            ),
             Self::Maven => FetchSupport::None(
                 "a Maven version is a set of files — a jar, a pom, sources, javadoc — so \
                  \"fetch this version\" has no single meaning",
@@ -595,27 +629,39 @@ impl RegistryKind {
     /// artifact is cached under, when it uses one.
     ///
     /// Proxy cache keys are `artifact:` + [`crate::entities::PackageId::cache_key`], i.e.
-    /// `artifact:{registry}/{name}/{version}[/{artifact}]`. Most kinds address
-    /// their main artifact by name/version alone and return `None` (new kinds
-    /// default to that). JetBrains Marketplace serves the plugin archive under
-    /// `plugin` — see `jbm_plugin_download` in
-    /// `crates/web/src/handlers/proxy/jetbrains_marketplace/files.rs`, which
-    /// must keep using the same sub-coordinate.
+    /// `artifact:{registry}/{name}/{version}[/{artifact}]`. Warming reads this
+    /// so a pre-fetched artifact lands in the exact slot the proxy read path
+    /// looks in, instead of a slot nothing ever reads.
     ///
-    /// Warming reads this so a pre-fetched artifact lands in the exact slot the
-    /// proxy read path looks in, instead of a slot nothing ever reads.
-    pub fn warm_artifact(&self) -> Option<&'static str> {
-        match self {
-            Self::JetbrainsMarketplace => Some("plugin"),
-            // Both extension kinds read with `.with_artifact("vsix")` in
-            // `handlers/proxy/openvsx.rs`. Returning `None` here — as this did —
-            // made the warmer write `artifact:{registry}/{name}/{version}` while
-            // every read looked in `…/{version}/vsix`, so warming an extension
-            // filled a slot nothing ever read and the first real request still
-            // went upstream.
-            Self::Openvsx | Self::VscodeMarketplace => Some("vsix"),
-            _ => None,
+    /// **Derived from [`Self::fetchable_by_version`], not restated.** Warming
+    /// and the console's fetch button ask the same question — *where does this
+    /// kind's one downloadable artifact live?* — and answering it twice is how
+    /// this went wrong before: the fetch table said "by version, no
+    /// sub-coordinate" for eight kinds whose download path uses one. A kind
+    /// that cannot name a single artifact for a version (PyPI, conda, Maven,
+    /// Terraform, the path-addressed kinds) answers `None` here, because
+    /// warming cannot name the file either.
+    pub fn warm_artifact(&self) -> Option<FetchArtifact> {
+        match self.fetchable_by_version() {
+            FetchSupport::ByVersion(artifact) => Some(artifact),
+            FetchSupport::None(_) => None,
         }
+    }
+
+    /// The exact `PackageId` a "fetch this version" runs — the same one the
+    /// package manager's own download builds, sub-coordinate and normalisation
+    /// included.
+    ///
+    /// `None` when this kind cannot name one artifact for a version; the caller
+    /// shows [`FetchSupport::reason`] instead.
+    pub fn fetch_coordinate(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+    ) -> Option<crate::entities::PackageId> {
+        self.warm_artifact()
+            .map(|artifact| artifact.coordinate(registry, name, version))
     }
 }
 
@@ -623,10 +669,15 @@ impl RegistryKind {
 /// ([`RegistryKind::fetchable_by_version`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FetchSupport {
-    /// `{registry}/{name}/{version}` names one artifact.
-    ByVersion,
-    /// It names one artifact under this sub-coordinate — `vsix`, `plugin`.
-    ByVersionWithArtifact(&'static str),
+    /// The coordinate names one artifact, and this is where the download path
+    /// caches it.
+    ///
+    /// There is no payload-less variant on purpose. Every kind that answers
+    /// this way addresses its artifact with a sub-coordinate — the bare
+    /// `{registry}/{name}/{version}` key is not a slot any read path looks in —
+    /// and a variant that let a kind stay silent about which one is what made
+    /// the button write dead keys for eight kinds.
+    ByVersion(FetchArtifact),
     /// It does not, and this is why. Quoted verbatim by the endpoint and by the
     /// console, so the published support table, the refusal and the button's
     /// tooltip cannot disagree.
@@ -638,18 +689,58 @@ impl FetchSupport {
         !matches!(self, Self::None(_))
     }
 
-    /// The `PackageId::artifact` this fetch should use, if any.
-    pub fn artifact(&self) -> Option<&'static str> {
-        match self {
-            Self::ByVersionWithArtifact(a) => Some(a),
-            _ => None,
-        }
-    }
-
     pub fn reason(&self) -> Option<&'static str> {
         match self {
             Self::None(reason) => Some(reason),
-            _ => None,
+            Self::ByVersion(_) => None,
+        }
+    }
+}
+
+/// How a kind addresses the one artifact a version resolves to.
+///
+/// Turned into a `PackageId` by [`Self::coordinate`], which is the only place
+/// that answer is built: the console's fetch and the warmer both go through it,
+/// so neither can write a key the proxy read path does not read back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchArtifact {
+    /// A fixed sub-coordinate, the same for every package of this kind —
+    /// npm's `tarball`, cargo's `dl`, RubyGems' `gem`, Composer's `dist`,
+    /// goproxy's `zip`, `vsix`, `plugin`.
+    Fixed(&'static str),
+    /// NuGet's flat container addresses the package by filename:
+    /// `{LOWER_ID}/{LOWER_VERSION}/{LOWER_ID}.{LOWER_VERSION}.nupkg` (NuGet V3
+    /// "package content" resource). Derivable from the coordinate, unlike
+    /// PyPI's wheel tags and conda's build strings — which is why NuGet keeps
+    /// its button and those two do not.
+    ///
+    /// The lower-casing is not cosmetic: `nuget restore` requests the
+    /// lower-cased URL, so the flat-index handler keys the artifact under the
+    /// lower-cased id and version. A fetch that kept `Newtonsoft.Json` as typed
+    /// in the console would write a neighbouring key no restore ever reads.
+    NugetFlat,
+}
+
+impl FetchArtifact {
+    /// The `PackageId` — including any normalisation the read path applies —
+    /// this artifact is fetched and cached as.
+    pub fn coordinate(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+    ) -> crate::entities::PackageId {
+        use crate::entities::PackageId;
+        match self {
+            Self::Fixed(artifact) => {
+                PackageId::new(registry, name, version).with_artifact(*artifact)
+            }
+            Self::NugetFlat => {
+                let id = name.to_lowercase();
+                let version = version.to_lowercase();
+                let filename = format!("{id}.{version}.nupkg");
+                PackageId::new(registry, id, version).with_artifact(filename)
+            }
         }
     }
 }
@@ -895,6 +986,90 @@ mod tests {
                 !kind.is_path_addressed(),
                 "{kind} should not be path-addressed"
             );
+        }
+    }
+
+    /// The cache key a console fetch writes, spelled out per kind.
+    ///
+    /// This is the regression: the table used to answer "by version, no
+    /// sub-coordinate" for eight kinds, so the fetch wrote
+    /// `npm1/lodash/4.17.21` while `npm install` reads
+    /// `npm1/lodash/4.17.21/tarball` — a success that filled a slot nothing
+    /// reads. Each expectation below is the key the *download handler* for that
+    /// kind builds (`handlers/proxy/<kind>`, via `artifact_suffix`), so a change
+    /// to either side has to change this list too.
+    #[test]
+    fn a_fetch_writes_the_key_the_download_path_reads() {
+        let cases = [
+            (RegistryKind::Npm, "r/lodash/4.17.21/tarball"),
+            (RegistryKind::Cargo, "r/lodash/4.17.21/dl"),
+            (RegistryKind::Composer, "r/lodash/4.17.21/dist"),
+            (RegistryKind::Rubygems, "r/lodash/4.17.21/gem"),
+            (RegistryKind::Goproxy, "r/lodash/4.17.21/zip"),
+            (RegistryKind::Openvsx, "r/lodash/4.17.21/vsix"),
+            (RegistryKind::VscodeMarketplace, "r/lodash/4.17.21/vsix"),
+            (
+                RegistryKind::JetbrainsMarketplace,
+                "r/lodash/4.17.21/plugin",
+            ),
+        ];
+        for (kind, expected) in cases {
+            let pkg = kind
+                .fetch_coordinate("r", "lodash", "4.17.21")
+                .unwrap_or_else(|| panic!("{kind} should be fetchable by version"));
+            assert_eq!(pkg.cache_key(), expected, "{kind}");
+        }
+    }
+
+    /// NuGet's flat container is addressed by a lower-cased filename, and
+    /// `nuget restore` requests the lower-cased URL — so a fetch of the
+    /// mixed-case id the console displays has to normalise, or it writes a
+    /// neighbouring key no restore reads.
+    #[test]
+    fn a_nuget_fetch_normalises_the_way_the_flat_index_does() {
+        let pkg = RegistryKind::Nuget
+            .fetch_coordinate("r", "Newtonsoft.Json", "13.0.3-Beta")
+            .unwrap();
+        assert_eq!(
+            pkg.cache_key(),
+            "r/newtonsoft.json/13.0.3-beta/newtonsoft.json.13.0.3-beta.nupkg"
+        );
+    }
+
+    /// PyPI and conda name a *set* of files per version, so the button is
+    /// refused with a reason rather than offered and quietly wrong. Left
+    /// offered, PyPI looked for a file named `""` and 404'd, and conda —
+    /// which carries the channel platform in the version slot — asked for
+    /// `{base}/{version}/repodata.json`, a path that cannot exist.
+    #[test]
+    fn kinds_that_cannot_name_one_artifact_refuse_with_a_reason() {
+        for kind in [
+            RegistryKind::Pypi,
+            RegistryKind::Conda,
+            RegistryKind::Maven,
+            RegistryKind::Terraform,
+        ] {
+            assert!(
+                kind.fetchable_by_version().reason().is_some(),
+                "{kind} should refuse with a reason"
+            );
+            assert!(
+                kind.fetch_coordinate("r", "numpy", "1.24.0").is_none(),
+                "{kind} should not produce a fetch coordinate"
+            );
+        }
+    }
+
+    /// Warming and the console fetch must not be two lists of the same fact.
+    #[test]
+    fn warming_and_fetching_agree_on_every_kind() {
+        for kind in RegistryKind::ALL {
+            match kind.fetchable_by_version() {
+                FetchSupport::ByVersion(artifact) => {
+                    assert_eq!(kind.warm_artifact(), Some(artifact), "{kind}")
+                }
+                FetchSupport::None(_) => assert_eq!(kind.warm_artifact(), None, "{kind}"),
+            }
         }
     }
 }

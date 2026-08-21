@@ -231,6 +231,34 @@ describe("router navigation guards (integration)", () => {
     expect(localStorage.getItem("batlehub_access_token")).toBeNull();
   });
 
+  it("consumes a callback fragment from the address bar exactly once", async () => {
+    /* The fragment is read from `window.location`, because vue-router decodes
+       `to.hash` a second time and mangles an opaque refresh token. `location`
+       is only rewritten when a navigation *finalizes*, and a guard that returns
+       a redirect never gets there — so the fragment was still in the address
+       bar when `beforeEach` re-ran for `/packages`, the state had already been
+       taken out of `sessionStorage` by the first pass, and a sign-in that had
+       just succeeded bounced to `/login?error=oidcStateMismatch`. */
+    await setAuth(ANON, "");
+    const state = generateOidcState();
+    /* `replaceState`, so the address bar carries the fragment without firing a
+       navigation of its own — which is what a landing from the IdP looks like
+       to the first guard run. */
+    const frag = oidcFragment({ oidc_access_token: "access-xyz", oidc_state: state });
+    window.history.replaceState(window.history.state, "", `/login${frag}`);
+    try {
+      // A distinct location, so the guard actually runs: the suite's setup has
+      // already parked an anonymous session on `/login`, and vue-router skips
+      // the guards for a push to where it already is.
+      const path = await go({ path: "/login", query: { cb: "1" } });
+      expect(path).toBe("/packages");
+      expect(localStorage.getItem("batlehub_access_token")).toBe("access-xyz");
+      expect(window.location.hash).toBe("");
+    } finally {
+      window.history.replaceState(window.history.state, "", "/");
+    }
+  });
+
   it("ignores tokens offered in the query string", async () => {
     /* The fragment is the whole point of the change: a query string reaches the
        server hosting this SPA and lands in its access log. If a callback ever

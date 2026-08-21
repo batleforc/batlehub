@@ -50,6 +50,24 @@ async fn app(
     (app, repo)
 }
 
+/// [`app`], with the registry open to anonymous readers as well.
+///
+/// The default fixture grants nothing to `anonymous`, and the detail endpoint
+/// now refuses a registry the caller may not browse — so a signed-out `GET`
+/// against it is a `404` and never reaches the question of what the page offers.
+/// A test about the *button* needs a reader who can see the page.
+async fn app_open_to_anonymous(
+    kind: &str,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let mut parts = local_registry_app_parts(REG, kind, RegistryMode::Proxy, None);
+    parts.access_config = access_config_for(&[REG]);
+    build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await
+}
+
 // ── The happy path ───────────────────────────────────────────────────────────
 
 /// It runs the download, and reports what arrived. The size and duration are
@@ -89,10 +107,20 @@ async fn the_fetched_bytes_are_actually_held_afterwards() {
 
     // The **proxy** key. `artifact_storage_key` is the `local:` one a *published*
     // artifact goes to, and asking it here is a question always answered "no".
-    let key = batlehub_core::services::proxy::proxy_artifact_key(
+    //
+    // And the key with npm's `tarball` sub-coordinate, because that is the one
+    // `download_tarball` reads back. This assertion used to name the bare
+    // coordinate, which is what let the bug through: the fetch really did write
+    // a key, the test really did find it, and `npm install` still went upstream
+    // because nothing reads there. The bare key is asserted *absent* below for
+    // the same reason.
+    let held = batlehub_core::services::proxy::proxy_artifact_key(
+        &batlehub_core::entities::PackageId::new(REG, "widget", "1.0.0").with_artifact("tarball"),
+    );
+    let bare = batlehub_core::services::proxy::proxy_artifact_key(
         &batlehub_core::entities::PackageId::new(REG, "widget", "1.0.0"),
     );
-    assert!(!storage.exists(&key).await.unwrap(), "nothing held before");
+    assert!(!storage.exists(&held).await.unwrap(), "nothing held before");
 
     let resp = call_service(
         &app,
@@ -104,8 +132,12 @@ async fn the_fetched_bytes_are_actually_held_afterwards() {
     .await;
     assert_eq!(resp.status(), 200);
     assert!(
-        storage.exists(&key).await.unwrap(),
-        "the artifact must be held after a fetch"
+        storage.exists(&held).await.unwrap(),
+        "the artifact must be held under the key the download path reads"
+    );
+    assert!(
+        !storage.exists(&bare).await.unwrap(),
+        "the bare coordinate is a slot nothing reads; writing it is the bug"
     );
 }
 
@@ -247,7 +279,18 @@ async fn the_fetch_is_audited_with_the_caller_as_the_actor() {
 /// does not draw (§4.4).
 #[actix_web::test]
 async fn a_kind_with_no_single_artifact_per_version_refuses_with_its_reason() {
-    for (kind, expected) in [("maven", "set of files"), ("terraform", "architecture")] {
+    // `pypi` and `conda` are here because they used to be *offered*, and could
+    // not work: with no filename the PyPI client looks for a file named `""` in
+    // the version's `urls` and 404s, and conda carries the channel platform in
+    // the version slot, so a fetch of `numpy 1.24.0` asked upstream for
+    // `{base}/1.24.0/repodata.json` — a path that cannot exist. A button that
+    // always fails is worse than a stated reason.
+    for (kind, expected) in [
+        ("maven", "set of files"),
+        ("terraform", "architecture"),
+        ("pypi", "wheel"),
+        ("conda", "build string"),
+    ] {
         let (app, _) = app(kind).await;
         let resp = call_service(
             &app,
@@ -389,7 +432,7 @@ async fn an_anonymous_attempt_pulls_nothing() {
 /// drew the button for a signed-out reader would be promising a `401`.
 #[actix_web::test]
 async fn the_button_is_not_offered_to_an_anonymous_reader() {
-    let (app, _) = app("npm").await;
+    let app = app_open_to_anonymous("npm").await;
     let uri = format!("/api/v1/explore/packages/{REG}/widget");
 
     let anon: serde_json::Value =
@@ -413,5 +456,50 @@ async fn the_button_is_not_offered_to_an_anonymous_reader() {
     assert_eq!(
         signed_in["fetch"]["offered"], true,
         "a signed-in reader still is: {signed_in}"
+    );
+}
+
+/// A registry `rbac.explore` denies is not fetchable from the console either.
+///
+/// The detail, README and image endpoints all refuse a registry the caller may
+/// not browse; this one did not, and that made the console's own API a door
+/// around the gate. `409 fetch.already-held` is an inventory oracle — it says
+/// this instance holds that exact version — and the success path drives the
+/// instance into fetching the ones it does not, into a registry the operator
+/// has said this role may not look at.
+///
+/// `404`, not `403`: denied and absent read the same from outside, so the
+/// refusal does not confirm the package exists. And nothing is pulled.
+#[actix_web::test]
+async fn a_registry_the_caller_may_not_browse_is_not_fetchable_either() {
+    let mut parts = local_registry_app_parts(REG, "npm", RegistryMode::Proxy, None);
+    // Full proxy access, no explore access — `[registries.rbac.explore]` with
+    // every tier off, which is what an operator writes to keep a registry out
+    // of the console while package managers go on using it.
+    parts.access_config = access_config_explore_denied(&[REG]);
+    let storage = std::sync::Arc::clone(&parts.proxy_svc.storage);
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+
+    let key = batlehub_core::services::proxy::proxy_artifact_key(
+        &batlehub_core::entities::PackageId::new(REG, "widget", "1.0.0"),
+    );
+
+    let resp = call_service(
+        &app,
+        TestRequest::post()
+            .uri(&fetch_uri("widget", "1.0.0"))
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        404,
+        "a registry the caller cannot browse must not be fetchable"
+    );
+
+    assert!(
+        !storage.exists(&key).await.unwrap(),
+        "a refused fetch must leave nothing behind"
     );
 }

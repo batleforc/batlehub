@@ -613,6 +613,20 @@ pub const TEAM_AB_TOKEN: &str = "team-ab-token";
 pub fn bearer(token: &str) -> String {
     format!("Bearer {token}")
 }
+/// `AccessConfig` for registries reachable anonymously and by user/admin.
+///
+/// **Explore follows proxy access here, because that is what a server does.**
+/// `rbac.explore.{anonymous,user,admin}` all default to `true`, so
+/// `build_access_config` puts a registry in the explore set of every tier that
+/// can reach it unless an operator says otherwise — an unconfigured deployment
+/// browses everything it can proxy. This helper used to leave the three explore
+/// sets empty, which is not a weaker default but a *different* server: one where
+/// no registry is browsable by anyone. That was invisible for as long as the
+/// catalogue's only reader was `ExploreFilter::registries`, where an empty
+/// vector means "no restriction" rather than "nothing"; it stopped being
+/// invisible once endpoints began refusing on the set itself, and a suite that
+/// wants explore denied should build the denial explicitly rather than inherit
+/// it from a helper's silence.
 pub fn access_config(anonymous: &[&str], user_admin: &[&str]) -> batlehub_web::AccessConfigLock {
     let to_set = |names: &[&str]| -> std::collections::HashSet<String> {
         names.iter().map(|s| s.to_string()).collect()
@@ -622,26 +636,24 @@ pub fn access_config(anonymous: &[&str], user_admin: &[&str]) -> batlehub_web::A
         user: to_set(user_admin),
         admin: to_set(user_admin),
         groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
+        explore_anonymous: to_set(anonymous),
+        explore_user: to_set(user_admin),
+        explore_admin: to_set(user_admin),
     })
 }
 
 /// `AccessConfig` granting anonymous/user/admin access to exactly `names`,
-/// with empty groups and explore overrides.
+/// with empty groups.
 pub fn access_config_for(names: &[&str]) -> batlehub_web::AccessConfigLock {
     access_config(names, names)
 }
 
-/// Like [`access_config_for`], but also grants explore access to `names` for every role.
+/// [`access_config_for`], spelled out.
 ///
-/// Needed by anything that scopes on the accessible set *explicitly*. The
-/// catalogue listing reads `ExploreFilter::registries`, where an empty vector
-/// means "no restriction", so most suites never notice that [`access_config`]
-/// leaves the explore sets empty. The README search does notice: an empty scope
-/// there means "search nothing", which is the safe direction and the reason a
-/// prose-search test must name its registry.
+/// Identical to it now that [`access_config`] no longer leaves the explore sets
+/// empty. Kept as its own name because the suites that call it — README search,
+/// the catalogue scopes — are the ones that read the explore set *directly*, and
+/// the call site saying so is worth a line of indirection.
 pub fn access_config_with_explore(names: &[&str]) -> batlehub_web::AccessConfigLock {
     let set: std::collections::HashSet<String> = names.iter().map(|s| s.to_string()).collect();
     new_access_lock(batlehub_web::AccessConfig {
@@ -654,6 +666,25 @@ pub fn access_config_with_explore(names: &[&str]) -> batlehub_web::AccessConfigL
         explore_admin: set,
     })
 }
+/// Full proxy access to `names`, and no explore access to any of them.
+///
+/// What `[registries.rbac.explore] anonymous = false, user = false, admin =
+/// false` produces: a registry package managers may pull from and the console
+/// may not browse. Spelled out here rather than left to a helper's default, so a
+/// test asserting the catalogue's refusal says which setting it is asserting.
+pub fn access_config_explore_denied(names: &[&str]) -> batlehub_web::AccessConfigLock {
+    let set: std::collections::HashSet<String> = names.iter().map(|s| s.to_string()).collect();
+    new_access_lock(batlehub_web::AccessConfig {
+        anonymous: set.clone(),
+        user: set.clone(),
+        admin: set,
+        groups: std::collections::HashMap::new(),
+        explore_anonymous: std::collections::HashSet::new(),
+        explore_user: std::collections::HashSet::new(),
+        explore_admin: std::collections::HashSet::new(),
+    })
+}
+
 pub fn registry_map_for(pairs: &[(&str, &str)]) -> batlehub_web::RegistryMap {
     batlehub_web::RegistryMap::from(
         pairs

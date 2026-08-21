@@ -117,6 +117,24 @@ async fn app_with_hosts(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
+    app_with_hosts_and_explore(readme_markdown, policy, fetcher, hosts, true).await
+}
+
+/// [`app_with_hosts`], with the registry's `rbac.explore` decided by the caller.
+///
+/// `false` is a registry package managers may pull from and the console may not
+/// browse — proxy access unchanged, every explore set empty.
+async fn app_with_hosts_and_explore(
+    readme_markdown: &str,
+    policy: RemoteImagePolicy,
+    fetcher: Arc<ScriptedFetcher>,
+    hosts: Vec<String>,
+    explore: bool,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
     let repo = InMemoryReadmeRepository::new();
     repo.upsert(PackageReadme {
         registry: REG.to_owned(),
@@ -140,13 +158,16 @@ async fn app_with_hosts(
             .with_image_fetcher(fetcher as Arc<dyn ReadmeImageFetcher>),
     );
 
-    let parts = local_registry_app_parts_with_readme(
+    let mut parts = local_registry_app_parts_with_readme(
         REG,
         "npm",
         RegistryMode::Local,
         None,
         Some(readme_svc),
     );
+    if !explore {
+        parts.access_config = access_config_explore_denied(&[REG]);
+    }
     // The endpoint reads the policy out of `LocalRegistryService`'s hot config,
     // which the shared factory leaves empty — an absent entry means the README
     // block's default, and its default is `strip`.
@@ -314,6 +335,41 @@ async fn under_strip_nothing_is_fetched_at_all() {
     .await;
     assert_eq!(resp.status(), 404);
     assert_eq!(fetcher.calls(), 0, "no upstream request under strip");
+}
+
+/// A registry the console may not browse serves no images, under `proxy` and
+/// with an index that resolves — the two conditions that make every other test
+/// here return `200`.
+///
+/// The image endpoint's gates are the README endpoint's, by construction: both
+/// go through `resolve_readme`, so a document the catalogue refuses cannot have
+/// its pictures pulled out of it one index at a time. Asserted on the fetcher
+/// too: refusing after dialling `img.shields.io` would still have told a
+/// third-party host that somebody is reading this package.
+#[actix_web::test]
+async fn a_registry_the_catalogue_hides_serves_no_images() {
+    let fetcher = scripted();
+    let app = app_with_hosts_and_explore(
+        BADGE,
+        RemoteImagePolicy::Proxy,
+        Arc::clone(&fetcher),
+        Vec::new(),
+        false,
+    )
+    .await;
+
+    for token in [USER_TOKEN, ADMIN_TOKEN] {
+        let resp = call_service(
+            &app,
+            TestRequest::get()
+                .uri(&image_uri(0))
+                .insert_header(("Authorization", bearer(token)))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 404, "{token}");
+    }
+    assert_eq!(fetcher.calls(), 0, "nothing was dialled");
 }
 
 #[actix_web::test]

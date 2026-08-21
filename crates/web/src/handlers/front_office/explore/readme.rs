@@ -6,8 +6,8 @@
 //! (§5.4).
 
 use super::{
-    get, web, AdminService, AppError, Arc, AuthIdentity, Deserialize, IntoParams, Responder,
-    Serialize, ToSchema,
+    get, newest_first, web, AdminService, AppError, Arc, AuthIdentity, Deserialize, IntoParams,
+    Responder, Serialize, ToSchema,
 };
 use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
@@ -71,6 +71,17 @@ pub struct ReadmeQuery {
     #[serde(default)]
     #[param(inline)]
     pub format: ReadmeFormatParam,
+    /// Whether the derived-from-upstream fallback may run.
+    ///
+    /// The same key, the same values and the same meaning as the detail
+    /// endpoint's — a caller who asks one for a local-only answer means it of
+    /// both, and the CLI's `--no-upstream` sends it to whichever endpoint the
+    /// subcommand happens to call. `serde_urlencoded` drops unknown keys
+    /// silently, so leaving this undeclared did not reject `upstream=skip`; it
+    /// accepted it, ignored it, and went to the network anyway.
+    #[serde(default)]
+    #[param(inline)]
+    pub upstream: super::detail::UpstreamMode,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -116,15 +127,16 @@ pub struct ReadmeResponse {
     responses(
         (status = 200, description = "The README for this version", body = ReadmeResponse),
         (status = 403, description = "The version is blocked; the body carries the reason"),
-        (status = 404, description = "No README, or the package is not visible to this caller"),
+        (status = 404, description = "No README, or the registry is not browsable by this caller, \
+                                     or the package is not visible to them"),
     ),
     security(("bearer_token" = [])),
 )]
-// Eight extractors, one per thing this endpoint has to consult before it can
-// answer: the coordinate, the query, the caller, the blocked set, the local
-// backend, the README store, the registry's type and its mode. Actix injects
-// each by type, so collapsing them into a bag would hide what the handler
-// reads — and every one of them gates or shapes the answer.
+// Nine extractors, one per thing this endpoint has to consult before it can
+// answer: the coordinate, the query, the caller, what that caller may browse,
+// the blocked set, the local backend, the README store, the registry's type and
+// its mode. Actix injects each by type, so collapsing them into a bag would hide
+// what the handler reads — and every one of them gates or shapes the answer.
 #[allow(clippy::too_many_arguments)]
 #[get("/api/v1/explore/packages/{registry}/{name}/readme")]
 pub async fn explore_package_readme(
@@ -132,6 +144,7 @@ pub async fn explore_package_readme(
     path: web::Path<ReadmePath>,
     query: web::Query<ReadmeQuery>,
     identity: AuthIdentity,
+    access: web::Data<crate::AccessConfigLock>,
     admin_svc: web::Data<Arc<AdminService>>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
     proxy_svc: web::Data<Arc<ProxyService>>,
@@ -146,7 +159,9 @@ pub async fn explore_package_readme(
         registry,
         name,
         version: requested.as_deref(),
+        upstream: query.upstream,
         identity: &identity,
+        access: &access,
         admin_svc: &admin_svc,
         local_svc: &local_svc,
         proxy_svc: &proxy_svc,
@@ -204,7 +219,13 @@ pub(super) struct ResolveInput<'a> {
     pub registry: &'a str,
     pub name: &'a str,
     pub version: Option<&'a str>,
+    /// `Skip` stops the derived-from-upstream fallback: a caller who asked for
+    /// no egress gets the `404` this instance can answer on its own rather than
+    /// an outbound resolve they did not sanction.
+    pub upstream: super::detail::UpstreamMode,
     pub identity: &'a AuthIdentity,
+    /// Read for one question: may this caller browse this registry at all.
+    pub access: &'a crate::AccessConfigLock,
     pub admin_svc: &'a AdminService,
     pub local_svc: &'a LocalRegistryService,
     pub proxy_svc: &'a ProxyService,
@@ -232,13 +253,46 @@ pub(super) async fn resolve_readme(input: ResolveInput<'_>) -> Result<Resolved, 
         registry,
         name,
         version,
+        upstream,
         identity,
+        access,
         admin_svc,
         local_svc,
         proxy_svc,
         registry_map,
         mode_map,
     } = input;
+
+    // Gate: the catalogue's own registry list, checked first because it is the
+    // widest of the three and the cheapest — one read lock, no I/O.
+    //
+    // `explore_accessible_registries_for` is the set `list.rs` filters its rows
+    // by and `stats.rs` counts over, so a registry it refuses to admit has no
+    // rows, no counts and no page. Serving its README anyway made this endpoint
+    // the way round that refusal: the text names the package, and usually its
+    // homepage, its dependencies and its build. That is the same side channel
+    // `check_visibility` closes one level down, one level up — a registry an
+    // operator took out of `rbac.explore` is not browsable *by any door*.
+    //
+    // The proxy path is untouched and is meant to be: `rbac.explore.user =
+    // false` is "this registry is for package managers, not for reading", and a
+    // caller who can still `GET` an artifact through the proxy is exercising the
+    // access they were granted. This gate is about the catalogue only.
+    //
+    // `404`, and the package's own `404` at that, for the reason the visibility
+    // gate below gives: denied and absent look identical from outside.
+    if !access
+        .read()
+        .await
+        .explore_accessible_registries_for(identity)
+        .contains(registry)
+    {
+        tracing::debug!(
+            registry = %registry, package = %name,
+            "explore readme: registry not browsable by this caller"
+        );
+        return Err(not_found(registry, name));
+    }
 
     // `404` rather than `403` on a visibility refusal, exactly as `detail.rs`
     // does and for the reason stated there: a `403` confirms the package
@@ -322,6 +376,12 @@ pub(super) async fn resolve_readme(input: ResolveInput<'_>) -> Result<Resolved, 
             answer,
             derived: None,
         }),
+        // …unless the caller said not to. `Skip` is the whole of `--no-upstream`:
+        // the store had nothing, and asking upstream is exactly the request they
+        // declined to make.
+        None if upstream == super::detail::UpstreamMode::Skip => {
+            Err(AppError::not_found(missing_message(kind, name)).coded(README_NONE_STORED))
+        }
         None => match derived_readme(
             proxy_svc, local_svc, mode_map, registry, name, version, identity,
         )
@@ -538,11 +598,29 @@ async fn derived_readme(
             .get(version)
             .cloned()
             .map(|found| (version.to_owned(), found)),
+        // `readmes` is a `HashMap`, and npm's reader puts one entry in it per
+        // version that carries a `readme` field *plus* one for
+        // `dist-tags.latest` — so `iter().next()` is whichever version the
+        // hasher's per-process seed happens to put first, and the same request
+        // answers with a different version's text on the next boot. Pick the
+        // highest version instead, which is the one a reader who named none
+        // means, with a lexicographic tiebreak so the answer is total.
+        //
+        // The tiebreak is spelled out rather than left to `newest_first`, which
+        // only falls back to a string compare when *neither* side parses:
+        // `1.0` and `1.0.0`, `v2.1.0` and `2.1.0`, or two versions differing
+        // only in build metadata all compare `Equal` under semver, and
+        // `max_by` on a `HashMap` would then return whichever the seed put
+        // last — the same per-boot coin flip, one case narrower.
         None => outcome
             .detail
             .readmes
             .iter()
-            .next()
+            .max_by(|(a, _), (b, _)| {
+                newest_first(a, b)
+                    .reverse()
+                    .then_with(|| a.as_str().cmp(b.as_str()))
+            })
             .map(|(v, r)| (v.clone(), r.clone())),
     };
 

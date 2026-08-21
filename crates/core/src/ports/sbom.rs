@@ -28,6 +28,40 @@ pub trait SbomRepository: Send + Sync {
         format: &SbomFormat,
     ) -> Result<Option<ArtifactSbom>, CoreError>;
 
+    /// Which SBOM formats this instance actually holds for a
+    /// registry/package/version.
+    ///
+    /// Asked before a download is *offered*, not after it fails. The formats a
+    /// version has are decided per registry by `[registries.sbom].formats`, so a
+    /// console that assumed both draws a CycloneDX button on an SPDX-only
+    /// registry — a link whose only possible outcome is a `404`, after a
+    /// spinner. Ordered `spdx`, `cyclonedx`; empty means none are held.
+    ///
+    /// The default implementation asks [`Self::get_sbom_by_coordinates`] once
+    /// per format, which is correct everywhere and cheap for the in-memory
+    /// backends. The Postgres repository overrides it with a single
+    /// `SELECT DISTINCT format`, because this runs once per row of a version
+    /// page and the default would load two whole SBOM documents to answer a
+    /// question about their existence.
+    async fn sbom_formats_for_coordinate(
+        &self,
+        registry: &str,
+        package_name: &str,
+        version: &str,
+    ) -> Result<Vec<SbomFormat>, CoreError> {
+        let mut held = Vec::new();
+        for format in [SbomFormat::Spdx, SbomFormat::CycloneDx] {
+            if self
+                .get_sbom_by_coordinates(registry, package_name, version, &format)
+                .await?
+                .is_some()
+            {
+                held.push(format);
+            }
+        }
+        Ok(held)
+    }
+
     /// The licence recorded for a registry/package/version, if one is known.
     ///
     /// Separate from [`Self::get_sbom_by_coordinates`] because

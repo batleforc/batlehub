@@ -42,20 +42,51 @@ fn from_conda_zip(data: &Bytes) -> Option<String> {
     use tar::Archive;
     use zip::ZipArchive;
 
+    use batlehub_core::ports::README_EXTRACT_CEILING;
+
     let mut zip = ZipArchive::new(Cursor::new(data.as_ref())).ok()?;
     let member = (0..zip.len())
         .filter_map(|i| zip.by_index(i).ok().map(|f| f.name().to_owned()))
         .find(|name| name.starts_with("info-") && name.ends_with(".tar.zst"))?;
 
-    // The zstd member is bounded on the way out by `read_about_from_tar`'s own
-    // ceiling; the intermediate tar is read into memory because `zstd`'s reader
-    // is not seekable and `tar` wants to walk entries.
+    // **Both** decompressions are bounded, and each one on its own output.
+    //
+    // The ceiling on `read_about_from_tar` bounds only the third stage, which is
+    // two stages too late: a `.conda` is a zip (deflate) holding a zstd frame
+    // holding a tar, and either of the first two will happily inflate a few
+    // megabytes of attacker-supplied bytes into tens of gigabytes before the tar
+    // is ever walked. The input is a package body from an upstream, so it is
+    // attacker-controlled by construction.
+    //
+    // `README_EXTRACT_CEILING` is the right bound for both: whatever comes out
+    // of them exists only to have `info/about.json` read out of it, and that
+    // read is capped at the same number. `take` is on the *decompressed* side,
+    // which is the number that matters.
     let mut compressed = Vec::new();
     zip.by_name(&member)
         .ok()?
+        .take(README_EXTRACT_CEILING as u64)
         .read_to_end(&mut compressed)
         .ok()?;
-    let decoded = zstd::stream::decode_all(Cursor::new(compressed)).ok()?;
+
+    // The read's *error* is discarded, its output is not. Two ways this ends
+    // short of a complete frame, and neither is a reason to answer "no
+    // `about.json`": the `take` above may have cut the zstd frame mid-way, and
+    // the `take` below stops the decoder at the ceiling. `read_to_end` reports
+    // the truncation as an error while leaving everything it did decode in
+    // `decoded` — and `info/about.json` sorts near the front of the `info/`
+    // tar, so it is almost always already in there. `read_about_from_tar` walks
+    // what arrived and returns `None` of its own accord if the entry is not in
+    // it, which is the honest answer for a package genuinely over the bound.
+    let mut decoded = Vec::new();
+    let _ = zstd::stream::read::Decoder::new(Cursor::new(compressed))
+        .ok()?
+        .take(README_EXTRACT_CEILING as u64)
+        .read_to_end(&mut decoded);
+    if decoded.is_empty() {
+        return None;
+    }
+
     let mut archive = Archive::new(Cursor::new(decoded));
     read_about_from_tar(&mut archive)
 }

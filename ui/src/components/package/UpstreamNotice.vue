@@ -72,7 +72,7 @@ const message = computed(() => {
     :class="kind === 'unreachable' ? 'text-destructive' : ''"
     role="status"
   >
-    <component :is="icon" class="h-4 w-4 shrink-0 mt-0.5" />
+    <component :is="icon" class="mt-1 h-4 w-4 shrink-0" />
     <span>{{ message }}</span>
   </p>
 </template>

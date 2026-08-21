@@ -44,8 +44,7 @@ fn main() {
         // as the columns beside it, so a kind cannot be added without deciding —
         // and the published table cannot claim a button dispatch will not draw.
         let fetchable = match kind.fetchable_by_version() {
-            FetchSupport::ByVersion => "yes",
-            FetchSupport::ByVersionWithArtifact(_) => "yes",
+            FetchSupport::ByVersion(_) => "yes",
             FetchSupport::None(_) => "no",
         };
 

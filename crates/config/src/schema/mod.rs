@@ -864,18 +864,124 @@ impl AppConfig {
     /// Loopback is allowed unencrypted, because that is how the test suites and a
     /// local Keycloak run and there is no network to be on the path of.
     fn validate_auth_issuers(&self) -> Result<()> {
+        /// Why an OIDC issuer cannot be plain HTTP.
+        const DISCOVERY: &str = "The discovery document it serves decides which issuer and which \
+                                 signing keys this server trusts, so it cannot travel over plain \
+                                 HTTP.";
+        /// Why the Kubernetes API server cannot be either.
+        ///
+        /// A stronger case than the OIDC one, if anything: the request carries
+        /// this server's own service account token, and the *answer* decides the
+        /// caller's identity. Anyone on that path both learns the token and can
+        /// reply `authenticated: true` with `system:serviceaccount:…`, which
+        /// `resolve_role` will map straight to `Role::Admin`.
+        const TOKENREVIEW: &str = "Every TokenReview carries this server's own service account \
+                                   token, and the answer decides the caller's role — so a plain \
+                                   HTTP path both leaks that token and lets anyone on it grant \
+                                   themselves any role this provider maps.";
+
         for auth in &self.auth {
-            let (kind, name, issuer_url) = match auth {
-                AuthConfig::Oidc(cfg) => ("oidc", &cfg.name, &cfg.issuer_url),
-                AuthConfig::ActionsOidc(cfg) => ("actions-oidc", &cfg.name, &cfg.issuer_url),
-                AuthConfig::Token(_) | AuthConfig::Kubernetes(_) => continue,
+            let (kind, name, key, url, why) = match auth {
+                AuthConfig::Oidc(cfg) => {
+                    ("oidc", &cfg.name, "issuer_url", &cfg.issuer_url, DISCOVERY)
+                }
+                AuthConfig::ActionsOidc(cfg) => (
+                    "actions-oidc",
+                    &cfg.name,
+                    "issuer_url",
+                    &cfg.issuer_url,
+                    DISCOVERY,
+                ),
+                // Only when it is set. An absent `api_server` means the
+                // in-cluster default built from `KUBERNETES_SERVICE_HOST`, which
+                // is `https://` by construction — there is nothing to check and
+                // nothing an operator could have got wrong.
+                AuthConfig::Kubernetes(cfg) => match cfg.api_server.as_ref() {
+                    Some(api_server) => (
+                        "kubernetes",
+                        &cfg.name,
+                        "api_server",
+                        api_server,
+                        TOKENREVIEW,
+                    ),
+                    None => continue,
+                },
+                AuthConfig::Token(_) => continue,
             };
-            if !is_secure_issuer_url(issuer_url) {
+            if !is_secure_issuer_url(url) {
                 bail!(
-                    "[[auth]] type = \"{kind}\" name = \"{name}\": issuer_url '{issuer_url}' must \
-                     use https. The discovery document it serves decides which issuer and which \
-                     signing keys this server trusts, so it cannot travel over plain HTTP. \
-                     (http:// is accepted for localhost and 127.0.0.1 only.)"
+                    "[[auth]] type = \"{kind}\" name = \"{name}\": {key} '{url}' must use https. \
+                     {why} (http:// is accepted for localhost and 127.0.0.1 only.)"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// An `actions-oidc` provider names a non-blank `audience`.
+    ///
+    /// `ActionsOidcAuthProvider::new` already refuses a blank one, but that error
+    /// travels through `provider_unavailable(…, cfg.required, e)` in
+    /// `server/src/setup.rs`, and `required` defaults to `false` for this kind —
+    /// so a blank `audience` logged one warning and the server came up *without*
+    /// the provider. Every CI caller then resolved to anonymous and publishes
+    /// started returning `403` with nothing in the configuration to point at.
+    ///
+    /// Checked here instead, where it is a configuration error rather than an
+    /// "identity provider unreachable" one, so `required` never gets a say:
+    /// `docs/guide/configuration.md` says startup fails on a blank `audience`,
+    /// and this is what makes that true. `serde` already rejects the key being
+    /// absent — the field has no default — so only blank needs saying.
+    fn validate_actions_oidc_audience(&self) -> Result<()> {
+        for auth in &self.auth {
+            let AuthConfig::ActionsOidc(cfg) = auth else {
+                continue;
+            };
+            if cfg.audience.trim().is_empty() {
+                bail!(
+                    "[[auth]] type = \"actions-oidc\" name = \"{}\": `audience` must not be \
+                     blank. The issuer is shared by every repository on the forge, so `audience` \
+                     is the only claim that says a token was minted for this deployment — \
+                     without it, `iss` proves nothing more than \"some CI job somewhere\".",
+                    cfg.name
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// `[[auth]]` names are unique across every provider kind.
+    ///
+    /// The name is not a label: it is the identity a session is attributed to.
+    /// `oidc_session_owner` keys stored refresh tokens and OIDC-issued PATs on
+    /// `(provider_name, username)` and documents that a non-OIDC provider named
+    /// `"oidc"` "does not pass" — but nothing made that true. Two providers of
+    /// different kinds sharing one name let the weaker one act as the stronger:
+    /// a `type = "kubernetes" name = "corp"` service account whose TokenReview
+    /// returns a username an OIDC user also has could mint 90-day personal
+    /// access tokens as that user and manage the tokens they own.
+    ///
+    /// It is also the prefix for unmapped groups (`"k8s-prod:team-a"`), so two
+    /// providers sharing a name merge their group namespaces into one — which
+    /// silently widens whatever `[registries.rbac.groups]` grants.
+    fn validate_auth_names(&self) -> Result<()> {
+        let mut seen: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        for auth in &self.auth {
+            let (kind, name) = match auth {
+                AuthConfig::Oidc(cfg) => ("oidc", cfg.name.as_str()),
+                AuthConfig::ActionsOidc(cfg) => ("actions-oidc", cfg.name.as_str()),
+                AuthConfig::Kubernetes(cfg) => ("kubernetes", cfg.name.as_str()),
+                // The static-token provider carries no name of its own, so it
+                // has no identity to collide with.
+                AuthConfig::Token(_) => continue,
+            };
+            if let Some(first) = seen.insert(name, kind) {
+                bail!(
+                    "[[auth]] name = \"{name}\" is used by both type = \"{first}\" and type = \
+                     \"{kind}\". The name is what a session, a stored refresh token and an \
+                     unmapped group are attributed to, so two providers sharing one are one \
+                     provider as far as everything downstream is concerned — give them distinct \
+                     names."
                 );
             }
         }
@@ -1024,6 +1130,8 @@ impl AppConfig {
         // entry is dropped as before and surfaced as
         // `PROXY_TRUST_INVALID_DEPRECATED_ENTRY` instead.
         self.validate_auth_issuers()?;
+        self.validate_auth_names()?;
+        self.validate_actions_oidc_audience()?;
         self.validate_host_routing()?;
 
         // A page size of zero is a list that can never answer, and the failure

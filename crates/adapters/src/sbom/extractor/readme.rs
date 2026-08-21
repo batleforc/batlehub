@@ -58,8 +58,20 @@ fn read_bounded(mut reader: impl Read, path: &str) -> Option<ExtractedReadme> {
         buf.truncate(README_EXTRACT_CEILING);
         // Truncation may have landed mid-character; drop the partial one rather
         // than failing the whole read over it.
-        while !buf.is_empty() && std::str::from_utf8(&buf).is_err() {
-            buf.pop();
+        //
+        // Exactly the *trailing* partial sequence, in one pass. Popping a byte at
+        // a time until the whole buffer validates looks equivalent and is not:
+        // `from_utf8` scans to the first bad byte on every call, so an entry with
+        // an invalid byte in the middle makes this quadratic — a 4 MiB buffer with
+        // a bad byte at 2 MiB costs ~4×10¹² byte comparisons and pins a runtime
+        // worker for minutes, on input an upstream chooses. `error_len() == None`
+        // is precisely "input ended mid-sequence", which is the only case
+        // truncation can create; anything else is a genuinely invalid byte and
+        // must still fail the read below rather than be eroded away.
+        if let Err(e) = std::str::from_utf8(&buf) {
+            if e.error_len().is_none() {
+                buf.truncate(e.valid_up_to());
+            }
         }
     }
     let content = match String::from_utf8(buf) {

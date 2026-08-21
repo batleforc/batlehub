@@ -15,6 +15,7 @@ pub mod search;
 pub mod signature;
 pub mod stats_rollup;
 pub mod upstream_detail;
+pub mod version_order;
 pub mod vulnerability;
 pub mod warming;
 
@@ -48,5 +49,6 @@ pub use sbom::{SbomProxiedOptions, SbomPublishOptions, SbomService};
 pub use search::{SearchHit, SearchMode, SearchResults};
 pub use stats_rollup::{hour_start, StatsRollupService};
 pub use upstream_detail::{UpstreamDetail, UpstreamDetailCoordinator, UpstreamVersion};
+pub use version_order::newest_first;
 pub use vulnerability::{ScanReport, VulnerabilityScanService};
 pub use warming::{WarmFailure, WarmingReport, WarmingService};

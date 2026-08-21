@@ -18,7 +18,26 @@ type AuthState = ReturnType<typeof useAuth>;
    route without the hash is what then clears it from the address bar, so it
    survives only until the first navigation. */
 function oidcCallbackParams(to: RouteLocationNormalized): URLSearchParams | null {
-  const raw = to.hash.startsWith("#") ? to.hash.slice(1) : to.hash;
+  /* `window.location.hash`, not `to.hash`. vue-router's `parseURL` returns
+     `hash: decode(hash)` — it runs `decodeURIComponent` over the *whole*
+     fragment before any guard sees it. The backend percent-encodes each value
+     individually (`url_encode` in `sso.rs`), so by the time `to.hash` exists
+     that encoding has already been undone once and `URLSearchParams` would
+     decode a second time. The access token and state survive it (base64url and
+     hex have nothing to decode), but the refresh token is an opaque
+     provider-issued string: one containing `+` comes back with a space, and one
+     containing `&` splits into two parameters. The user is signed in and then
+     unrecoverably signed out at the first refresh, with nothing to explain it.
+
+     `to.hash` is still what the guard is triggered on; this reads the raw bytes
+     of the same fragment. */
+  const strip = (h: string) => (h.startsWith("#") ? h.slice(1) : h);
+  const live = typeof window !== "undefined" ? strip(window.location.hash) : "";
+  /* An OIDC callback is always a full page load — the IdP redirected here — so
+     the address bar holds this navigation's own fragment. Falling back to
+     `to.hash` keeps an in-app navigation (where the address bar still shows the
+     *previous* URL) reading the route it was given. */
+  const raw = live.includes("oidc_access_token=") ? live : strip(to.hash);
   if (!raw) return null;
   const params = new URLSearchParams(raw);
   return params.has("oidc_access_token") ? params : null;
@@ -27,6 +46,28 @@ function oidcCallbackParams(to: RouteLocationNormalized): URLSearchParams | null
 function handleOidcCallback(to: RouteLocationNormalized): RouteLocationRaw | null {
   const params = oidcCallbackParams(to);
   if (!params) return null;
+
+  /* Consume the fragment the moment it is read, because it is read from the
+     address bar and a guard redirect does not touch the address bar.
+     `finalizeNavigation` is what calls `pushState`, and a guard that returns a
+     location never gets there — so `window.location.hash` still carried the
+     callback fragment when `beforeEach` re-ran for `/packages`, this function
+     parsed the same parameters a second time, found the state already taken out
+     of `sessionStorage` by the first pass, and bounced a sign-in that had just
+     succeeded to `/login?error=oidcStateMismatch`. (Vue Router's
+     infinite-redirect counter is `NODE_ENV !== "production"`-only, so a release
+     build has nothing to stop the third pass doing it again.)
+
+     Doing it here rather than leaving it to the returned route also takes the
+     token out of the address bar one navigation earlier, which is where the
+     comment above wanted it. */
+  if (typeof window !== "undefined" && window.location.hash.includes("oidc_access_token=")) {
+    window.history.replaceState(
+      window.history.state,
+      "",
+      window.location.pathname + window.location.search,
+    );
+  }
 
   const incomingState = params.get("oidc_state") ?? "";
   const expectedState = sessionStorage.getItem(OIDC_STATE_KEY) ?? "";
@@ -166,9 +207,21 @@ export const router = createRouter({
    * `{ top: 0 }` for everything else: a fresh destination starts at its own
    * beginning, and this is also what makes a route change behave like a page
    * load for anyone who expects one.
+   *
+   * **Except when nothing but the query changed.** A page that keeps its reading
+   * position in the URL — the catalog's search and page, the detail page's
+   * selected version and version filter — issues a navigation per keystroke and
+   * per row click, and every one of them was landing here and slamming the
+   * viewport to the top. On the detail page that meant typing blind into a
+   * filter that had just scrolled off the bottom of a page which opens with a
+   * 104px headline. The reader has not gone anywhere: `to.path === from.path`
+   * is precisely the case where the browser's own scroll offset is the right
+   * answer, and `false` is how vue-router says "leave it alone".
    */
-  scrollBehavior(_to, _from, savedPosition) {
-    return savedPosition ?? { top: 0 };
+  scrollBehavior(to, from, savedPosition) {
+    if (savedPosition) return savedPosition;
+    if (to.path === from.path) return false;
+    return { top: 0 };
   },
   routes: [
     { path: "/", component: () => import("@/pages/HomePage.vue") },

@@ -254,6 +254,14 @@ pub struct OidcPaste {
     /// `None` for a bare token, which carries no state to check — see
     /// `handle_auth_login`, which decides what to do about that.
     pub state: Option<String>,
+    /// The name of the provider that actually signed the user in, echoed back
+    /// as `oidc_provider`.
+    ///
+    /// Stored in the profile because `resolve_token` sends it with every refresh:
+    /// without it the server falls back to `flows.first()`, so on a deployment
+    /// with more than one provider the refresh token is presented to the wrong
+    /// token endpoint and every session silently stops renewing.
+    pub provider: Option<String>,
 }
 
 /// Parse a token value or full SPA redirect URL pasted by the user after OIDC login.
@@ -272,6 +280,7 @@ pub fn parse_oidc_paste(input: &str) -> OidcPaste {
                 .and_then(|s| s.parse::<i64>().ok())
                 .map(|secs| Utc::now().timestamp() + secs),
             state: extract_param(input, "oidc_state"),
+            provider: extract_param(input, "oidc_provider"),
         }
     } else {
         OidcPaste {
@@ -279,6 +288,7 @@ pub fn parse_oidc_paste(input: &str) -> OidcPaste {
             refresh_token: None,
             expires_at: None,
             state: None,
+            provider: None,
         }
     }
 }

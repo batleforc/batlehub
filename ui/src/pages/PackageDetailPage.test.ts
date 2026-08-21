@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mount, flushPromises } from "@vue/test-utils";
+import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
 
 /**
  * The **Fetch this version** button (RFC 0007-bis §4.4).
@@ -48,11 +48,48 @@ vi.mock("@/client/sdk.gen", () => ({
  * both: the selected version travels in the query, so a mock without one cannot
  * tell whether a link to a version opens on that version.
  */
-vi.mock("vue-router", () => ({
-  useRoute: () => routeState,
-  useRouter: () => ({ push: pushMock, back: backMock, replace: replaceMock }),
-  RouterLink: { template: "<a><slot /></a>" },
-}));
+vi.mock("vue-router", async () => {
+  const { reactive } = await import("vue");
+  /* Reactive, because the query is an *input* to the page now and not only an
+     output of it: selecting a version is a `RouterLink` that writes
+     `?version=`, and the page watches the query to read it back. A plain object
+     could be read at mount and never seen to change. */
+  const route = reactive(routeState);
+  return {
+    useRoute: () => route,
+    useRouter: () => ({
+      push: pushMock,
+      back: backMock,
+      replace: replaceMock,
+      /* The breadcrumb's first crumb is a real `<a>` with a resolved href, so
+         the mock has to resolve one. Without it the page throws before it
+         renders — which is a fair thing for a stub to catch. */
+      resolve: (to: string | { path?: string }) => ({
+        href: typeof to === "string" ? to : (to.path ?? "/"),
+      }),
+    }),
+    /* A link that navigates, which is what makes the version links testable at
+       all. The real router merges the target query and re-renders; this does the
+       merge and lets the page's own watcher do the rest. Anything else would
+       test the stub. */
+    RouterLink: {
+      props: { to: { type: [String, Object], default: "" } },
+      template: '<a :data-to="href" @click="navigate"><slot /></a>',
+      computed: {
+        href(this: { to: string | { path?: string } }) {
+          return typeof this.to === "string" ? this.to : (this.to?.path ?? "");
+        },
+      },
+      methods: {
+        navigate(this: { to: string | { query?: Record<string, string> } }) {
+          if (typeof this.to === "object" && this.to?.query) {
+            route.query = { ...route.query, ...this.to.query };
+          }
+        },
+      },
+    },
+  };
+});
 
 /**
  * Signed in, not an admin, by default; individual tests flip a field before
@@ -83,7 +120,22 @@ vi.mock("@/composables/useAuthFetch", () => ({
   useAuthFetch: () => ({ authFetch: vi.fn() }),
 }));
 
+import { useRoute } from "vue-router";
+
 import PackageDetailPage from "./PackageDetailPage.vue";
+
+/**
+ * Change the query the way a navigation does — **through the proxy**.
+ *
+ * `routeState` is the raw object the mock wraps in `reactive()`, so assigning to
+ * it directly mutates the target behind the proxy's back and triggers nothing.
+ * That is fine for the tests that set a query *before* mounting, and useless for
+ * one about a link arriving afterwards.
+ */
+function navigateTo(query: Record<string, string>) {
+  const route = useRoute() as unknown as { query: Record<string, string> };
+  route.query = { ...route.query, ...query };
+}
 
 function version(over: Record<string, unknown> = {}) {
   return {
@@ -96,6 +148,10 @@ function version(over: Record<string, unknown> = {}) {
     is_prerelease: false,
     vulnerabilities: [],
     readme: "unknown",
+    // The default row is upstream-only, and an upstream-only row has no SBOM to
+    // find — the server leaves it `unknown` rather than claiming `none` about a
+    // version whose bytes nothing here has ever opened.
+    sbom: { state: "unknown", formats: [] },
     vulnerabilities_scanned: false,
     ...over,
   };
@@ -106,7 +162,7 @@ function detail(over: Record<string, unknown> = {}) {
     data: {
       registry: "npm1",
       name: "express",
-      gate: { registry_accessible: true, beta_member: false },
+      gate: { beta_member: false },
       versions: [version()],
       upstream_unavailable: false,
       upstream: { attempted: true, freshness: "cached", truncated: false, error: null },
@@ -188,6 +244,15 @@ function serve(over: Record<string, unknown> = {}) {
         },
         default_version: defaultVersion,
         selected_version: pin !== null && all.some((v) => v.version === pin) ? pin : null,
+        /* The subject's row travels with the response, from the *whole* list —
+           the endpoint captures it before the pre-release filter, `q` and the
+           page slice, precisely so a `?version=X&page=N` link renders a subject
+           when X is not on page N. A double that derived it from `rows` would be
+           maintaining the fiction this field exists to end. */
+        selected: (() => {
+          const wanted = pin !== null && all.some((v) => v.version === pin) ? pin : defaultVersion;
+          return all.find((v) => v.version === wanted) ?? null;
+        })(),
       },
     });
   };
@@ -216,10 +281,26 @@ function respond(versions: unknown[], envelope: Record<string, unknown> = {}) {
       },
       default_version: null,
       selected_version: null,
+      selected: (versions[0] as Record<string, unknown> | undefined) ?? null,
       ...envelope,
     },
   };
 }
+
+/**
+ * Every page this file has mounted and not torn down.
+ *
+ * `route` is one shared reactive object, so a page left mounted keeps watching
+ * it: changing the query for *this* test woke eleven pages from earlier ones,
+ * each of which went and fetched. Harmless for the tests that set the query
+ * before mounting — nothing is listening yet — and fatal for the ones about a
+ * link arriving afterwards, which is what [`navigateTo`] is for.
+ */
+const mounted: VueWrapper[] = [];
+
+afterEach(() => {
+  while (mounted.length) mounted.pop()!.unmount();
+});
 
 async function mountPage() {
   const wrapper = mount(PackageDetailPage, {
@@ -235,6 +316,7 @@ async function mountPage() {
       },
     },
   });
+  mounted.push(wrapper as VueWrapper);
   await flushPromises();
   return wrapper;
 }
@@ -256,6 +338,12 @@ describe("PackageDetailPage fetch button", () => {
     exploreFetchVersionMock.mockReset();
     listRegistriesMock.mockReset().mockResolvedValue({ data: [{ name: "npm1", type: "npm" }] });
     packageDetailMock.mockReset().mockResolvedValue({ data: null });
+    // The query is shared state between tests now that selecting a version is a
+    // link that writes one. Without this, a test that clicked `4.0.4` left the
+    // *next* test mounting with `4.0.4` already selected — where clicking it
+    // again is a no-op, and the assertion fails for a reason that has nothing to
+    // do with the code under test.
+    routeState.query = {};
   });
 
   /**
@@ -372,6 +460,12 @@ describe("PackageDetailPage default selection", () => {
     exploreFetchVersionMock.mockReset();
     listRegistriesMock.mockReset().mockResolvedValue({ data: [] });
     packageDetailMock.mockReset().mockResolvedValue({ data: undefined });
+    // The query is shared state, as it is for the fetch-button suite: a test
+    // that leaves `?version=` behind mounts the *next* one on that version, and
+    // the failure then has nothing to do with the code under test. Cleared here
+    // rather than only at the end of each test, so a failing assertion cannot
+    // skip the cleanup and take its neighbours down with it.
+    routeState.query = {};
   });
 
   /**
@@ -433,6 +527,54 @@ describe("PackageDetailPage default selection", () => {
 
     expect(selectedRow(wrapper)).toBeUndefined();
   });
+
+  /**
+   * A `?version=` that arrives *after* the page loaded, naming a version the
+   * rendered answer does not carry.
+   *
+   * Selecting a row on screen costs no request — the rows are already the
+   * answer. But a link from somewhere that did not render this table (
+   * Administration → *View*, for a version on page 3) names one that is on
+   * neither the rendered page nor the stale `selected`, and `selectedRow` was
+   * then `null`: the `v-if` took the whole subject section out — heading, state
+   * chip, blocked reason, vulnerabilities, install line, download and SBOM
+   * links, Fetch button — while the README panel went on loading below the
+   * hole. The page has to go and get the page that holds it.
+   */
+  it("loads a version that arrives in the URL after the page rendered", async () => {
+    // Enough versions to paginate: 60 at 25 a page puts `1.0.5` on page 2.
+    const many = Array.from({ length: 60 }, (_, i) => version({ version: `1.0.${i}` }));
+    explorePackageDetailMock.mockReset().mockImplementation(serve({ versions: many }));
+
+    const wrapper = await mountPage();
+    const afterMount = explorePackageDetailMock.mock.calls.length;
+    expect(wrapper.find("#subject-heading").exists()).toBe(true);
+    // Page 1 only, so `1.0.55` is genuinely not in what the page is holding.
+    expect(wrapper.html()).not.toContain("1.0.55");
+
+    navigateTo({ version: "1.0.55" });
+    await flushPromises();
+
+    expect(explorePackageDetailMock.mock.calls.length).toBe(afterMount + 1);
+    expect(wrapper.find("#subject-heading").text()).toContain("1.0.55");
+    routeState.query = {};
+  });
+
+  /** …and selecting one that *is* on screen still costs nothing. */
+  it("does not re-ask the server for a version the page is already holding", async () => {
+    const many = Array.from({ length: 60 }, (_, i) => version({ version: `1.0.${i}` }));
+    explorePackageDetailMock.mockReset().mockImplementation(serve({ versions: many }));
+
+    const wrapper = await mountPage();
+    const afterMount = explorePackageDetailMock.mock.calls.length;
+
+    navigateTo({ version: "1.0.3" });
+    await flushPromises();
+
+    expect(explorePackageDetailMock.mock.calls.length).toBe(afterMount);
+    expect(wrapper.find("#subject-heading").text()).toContain("1.0.3");
+    routeState.query = {};
+  });
 });
 
 /**
@@ -446,7 +588,7 @@ describe("PackageDetailPage default selection", () => {
  */
 describe("PackageDetailPage back link", () => {
   const backButton = (w: Awaited<ReturnType<typeof mountPage>>) =>
-    w.findAll("button").find((b) => b.text().includes("Back to catalog"))!;
+    w.findAll("a").find((a) => a.text().includes("Back to catalog"))!;
 
   beforeEach(() => {
     pushMock.mockReset();
@@ -539,29 +681,135 @@ describe("PackageDetailPage version in the url", () => {
     expect(wrapper.findComponent({ name: "ReadmePanel" }).props("version")).toBe("4.0.2");
   });
 
+  /**
+   * The version *link*, not the row.
+   *
+   * The row was a `<tr>` with a click handler, no `tabindex` and no key
+   * handler, so the page's central interaction was unavailable to a keyboard
+   * while `aria-current` announced a selection that reader could not change.
+   * Selecting through the link is what the assertion is now about — clicking a
+   * `<tr>` does nothing, deliberately, and a test that still did it would pass
+   * for the wrong reason.
+   */
+  const selectVersion = async (wrapper: VueWrapper, index: number) => {
+    await wrapper.findAll("tbody tr")[index].find("a").trigger("click");
+    // Two hops, not one: the click writes the query, a watcher reads it into the
+    // selection, and a second watcher writes the selection back to the URL.
+    await flushPromises();
+  };
+
+  /**
+   * The link *is* the write, which is the difference from the old click
+   * handler. Selecting used to set component state and let `syncQuery` push it
+   * into the address bar; a `RouterLink` navigates, so the version is in the URL
+   * before the page hears about it — and `syncQuery` then correctly declines to
+   * re-issue a navigation for a query that already says what it wants.
+   *
+   * So the assertion is on the outcome both mechanisms owe: the URL names the
+   * chosen version, and the page's selection follows it.
+   */
   it("writes a chosen version into the url", async () => {
     const wrapper = await mountPage();
 
-    await wrapper.findAll("tbody tr")[0].trigger("click"); // 4.0.4, not the default
+    await selectVersion(wrapper, 0); // 4.0.4, not the default
 
-    expect(replaceMock).toHaveBeenLastCalledWith({
-      path: "/packages/npm1/express",
-      query: { version: "4.0.4" },
-    });
+    expect(routeState.query).toEqual({ version: "4.0.4" });
+    expect(selectedRow(wrapper)!.text()).toContain("4.0.4");
+    expect(wrapper.findComponent({ name: "ReadmePanel" }).props("version")).toBe("4.0.4");
   });
 
   /** One state, one URL — the same reason the catalog keeps its defaults out. */
   it("keeps the default selection out of the url", async () => {
     const wrapper = await mountPage();
-    await wrapper.findAll("tbody tr")[0].trigger("click"); // away from the default
+    await selectVersion(wrapper, 0); // away from the default
     replaceMock.mockClear();
 
-    await wrapper.findAll("tbody tr")[2].trigger("click"); // 2.1.0, the held default
+    await selectVersion(wrapper, 2); // 2.1.0, the held default
 
     expect(replaceMock).toHaveBeenLastCalledWith({
       path: "/packages/npm1/express",
       query: {},
     });
+  });
+
+  /** The row itself is inert now: six nested buttons inside a clickable row was
+      the shape that made the whole thing mouse-only. */
+  it("does not select a version when the row body is clicked", async () => {
+    const wrapper = await mountPage();
+    replaceMock.mockClear();
+
+    await wrapper.findAll("tbody tr")[0].trigger("click");
+
+    expect(replaceMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The subject survives a link the page produces itself.
+   *
+   * `?version=X&page=N` is written by this page, and X is routinely not on page
+   * N. The subject used to be reconstructed from the rows in hand, so such a
+   * link rendered no state, no refusal reason, no advisories, no install line
+   * and no fetch button — while the README below still rendered X's text, which
+   * made the page look loaded. It reads the server's `selected` now.
+   */
+  it("renders the subject for a version that is not on the page in hand", async () => {
+    routeState.query = { version: "4.0.4", page: "2" };
+    explorePackageDetailMock.mockReset().mockImplementation(() =>
+      Promise.resolve({
+        data: {
+          registry: "npm1",
+          name: "express",
+          gate: { beta_member: false },
+          versions: [version({ version: "2.1.0", source: "proxied" })],
+          versions_page: {
+            page: 1,
+            per_page: 1,
+            total: 3,
+            unfiltered_total: 3,
+            prerelease_total: 0,
+            hidden_prereleases: 0,
+          },
+          default_version: "2.1.0",
+          selected_version: "4.0.4",
+          selected: version({ version: "4.0.4" }),
+          upstream_unavailable: false,
+          upstream: { attempted: true, freshness: "cached", truncated: false, error: null },
+          fetch: { offered: true, reason: null },
+        },
+      }),
+    );
+
+    const wrapper = await mountPage();
+
+    const subject = wrapper.find("#subject-heading");
+    expect(subject.exists(), "the subject region must render").toBe(true);
+    expect(subject.text()).toContain("4.0.4");
+    expect(wrapper.findAll("tbody tr").some((r) => r.text().includes("4.0.4"))).toBe(false);
+  });
+
+  /**
+   * And it follows a click, which is not the same assertion.
+   *
+   * Selecting a version issues no request — the rows are already on screen — so
+   * a subject read from the *response's* `selected` is the version that was
+   * selected when the response was built and stays there. Every fact in the
+   * region went on describing the previous version: the heading, the state chip,
+   * the refusal reason, the advisories, the download and SBOM links, the fetch
+   * button, and the sticky breadcrumb whose whole job is to make the selection
+   * visible from anywhere — while the install line, the README panel and the
+   * row's own highlight had moved on. Two versions on one page, and no way to
+   * tell which half was right.
+   */
+  it("moves the subject to the version just clicked", async () => {
+    const wrapper = await mountPage();
+    expect(wrapper.find("#subject-heading").text()).toContain("2.1.0"); // the default
+
+    await selectVersion(wrapper, 0); // 4.0.4
+
+    expect(wrapper.find("#subject-heading").text()).toContain("4.0.4");
+    expect(wrapper.find("#subject-heading").text()).not.toContain("2.1.0");
+    // The breadcrumb carries the selection too, and reads from the same row.
+    expect(wrapper.find("nav ol").text()).toContain("4.0.4");
   });
 
   /** A typo, or a version yanked since the link was sent. */
@@ -1171,5 +1419,97 @@ describe("PackageDetailPage filter and page in the url", () => {
       path: "/packages/npm1/express",
       query: { q: "1.1" },
     });
+  });
+});
+
+/**
+ * The SBOM controls.
+ *
+ * The page used to draw both format buttons on every row and find out on the
+ * click. Which formats exist is per registry (`[registries.sbom].formats`) and
+ * whether *this* version has any depends on whether the bytes were ever held
+ * here, so both answers are the server's — and a button for a format that does
+ * not exist is a link whose only outcome is a spinner and a 404.
+ */
+describe("PackageDetailPage SBOM downloads", () => {
+  beforeEach(() => {
+    exploreFetchVersionMock.mockReset();
+    listRegistriesMock.mockReset().mockResolvedValue({ data: [{ name: "npm1", type: "npm" }] });
+    packageDetailMock.mockReset().mockResolvedValue({ data: null });
+    routeState.query = {};
+    authState.token = "t";
+  });
+
+  const held = (sbom: { state: string; formats: string[] }) =>
+    version({ version: "4.18.2", source: "proxied", download_count: 3, sbom });
+
+  const sbomButton = (w: Awaited<ReturnType<typeof mountPage>>, label: RegExp) =>
+    w.findAll("button").find((b) => label.test(b.text()));
+
+  it("offers exactly the formats this instance holds", async () => {
+    explorePackageDetailMock
+      .mockReset()
+      .mockImplementation(serve({ versions: [held({ state: "available", formats: ["spdx"] })] }));
+
+    const wrapper = await mountPage();
+
+    expect(sbomButton(wrapper, /SPDX/)).toBeDefined();
+    expect(sbomButton(wrapper, /CycloneDX/)).toBeUndefined();
+    expect(wrapper.text()).not.toContain("No SBOM");
+  });
+
+  it("offers both when both were recorded", async () => {
+    explorePackageDetailMock.mockReset().mockImplementation(
+      serve({
+        versions: [held({ state: "available", formats: ["spdx", "cyclonedx"] })],
+      }),
+    );
+
+    const wrapper = await mountPage();
+
+    expect(sbomButton(wrapper, /SPDX/)).toBeDefined();
+    expect(sbomButton(wrapper, /CycloneDX/)).toBeDefined();
+  });
+
+  /** The point of the whole exercise: say so, rather than offer a 404. */
+  it("says there is no SBOM instead of offering a download that cannot work", async () => {
+    explorePackageDetailMock
+      .mockReset()
+      .mockImplementation(serve({ versions: [held({ state: "none", formats: [] })] }));
+
+    const wrapper = await mountPage();
+
+    expect(sbomButton(wrapper, /SPDX/)).toBeUndefined();
+    expect(sbomButton(wrapper, /CycloneDX/)).toBeUndefined();
+    expect(wrapper.text()).toContain("No SBOM for this version");
+  });
+
+  /**
+   * *We hold none* and *nothing has opened these bytes* are different answers,
+   * and the second one is the common case on a row the fetch button exists for.
+   * Rendering it as "no SBOM" would state as a fact about the package something
+   * that is only a fact about our cache.
+   */
+  it("says the SBOM is still to come on a version this instance does not hold", async () => {
+    explorePackageDetailMock.mockReset().mockImplementation(serve());
+
+    const wrapper = await mountPage();
+
+    expect(sbomButton(wrapper, /SPDX/)).toBeUndefined();
+    expect(wrapper.text()).toContain("generated when this instance holds the version");
+    expect(wrapper.text()).not.toContain("No SBOM for this version");
+  });
+
+  /** No session, no SBOM endpoint — and no controls claiming otherwise. */
+  it("offers nothing at all to a signed-out reader", async () => {
+    authState.token = "";
+    explorePackageDetailMock
+      .mockReset()
+      .mockImplementation(serve({ versions: [held({ state: "available", formats: ["spdx"] })] }));
+
+    const wrapper = await mountPage();
+
+    expect(sbomButton(wrapper, /SPDX/)).toBeUndefined();
+    expect(wrapper.text()).not.toContain("No SBOM for this version");
   });
 });

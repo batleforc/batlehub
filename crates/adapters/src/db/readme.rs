@@ -311,22 +311,40 @@ impl ReadmeRepository for PgReadmeRepository {
         // snippet came back wrapped in `,StopSel=…</b>`. Caught by the assertion
         // that the snippet contains no `</b>`, which is exactly the assertion a
         // looser test would not have made.
+        // **`ts_headline` runs above the `LIMIT`, not below it.** It is the one
+        // expensive thing here: it re-parses the whole `content` column — up to
+        // `readme.max_bytes`, whose ceiling is 4 MiB — and it cannot use the GIN
+        // index, which only covers `content_tsv`. With it in the `DISTINCT ON`
+        // subquery's target list, Postgres computed a snippet for *every* matching
+        // README before the limit could discard all but 201 of them, so one
+        // `?q=…&in=readme` on an instance with tens of thousands of stored READMEs
+        // detoasted and re-parsed the lot. Ranking and limiting first and
+        // snippeting the survivors is the same answer for the cost of the rows
+        // actually returned.
+        //
+        // The `LIMIT` is what keeps the layers apart: a subquery carrying one is
+        // never flattened into its parent, so the outer target list cannot be
+        // pulled back down into the scan.
         let cfg = &self.text_config;
         let sql = format!(
-            "SELECT registry, package_name, version, snippet, rank FROM ( \
-               SELECT DISTINCT ON (registry, package_name) \
-                 registry, package_name, version, \
-                 ts_headline('{cfg}', content, websearch_to_tsquery('{cfg}', $2), \
-                   'StartSel=\"\",StopSel=\"\",MaxWords=32,MinWords=12,MaxFragments=1') \
-                   AS snippet, \
-                 ts_rank_cd(content_tsv, websearch_to_tsquery('{cfg}', $2)) AS rank \
-               FROM package_readmes \
-               WHERE registry = ANY($1) \
-                 AND content_tsv @@ websearch_to_tsquery('{cfg}', $2) \
-               ORDER BY registry, package_name, rank DESC \
-             ) best \
-             ORDER BY rank DESC, package_name ASC \
-             LIMIT $3"
+            "SELECT registry, package_name, version, rank, \
+               ts_headline('{cfg}', content, websearch_to_tsquery('{cfg}', $2), \
+                 'StartSel=\"\",StopSel=\"\",MaxWords=32,MinWords=12,MaxFragments=1') \
+                 AS snippet \
+             FROM ( \
+               SELECT registry, package_name, version, content, rank FROM ( \
+                 SELECT DISTINCT ON (registry, package_name) \
+                   registry, package_name, version, content, \
+                   ts_rank_cd(content_tsv, websearch_to_tsquery('{cfg}', $2)) AS rank \
+                 FROM package_readmes \
+                 WHERE registry = ANY($1) \
+                   AND content_tsv @@ websearch_to_tsquery('{cfg}', $2) \
+                 ORDER BY registry, package_name, rank DESC \
+               ) best \
+               ORDER BY rank DESC, package_name ASC \
+               LIMIT $3 \
+             ) top \
+             ORDER BY rank DESC, package_name ASC"
         );
 
         // `AssertSqlSafe` for the same reason as above, and only for that

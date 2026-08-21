@@ -1,11 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { FileText } from "@lucide/vue";
 import { explorePackageReadme } from "@/client/sdk.gen";
 import type { ReadmeResponse } from "@/client/types.gen";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { highlightInto, useShiki } from "@/composables/useShiki";
 
 /**
@@ -42,7 +40,20 @@ const loading = ref(false);
 const absence = ref<string | null>(null);
 const failure = ref<string | null>(null);
 
+/**
+ * Which `load()` the panel is currently showing.
+ *
+ * The version rows on the detail page are clickable, so two clicks in quick
+ * succession issue two reads; without this the slower one lands last and the
+ * panel shows version A's prose — with A's version in the card title — while
+ * the table marks B as selected. Nothing catches it downstream: the response is
+ * internally consistent, just for the wrong ask, so `fallbackNotice` stays
+ * silent. Same `seq` guard the catalogue and `fetchDetail` already use.
+ */
+let readmeSeq = 0;
+
 async function load() {
+  const seq = ++readmeSeq;
   loading.value = true;
   readme.value = null;
   absence.value = null;
@@ -56,6 +67,7 @@ async function load() {
       // parameter rather than anything missing from the store.
       query: { format: "both", ...(props.version ? { version: props.version } : {}) },
     });
+    if (seq !== readmeSeq) return;
     if (error) {
       // A `404`/`403` here is information, not a failure: the panel renders a
       // statement for each shape rather than an error banner (§4.4).
@@ -66,9 +78,12 @@ async function load() {
     }
     readme.value = data as ReadmeResponse;
   } catch {
+    if (seq !== readmeSeq) return;
     absence.value = "readme.unreachable";
   } finally {
-    loading.value = false;
+    // Only the newest read owns the spinner: an older one finishing later must
+    // not clear it while the current read is still in flight.
+    if (seq === readmeSeq) loading.value = false;
   }
 }
 
@@ -202,32 +217,36 @@ const absenceMessage = computed(() => {
 </script>
 
 <template>
-  <Card>
-    <CardHeader class="pb-2">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <CardTitle class="text-base flex items-center gap-2">
-          <FileText class="h-4 w-4 text-primary shrink-0" />
-          {{ t("readmePanel.title") }}
-          <span v-if="readme" class="font-mono text-xs text-muted-foreground">
-            {{ readme.version }}
-          </span>
-        </CardTitle>
-        <!-- One control, labelled with the view it switches *to* rather than
-             the one you are in: a button that says where you already are makes
-             a reader test it to find out. -->
-        <Button
-          v-if="canShowSource"
-          variant="outline"
-          size="sm"
-          class="h-7 px-2 text-xs"
-          :aria-pressed="view === 'source'"
-          @click="view = view === 'rendered' ? 'source' : 'rendered'"
-        >
-          {{ view === "rendered" ? t("readmePanel.showSource") : t("readmePanel.showRendered") }}
-        </Button>
-      </div>
-    </CardHeader>
-    <CardContent>
+  <!-- A region separated by a full-width hairline, not a card. The world has
+       none, and this was one of three stacked on the package page.
+
+       The icon went with it: a crimson glyph beside a heading spends the one
+       synthetic colour in the system on decoration, and crimson has four jobs,
+       none of which is "there is a README here". The heading says that. -->
+  <section class="border-t border-rule-soft pt-6" aria-labelledby="readme-heading">
+    <div class="flex flex-wrap items-center justify-between gap-3 pb-3">
+      <h2 id="readme-heading" class="flex items-center gap-2 font-mono text-base text-foreground">
+        {{ t("readmePanel.title") }}
+        <span v-if="readme" class="font-mono text-xs text-muted-foreground">
+          {{ readme.version }}
+        </span>
+      </h2>
+      <!-- One control, labelled with the view it switches *to* rather than
+           the one you are in: a button that says where you already are makes
+           a reader test it to find out. No `aria-pressed` on top of that — the
+           label already inverts, and the two together announce as a double
+           negative. -->
+      <Button
+        v-if="canShowSource"
+        variant="outline"
+        size="sm"
+        class="px-2 text-xs"
+        @click="view = view === 'rendered' ? 'source' : 'rendered'"
+      >
+        {{ view === "rendered" ? t("readmePanel.showSource") : t("readmePanel.showRendered") }}
+      </Button>
+    </div>
+    <div>
       <p v-if="loading" class="text-sm text-muted-foreground">
         {{ t("common.loading") }}
       </p>
@@ -250,13 +269,19 @@ const absenceMessage = computed(() => {
           bundle would put the boundary where the fuzz suite cannot reach it.
           `ReadmePanel.test.ts` asserts no third component grows one.
         -->
-        <!-- eslint-disable-next-line vue/no-v-html -->
+        <!-- A disable/enable *pair*, not `disable-next-line`: the rule reports at
+             the `v-html` attribute, four lines into the element, so the
+             single-line form suppressed nothing and the warning kept surfacing
+             as a code-scanning alert on every PR. This form does not care where
+             in the element the attribute sits. -->
+        <!-- eslint-disable vue/no-v-html -->
         <div
           v-if="view === 'rendered'"
           ref="bodyEl"
           class="readme-body"
           v-html="readme.rendered_html ?? ''"
         ></div>
+        <!-- eslint-enable vue/no-v-html -->
         <!-- The source as **text**, through interpolation. It is the same bytes
              the rendered view came from, and the whole reason a reader opens
              this is to see them exactly — so this is the one place they must not
@@ -273,8 +298,8 @@ const absenceMessage = computed(() => {
           {{ absenceMessage ?? failure ?? t("readmePanel.noneStored") }}
         </p>
       </template>
-    </CardContent>
-  </Card>
+    </div>
+  </section>
 </template>
 
 <style scoped>
@@ -351,13 +376,20 @@ const absenceMessage = computed(() => {
 /* Shiki paints each token's colour onto a custom property; the same pair the
    console's own `CodeBlock` uses, so a README block and a Setup Guide snippet
    are lit by one theme rather than two. A block Shiki did not recognise sets
-   neither property and keeps the inherited ink. */
+   neither property and keeps the inherited ink.
+
+   `:deep()` on **both** branches. The source view's spans are built
+   imperatively by `highlightInto` (`document.createElement("span")`), so they
+   carry no `data-v-` attribute: scoped `.readme-source span` compiles to
+   `.readme-source span[data-v-x]` and matches none of them, and the whole
+   "Show source" block rendered in the inherited foreground colour with every
+   `--shiki-light` set and unused. */
 .readme-body :deep(pre code span),
-.readme-source span {
+.readme-source :deep(span) {
   color: var(--shiki-light);
 }
 [data-theme="dark"] .readme-body :deep(pre code span),
-[data-theme="dark"] .readme-source span {
+[data-theme="dark"] .readme-source :deep(span) {
   color: var(--shiki-dark);
 }
 .readme-source {
@@ -426,9 +458,13 @@ const absenceMessage = computed(() => {
   color: var(--ink-dim);
 }
 
-/* Under `remote_images = "proxy"` the panel receives real `<img>` tags, pointing
-   at this server. It does not know or care which policy produced them — that is
-   the point of doing the rewriting server-side (RFC 0007-bis §6.4).
+/* Under `remote_images = "proxy"` the panel receives real image elements,
+   pointing at this server. It does not know or care which policy produced them —
+   that is the point of doing the rewriting server-side (RFC 0007-bis §6.4).
+
+   (Spelled out rather than written as the literal tag: `impeccable detect`
+   scans source text, and a bare tag with no `src` in a comment reads to it as a
+   shipped broken image — see .github/workflows/front-design.yaml.)
 
    The styling is written for the failure case, because the endpoint answers 404
    for every image it could not get: a dead URL, a type that is not an image, one

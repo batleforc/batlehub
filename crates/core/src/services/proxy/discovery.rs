@@ -93,18 +93,27 @@ impl ProxyService {
             .parse()
             .map_err(|_| CoreError::NotSupported("unknown registry type".to_owned()))?;
 
-        let doc_kind = match kind.upstream_detail() {
-            UpstreamDetailSupport::Document(name) => document_kind(name),
-            UpstreamDetailSupport::ListVersions => {
-                return self.upstream_detail_by_listing(&prelude, name, &cfg).await
-            }
+        // **Which upstream question this kind answers — and nothing else.**
+        //
+        // Everything below this line is shared by both, deliberately: the
+        // `ListVersions` branch used to `return` from here, straight past the
+        // negative cache, the single-flight claim and the freshness stamp. Every
+        // page view of an Open VSX, VS Code, JetBrains or conda package was then
+        // one upstream gallery query — and for conda, one `repodata.json` per
+        // channel platform, five of them, per view — with a hard-coded
+        // `Freshness::Fresh` that made the page say so. That is exactly the
+        // amplification this module's doc comment says it prevents, and the way
+        // to keep the two paths from drifting again is to have one path.
+        let source = match kind.upstream_detail() {
+            UpstreamDetailSupport::Document(name) => DiscoverySource::Document(document_kind(name)),
+            UpstreamDetailSupport::ListVersions => DiscoverySource::Listing,
             UpstreamDetailSupport::None(_) => return Ok(None),
         };
 
         // The single-flight and negative-cache key is the metadata cache key,
         // so a page reload during a fetch collapses into the same flight and an
         // absence is remembered per document rather than per package.
-        let key = format!("doc:{registry}:{}:{name}", doc_kind.as_str());
+        let key = source.cache_key(registry, name);
         if self.discovery.is_absent(&key) {
             return Ok(None);
         }
@@ -114,23 +123,33 @@ impl ProxyService {
             // Somebody else just finished, and wrote the answer before
             // releasing. Reading their cache entry is rung 1 by definition, and
             // is the whole point of coalescing: N readers, one request.
-            return Ok(self.cached_document_only(&key).await.map(|doc| {
-                let (detail, truncated) = capped(upstream_detail::dispatch(kind, &doc), &cfg);
-                DiscoveryOutcome {
-                    detail,
-                    freshness: Freshness::Cached,
-                    truncated,
-                }
-            }));
+            let cached = self.cached_document_only(&key).await;
+            return Ok(cached
+                .and_then(|doc| source.decode(kind, &doc))
+                .map(|detail| {
+                    let (detail, truncated) = capped(detail, &cfg);
+                    DiscoveryOutcome {
+                        detail,
+                        freshness: Freshness::Cached,
+                        truncated,
+                    }
+                }));
         }
 
         // Whether the answer was already there decides which rung this is, and
         // it has to be asked *before* the fetch that would put it there.
         let fresh_before = self.cached_document_only(&key).await.is_some();
-        let doc = match self
-            .cached_version_document(&prelude, &req, name, doc_kind)
-            .await
-        {
+        let fetched = match &source {
+            DiscoverySource::Document(doc_kind) => {
+                self.cached_version_document(&prelude, &req, name, *doc_kind)
+                    .await
+            }
+            DiscoverySource::Listing => {
+                self.cached_version_listing(&prelude, &req, name, &key)
+                    .await
+            }
+        };
+        let doc = match fetched {
             Ok(doc) => doc,
             Err(CoreError::NotFound(_)) => {
                 // Upstream *answered*, and the answer was "no such package".
@@ -148,7 +167,14 @@ impl ProxyService {
             Err(e) => return Err(e),
         };
 
-        let (detail, truncated) = capped(upstream_detail::dispatch(kind, &doc), &cfg);
+        let Some(detail) = source.decode(kind, &doc) else {
+            // Unreachable for a document this call just built. A cache entry
+            // written by an older build under a different shape lands here, and
+            // "no upstream answer" is the safe reading of one.
+            tracing::debug!(key = %key, "discovery: undecodable upstream document");
+            return Ok(None);
+        };
+        let (detail, truncated) = capped(detail, &cfg);
         Ok(Some(DiscoveryOutcome {
             detail,
             // Rung 1 when the entry was already there, rung 2 when this call
@@ -285,36 +311,85 @@ impl ProxyService {
             .map(|text| (text, found.format, found.package_level, freshness)))
     }
 
-    /// The kinds with no listing document the proxy can read, but which can
-    /// enumerate versions: the extension galleries, and conda — whose
-    /// `repodata.json` describes a whole channel rather than a package.
+    /// `list_versions`, cached under `key` exactly as
+    /// [`ProxyService::cached_version_document`] caches a real document.
     ///
-    /// Produces rows with no publish times, which is honest and still the
-    /// difference between a versions table and an empty state.
-    async fn upstream_detail_by_listing(
+    /// The kinds this serves have no listing document the proxy can read but
+    /// can enumerate versions: the extension galleries, and conda — whose
+    /// `repodata.json` describes a whole channel rather than a package, so
+    /// answering one package's versions means fetching and parsing one file per
+    /// channel platform. That cost is the reason this is cached and not the
+    /// reason it is not: it used to run on *every page view*.
+    ///
+    /// The version list is stored as a JSON array in the same `doc:` namespace
+    /// the real documents use, so it inherits the store's TTL, its stale
+    /// handling and `cached_document_only` unchanged. It is not a document any
+    /// protocol serves and nothing but [`DiscoverySource::decode`] reads it
+    /// back.
+    async fn cached_version_listing(
         &self,
         prelude: &super::handle::RequestPrelude,
+        req: &ProxyRequest,
         name: &str,
-        cfg: &crate::services::hot_config::UpstreamDetailConfig,
-    ) -> Result<Option<DiscoveryOutcome>, CoreError> {
-        let versions = prelude.client.list_versions(name).await?;
-        let detail = UpstreamDetail {
-            versions: versions.into_iter().map(UpstreamVersion::bare).collect(),
-            readmes: Default::default(),
-            // `list_versions` answers with version strings and nothing else, so
-            // these kinds keep answering the page's link from the metadata
-            // cache — which their README panel warms, one page view later.
-            links: None,
-        };
-        let (detail, truncated) = capped(detail, cfg);
-        Ok(Some(DiscoveryOutcome {
-            detail,
-            // `list_versions` is not cached by this path, so every answer it
-            // gives was fetched now. Saying `Cached` would be a claim about a
-            // cache that is not involved.
-            freshness: Freshness::Fresh,
-            truncated,
-        }))
+        key: &str,
+    ) -> Result<crate::ports::VersionDocument, CoreError> {
+        if let Some(doc) = self.cached_document_only(key).await {
+            return Ok(doc);
+        }
+
+        match prelude.client.list_versions(name).await {
+            Ok(versions) => {
+                let doc = crate::ports::VersionDocument::json(
+                    serde_json::to_value(&versions).unwrap_or(serde_json::Value::Null),
+                );
+                let entry = crate::ports::CacheEntry {
+                    metadata: crate::entities::PackageMetadata {
+                        id: req.package_id.clone(),
+                        published_at: None,
+                        download_url: None,
+                        checksum: None,
+                        is_signed: None,
+                        extra: serde_json::to_value(&doc).unwrap_or(serde_json::Value::Null),
+                        cache_control: None,
+                    },
+                    cached_at: chrono::Utc::now(),
+                    // The store owns expiry, exactly as it does for a real
+                    // document — a second, independently clocked one could
+                    // disagree with it.
+                    expires_at: None,
+                };
+                if let Err(e) = self.cache.set(key, entry, prelude.ttl).await {
+                    tracing::warn!(key = %key, error = %e, "caching version listing failed");
+                }
+                Ok(doc)
+            }
+            Err(e) => {
+                // Same stale policy as a real document: an upstream that has
+                // gone away should not empty a page that was answered a minute
+                // ago, when the operator has said they would rather have old
+                // than nothing.
+                let serve_stale = prelude
+                    .policy
+                    .as_ref()
+                    .map(|p| p.serve_stale_metadata)
+                    .unwrap_or(false);
+                if serve_stale {
+                    if let Ok(Some(stale)) = self.cache.get_stale(key).await {
+                        if let Ok(doc) = serde_json::from_value::<crate::ports::VersionDocument>(
+                            stale.metadata.extra,
+                        ) {
+                            tracing::warn!(
+                                key = %key,
+                                error = %e,
+                                "upstream version listing unavailable, serving stale"
+                            );
+                            return Ok(doc);
+                        }
+                    }
+                }
+                Err(e)
+            }
+        }
     }
 
     /// A cached listing document, without fetching.
@@ -326,6 +401,67 @@ impl ProxyService {
     async fn cached_document_only(&self, key: &str) -> Option<crate::ports::VersionDocument> {
         let entry = self.cache.get(key).await.ok().flatten()?;
         serde_json::from_value(entry.metadata.extra).ok()
+    }
+}
+
+/// Where one kind's discovery answer comes from.
+///
+/// Both arms share the whole scaffolding around them — the negative cache, the
+/// single flight, the `doc:` cache namespace, the freshness stamp — and differ
+/// only in what they ask upstream and how the answer decodes. Kept as one type
+/// rather than two code paths because it was two code paths, and the second one
+/// quietly had none of the scaffolding.
+enum DiscoverySource {
+    /// A real listing document the protocol serves.
+    Document(DocumentKind),
+    /// `RegistryClient::list_versions` — a query, not a document.
+    Listing,
+}
+
+impl DiscoverySource {
+    /// The cache key this answer lives under.
+    ///
+    /// `Document` must reproduce [`ProxyService::cached_version_document`]'s key
+    /// exactly, or the freshness probe and the single flight guard a different
+    /// entry than the fetch writes.
+    fn cache_key(&self, registry: &str, name: &str) -> String {
+        match self {
+            Self::Document(doc_kind) => format!("doc:{registry}:{}:{name}", doc_kind.as_str()),
+            // A discriminant no `DocumentKind::as_str()` returns, so a listing
+            // answer can never collide with a real document's entry. Changing
+            // it is a cache invalidation rather than a rename, same as
+            // `DocumentKind::Secondary`.
+            Self::Listing => format!("doc:{registry}:__list_versions__:{name}"),
+        }
+    }
+
+    /// The detail a cached or freshly fetched document carries.
+    ///
+    /// `None` when the entry does not decode — an entry written by an older
+    /// build under a different shape — which the caller treats as a miss.
+    fn decode(
+        &self,
+        kind: RegistryKind,
+        doc: &crate::ports::VersionDocument,
+    ) -> Option<UpstreamDetail> {
+        match self {
+            Self::Document(_) => Some(upstream_detail::dispatch(kind, doc)),
+            Self::Listing => {
+                let crate::ports::DocumentBody::Json(value) = &doc.body else {
+                    return None;
+                };
+                let versions: Vec<String> = serde_json::from_value(value.clone()).ok()?;
+                Some(UpstreamDetail {
+                    versions: versions.into_iter().map(UpstreamVersion::bare).collect(),
+                    readmes: Default::default(),
+                    // `list_versions` answers with version strings and nothing
+                    // else, so these kinds keep answering the page's link from
+                    // the metadata cache — which their README panel warms, one
+                    // page view later.
+                    links: None,
+                })
+            }
+        }
     }
 }
 
@@ -360,13 +496,19 @@ fn capped(
     if detail.versions.len() <= cfg.max_versions {
         return (detail, false);
     }
-    // The same crude ordering the version table already uses — stable before
-    // pre-release, then by string, descending — so a row does not move
-    // depending on which list it came from.
+    // The same ordering the version table uses — stable before pre-release,
+    // then newest first — so a row does not move depending on which list it
+    // came from, **and so the rows thrown away here are the ones both orders
+    // agree are oldest**. This was `b.version.cmp(&a.version)`: a descending
+    // *string* compare, under which `5.9.0` outranks `5.19.0`. On a package
+    // with more than `max_versions` upstream versions (`typescript`,
+    // `aws-sdk`, `@babel/*`) that kept the single-digit-minor releases and
+    // discarded the current one, so the page showed a table with the newest
+    // version missing and `default_selection` opened on a stale one.
     detail.versions.sort_by(|a, b| {
         a.is_prerelease
             .cmp(&b.is_prerelease)
-            .then(b.version.cmp(&a.version))
+            .then_with(|| crate::services::newest_first(&a.version, &b.version))
     });
     detail.versions.truncate(cfg.max_versions);
     let kept: std::collections::HashSet<&str> =

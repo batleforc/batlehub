@@ -16,6 +16,12 @@ node_modules/
 # Config (contains secrets)
 /config.toml
 
+# Rendered by `task dex:config` from dev/dex/config.tmpl.yaml. Both name this
+# workspace's gateway FQDN, so they are per-clone and mean nothing to anyone
+# else. The template IS tracked.
+dev/dex/config.yaml
+dev/dex/auth.toml
+
 # Frontend
 ui/node_modules/
 ui/dist/

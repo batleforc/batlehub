@@ -118,6 +118,38 @@ async fn vsix_download_returns_artifact_after_publish() {
     assert_eq!(body.as_ref(), vsix_bytes.as_slice());
 }
 
+/// The route ends in `vsix`, so a browser saving from it wrote a file called
+/// `vsix`. The name here is OpenVSX's own — the one its `…/file/{filename}`
+/// route serves the package under — so saving from this proxy and saving from
+/// upstream land the same file on disk.
+#[actix_web::test]
+async fn vsix_download_names_the_package_file() {
+    let app = make_local_vsx_app(RegistryMode::Local).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-vsx/my-org.my-ext/2.0.0/vsix")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("Content-Type", "application/octet-stream"))
+        .set_payload(b"PK\x03\x04fake-vsix-bytes".to_vec())
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-vsx/my-org.my-ext/2.0.0/vsix")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers()
+            .get("Content-Disposition")
+            .expect("a route ending in a verb must name its file")
+            .to_str()
+            .unwrap(),
+        "attachment; filename=\"my-org.my-ext-2.0.0.vsix\""
+    );
+}
+
 #[actix_web::test]
 async fn vsix_download_unknown_version_returns_404() {
     let app = make_local_vsx_app(RegistryMode::Local).await;

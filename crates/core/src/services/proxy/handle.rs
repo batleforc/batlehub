@@ -138,9 +138,38 @@ impl ProxyService {
         &self,
         req: &ProxyRequest,
     ) -> Result<crate::entities::PackageMetadata, CoreError> {
+        self.resolve_metadata_for_inner(req, true).await
+    }
+
+    /// [`Self::resolve_metadata_for`] without the README capture.
+    ///
+    /// For the console: a **page view** must write nothing. `resolve_metadata_for`
+    /// runs `maybe_record_readme`, which stores whatever README the upstream
+    /// document carried without checking that this instance holds the version —
+    /// so the package page's homepage/repository lookup left a `package_readmes`
+    /// row for a version nothing here has bytes for, which nothing ever deletes
+    /// (deletion keys on a version being deleted, and a version never held here
+    /// is never deleted). It also flipped that version's `readme_state` from
+    /// `unknown` to `available` on the next load, claiming a stored README for
+    /// bytes we never had.
+    ///
+    /// Everything else is identical, the cache included: N readers of the same
+    /// version during one TTL still produce one upstream request.
+    pub async fn resolve_metadata_uncaptured_for(
+        &self,
+        req: &ProxyRequest,
+    ) -> Result<crate::entities::PackageMetadata, CoreError> {
+        self.resolve_metadata_for_inner(req, false).await
+    }
+
+    async fn resolve_metadata_for_inner(
+        &self,
+        req: &ProxyRequest,
+        capture_readme: bool,
+    ) -> Result<crate::entities::PackageMetadata, CoreError> {
         let prelude = self.request_prelude(req).await?;
-        let metadata = self
-            .resolve_metadata_cached(
+        let metadata = if capture_readme {
+            self.resolve_metadata_cached(
                 &prelude.client,
                 &prelude.policy,
                 req,
@@ -148,7 +177,18 @@ impl ProxyService {
                 prelude.ttl,
                 &prelude.registry_label,
             )
-            .await?;
+            .await?
+        } else {
+            self.resolve_metadata_uncaptured(
+                &prelude.client,
+                &prelude.policy,
+                req,
+                &prelude.cache_key,
+                prelude.ttl,
+                &prelude.registry_label,
+            )
+            .await?
+        };
 
         let empty: Vec<Box<dyn crate::rules::Rule>> = vec![];
         let rules = prelude

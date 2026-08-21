@@ -79,7 +79,7 @@ pub(crate) fn content_type_for(file_name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{content_type_for, PLUGIN_ARTIFACT};
-    use batlehub_core::entities::RegistryKind;
+    use batlehub_core::entities::{FetchArtifact, RegistryKind};
 
     /// Warming writes the plugin archive under
     /// `RegistryKind::warm_artifact()`; the download handlers read it back under
@@ -89,7 +89,7 @@ mod tests {
     fn plugin_artifact_matches_the_warming_coordinate() {
         assert_eq!(
             RegistryKind::JetbrainsMarketplace.warm_artifact(),
-            Some(PLUGIN_ARTIFACT)
+            Some(FetchArtifact::Fixed(PLUGIN_ARTIFACT))
         );
     }
 

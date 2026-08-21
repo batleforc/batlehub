@@ -249,19 +249,33 @@ pub async fn explore_packages(
         None
     };
 
-    if let Some(ref reg) = query.registry {
-        if !accessible.contains(reg) {
-            return Ok(web::Json(ExplorePackageListResponse {
-                items: vec![],
-                total: 0,
-                page,
-                per_page,
-                upstream_unavailable: false,
-                readme_search_enabled,
-                searched_in: scope.as_str().to_owned(),
-                truncated: false,
-            }));
-        }
+    // An empty accessible set is **nothing**, not "no restriction".
+    //
+    // `ExploreFilter::registries` is a scope, and every implementation of it
+    // reads an empty vector as unfiltered: `prepare_registries_param` binds
+    // `NULL` and the SQL is `$3::text[] IS NULL OR ps.registry = ANY($3)`, the
+    // in-memory repository is `filter.registries.is_empty() || contains(…)`.
+    // So a caller with no browsable registry at all — an anonymous visitor on a
+    // server with `rbac.explore.anonymous = false`, a role denied explore
+    // everywhere — was handed the *entire* catalogue by the one endpoint whose
+    // whole job is to scope it. Refused here, before the scope is built, rather
+    // than by teaching four repositories to tell "all" from "none" apart.
+    let denied_everywhere = accessible.is_empty();
+    let named_registry_denied = query
+        .registry
+        .as_ref()
+        .is_some_and(|reg| !accessible.contains(reg));
+    if denied_everywhere || named_registry_denied {
+        return Ok(web::Json(ExplorePackageListResponse {
+            items: vec![],
+            total: 0,
+            page,
+            per_page,
+            upstream_unavailable: false,
+            readme_search_enabled,
+            searched_in: scope.as_str().to_owned(),
+            truncated: false,
+        }));
     }
 
     let registries: Vec<String> = if query.registry.is_none() {
@@ -303,7 +317,8 @@ pub async fn explore_packages(
         }
         _ => Vec::new(),
     };
-    let truncated = prose.len() as u64 >= PROSE_SEARCH_CAP;
+    let truncated = prose.len() as u64 > PROSE_SEARCH_CAP;
+    let prose: Vec<_> = prose.into_iter().take(PROSE_SEARCH_CAP as usize).collect();
 
     let filter = ExploreFilter {
         registry: query.registry.clone(),
@@ -363,7 +378,10 @@ pub async fn explore_packages(
     let (name_rows, name_unavailable) = if scope.searches_names() {
         admin_svc
             .explore_packages(ExploreFilter {
-                limit: PROSE_SEARCH_CAP,
+                // One more than the cap, so "there were more" is distinguishable
+                // from "there were exactly this many" — the same trick the prose
+                // half needs and the reason `truncated` below counts both.
+                limit: PROSE_SEARCH_CAP + 1,
                 offset: 0,
                 ..filter
             })
@@ -372,6 +390,17 @@ pub async fn explore_packages(
     } else {
         (Vec::new(), false)
     };
+    // The name half is capped too, and until now nothing said so: `truncated`
+    // was computed from the prose half alone, so `?q=a&in=both` on a catalogue
+    // with 5 000 matching names reported `total: 200, truncated: false` — a
+    // silently shortened list reading as "that is all there is", which is
+    // precisely what the field's own doc comment says it exists to prevent.
+    let names_truncated = name_rows.len() as u64 > PROSE_SEARCH_CAP;
+    let name_rows: Vec<_> = name_rows
+        .into_iter()
+        .take(PROSE_SEARCH_CAP as usize)
+        .collect();
+    let truncated = truncated || names_truncated;
 
     let mut merged: Vec<ExploreEntryDto> = Vec::new();
     let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
@@ -476,9 +505,14 @@ async fn prose_hits(
     let Some(readme_svc) = proxy_svc.readme.as_ref() else {
         return Vec::new();
     };
+    // One more than the cap, for the same reason the name half asks for one
+    // more: `truncated` is answered by comparing the count to the cap, and with
+    // a limit *equal* to the cap a search that found exactly `PROSE_SEARCH_CAP`
+    // hits and one that found ten thousand are the same number. The extra row
+    // is dropped by the caller; only its existence is used.
     match readme_svc
         .repo
-        .search(registries, term, PROSE_SEARCH_CAP)
+        .search(registries, term, PROSE_SEARCH_CAP + 1)
         .await
     {
         Ok(hits) => hits,

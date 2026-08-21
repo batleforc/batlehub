@@ -21,7 +21,7 @@ pub mod stats;
 
 pub use detail::{
     explore_package_detail, ExplorePackageDetailResponse, ExploreVersionDto, FetchOfferDto,
-    FirewallDto, GateDto, PackageDetailPath,
+    FirewallDto, GateDto, PackageDetailPath, SbomDto,
 };
 pub use fetch::{explore_fetch_version, FetchPath, FetchResponse};
 pub use image::{explore_readme_image, ReadmeImagePath};
@@ -35,6 +35,14 @@ pub use stats::{
 pub fn format_dt(dt: DateTime<Utc>) -> String {
     dt.to_rfc3339()
 }
+
+/// Order two version strings newest-first.
+///
+/// Re-exported from `batlehub_core::services::version_order` rather than
+/// defined here: `proxy::discovery::capped` *truncates* an upstream version
+/// list, and a list this sorts one way and that cuts the other way loses the
+/// rows this calls newest. One function, so the two cannot drift.
+pub use batlehub_core::services::newest_first;
 
 // `default_per_page` used to live here as a constant 20. The catalog's page size
 // is `[limits].packages_per_page` now — an operator's number rather than a

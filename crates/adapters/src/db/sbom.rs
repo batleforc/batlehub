@@ -119,6 +119,38 @@ impl SbomRepository for PgSbomRepository {
         Ok(row.as_ref().map(row_to_sbom))
     }
 
+    /// Existence only — no `document` column in the projection.
+    ///
+    /// The default implementation in the port answers this by fetching both
+    /// SBOMs whole, and this runs once per row of a version page: on a
+    /// twenty-five row page that is fifty JSONB documents read and discarded to
+    /// learn which two buttons to draw.
+    async fn sbom_formats_for_coordinate(
+        &self,
+        registry: &str,
+        package_name: &str,
+        version: &str,
+    ) -> Result<Vec<SbomFormat>, CoreError> {
+        let rows = sqlx::query(
+            "SELECT DISTINCT format FROM artifact_sboms \
+             WHERE registry = $1 AND package_name = $2 AND version = $3",
+        )
+        .bind(registry)
+        .bind(package_name)
+        .bind(version)
+        .fetch_all(&self.pool)
+        .await
+        .db_err()?;
+
+        // Ordered by the enum rather than by whatever the DISTINCT returned, so
+        // the console draws SPDX before CycloneDX on every row of every page.
+        let held: Vec<String> = rows.iter().map(|r| r.get("format")).collect();
+        Ok([SbomFormat::Spdx, SbomFormat::CycloneDx]
+            .into_iter()
+            .filter(|f| held.iter().any(|h| h == f.as_str()))
+            .collect())
+    }
+
     async fn get_license_for_coordinate(
         &self,
         registry: &str,

@@ -158,8 +158,13 @@ jobs:
           node ui/build/stub-server.mjs --port 4173 --dist ui/dist &
           npx --yes wait-on http://127.0.0.1:4173 -t 60000
 
-      # Two viewports, because the failures differ: contrast and hierarchy are
-      # width-independent, overflow and reflow are not.
+      # Two viewports here, four in the rendered harness below. The split is
+      # deliberate: these rules are anti-pattern rules over what is on the page,
+      # and they do not change between 1024 and 768 — what changes at those
+      # widths is overflow and reflow, which axe and the ramp check measure, so
+      # that is where the two middle widths were added. Doubling this loop would
+      # double the slowest job in the workflow to re-measure width-independent
+      # findings.
       #
       # Every route reachable without a session. `/me/*` and `/admin/*` sit
       # behind router guards and would redirect, so scanning them here would
@@ -174,7 +179,7 @@ jobs:
         run: |
           fail=0
           for viewport in 1440x900 390x844; do
-            for route in / /login /packages /setup /tools/access-check /tools/url-mapper; do
+            for route in / /login /packages /packages/npm/react /setup /tools/access-check /tools/url-mapper; do
               echo "::group::$viewport $route"
               npx --yes impeccable detect --viewport "$viewport" "http://127.0.0.1:4173$route" || fail=1
               echo "::endgroup::"
@@ -211,9 +216,12 @@ jobs:
       # not authentication — so there is nothing here worth protecting, and the
       # gate needs no repository secrets to run.
       #
-      # `/packages` is pinned in the script's EXPECTED_FAIL: it disagrees with
-      # its own design proof, the disagreement is RFC 0004-bis O3's to settle,
-      # and it is reported as a line in the output rather than as a silence.
+      # Nothing is pinned in the script's EXPECTED_FAIL, and that is a result.
+      # `/packages/npm/react` was added expecting to go red — it was the densest
+      # page in the console with no gate on it at all — and it enters green,
+      # because the pass that added it fixed what it would have reported. A pin
+      # on a passing route fails this gate by design, so the honest entry is no
+      # entry.
       - name: Rendered gates — every route, axe and type ramp
         env:
           BATLEHUB_ADMIN_TOKEN: stub

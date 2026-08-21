@@ -1,3 +1,12 @@
+---
+# The contributor's reference: it sat just under the line until the workspace
+# grew a second sidecar (§11), and the material it covers — crate layout, test
+# suites, design gates, the dev-time identity provider — is a subject that is
+# long rather than a page that has sprawled. `docs:structure` asks for this
+# declaration above 4 000 words (RFC 0005-bis §4.5).
+reference: true
+---
+
 # Contributing to BatleHub
 
 This guide is the starting point for developers working on the BatleHub codebase. It covers the project layout, key architectural patterns, how to run the tests, and known design limitations you need to be aware of before touching specific areas.
@@ -590,8 +599,9 @@ The fourth needs a real browser, because contrast on painted pixels, focus-ring
 visibility and reflow at 390 px cannot be measured by reading source.
 
 `ui:design:routes` is that fourth gate, and it covers **every rendered route** —
-the 15 admin pages and 4 account pages behind router guards *and* the six public
-ones, at both viewports, with axe plus the type ramp and the display face. It
+the 15 admin pages and 4 account pages behind router guards *and* the seven
+public ones, at four viewports, with axe plus the type ramp and the display
+face. It
 used to be two gates: `impeccable detect` + `@axe-core/cli` over the public
 routes, and a separate authenticated harness. Neither URL-based scanner knows
 what a type ramp is, so the ramp assertions ran on `/admin/*`, `/me/*` and `/`
@@ -600,11 +610,13 @@ of its own appearance (`ui/design-proof/index.html`), was the significant page
 no ramp check ran against. That is how its 104px display element became 24px
 with every gate green (RFC 0004-bis §4.4).
 
-`/packages` is pinned in the script's `EXPECTED_FAIL`: it disagrees with its own
-design proof, the disagreement is RFC 0004-bis O3's to settle, and it is
-reported as a line in the output rather than as a silence. A pinned route that
-starts *passing* fails the gate — that means one side of O3 moved and the pin
-has become the stale claim.
+The script's `EXPECTED_FAIL` is **empty**, and that is a result: `/packages` sat
+in it until RFC 0004-bis O3 settled by moving the page. A pinned route that
+starts *passing* fails the gate, so expect to unpin what you pin.
+
+The viewports are 1440, 1024, 768 and 390. The middle two catch what the outer
+pair cannot: a table whose fixed columns starve its flexible one is green at 390
+(every fixed width released) and at 1440 (room for all).
 
 The workspace `devfile.yaml` declares a **`browser` sidecar**
 ([che-browser](https://github.com/batleforc/WeeboDevImage/tree/main/che-browser)):
@@ -648,4 +660,72 @@ restart, and `task browser:check` fails with a connection error until then.
 Chromium cannot run in the tools container itself: the image has no
 `libglib-2.0`, and there is no root to install it. That is the gap the sidecar
 fills, rather than a preference for sidecars.
+
+## 11. An OIDC provider in the workspace (the dex sidecar)
+
+`docker-compose.yml` runs **Authentik** for `[[auth]] type = "oidc"` work, and a
+workspace has no compose to run it in — it is four containers and a Postgres of
+its own. `devfile.yaml` declares a **`dex` sidecar** instead: one container,
+in-memory storage, listening on **9000**, the same port Authentik uses. So
+`localhost:9000` is the local identity provider either way, and only `issuer_url`
+tells the two apart.
+
+```bash
+task dex:config                     # render the config + the [[auth]] blocks
+task dex:check                      # discovery document — is it up, and as whom?
+task run:space                      # the server, already pointed at dex
+task dex:token -- admin@example.com password   # a JWT for curl, no browser
+task dex:logs -f                    # follow the sidecar
+```
+
+Two accounts, both with the password `password`: `admin@example.com` → `admin`
+and `dev@example.com` → `user`.
+
+**`task run:space` needs no pasting.** `config.example-space.toml` is the
+workspace's config, and its two `[[auth]] type = "oidc"` blocks already describe
+dex — email-mapped roles and all. What it does not contain is a workspace name:
+the issuer, the callback host and the SPA origin are `${BATLEHUB_DEX_ISSUER}`,
+`${BATLEHUB_BACK_URL}` and `${BATLEHUB_FRONT_URL}`, which the task fills from the
+same `url` helper `task dex:config` uses, so the tracked file works in anyone's
+workspace and the two cannot disagree about the FQDN. Pass `LOCAL=1` to both or
+to neither — the issuer is one value, and a mismatch is every login failing on
+the `iss` check. The generated `dev/dex/auth.toml` remains what you paste into a
+config of your own.
+
+**Why the config is rendered and not committed.** The issuer is one value that
+every party has to agree on: the browser is redirected to it, the server fetches
+`{issuer}/.well-known/openid-configuration` from it, and the `iss` that comes back
+is checked against `issuer_url`. In a workspace that is the gateway FQDN, which
+contains the workspace name — so `dev/dex/config.yaml` is generated from
+`dev/dex/config.tmpl.yaml` (tracked) by `task dex:config` and gitignored, along
+with the `dev/dex/auth.toml` it writes beside it: the two `[[auth]]` blocks with
+issuer, redirect and frontend URLs already filled in, to paste over the Authentik
+ones in your config. The pod can reach its own ingress, so the server is content
+with the same URL the browser uses.
+
+`task dex:config LOCAL=1` renders `http://localhost:9000` instead —
+`is_secure_issuer_url` permits plain HTTP on loopback exactly so this works. The
+server and the `browser` sidecar can both reach that (one pod, one network
+namespace, so the rendered gates can drive a full SSO flow); your own browser
+cannot.
+
+**Roles map off `email`, not `groups`.** Dex's password DB carries no group
+membership — groups only ever come from a real connector (LDAP, GitHub) — so
+`role_claim = "groups"` would find no claim at all and `map_role` would fall
+through to `Role::Anonymous` for every login. `email` is always present with the
+`email` scope and is matched the same way, a string against the keys of
+`[auth.role_mappings]`.
+
+**The endpoint is public and not `secure`.** It has to be: the server fetches the
+discovery document unauthenticated, and Che's auth in front of it would answer
+that fetch with a login page. What is exposed is a throwaway provider holding two
+accounts whose password is `password`. Put nothing in it you would mind a
+passer-by reaching; for a sealed setup, use `LOCAL=1` and switch the endpoint to
+`exposure: internal`.
+
+As with the browser sidecar, **a devfile change needs a workspace restart** —
+`task dex:check` fails with a connection error until then. The container waits for
+`dev/dex/config.yaml` rather than exiting when it is missing, so a workspace that
+has never run `task dex:config` still starts; it would otherwise crash-loop and
+leave the pod short of Ready.
 

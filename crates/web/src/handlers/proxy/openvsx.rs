@@ -6,8 +6,8 @@ use sha2::{Digest, Sha256};
 use batlehub_core::services::{LocalRegistryService, ProxyService, PublishRequest};
 
 use super::common::{
-    collect_payload, extract_signature_headers, require_local_mode, serve_local_or_proxy_artifact,
-    LocalOrProxyArtifactOpts,
+    attachment_disposition, collect_payload, extract_signature_headers, require_local_mode,
+    serve_local_or_proxy_artifact, LocalOrProxyArtifactOpts,
 };
 use crate::handlers::schemas::{ArtifactBytes, OkResponse};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
@@ -69,7 +69,7 @@ pub async fn download_vsix(
     // consulting the registry's `[registries.rbac]` chain — the proxy
     // fall-through ran it, the local path did not. Every other ecosystem goes
     // through this helper precisely so that cannot happen.
-    serve_local_or_proxy_artifact(
+    let mut resp = serve_local_or_proxy_artifact(
         svc,
         local_svc,
         &mode_map,
@@ -86,7 +86,16 @@ pub async fn download_vsix(
             append_signature: true,
         },
     )
-    .await
+    .await?;
+    // `{namespace}.{extension}-{version}.vsix` is OpenVSX's own name for the
+    // file — the same one its `…/file/{filename}` route serves it under — so a
+    // browser saving from here and a browser saving from upstream write the same
+    // name, rather than one of them writing `vsix`.
+    resp.headers_mut().insert(
+        actix_web::http::header::CONTENT_DISPOSITION,
+        attachment_disposition(&format!("{extension_id}-{version}.vsix"))?,
+    );
+    Ok(resp)
 }
 
 /// Upload a VS Code extension VSIX package.
@@ -190,7 +199,7 @@ pub async fn vsix_publish(
 #[cfg(test)]
 mod tests {
     use super::VSIX_ARTIFACT;
-    use batlehub_core::entities::RegistryKind;
+    use batlehub_core::entities::{FetchArtifact, RegistryKind};
 
     /// The warmer and the download path must agree on the cache slot.
     ///
@@ -203,7 +212,7 @@ mod tests {
         for kind in [RegistryKind::Openvsx, RegistryKind::VscodeMarketplace] {
             assert_eq!(
                 kind.warm_artifact(),
-                Some(VSIX_ARTIFACT),
+                Some(FetchArtifact::Fixed(VSIX_ARTIFACT)),
                 "{kind}: warming and downloading must use the same cache slot"
             );
         }

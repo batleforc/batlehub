@@ -1515,3 +1515,178 @@ fn the_two_page_sizes_do_not_move_each_other() {
     assert_eq!(cfg.limits.packages_per_page, 40);
     assert_eq!(cfg.limits.versions_per_page, DEFAULT_VERSIONS_PER_PAGE);
 }
+
+// ── Auth: transport and identity ──────────────────────────────────────────────
+
+/// The Kubernetes API server is held to the same rule as an OIDC issuer, and for
+/// a stronger reason: the TokenReview carries this server's own service account
+/// token, and whoever answers it decides the caller's role.
+#[test]
+fn a_plain_http_kubernetes_api_server_refuses_to_start() {
+    let cfg = parse_config(
+        r#"
+        [[auth]]
+        type = "kubernetes"
+        name = "k8s"
+        api_server = "http://kube.internal:6443""#,
+    );
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("api_server"), "{err}");
+    assert!(err.contains("must use https"), "{err}");
+    assert!(
+        err.contains("service account token"),
+        "the message should say what is at stake; {err}"
+    );
+}
+
+/// The same userinfo trick `is_secure_issuer_url` refuses for an issuer: the
+/// authority ends at the last `@`, so this dials `evil.example` in cleartext.
+#[test]
+fn a_kubernetes_api_server_hiding_behind_userinfo_refuses_to_start() {
+    let cfg = parse_config(
+        r#"
+        [[auth]]
+        type = "kubernetes"
+        name = "k8s"
+        api_server = "http://localhost:6443@evil.example""#,
+    );
+    assert!(cfg
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("must use https"));
+}
+
+/// Loopback over plain HTTP stays allowed — that is how the test suites and a
+/// developer's local cluster run — and an absent `api_server` has nothing to
+/// check: it means the in-cluster default, which is https by construction.
+#[test]
+fn a_loopback_or_absent_kubernetes_api_server_starts() {
+    parse_config(
+        r#"
+        [[auth]]
+        type = "kubernetes"
+        name = "k8s"
+        api_server = "http://127.0.0.1:6443""#,
+    )
+    .validate()
+    .expect("loopback is exempt");
+
+    parse_config(
+        r#"
+        [[auth]]
+        type = "kubernetes"
+        name = "k8s""#,
+    )
+    .validate()
+    .expect("an absent api_server means the in-cluster https default");
+}
+
+/// A blank `audience` is a configuration error, not an unreachable provider.
+///
+/// `ActionsOidcAuthProvider::new` refuses it, but that error is routed through
+/// `provider_unavailable(…, cfg.required, …)` and `required` defaults to `false`
+/// for this kind — so the server used to log one warning and come up *without*
+/// the provider, silently downgrading every CI caller to anonymous.
+#[test]
+fn a_blank_actions_oidc_audience_is_refused_at_load() {
+    for audience in ["\"\"", "\"   \""] {
+        let cfg = parse_config(&format!(
+            r#"
+        [[auth]]
+        type = "actions-oidc"
+        name = "gha"
+        issuer_url = "https://token.actions.githubusercontent.com"
+        audience = {audience}"#
+        ));
+        let err = cfg
+            .validate()
+            .expect_err("a blank audience must not start")
+            .to_string();
+        assert!(err.contains("audience"), "{err}");
+        assert!(err.contains("gha"), "{err}");
+    }
+}
+
+/// And a real one still starts — the check is about blankness, not about the
+/// provider kind being unwelcome.
+#[test]
+fn an_actions_oidc_provider_with_an_audience_starts() {
+    parse_config(
+        r#"
+        [[auth]]
+        type = "actions-oidc"
+        name = "gha"
+        issuer_url = "https://token.actions.githubusercontent.com"
+        audience = "https://batlehub.example.com""#,
+    )
+    .validate()
+    .expect("a named audience is the supported configuration");
+}
+
+/// Two providers of different kinds sharing one name are one provider as far as
+/// `oidc_session_owner` and the group prefix are concerned — which is how a
+/// service account comes to mint personal access tokens as an OIDC user.
+#[test]
+fn two_auth_providers_may_not_share_a_name() {
+    let cfg = parse_config(
+        r#"
+        [[auth]]
+        type = "oidc"
+        name = "corp"
+        issuer_url = "https://idp.example.com"
+        client_id = "batlehub"
+
+        [[auth]]
+        type = "kubernetes"
+        name = "corp""#,
+    );
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("\"corp\""), "{err}");
+    assert!(err.contains("oidc"), "{err}");
+    assert!(err.contains("kubernetes"), "{err}");
+}
+
+/// Including two of the same kind: the collision is about the name, not about
+/// the kinds differing.
+#[test]
+fn two_oidc_providers_may_not_share_a_name_either() {
+    let cfg = parse_config(
+        r#"
+        [[auth]]
+        type = "oidc"
+        name = "corp"
+        issuer_url = "https://idp.example.com"
+        client_id = "batlehub"
+
+        [[auth]]
+        type = "oidc"
+        name = "corp"
+        issuer_url = "https://other.example.com"
+        client_id = "batlehub""#,
+    );
+    assert!(cfg.validate().is_err());
+}
+
+/// Distinct names are the normal case and must still start, static tokens
+/// included — that provider has no name of its own to collide with.
+#[test]
+fn distinct_auth_names_start() {
+    parse_config(
+        r#"
+        [[auth]]
+        type = "token"
+
+        [[auth]]
+        type = "oidc"
+        name = "corp"
+        issuer_url = "https://idp.example.com"
+        client_id = "batlehub"
+
+        [[auth]]
+        type = "kubernetes"
+        name = "k8s-prod""#,
+    )
+    .validate()
+    .expect("distinct names are fine");
+}

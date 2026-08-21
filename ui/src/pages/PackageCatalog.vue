@@ -350,6 +350,15 @@ interface PageResult {
       than assumed, so a hot reload of `packages_per_page` cannot leave the
       pager doing arithmetic with a number the cached page was not built at. */
   perPage: number;
+  /** Whether this instance searches prose at all. Cached for the same reason as
+      `perPage`: it is the server's answer, not something a client can infer, and
+      a cache hit that left it at its initial `false` made the scope selector
+      disappear for the whole TTL — catalog → package → Back is a cache hit. */
+  readmeSearchEnabled: boolean;
+  /** Whether the answer was cut at the prose cap. Stale in the other direction:
+      a truncated prose search followed by a cached name search left the
+      "showing the first N matches" note under a list it was not about. */
+  truncated: boolean;
 }
 const exploreCache = useExploreCache<PageResult>();
 const upstreamCache = useUpstreamCache<UpstreamPackageDto[]>();
@@ -420,6 +429,8 @@ async function fetchPackages() {
     packages.value = cached.items;
     total.value = cached.total;
     perPage.value = cached.perPage;
+    readmeSearchEnabled.value = cached.readmeSearchEnabled;
+    searchTruncated.value = cached.truncated;
     // `loading` has to be cleared here too, not only in the `finally` below.
     // This call already bumped `packagesSeq`, so any request still in flight
     // will fail its own `seq === packagesSeq` check and skip the `finally` —
@@ -451,23 +462,33 @@ async function fetchPackages() {
     // it can change under a hot reload, and a pager sized from a stale number
     // would offer pages the list does not have.
     const applied = body.per_page ?? perPage.value;
+    // Reported by the server rather than inferred: a client cannot tell "no
+    // package here says that" from "this instance does not search prose", and
+    // guessing would put the wrong empty state on screen. Cached alongside the
+    // rows for exactly that reason — a cache hit that did not restore them
+    // would be the guess, one TTL later.
+    const prose = body.readme_search_enabled === true;
+    const cut = body.truncated === true;
     exploreCache.set(
       reg,
       p,
       s,
       q,
-      { items: body.items, total: body.total, perPage: applied },
+      {
+        items: body.items,
+        total: body.total,
+        perPage: applied,
+        readmeSearchEnabled: prose,
+        truncated: cut,
+      },
       scope,
     );
     if (seq !== packagesSeq) return; // superseded — cached, not displayed
     packages.value = body.items;
     total.value = body.total;
     perPage.value = applied;
-    // Reported by the server rather than inferred: a client cannot tell "no
-    // package here says that" from "this instance does not search prose", and
-    // guessing would put the wrong empty state on screen.
-    readmeSearchEnabled.value = body.readme_search_enabled === true;
-    searchTruncated.value = body.truncated === true;
+    readmeSearchEnabled.value = prose;
+    searchTruncated.value = cut;
   } catch (e) {
     if (seq === packagesSeq) error.value = extractMessage(e);
   } finally {
@@ -517,6 +538,28 @@ let searchTimer: ReturnType<typeof setTimeout> | null = null;
 onBeforeUnmount(() => {
   if (searchTimer) clearTimeout(searchTimer);
 });
+
+/**
+ * Empty the box and re-run the unfiltered listing, at once.
+ *
+ * `search = ''` alone only emptied the ref: nothing refetches on a bare change
+ * (the one watcher on `search` is `syncQuery`), so the address bar went back to
+ * `/packages` while `packages` still held the failed search's zero rows — and
+ * because `search.trim()` was now falsy the empty state changed its story from
+ * "nothing matches that search" to "nothing has been pulled through", which is a
+ * claim about the registry rather than about the query. Only a reload got out
+ * of it.
+ *
+ * Undebounced, and without `fetchUpstream`, for the same reason `onScopeChange`
+ * is: there is no query left to ask upstream about.
+ */
+function onClearSearch() {
+  search.value = "";
+  upstreamResults.value = [];
+  page.value = 0;
+  if (searchTimer) clearTimeout(searchTimer);
+  void fetchPackages();
+}
 
 function onSearchInput(val: string) {
   search.value = val;
@@ -1097,7 +1140,7 @@ onMounted(() => {
             "
           >
             <template v-if="search.trim()" #action>
-              <Button size="sm" variant="outline" @click="search = ''">{{
+              <Button size="sm" variant="outline" @click="onClearSearch">{{
                 t("packageCatalog.clearSearch")
               }}</Button>
             </template>

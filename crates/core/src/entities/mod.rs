@@ -31,7 +31,7 @@ pub use readme::{
     ReadmeSource, ReadmeState,
 };
 pub use registry_kind::{
-    FetchSupport, ListingDocument, ListingSupport, ReadmeSupport, RegistryKind,
+    FetchArtifact, FetchSupport, ListingDocument, ListingSupport, ReadmeSupport, RegistryKind,
     UpstreamDetailSupport,
 };
 pub use sbom::{ArtifactSbom, SbomFormat, SbomSource};

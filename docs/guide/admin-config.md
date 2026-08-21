@@ -529,8 +529,10 @@ It is inert on a `local`-mode registry: there is no upstream to fetch from.
 
 The button is **not shown** where "fetch this version" has no single meaning —
 Maven's artifact is a set of files, a Terraform provider needs an OS and an
-architecture — and the page says why rather than showing a disabled button with
-no explanation. Which kinds those are is the *Fetchable* column of the
+architecture, a PyPI version is an sdist plus a wheel per interpreter and
+platform, a conda artifact needs a channel platform and a build string — and the
+page says why rather than showing a disabled button with no explanation. Which
+kinds those are is the *Fetchable* column of the
 [README support table](/registries/#readmes).
 
 See [what leaves this instance](/operations/egress#someone-presses-fetch).

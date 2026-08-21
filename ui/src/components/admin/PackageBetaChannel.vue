@@ -62,7 +62,7 @@ const {
       <p class="px-6 py-2 text-xs text-muted-foreground border-b">
         {{ t("packageBetaChannel.preReleaseVersionsAre") }}
       </p>
-      <Table>
+      <Table :label="t('a11y.betaMembersTableLabel')">
         <TableHeader>
           <TableRow>
             <TableHead>{{ t("common.type") }}</TableHead>

@@ -47,6 +47,31 @@ async fn make_explore_app_with_limits(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
+    make_explore_app_full(repo, versions_per_page, packages_per_page, true).await
+}
+
+/// The same fixture with `rbac.explore` off for every role on every registry:
+/// registries package managers may pull from and the console may not browse.
+async fn make_explore_app_no_explore(
+    repo: Arc<InMemoryRepo>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    make_explore_app_full(repo, None, None, false).await
+}
+
+async fn make_explore_app_full(
+    repo: Arc<InMemoryRepo>,
+    versions_per_page: Option<u64>,
+    packages_per_page: Option<u64>,
+    explore_allowed: bool,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
     let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
@@ -108,9 +133,21 @@ async fn make_explore_app_with_limits(
         user: regs.clone(),
         admin: regs.clone(),
         groups: HashMap::new(),
-        explore_anonymous: regs.clone(),
-        explore_user: regs.clone(),
-        explore_admin: regs.clone(),
+        explore_anonymous: if explore_allowed {
+            regs.clone()
+        } else {
+            Default::default()
+        },
+        explore_user: if explore_allowed {
+            regs.clone()
+        } else {
+            Default::default()
+        },
+        explore_admin: if explore_allowed {
+            regs.clone()
+        } else {
+            Default::default()
+        },
     });
     let registry_map = registry_map_for(&[
         ("github", "github"),
@@ -242,9 +279,6 @@ async fn explore_package_detail_with_upstream_skipped_returns_only_local_rows() 
     assert_eq!(body["name"], "lodash");
     assert_eq!(body["versions"], serde_json::json!([]));
     assert_eq!(body["upstream"]["attempted"], false);
-    assert!(body["gate"]["registry_accessible"]
-        .as_bool()
-        .unwrap_or(false));
 }
 
 /// And the default now answers, which is the whole point of RFC 0007 §2.3: the
@@ -275,19 +309,34 @@ async fn explore_package_detail_now_answers_for_a_package_held_nowhere() {
     }
 }
 
+/// A registry this caller may not browse is a `404`, not a page carrying a flag
+/// that says so.
+///
+/// It used to answer `200` with `gate.registry_accessible: false` and the whole
+/// version table underneath — including, on the upstream path, a fetch made on
+/// the caller's behalf. The listing and the stats have always filtered this
+/// registry out; the detail page is the door that was left open, and the README
+/// and image endpoints already refuse it.
+///
+/// The `404` is the package's own, so a denial cannot be told apart from a name
+/// that does not exist.
 #[actix_web::test]
-async fn explore_package_detail_inaccessible_registry() {
+async fn explore_package_detail_refuses_a_registry_the_caller_cannot_browse() {
     let app = make_explore_app(InMemoryRepo::new()).await;
     let req = TestRequest::get()
         .uri("/api/v1/explore/packages/unknown-reg/some-pkg")
         .insert_header(("Authorization", bearer(USER_TOKEN)))
         .to_request();
     let resp = call_service(&app, req).await;
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 404);
     let body: Value = read_body_json(resp).await;
-    assert!(!body["gate"]["registry_accessible"]
-        .as_bool()
-        .unwrap_or(true));
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not found"),
+        "{body}"
+    );
 }
 
 #[actix_web::test]
@@ -481,6 +530,129 @@ async fn seed_versions(repo: &Arc<InMemoryRepo>, name: &str, n: usize) {
         .await
         .unwrap();
     }
+}
+
+/// A version this instance holds no bytes of is `pending`, never `cached`.
+///
+/// The console used to grade this itself, from `firewall` alone, over three
+/// values — and an upstream-only candidate carries `Clear`, because the firewall
+/// has nothing to refuse about a version nobody can download from here yet. So
+/// the resolution matrix, the design system's signature device, rendered *held
+/// and verified* in full ink on precisely the rows the fetch button exists for.
+/// Graded on the side that knows what is held, it cannot say that.
+#[actix_web::test]
+async fn an_upstream_only_row_is_pending_and_a_held_one_is_cached() {
+    let repo = InMemoryRepo::new();
+    seed_versions(&repo, "lodash", 1).await;
+    let app = make_explore_app(repo).await;
+
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/packages/npm/lodash")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let body: Value = read_body_json(call_service(&app, req).await).await;
+
+    let rows = body["versions"].as_array().unwrap();
+    for row in rows {
+        let expected = if row["source"] == "upstream" {
+            "pending"
+        } else {
+            "cached"
+        };
+        assert_eq!(
+            row["state"], expected,
+            "state must follow what is held, not what the firewall had nothing to say about: {row}"
+        );
+    }
+    let states: Vec<&str> = rows.iter().map(|r| r["state"].as_str().unwrap()).collect();
+    assert!(
+        states.contains(&"pending") && states.contains(&"cached"),
+        "the fixture must produce both kinds of row: {states:?}"
+    );
+}
+
+/// The selected version's row travels with the response, whatever page it is on.
+///
+/// The console writes `?version=X&page=N` into the address bar itself, so a link
+/// it produces routinely names a version that is not on the page it also names.
+/// The subject region is rendered from this field; without it, a shared link
+/// dropped the state, the refusal reason, the advisories, the install line and
+/// the fetch button, while the README below still rendered that version's text —
+/// so the page looked loaded and was missing the answer.
+#[actix_web::test]
+async fn the_selected_row_travels_with_the_response_even_off_its_page() {
+    let repo = InMemoryRepo::new();
+    seed_versions(&repo, "lodash", 30).await;
+    let app = make_explore_app(repo).await;
+
+    // Newest first, so `1.000.0` is the *last* row of thirty — page 2 at ten a
+    // page. Asking for page 0 puts the selection off the page on purpose.
+    let req = TestRequest::get()
+        .uri("/api/v1/explore/packages/npm/lodash?version=1.000.0&page=0&per_page=10")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let body: Value = read_body_json(call_service(&app, req).await).await;
+
+    assert_eq!(body["selected_version"], "1.000.0");
+    assert_eq!(body["selected"]["version"], "1.000.0", "{body}");
+    assert!(
+        !body["versions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["version"] == "1.000.0"),
+        "the point of the test is that the selection is not on the page"
+    );
+    // Enriched like any drawn row, not a bare skeleton.
+    assert!(body["selected"]["state"].is_string());
+    assert!(body["selected"]["vulnerabilities"].is_array());
+}
+
+/// A caller who may browse **nothing** sees nothing — not everything.
+///
+/// `ExploreFilter::registries` is a scope, and every implementation of it reads
+/// an empty vector as *unfiltered*: `prepare_registries_param` binds `NULL` and
+/// the SQL is `$3::text[] IS NULL OR ps.registry = ANY($3)`; the in-memory
+/// repository is `filter.registries.is_empty() || contains(…)`. So the one
+/// endpoint whose job is to scope the catalogue handed the whole of it to an
+/// anonymous visitor on a server with `rbac.explore.anonymous = false`, and to
+/// any role denied explore everywhere.
+///
+/// Both callers here can still proxy from every registry — the packages are
+/// real and the rows exist — so an empty answer is the gate, not an absence.
+#[actix_web::test]
+async fn a_caller_with_no_browsable_registry_gets_no_rows_rather_than_all_of_them() {
+    let repo = InMemoryRepo::new();
+    seed_versions(&repo, "lodash", 2).await;
+    let app = make_explore_app_no_explore(repo).await;
+
+    for auth in [None, Some(USER_TOKEN), Some(ADMIN_TOKEN)] {
+        let mut req = TestRequest::get().uri("/api/v1/explore/packages");
+        if let Some(token) = auth {
+            req = req.insert_header(("Authorization", bearer(token)));
+        }
+        let resp = call_service(&app, req.to_request()).await;
+        assert_eq!(resp.status(), 200, "{auth:?}");
+        let body: Value = read_body_json(resp).await;
+        assert_eq!(body["items"], serde_json::json!([]), "{auth:?}: {body}");
+        assert_eq!(body["total"], 0, "{auth:?}: {body}");
+    }
+
+    // …and the same list *is* served once the registries are browsable, so the
+    // assertion above is about the gate and not about an empty repository.
+    let repo = InMemoryRepo::new();
+    seed_versions(&repo, "lodash", 2).await;
+    let allowed = make_explore_app(repo).await;
+    let resp = call_service(
+        &allowed,
+        TestRequest::get()
+            .uri("/api/v1/explore/packages")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["total"], 1, "{body}");
 }
 
 async fn detail_body(

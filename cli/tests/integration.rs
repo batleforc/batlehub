@@ -181,14 +181,20 @@ impl TestServer {
         let admin_svc = Arc::new(AdminService::new(repo.clone()));
         let token_repo = NullUserTokenRepository::arc();
 
+        // Explore follows proxy access, as `build_access_config` makes it in an
+        // unconfigured server: `rbac.explore.*` all default to `true`. Leaving
+        // these three empty modelled a server where nothing is browsable by
+        // anyone, which is not what the CLI's catalogue commands run against —
+        // `package readme` reads the set directly and would get the `404` an
+        // operator gets for a registry they took out of the console.
         let access_config = new_access_lock(AccessConfig {
             anonymous: registry_names.iter().cloned().collect(),
             user: registry_names.iter().cloned().collect(),
             admin: registry_names.iter().cloned().collect(),
             groups: HashMap::new(),
-            explore_anonymous: std::collections::HashSet::new(),
-            explore_user: std::collections::HashSet::new(),
-            explore_admin: std::collections::HashSet::new(),
+            explore_anonymous: registry_names.iter().cloned().collect(),
+            explore_user: registry_names.iter().cloned().collect(),
+            explore_admin: registry_names.iter().cloned().collect(),
         });
 
         let auth_providers: Vec<Arc<dyn AuthProvider>> =
@@ -379,26 +385,54 @@ fn wait_for_port(port: u16, timeout: Duration) -> bool {
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
+/// A `HOME` for one CLI subprocess that nothing else can see.
+///
+/// **`mktemp`, not `/tmp`.** Every test here runs the real binary, and the
+/// binary reads its `HOME`: `~/.netrc`, and `~/.config` whenever
+/// `XDG_CONFIG_HOME` does not decide the question. Handing them all the literal
+/// `/tmp` made that one directory shared state between processes that know
+/// nothing about each other — not only the tests in this file but every other
+/// suite `cargo test --workspace` runs at the same time, plus whatever else is
+/// already in `/tmp` on the machine. It held: two `setup detect` tests failed
+/// under a loaded parallel run and passed in isolation, which is the shape of a
+/// flake nobody can reproduce.
+///
+/// The returned handle must stay alive for the whole call — dropping it deletes
+/// the directory — which is why every caller binds it before spawning.
+fn scratch_home() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("batlehub-cli-home-")
+        .tempdir()
+        .expect("scratch HOME")
+}
+
 /// Run the CLI binary with env-injected server/token and return (success, stdout, stderr).
+///
+/// A fresh config directory per call, because none of these commands carries
+/// state from one invocation to the next: the token arrives in the environment
+/// and everything else is asked of the server. A test that *does* need a config
+/// directory to survive two calls uses [`cli_cmd_in`] with its own.
 fn cli_cmd(args: &[&str], server: &str, token: &str) -> (bool, String, String) {
-    cli_cmd_in(args, server, token, "/tmp/.xdg-batlehub-test")
+    let config = scratch_home();
+    cli_cmd_in(args, server, token, config.path().to_str().unwrap())
 }
 
 /// [`cli_cmd`] with a config directory of the caller's choosing.
 ///
 /// The auth tests read and write stored credentials, so each needs its own —
-/// sharing the default one would let a login in one test satisfy another.
+/// sharing one would let a login in one test satisfy another.
 fn cli_cmd_in(
     args: &[&str],
     server: &str,
     token: &str,
     config_home: &str,
 ) -> (bool, String, String) {
+    let home = scratch_home();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
         .args(args)
         .env("BATLEHUB_SERVER", server)
         .env("BATLEHUB_TOKEN", token)
-        .env("HOME", "/tmp")
+        .env("HOME", home.path())
         .env("XDG_CONFIG_HOME", config_home)
         .output()
         .expect("failed to run batlehub-cli binary");
@@ -1078,11 +1112,12 @@ fn auth_login_kubernetes_saves_config() {
     let token_path = token_file.to_str().unwrap();
     let srv = TestServer::start();
 
+    let home = scratch_home();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
         .args(["auth", "login", "--kubernetes-token-path", token_path])
         .env("BATLEHUB_SERVER", srv.base_url())
         .env("BATLEHUB_TOKEN", AUTH_TOKEN)
-        .env("HOME", "/tmp")
+        .env("HOME", home.path())
         .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())
         .output()
         .expect("failed to run batlehub-cli");
@@ -1898,9 +1933,10 @@ fn admin_export_audit_log_csv_to_file() {
 #[test]
 fn config_show_defaults() {
     let config_dir = tempfile::tempdir().unwrap();
+    let home = scratch_home();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
         .args(["config", "show"])
-        .env("HOME", "/tmp")
+        .env("HOME", home.path())
         .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())
         .output()
         .expect("failed to run batlehub-cli");
@@ -1921,10 +1957,14 @@ fn config_show_defaults() {
 #[test]
 fn config_set_then_show_masks_token() {
     let config_dir = tempfile::tempdir().unwrap();
+    // One `HOME` for all four calls — the config directory below is what has to
+    // persist between them, and this keeps them equally isolated from everything
+    // outside this test.
+    let home = scratch_home();
     let run = |args: &[&str]| {
         std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
             .args(args)
-            .env("HOME", "/tmp")
+            .env("HOME", home.path())
             .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())
             .output()
             .expect("failed to run batlehub-cli")
@@ -1957,9 +1997,10 @@ fn config_set_then_show_masks_token() {
 #[test]
 fn config_set_unknown_key_fails() {
     let config_dir = tempfile::tempdir().unwrap();
+    let home = scratch_home();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
         .args(["config", "set", "bogus", "value"])
-        .env("HOME", "/tmp")
+        .env("HOME", home.path())
         .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())
         .output()
         .expect("failed to run batlehub-cli");
@@ -1985,35 +2026,66 @@ fn setup_detect_json(dir: &std::path::Path) -> (bool, Vec<serde_json::Value>, St
 
 /// `setup detect` against `server` in `dir`, with `extra` flags in between.
 ///
-/// Each caller passes its own `config_home`: these run as subprocesses against
-/// the real binary, and a shared config directory would let one test's cached
-/// registry list answer another's question.
-fn setup_detect(
-    server: &str,
-    dir: &std::path::Path,
-    extra: &[&str],
-    config_home: &str,
-) -> (bool, String) {
+/// Its own `HOME` and its own config directory, both from `mktemp`: these run as
+/// subprocesses against the real binary, and a shared config directory would let
+/// one test's cached registry list answer another's question. The detection
+/// walks `HOME` too, so a shared one lets anything already sitting in `/tmp`
+/// decide what this test sees.
+fn setup_detect(server: &str, dir: &std::path::Path, extra: &[&str]) -> (bool, String, String) {
     let mut args: Vec<&str> = vec!["--server", server, "setup", "detect"];
     args.extend_from_slice(extra);
     args.push("--dir");
+    let home = scratch_home();
+    let config = scratch_home();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
         .args(&args)
         .arg(dir)
-        .env("HOME", "/tmp")
-        .env("XDG_CONFIG_HOME", config_home)
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", config.path())
         .output()
         .expect("failed to run batlehub-cli");
     (
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
     )
+}
+
+/// The marker `load_registries` prints on both of its fallback arms.
+const PLACEHOLDER_NOTE: &str = "using placeholders.";
+
+/// [`setup_detect`], for the tests that assert on what the *server* answered.
+///
+/// `load_registries` gives the server five seconds and then prints instructions
+/// carrying `<registry>` rather than failing — the right behaviour for a wizard,
+/// and a trap for a test that asserts on the resolved name. On a loaded machine
+/// (two test binaries at once, each starting its own in-process server) that
+/// deadline is missable, and the assertion then fails on the *snippet* while the
+/// reason sits in a stderr this helper used to throw away. So: retry, and if it
+/// never gets an answer, fail with the note rather than with a diff of the
+/// snippet.
+///
+/// The retry is for the deadline, not for a wrong answer — a server that
+/// responds with the wrong registry still fails on the first pass.
+fn setup_detect_resolved(server: &str, dir: &std::path::Path, extra: &[&str]) -> String {
+    let mut note = String::new();
+    for _ in 0..4 {
+        let (ok, stdout, stderr) = setup_detect(server, dir, extra);
+        assert!(ok, "setup detect failed: {stdout}\nstderr: {stderr}");
+        if !stderr.contains(PLACEHOLDER_NOTE) {
+            return stdout;
+        }
+        note = stderr;
+    }
+    panic!("setup detect never got an answer out of the test server: {note}");
 }
 
 fn setup_detect_json_depth(
     dir: &std::path::Path,
     depth: usize,
 ) -> (bool, Vec<serde_json::Value>, String) {
+    let home = scratch_home();
+    let config = scratch_home();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
         .args([
             "setup",
@@ -2025,8 +2097,8 @@ fn setup_detect_json_depth(
             &depth.to_string(),
         ])
         .env("BATLEHUB_SERVER", "http://127.0.0.1:1") // no real server needed
-        .env("HOME", "/tmp")
-        .env("XDG_CONFIG_HOME", "/tmp/.xdg-batlehub-detect-test")
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", config.path())
         .output()
         .expect("failed to run batlehub-cli");
     let ok = out.status.success();
@@ -2106,14 +2178,8 @@ fn setup_detect_names_the_configured_registry() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("package.json"), r#"{"name":"my-app"}"#).unwrap();
 
-    let (ok, stdout) = setup_detect(
-        &server.base_url(),
-        dir.path(),
-        &[],
-        "/tmp/.xdg-batlehub-detect-named",
-    );
+    let stdout = setup_detect_resolved(&server.base_url(), dir.path(), &[]);
 
-    assert!(ok, "setup detect failed: {stdout}");
     assert!(
         stdout.contains(&format!("registry={}/proxy/npm1/npm/", server.base_url())),
         "expected the configured registry name in the snippet; got:\n{stdout}"
@@ -2137,14 +2203,8 @@ fn setup_detect_uses_the_registry_subdomain_and_netrc_host() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("package.json"), r#"{"name":"my-app"}"#).unwrap();
 
-    let (ok, stdout) = setup_detect(
-        &server.base_url(),
-        dir.path(),
-        &[],
-        "/tmp/.xdg-batlehub-detect-subdomain",
-    );
+    let stdout = setup_detect_resolved(&server.base_url(), dir.path(), &[]);
 
-    assert!(ok, "setup detect failed: {stdout}");
     assert!(
         stdout.contains("registry=https://npm1.batlehub.example.com/npm/"),
         "expected the registry's own host in the snippet; got:\n{stdout}"
@@ -2173,14 +2233,8 @@ fn setup_detect_json_reports_the_resolved_registry() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"c\"\n").unwrap();
 
-    let (ok, stdout) = setup_detect(
-        &server.base_url(),
-        dir.path(),
-        &["--json"],
-        "/tmp/.xdg-batlehub-detect-json-reg",
-    );
+    let stdout = setup_detect_resolved(&server.base_url(), dir.path(), &["--json"]);
 
-    assert!(ok);
     let items: Vec<serde_json::Value> =
         serde_json::from_str(&stdout).expect("stdout should be a JSON array");
     assert_eq!(items[0]["registry_name"], serde_json::json!("cargo1"));
@@ -2198,17 +2252,19 @@ fn setup_detect_offline_keeps_the_placeholder() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("package.json"), r#"{"name":"my-app"}"#).unwrap();
 
-    let (ok, stdout) = setup_detect(
-        &server.base_url(),
-        dir.path(),
-        &["--offline"],
-        "/tmp/.xdg-batlehub-detect-offline",
-    );
+    let (ok, stdout, stderr) = setup_detect(&server.base_url(), dir.path(), &["--offline"]);
 
     assert!(ok, "setup detect failed: {stdout}");
     assert!(
         stdout.contains("/proxy/<registry>/npm/"),
         "expected the placeholder; got:\n{stdout}"
+    );
+    // The placeholder came from `--offline`, not from a fetch that failed or
+    // timed out — without this the test passes for the wrong reason on exactly
+    // the loaded machine where the distinction matters.
+    assert!(
+        !stderr.contains(PLACEHOLDER_NOTE),
+        "--offline must not contact the server at all; stderr: {stderr}"
     );
 }
 

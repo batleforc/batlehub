@@ -254,6 +254,13 @@ async fn handle_auth_login(
     entry.token = Some(access_token.clone());
     entry.oidc_refresh_token = paste.refresh_token;
     entry.oidc_expires_at = paste.expires_at;
+    // Recorded, because `resolve_token` sends it with every refresh. Without it
+    // the server falls back to `flows.first()`, so on a deployment with more
+    // than one provider the refresh token goes to the wrong token endpoint,
+    // comes back `400`, and the CLI keeps presenting an expired access token.
+    // The server's own echo wins over `--provider`: it names the flow that
+    // actually issued this token.
+    entry.oidc_provider = paste.provider.or_else(|| provider.clone());
     entry.kubernetes_token_path = None;
     cfg.save()?;
 

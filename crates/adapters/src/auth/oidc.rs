@@ -50,6 +50,15 @@ pub struct OidcTokens {
     /// The raw access token, kept for calls to the identity provider itself.
     /// Never used to establish identity.
     pub access_token: String,
+    /// Whether the provider actually issued an `id_token`.
+    ///
+    /// Stated rather than inferred from `session_token != access_token`: the two
+    /// are equal whenever the fallback fired *and* whenever a provider happens
+    /// to return the same string twice, and the callback needs to tell those
+    /// apart. It decides whether OIDC Core §3.1.3.7 step 11 applies at all —
+    /// the `nonce` check is a rule about ID tokens, and an access token has no
+    /// claim to check.
+    pub has_id_token: bool,
     pub refresh_token: Option<String>,
     /// Lifetime of the access token in seconds as reported by the provider.
     pub expires_in: Option<u64>,
@@ -279,6 +288,7 @@ impl OidcSsoFlow {
             // did before. `session_token_is_a_jwt` is what tells an operator
             // when that fallback has landed them on an opaque credential.
             session_token: id_token.clone().unwrap_or_else(|| access_token.clone()),
+            has_id_token: id_token.is_some(),
             access_token,
             refresh_token: resp["refresh_token"].as_str().map(str::to_owned),
             expires_in: resp["expires_in"].as_u64(),

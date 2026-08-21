@@ -5,6 +5,7 @@ use super::{
     LocalRegistryService, PackageId, ProxyService, RegistryMap, RegistryModeMap, Responder,
     UpstreamMap,
 };
+use crate::handlers::proxy::common::attachment_disposition;
 use crate::handlers::proxy::upstream::{cached_forward, Outbound};
 use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 
@@ -176,7 +177,7 @@ pub async fn download_tarball(
     let (registry, package, version) = path.into_inner();
     require_npm(&registry, &map)?;
 
-    serve_local_or_proxy_artifact(
+    let mut resp = serve_local_or_proxy_artifact(
         svc,
         local_svc,
         &mode_map,
@@ -193,7 +194,25 @@ pub async fn download_tarball(
             append_signature: false,
         },
     )
-    .await
+    .await?;
+    resp.headers_mut().insert(
+        actix_web::http::header::CONTENT_DISPOSITION,
+        attachment_disposition(&tarball_file_name(&package, &version))?,
+    );
+    Ok(resp)
+}
+
+/// npm's own name for a version's tarball: `pkg-1.2.3.tgz`, with the scope
+/// dropped.
+///
+/// `@babel/core` publishes `core-7.24.0.tgz`, not `@babel/core-7.24.0.tgz` —
+/// registries serve it under `/@babel/core/-/core-7.24.0.tgz`, and the slash in
+/// the scope is not a filename character in the first place. Keeping the scope
+/// would put a name on disk that no npm user recognises and that
+/// `sanitize_filename` would have to mangle anyway.
+fn tarball_file_name(package: &str, version: &str) -> String {
+    let base = package.rsplit('/').next().unwrap_or(package);
+    format!("{base}-{version}.tgz")
 }
 
 /// `npm audit`, quick mode — on the path npm sends.
@@ -393,4 +412,24 @@ async fn forward_npm_audit(
         Outbound::post_json(format!("{upstream}{endpoint}"), body),
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tarball_file_name;
+
+    /// npm's own name for the file, which is not the package's name.
+    ///
+    /// A scoped package publishes `core-7.24.0.tgz` — registries serve it at
+    /// `/@babel/core/-/core-7.24.0.tgz` — so keeping the scope would put a name
+    /// on disk that no npm user recognises, and one whose `/` is not a filename
+    /// character in the first place.
+    #[test]
+    fn scoped_packages_drop_the_scope() {
+        assert_eq!(
+            tarball_file_name("@babel/core", "7.24.0"),
+            "core-7.24.0.tgz"
+        );
+        assert_eq!(tarball_file_name("lodash", "4.17.21"), "lodash-4.17.21.tgz");
+    }
 }

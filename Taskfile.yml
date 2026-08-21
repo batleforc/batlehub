@@ -11,6 +11,8 @@ vars:
   # "Browser sidecar" task group below.
   BROWSER_EXEC: kubectl exec ${DEVWORKSPACE_NAMESPACE:+-n ${DEVWORKSPACE_NAMESPACE}} ${HOSTNAME} -c browser --
   BROWSER_LOGS: kubectl logs ${DEVWORKSPACE_NAMESPACE:+-n ${DEVWORKSPACE_NAMESPACE}} ${HOSTNAME} -c browser
+  # Same hop into the dex sidecar — see the "Dex" task group below.
+  DEX_LOGS: kubectl logs ${DEVWORKSPACE_NAMESPACE:+-n ${DEVWORKSPACE_NAMESPACE}} ${HOSTNAME} -c dex
 
 tasks:
   init:
@@ -568,11 +570,28 @@ tasks:
     cmds:
       - cargo run -p batlehub-server -- --config config.example.toml
 
+  # config.example-space.toml names no workspace — it reads the three URLs below
+  # out of the environment, so the tracked file stays workspace-agnostic and the
+  # `url` helper remains the single source of truth for what this workspace is
+  # called. `url` prints a trailing slash; every one of these is concatenated
+  # with a path or compared against an `iss`, so all three are stripped.
+  #
+  # LOCAL=1 mirrors `task dex:config LOCAL=1`: loopback everywhere, reachable
+  # from the server and the che-browser sidecar but not from your own browser.
+  # The two must agree — the issuer here is checked against the one dex mints.
   run:space:
-    desc: Start the server with the example config (requires postgres)
+    desc: "Start the server against the dex sidecar (requires postgres; LOCAL=1 for the loopback issuer)"
     env:
       OIDC_CLIENT_SECRET: "proxy-auth-secret"
+      OIDC2_CLIENT_SECRET: "proxy-auth-secret"
+      BATLEHUB_FRONT_URL:
+        sh: if [ -n "{{.LOCAL}}" ]; then echo http://localhost:5173; else url front | sed 's#/$##'; fi
+      BATLEHUB_BACK_URL:
+        sh: if [ -n "{{.LOCAL}}" ]; then echo http://localhost:8080; else url back | sed 's#/$##'; fi
+      BATLEHUB_DEX_ISSUER:
+        sh: if [ -n "{{.LOCAL}}" ]; then echo http://localhost:9000; else url dex | sed 's#/$##'; fi
     cmds:
+      - 'echo "front → $BATLEHUB_FRONT_URL    back → $BATLEHUB_BACK_URL    dex → $BATLEHUB_DEX_ISSUER"'
       - cargo run -p batlehub-server -- --config config.example-space.toml
 
   run:s3:
@@ -795,7 +814,13 @@ tasks:
       # behind requiresAuth/requiresAdmin and would redirect to /login, so
       # scanning them would measure the login page 14 times over — see the
       # note in RFC 0003 §13 about what this gate still cannot see.
-      ROUTES: '{{.ROUTES | default "/ /login /packages /setup /tools/access-check /tools/url-mapper"}}'
+      #
+      # Keep this list identical to the `for route in …` loop in
+      # `.github/workflows/front-design.yaml`: a local reproduction that scans
+      # fewer routes than CI is the kind of gate you run, see green, push, and
+      # then watch go red — `/packages/npm/react` was in CI's loop and not in
+      # this one for exactly one commit.
+      ROUTES: '{{.ROUTES | default "/ /login /packages /packages/npm/react /setup /tools/access-check /tools/url-mapper"}}'
       # cd into the repo so the detector loads DESIGN.md and .impeccable/ — a
       # design-system-aware scan is the whole point of R6.
       ENV: 'export PATH={{.NODE_BIN}}:/usr/local/bin:/usr/bin:/bin PUPPETEER_EXECUTABLE_PATH=/opt/chrome/chrome CI=1; cd {{.ROOT_DIR}};'
@@ -807,8 +832,11 @@ tasks:
       # until it passes.
       SCAN: 'for r in {{.ROUTES}}; do echo "→ $r"; npx --yes impeccable detect --viewport "$V" "{{.BASE}}$r" || fail=1; done; [ -z "$fail" ]'
     cmds:
-      # The same two viewports CI uses: contrast and hierarchy are width-blind,
-      # overflow and reflow are not.
+      # The same two viewports CI's `impeccable detect` loop uses, and two is
+      # right *here*: these are anti-pattern rules over what is on the page, and
+      # they do not change between 1024 and 768. What does change at those widths
+      # is overflow and reflow, so the two middle widths went into
+      # `ui:design:routes` below, which measures them — it scans four.
       - '{{.BROWSER_EXEC}} sh -c {{printf "%s V=1440x900; %s" .ENV .SCAN | squote}}'
       - '{{.BROWSER_EXEC}} sh -c {{printf "%s V=390x844; %s" .ENV .SCAN | squote}}'
       # axe and the ramp check now come from `ui:design:routes`, which measures
@@ -820,8 +848,11 @@ tasks:
       - task: ui:design:routes
         vars: { PUBLIC_ONLY: "--public-only", BASE: "{{.BASE}}" }
 
-  # One gate, every rendered route, both viewports — axe plus the type ramp and
-  # the display face (RFC 0004-bis §4.4).
+  # One gate, every rendered route, four viewports — axe plus the type ramp and
+  # the display face (RFC 0004-bis §4.4). 1440 and 390 were the original pair;
+  # 1024 and 768 were added because the band between them is where fixed table
+  # columns starve the flexible one, and both ends of the old pair are blind to
+  # it (390 releases every fixed width, 1440 has room for all of them).
   #
   # The 15 admin pages and the 4 account pages sit behind router guards, and
   # both `impeccable detect` and `@axe-core/cli` scan by URL with no way to
@@ -834,8 +865,11 @@ tasks:
   #
   #   BATLEHUB_ADMIN_TOKEN=… BATLEHUB_USER_TOKEN=… task ui:design:routes
   #
-  # `/packages` is pinned as an expected failure; see EXPECTED_FAIL in the
-  # script and RFC 0004-bis O3.
+  # Nothing is pinned in the script's EXPECTED_FAIL, and that is the result
+  # rather than the absence of one: `/packages` sat in it against its own design
+  # proof until RFC 0004-bis O3 was settled, and the pass that settled it fixed
+  # the page instead of the proof. A pinned route that comes back clean fails
+  # this gate by design, so an empty EXPECTED_FAIL is the honest entry.
   ui:design:routes:
     desc: axe + type ramp over every rendered route (needs BATLEHUB_{ADMIN,USER}_TOKEN)
     deps: [browser:check]
@@ -1057,6 +1091,132 @@ tasks:
       - mc alias set local http://localhost:9900 rustfsadmin rustfsadmin
       - mc mb --ignore-existing local/artifacts
 
+  # ── Dex, the workspace's OIDC provider ────────────────────────────────────────
+  # The sidecar is declared in devfile.yaml and listens on 9000, the port the
+  # compose Authentik uses — so `localhost:9000` is the local IdP either way and
+  # only `issuer_url` tells them apart. Everything here is about one value: the
+  # issuer. It has to be a single URL that the browser is redirected to, that the
+  # backend fetches `/.well-known/openid-configuration` from, and that comes back
+  # as the `iss` this server then checks — and in a workspace that URL contains
+  # the workspace name, so it cannot be committed. Hence a rendered config.
+
+  dex:config:
+    desc: "Render dev/dex/config.yaml and the matching [[auth]] block for this workspace (LOCAL=1 for an issuer only the pod can reach)"
+    cmds:
+      - |
+        set -eu
+        if [ -n "{{.LOCAL}}" ]; then
+          # Reachable from the backend and the che-browser sidecar (one pod, one
+          # network namespace), not from your own browser. `is_secure_issuer_url`
+          # lets plain HTTP through for loopback exactly so this works.
+          issuer="http://localhost:9000"
+          back="http://localhost:8080"
+          front="http://localhost:5173"
+        else
+          # `url` prints a trailing slash; the issuer must not have one, or the
+          # `iss` dex mints and the `issuer_url` in the config stop matching.
+          issuer="$(url dex | sed 's#/$##')"
+          back="$(url back | sed 's#/$##')"
+          front="$(url front | sed 's#/$##')"
+        fi
+        # One callback for every provider: BatleHub has a single callback route
+        # and resolves the provider from the stored login state, so a
+        # per-provider path would be a 404 after a successful password.
+        sed -e "s#__ISSUER__#$issuer#g" \
+            -e "s#__CALLBACK__#$back/api/v1/auth/oidc/callback#g" \
+            dev/dex/config.tmpl.yaml > dev/dex/config.yaml
+        cat > dev/dex/auth.toml <<EOF
+        # Generated by \`task dex:config\`. Replace the two [[auth]] type = "oidc"
+        # blocks in your server config with these, then restart the server.
+        #
+        # Not needed for \`task run:space\`: config.example-space.toml already
+        # describes this provider and reads the same three URLs out of the
+        # environment. This file is for a config of your own.
+        #
+        # role_claim is "email", not "groups": dex's password DB carries no group
+        # membership, so a groups claim would never arrive and every login would
+        # map to Role::Anonymous.
+        [[auth]]
+        type = "oidc"
+        issuer_url = "$issuer"
+        client_id = "proxy-auth"
+        client_secret = "\${OIDC_CLIENT_SECRET}"   # export OIDC_CLIENT_SECRET=proxy-auth-secret
+        redirect_uri = "$back/api/v1/auth/oidc/callback"
+        scopes = ["openid", "profile", "email"]
+        frontend_url = "$front"
+        user_id_claim = "email"
+        role_claim = "email"
+
+        [auth.role_mappings]
+        "admin@example.com" = "admin"
+        "dev@example.com" = "user"
+
+        # Same redirect_uri as the block above, deliberately: one callback route
+        # serves every provider, and the provider is read from the login state
+        # rather than the path. Reach this one with
+        # /api/v1/auth/oidc/login?provider=oidc2.
+        [[auth]]
+        name = "oidc2"
+        type = "oidc"
+        issuer_url = "$issuer"
+        client_id = "proxy-auth"
+        client_secret = "\${OIDC2_CLIENT_SECRET}"  # export OIDC2_CLIENT_SECRET=proxy-auth-secret
+        redirect_uri = "$back/api/v1/auth/oidc/callback"
+        scopes = ["openid", "profile", "email"]
+        frontend_url = "$front"
+        user_id_claim = "email"
+        role_claim = "email"
+
+        [auth.role_mappings]
+        "admin@example.com" = "admin"
+        "dev@example.com" = "user"
+
+        # And so the SPA on $front may call the API at all — absent means
+        # same-origin only, which is every request failing with a 400.
+        # [server]
+        # cors_allowed_origins = ["$front"]
+        EOF
+        echo "dev/dex/config.yaml   issuer $issuer"
+        echo "dev/dex/auth.toml     the [[auth]] blocks to paste into your server config"
+        echo
+        echo "The sidecar picks the config up on its own if it is still waiting;"
+        echo "if dex was already running, restart the workspace. Then: task dex:check"
+
+  dex:check:
+    desc: Fetch dex's discovery document — proves the sidecar is up and says which issuer it is serving
+    cmds:
+      - |
+        set -eu
+        # Always over loopback: this asks whether dex is *running*, and going out
+        # to the gateway to answer that would confuse a down sidecar with a down
+        # ingress. The issuer inside the document is the public one either way.
+        curl -sf http://localhost:9000/.well-known/openid-configuration \
+          | python3 -c 'import json,sys; d=json.load(sys.stdin); print("issuer:  ", d["issuer"]); print("authz:   ", d["authorization_endpoint"]); print("jwks:    ", d["jwks_uri"])'
+
+  dex:logs:
+    desc: Tail the dex sidecar's logs
+    cmds:
+      - '{{.DEX_LOGS}} {{.CLI_ARGS}}'
+
+  dex:token:
+    desc: "Mint a JWT without a browser, for curl (task dex:token -- admin@example.com password)"
+    cmds:
+      - |
+        set -eu
+        # The password grant, which dex serves for a client that asks for it. The
+        # browser flow is what SSO uses; this is for probing the API by hand.
+        args="{{.CLI_ARGS}}"
+        case "$args" in
+          *\ *) ;;
+          *) echo "usage: task dex:token -- <email> <password>" >&2; exit 1 ;;
+        esac
+        user="${args%% *}"; pass="${args##* }"
+        curl -sf http://localhost:9000/token \
+          -d grant_type=password -d scope="openid email profile" \
+          -d client_id=proxy-auth -d client_secret=proxy-auth-secret \
+          -d "username=$user" -d "password=$pass" \
+          | python3 -c 'import json,sys; print(json.load(sys.stdin)["id_token"])'
+
   # ── The documentation site (VitePress) ──────────────────────────────────────────────────
 
   docs:dev:
@@ -1231,7 +1391,7 @@ tasks:
   # ── The docs site's design gates (RFC 0005 phase 4) ──────────────────────────
   # Until these existed the public site's entire design coverage was one static
   # source scan, while the internal console had axe plus a type-ramp check over
-  # 30 rendered route/role pairs at two viewports. The surface every prospective
+  # 31 rendered route/role pairs at four viewports. The surface every prospective
   # user sees was the one nobody measured in a browser.
 
   docs:design:

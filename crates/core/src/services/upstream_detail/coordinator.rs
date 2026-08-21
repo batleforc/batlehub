@@ -21,6 +21,19 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Notify;
 
+/// How many absences may be remembered at once.
+///
+/// The keys are `{registry}:{package}` strings a caller chooses, and
+/// `/api/v1/explore/packages/{registry}/{name}` is reachable without
+/// authentication — so without a cap, anything walking the namespace writes one
+/// permanent entry per `404` and the map grows for the life of the process.
+///
+/// Sized to be a bound rather than a tuning knob: 100 000 entries is far more
+/// than the working set of a real instance's genuinely-missing coordinates, and
+/// small enough that the worst case is tens of megabytes rather than the whole
+/// heap.
+const ABSENT_CAP: usize = 100_000;
+
 /// Per-process coordination for the discovery read.
 #[derive(Default)]
 pub struct UpstreamDetailCoordinator {
@@ -66,6 +79,15 @@ impl UpstreamDetailCoordinator {
     /// timeout the caller proceeds on its own, which costs a duplicate request
     /// in a situation that is already broken.
     pub async fn claim(self: &Arc<Self>, key: &str, wait: Duration) -> Option<FlightGuard> {
+        // One deadline for the whole call, not one per turn of the loop.
+        //
+        // The loop is re-entered whenever the key is re-claimed under us, and
+        // again whenever a wake finds the key still held — so a `wait` measured
+        // from the top of each iteration is not a bound at all: a popular
+        // coordinate under continuous contention could hold a reader for a
+        // multiple of it, which is exactly the "a wedged holder must not hold
+        // every other reader with it" this promises.
+        let deadline = Instant::now() + wait;
         loop {
             let waiter = {
                 let mut in_flight = self.in_flight.lock().unwrap();
@@ -80,11 +102,52 @@ impl UpstreamDetailCoordinator {
                     }
                 }
             };
-            // `notified()` is registered before the lock is dropped above only
-            // in the sense that the `Arc` was cloned under it; a holder that
-            // finishes in between wakes nothing, so the loop re-checks the map
-            // rather than waiting forever.
-            if tokio::time::timeout(wait, waiter.notified()).await.is_err() {
+            // Register *before* re-checking the map, then re-check, then wait.
+            //
+            // The order is the whole of the fix. `notify_waiters()` wakes only
+            // waiters already registered, and `FlightGuard::drop` removes the
+            // key and notifies in one step — so a holder that finished between
+            // the lock being dropped above and this future being polled woke
+            // nobody, and a plain `timeout(wait, waiter.notified())` then sat
+            // out the entire `wait` (ten seconds on the detail path) before the
+            // re-check below could tell it the answer had been in the cache the
+            // whole time. The caller does not "proceed on its own" after that:
+            // it reads the cache, finds the entry, and the page it renders spent
+            // ten seconds waiting for something already done.
+            //
+            // `enable()` registers the waiter without awaiting, so any
+            // `notify_waiters()` from here on is guaranteed to reach it; the
+            // re-check then covers the window that closed before it.
+            //
+            // The re-check is on the `Notify`'s *identity*, not on the key being
+            // present. The key alone is not enough: the holder may have finished
+            // **and** a fresh caller claimed the key again, both inside the same
+            // window — in which case the map says "in flight" while the waiter
+            // that was just registered belongs to a `Notify` nobody holds any
+            // more and nothing will ever signal. `contains_key` reads that as
+            // "still running" and parks for the whole `wait`, which is the ten
+            // seconds this fix exists to avoid. Same `Arc`: wait on it. Different
+            // `Arc`: start over and register on the one the new holder will
+            // actually signal.
+            let notified = waiter.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let still_ours = {
+                let in_flight = self.in_flight.lock().unwrap();
+                in_flight
+                    .get(key)
+                    .map(|current| Arc::ptr_eq(current, &waiter))
+            };
+            match still_ours {
+                // Gone: the holder finished and the answer is in the cache.
+                None => return None,
+                // Re-claimed under us; the waiter above is registered on a dead
+                // `Notify`.
+                Some(false) => continue,
+                Some(true) => {}
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if tokio::time::timeout(left, notified).await.is_err() {
                 tracing::debug!(key, "upstream detail: waited out the in-flight read");
                 return None;
             }
@@ -99,17 +162,49 @@ impl UpstreamDetailCoordinator {
         if ttl.is_zero() {
             return;
         }
-        self.absent
-            .lock()
-            .unwrap()
-            .insert(key.to_owned(), Instant::now() + ttl);
+        let now = Instant::now();
+        let mut absent = self.absent.lock().unwrap();
+        // Sweep before growing past the cap, and only then.
+        //
+        // Dropping expired entries "as they are found" is not enough on its own:
+        // a key is written once and, if nobody ever asks for that coordinate
+        // again, is never looked at again either. The keys are package names an
+        // unauthenticated caller chooses, so anything walking
+        // `/api/v1/explore/packages/{registry}/{random}` writes a permanent
+        // entry per 404 and the map grows for the life of the process.
+        //
+        // The sweep is O(n) and runs at most once per `ABSENT_CAP` inserts, so
+        // the amortised cost is constant. If every entry is still live the cap
+        // is enforced by clearing outright: a negative cache is an optimisation,
+        // and losing it costs one upstream request per forgotten key, which is
+        // the correct thing to trade for a bound.
+        if absent.len() >= ABSENT_CAP {
+            absent.retain(|_, until| *until > now);
+            if absent.len() >= ABSENT_CAP {
+                absent.clear();
+            }
+        }
+        // `checked_add`, not `+`: `ttl` is `negative_ttl_secs` straight out of
+        // the config and nothing bounds it, so an operator who writes a very
+        // large number would otherwise panic the task handling the first
+        // upstream `404` — a config typo taking out a page request. A deadline
+        // that cannot be represented is one that never expires, which is what
+        // the operator asked for anyway.
+        let Some(until) = now.checked_add(ttl) else {
+            tracing::warn!(
+                ttl_secs = ttl.as_secs(),
+                "upstream detail: negative_ttl is too large to represent; not remembering this \
+                 absence"
+            );
+            return;
+        };
+        absent.insert(key.to_owned(), until);
     }
 
     /// Whether this coordinate is remembered as absent.
     ///
-    /// Expired entries are dropped as they are found rather than by a sweep:
-    /// the map is only read on the path that writes it, so it cannot grow
-    /// without being walked.
+    /// Expired entries are dropped as they are found; `record_absent` sweeps
+    /// the ones nobody comes back for.
     pub fn is_absent(&self, key: &str) -> bool {
         let mut absent = self.absent.lock().unwrap();
         match absent.get(key) {

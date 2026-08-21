@@ -166,12 +166,28 @@ fuzz_target!(|data: &[u8]| {
 
     // `url(` may only ever be followed by a fragment — and only when it is in an
     // attribute value, for the same reason.
+    //
+    // Read the target the way `safe_value` reads it, not the way it is spelled.
+    // The sanitiser compacts whitespace out and strips a surrounding quote before
+    // deciding, then emits the value verbatim (with `'` escaped to `&apos;` by
+    // the serialiser), so `fill="url( #g)"` and `stroke="url('#h')"` are accepted
+    // and come out looking like they name something else. A `starts_with('#')` on
+    // the raw text called both a bypass — a false positive on an input a badge
+    // really writes, and the third of exactly this kind this target has had.
     for (idx, _) in lower.match_indices("url(") {
         if !inside_a_tag(idx) {
             continue;
         }
+        let target: String = lower[idx + 4..]
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let target = target
+            .trim_start_matches("&apos;")
+            .trim_start_matches("&quot;")
+            .trim_start_matches(['\'', '"']);
         assert!(
-            lower[idx + 4..].starts_with('#'),
+            target.starts_with('#'),
             "url() in an attribute names something other than a fragment: {text:?} (from {data:?})"
         );
     }

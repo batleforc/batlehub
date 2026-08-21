@@ -28,7 +28,7 @@ use futures::StreamExt;
 
 use super::{web, AppError, Arc, AuthIdentity, Deserialize, IntoParams, Serialize, ToSchema};
 use batlehub_core::{
-    entities::{PackageId, RegistryKind, Role},
+    entities::{RegistryKind, Role},
     services::{LocalRegistryService, ProxyRequest, ProxyResponse, ProxyService},
 };
 
@@ -92,6 +92,7 @@ pub async fn explore_fetch_version(
     local_svc: web::Data<Arc<LocalRegistryService>>,
     proxy_svc: web::Data<Arc<ProxyService>>,
     registry_map: web::Data<RegistryMap>,
+    access: web::Data<crate::AccessConfigLock>,
 ) -> Result<web::Json<FetchResponse>, AppError> {
     let FetchPath {
         registry,
@@ -141,6 +142,37 @@ pub async fn explore_fetch_version(
         .coded(FETCH_UNAUTHENTICATED));
     }
 
+    // Gate: `rbac.explore` on the registry — the same gate `explore_detail`,
+    // `explore_readme` and the image endpoint apply, and the one this endpoint
+    // was missing. Without it the console's own API is a door around it: a
+    // signed-in non-admin who gets `404` from
+    // `GET …/explore/packages/{registry}/{name}` still learns from this
+    // endpoint's `409 fetch.already-held` exactly which versions the instance
+    // holds, and can drive it into fetching the ones it does not — into a
+    // registry they are not allowed to browse at all.
+    //
+    // `404` and not `403`, exactly as the visibility check above: denied and
+    // absent look identical from outside. **After** the anonymous refusal, not
+    // before it: `explore.anonymous` is commonly off, and a `404` here would
+    // otherwise answer an unauthenticated caller who should be told to sign in.
+    // Neither answer leaks anything — an anonymous caller gets `401` whatever
+    // the registry, and a signed-in one gets a `404` that says nothing about
+    // whether the package exists.
+    if !access
+        .read()
+        .await
+        .explore_accessible_registries_for(&identity)
+        .contains(&registry)
+    {
+        tracing::debug!(
+            registry = %registry, package = %name,
+            "explore fetch: registry not browsable by this caller"
+        );
+        return Err(AppError::not_found(format!(
+            "package '{name}' not found in registry '{registry}'"
+        )));
+    }
+
     // The operator's switch. It admits nothing — the fetch is a download the
     // caller could already run with `curl` — so it exists for the operator who
     // wants the console strictly read-only, which is a legitimate posture and
@@ -176,15 +208,24 @@ pub async fn explore_fetch_version(
             "registry '{registry}' not found"
         )));
     };
-    let support = kind.fetchable_by_version();
-    if let Some(reason) = support.reason() {
+    // The coordinate comes from the kind's own table rather than being built
+    // here, because it has to be *byte-identical* to the one the package
+    // manager's download builds — sub-coordinate and normalisation included.
+    // Built here, it was `{registry}/{name}/{version}` for every kind: the
+    // fetch stored `artifact:npm1/lodash/4.17.21` while `npm install` reads
+    // `artifact:npm1/lodash/4.17.21/tarball`, so the button reported a success
+    // that filled a slot nothing reads and left the next install going upstream
+    // — and the `409` check below could never match a genuinely cached version.
+    let Some(package_id) = kind.fetch_coordinate(&registry, &name, &version) else {
+        // `fetch_coordinate` is `None` exactly when the kind cannot name one
+        // artifact for a version, which is when `fetchable_by_version` carries
+        // the reason to show.
+        let reason = kind
+            .fetchable_by_version()
+            .reason()
+            .unwrap_or("this registry type cannot fetch a version by coordinate");
         return Err(AppError::bad_request(reason.to_owned()).coded(FETCH_UNSUPPORTED));
-    }
-
-    let mut package_id = PackageId::new(&registry, &name, &version);
-    if let Some(artifact) = support.artifact() {
-        package_id = package_id.with_artifact(artifact);
-    }
+    };
 
     // Already here? Then this would be a cache read dressed as a fetch, and the
     // row the reader is looking at is out of date rather than upstream-only.

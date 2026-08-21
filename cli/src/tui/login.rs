@@ -80,6 +80,9 @@ impl LoginWidget {
                 cfg.default.token = Some(paste.access_token);
                 cfg.default.oidc_refresh_token = paste.refresh_token;
                 cfg.default.oidc_expires_at = paste.expires_at;
+                // The provider the redirect names, so refreshes go back to the
+                // endpoint that issued this token rather than to `flows.first()`.
+                cfg.default.oidc_provider = paste.provider;
                 cfg.default.kubernetes_token_path = None;
             }
             LoginMethod::Kubernetes => {

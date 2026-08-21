@@ -376,11 +376,15 @@ type = "kubernetes"
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `name` | string | `"kubernetes"` | Provider name; becomes the group prefix |
-| `api_server` | string | from `KUBERNETES_SERVICE_HOST` / `KUBERNETES_SERVICE_PORT` env | Kubernetes API server URL |
+| `api_server` | string | from `KUBERNETES_SERVICE_HOST` / `KUBERNETES_SERVICE_PORT` env | Kubernetes API server URL. **Must be `https://`** — see below |
 | `ca_cert_path` | string | `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt` | CA cert for API server TLS verification |
 | `token_path` | string | `/var/run/secrets/kubernetes.io/serviceaccount/token` | batlehub's own service account token for TokenReview calls; re-read each request to handle automatic rotation |
 | `audiences` | string[] | `["batlehub"]` | Audiences sent in the TokenReview request, **and required back in its response** — see below |
 | `role_mappings` | map | `{}` | Maps Kubernetes usernames or group names to proxy roles |
+
+**`api_server` must be `https://`, and the server refuses to start otherwise** (plain HTTP is accepted for `localhost` and `127.0.0.1` only, as it is for an OIDC `issuer_url`). The rule is stricter here than it looks: every TokenReview carries BatleHub's *own* service account token, and the reply decides the caller's identity. Anyone sitting on a cleartext path both learns that token and can answer `authenticated: true` with `system:serviceaccount:…`, which `role_mappings` will translate into whatever role that key names — up to `admin`. Leave `api_server` unset in-cluster and the default is `https://` by construction.
+
+**Every `[[auth]]` `name` must be unique across all provider types**, and the server refuses to start on a collision. The name is not a label: it is what a session, a stored OIDC refresh token and an unmapped group (`"k8s-prod:team-a"`) are attributed to. Two providers sharing one are one provider as far as all of that is concerned — a `type = "kubernetes"` provider named `"corp"` would let a service account act on the sessions and personal access tokens of the OIDC provider named `"corp"`.
 
 **Role mapping keys:** Kubernetes sets `username: "system:serviceaccount:<namespace>:<name>"` and `groups: ["system:serviceaccounts", "system:serviceaccounts:<namespace>", ...]`. When a token matches multiple keys, the highest role wins.
 

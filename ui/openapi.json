@@ -3688,6 +3688,9 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "The registry is not browsable by this caller, or the package is not visible to them"
           }
         },
         "security": [
@@ -3747,6 +3750,20 @@
                 "both"
               ]
             }
+          },
+          {
+            "name": "upstream",
+            "in": "query",
+            "description": "Whether the derived-from-upstream fallback may run.\n\nThe same key, the same values and the same meaning as the detail\nendpoint's — a caller who asks one for a local-only answer means it of\nboth, and the CLI's `--no-upstream` sends it to whichever endpoint the\nsubcommand happens to call. `serde_urlencoded` drops unknown keys\nsilently, so leaving this undeclared did not reject `upstream=skip`; it\naccepted it, ignored it, and went to the network anyway.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Whether the discovery read may run for this request.",
+              "enum": [
+                "auto",
+                "skip"
+              ]
+            }
           }
         ],
         "responses": {
@@ -3764,7 +3781,7 @@
             "description": "The version is blocked; the body carries the reason"
           },
           "404": {
-            "description": "No README, or the package is not visible to this caller"
+            "description": "No README, or the registry is not browsable by this caller, or the package is not visible to them"
           }
         },
         "security": [
@@ -3896,7 +3913,7 @@
             "description": "The version is blocked; the body carries the reason"
           },
           "404": {
-            "description": "No such image, or the package is not visible to this caller"
+            "description": "No such image, or the registry is not browsable by this caller, or the package is not visible to them"
           }
         },
         "security": [
@@ -14989,6 +15006,17 @@
           "registry": {
             "type": "string"
           },
+          "selected": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ExploreVersionDto",
+                "description": "The selected version's row, whatever page it is on.\n\n`selected_version` names it; this *is* it. The console renders its subject\nregion from this rather than from whatever happens to be in `versions`,\nbecause the two are routinely different: the page writes `?version=X&page=N`\ninto the URL itself, and X is on page 1 while N is 3."
+              }
+            ]
+          },
           "selected_version": {
             "type": [
               "string",
@@ -15097,7 +15125,9 @@
           "deprecated",
           "unlisted",
           "readme",
-          "vulnerabilities_scanned"
+          "sbom",
+          "vulnerabilities_scanned",
+          "state"
         ],
         "properties": {
           "deprecated": {
@@ -15149,6 +15179,10 @@
             "$ref": "#/components/schemas/ReadmeState",
             "description": "`available` | `none` | `unknown` — whether this version has a README.\n\nA tri-state rather than a boolean, because the answer genuinely has three\nvalues and the third is the common one for an archive-borne registry\nkind: a version this instance holds no bytes for has a README that cannot\nbe read yet. `false` rendered for *\"we have not looked\"* would be a\ndefinite-looking answer with nothing behind it (RFC 0007 §4.2)."
           },
+          "sbom": {
+            "$ref": "#/components/schemas/SbomDto",
+            "description": "Which SBOM formats this version has here — the answer the console needs\n*before* it draws a download control. See [`SbomDto`]."
+          },
           "socket_badge_url": {
             "type": [
               "string",
@@ -15159,6 +15193,10 @@
           "source": {
             "type": "string",
             "description": "`\"proxied\"` | `\"local\"` | `\"upstream\"`\n\n`upstream` means this instance holds no bytes for the version and knows\nabout it only because it asked. Every cell that would be a fact about\nwhat we hold is `null` on such a row rather than `0`."
+          },
+          "state": {
+            "type": "string",
+            "description": "`cached` | `pending` | `yanked` | `blocked` — the row's state in\nDESIGN.md's resolution vocabulary, graded here rather than in the\nconsole.\n\nThe console used to derive this from `firewall` alone, over three values,\nand the mapping said *held and verified* — a full 3×3 matrix in ink — for\na version this instance holds **no bytes of**: an upstream-only candidate\ncarries `FirewallDto::Clear`, because the firewall has nothing to refuse\nabout a version nobody can download from here yet. The signature device of\nthe whole design system was therefore lying on precisely the rows the\nfetch button exists for. Grading it on the side that knows what is held\nis the same correction `ExploreEntry::state` already applies to the\ncatalogue's rows.\n\nTwo of the six states are deliberately absent. `stale` needs the\nartifact's own fetch time against the registry's TTL, and `held` needs the\nrelease-age gate evaluated for this viewer — neither is per-version data\nthis endpoint holds, and inventing either would be the same class of\nclaim this field exists to stop."
           },
           "unlisted": {
             "type": "boolean",
@@ -15323,17 +15361,12 @@
       "GateDto": {
         "type": "object",
         "required": [
-          "registry_accessible",
           "beta_member"
         ],
         "properties": {
           "beta_member": {
             "type": "boolean",
             "description": "Whether the caller is a beta-channel member for this registry."
-          },
-          "registry_accessible": {
-            "type": "boolean",
-            "description": "Whether the caller's role can access this registry through the proxy."
           }
         }
       },
@@ -17024,6 +17057,27 @@
       "SbomDocument": {
         "type": "object",
         "description": "An SPDX 2.3 or CycloneDX 1.5 document.\n\nThe shape is the SBOM standard's, not this API's — which format you get is\ndecided by the `format` query parameter, and each is specified elsewhere."
+      },
+      "SbomDto": {
+        "type": "object",
+        "description": "Which SBOM formats a version actually has here, so the console can say *no\nSBOM* instead of offering a download that can only 404.\n\nThe formats are per registry (`[registries.sbom].formats`), so a console that\nassumed both drew a CycloneDX button on an SPDX-only registry and a pair of\nthem on every upstream-only row — three clicks, three spinners, three\nfailures, and the reader left to guess whether the SBOM was missing or the\nserver was.\n\nA tri-state for the same reason [`ReadmeState`] is one: *we hold none* and\n*we have not looked* are different answers, and rendering the second as the\nfirst is a definite claim with nothing behind it (RFC 0007 §4.2).",
+        "required": [
+          "state",
+          "formats"
+        ],
+        "properties": {
+          "formats": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The formats actually held, `\"spdx\"` before `\"cyclonedx\"`. Empty unless\n`state` is `available`."
+          },
+          "state": {
+            "type": "string",
+            "description": "`available` — [`Self::formats`] lists what can be downloaded;\n`none` — this instance holds no SBOM for the version;\n`unknown` — nothing has opened these bytes yet (an upstream-only row),\nor the lookup itself failed."
+          }
+        }
       },
       "SetBannerRequest": {
         "type": "object",

@@ -418,3 +418,29 @@ fn nothing_in_the_corpus_yields_script_a_handler_or_an_external_reference() {
         assert!(!out.contains("href"), "{input:?} → {out:?}");
     }
 }
+
+/// A `url(…)` reference is decided on the *compacted* value and emitted as it
+/// was written, so what the output looks like and what `safe_value` read are not
+/// the same string.
+///
+/// Pinned because the fuzz target's oracle has to agree with this. A
+/// `starts_with('#')` on the raw output called `fill="url( #g)"` a bypass — the
+/// whitespace is legal CSS, `safe_value` compacts it away before deciding, and
+/// the serialiser escapes a quote to `&apos;` on the way out. Both forms are
+/// local references and both are kept; a genuine external one still goes.
+#[test]
+fn a_local_reference_survives_however_it_is_spelled() {
+    let out =
+        sanitize_svg(br#"<svg fill="url( #g)" stroke="url('#h')" color="url(#i)"><rect/></svg>"#)
+            .expect("a well-formed svg");
+    let out = String::from_utf8(out).expect("utf-8 out");
+    assert!(out.contains("url( #g)"), "{out}");
+    assert!(out.contains("#h"), "{out}");
+    assert!(out.contains("url(#i)"), "{out}");
+
+    // And the whitespace trick does not smuggle an external reference through.
+    let out = sanitize_svg(br#"<svg fill="url( http://evil.test/x)"><rect/></svg>"#)
+        .expect("a well-formed svg");
+    let out = String::from_utf8(out).expect("utf-8 out");
+    assert!(!out.contains("evil.test"), "{out}");
+}

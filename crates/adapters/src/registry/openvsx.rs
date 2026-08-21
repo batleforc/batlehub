@@ -165,7 +165,9 @@ impl RegistryClient for OpenVsxRegistryClient {
         url: &str,
         max_bytes: usize,
     ) -> Result<Option<String>, CoreError> {
-        fetch_linked_text(self.get(url), url, &self.base_url, max_bytes).await
+        // No widening: Open VSX serves its `files.readme` from the same origin
+        // as the API, unlike the VS Code Marketplace's asset CDN.
+        fetch_linked_text(self.get(url), url, &self.base_url, &[], max_bytes).await
     }
 
     async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {

@@ -108,7 +108,15 @@ const proofDisplayFor = (width) => PROOF_DISPLAY_STEPS.find(([min]) => width >= 
  * tab strip and the page content as siblings of one flex row, and documents
  * came out 496-705px wide on a 390px viewport (RFC 0004 Phase 5).
  */
-const VIEWPORTS = [1440, 390];
+/*
+ * Four now, not two. The two-width gate has a blind spot between them, and the
+ * package detail page shipped in it: at 768px the versions table hid 192px of
+ * itself behind a scroll with no affordance, and at 1024 the fixed columns were
+ * still fighting the flexible one — both green at 1440 and at 390, because 390
+ * releases every fixed width and 1440 has room for all of them. The widths that
+ * break a table are the ones in the middle.
+ */
+const VIEWPORTS = [1440, 1024, 768, 390];
 const DISPLAY_FACE = "Silkscreen";
 
 const ADMIN_ROUTES = [
@@ -150,6 +158,23 @@ const PUBLIC_ROUTES = [
   "/",
   "/login",
   "/packages",
+  /*
+   * The densest page in the console, and until now the one no gate looked at.
+   *
+   * It is in neither list: not this file's, not the `impeccable detect` loop's.
+   * So the only nine-column table in the console, its only `v-html` surface and
+   * its only per-row policy explanation had zero rendered coverage and zero axe
+   * coverage — which is how a hover-only denial note, a mouse-only row
+   * selection and 539px of hidden columns at 390px all shipped green.
+   * `/packages` migrated because a gate went red on it; this one had nothing to
+   * go red.
+   *
+   * A concrete coordinate rather than a parameterised one, because a gate scans
+   * URLs: `npm/react` is what `build/fixtures/captured.json` answers for, with a
+   * blocked version, advisories and a pre-release in it — the states that
+   * actually expose contrast and reflow.
+   */
+  "/packages/npm/react",
   "/setup",
   "/tools/access-check",
   "/tools/url-mapper",
@@ -210,19 +235,19 @@ const EXPECTED_FAIL = {};
 //
 //   admin  14 admin + 5 user = 19
 //   user                       5
-//   anonymous                  6
+//   anonymous                  7
 //                             ──
-//                             30
+//                             31
 //
 // The number tracks real coverage, which is the point — it may only change in
 // the commit that changes the routes.
 //
-// It counts route/role pairs, NOT scans: every pair is measured at both
-// viewports, so the summary line at the end of a run reports twice this figure
-// (30 pairs → "60 route/role/viewport combination(s) scanned"). Two numbers 2×
-// apart in one run's output invite someone to "fix" the wrong one, so: this is
-// the coverage floor, that is the work done.
-const EXPECTED_COMBINATIONS = publicOnly ? PUBLIC_ROUTES.length : 30;
+// It counts route/role pairs, NOT scans: every pair is measured at all four
+// viewports, so the summary line at the end of a run reports four times this
+// figure (31 pairs → "124 route/role/viewport combination(s) scanned"). Two
+// numbers 4× apart in one run's output invite someone to "fix" the wrong one,
+// so: this is the coverage floor, that is the work done.
+const EXPECTED_COMBINATIONS = publicOnly ? PUBLIC_ROUTES.length : 31;
 const planned = plans.reduce((n, p) => n + p.routes.length, 0);
 if (planned < EXPECTED_COMBINATIONS) {
   console.error(

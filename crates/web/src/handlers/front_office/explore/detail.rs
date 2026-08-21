@@ -14,6 +14,75 @@ use crate::badges::socket_badge_url;
 use crate::handlers::back_office::packages::detail::VulnerabilityDto;
 use crate::RegistryMap;
 
+/// Which SBOM formats a version actually has here, so the console can say *no
+/// SBOM* instead of offering a download that can only 404.
+///
+/// The formats are per registry (`[registries.sbom].formats`), so a console that
+/// assumed both drew a CycloneDX button on an SPDX-only registry and a pair of
+/// them on every upstream-only row — three clicks, three spinners, three
+/// failures, and the reader left to guess whether the SBOM was missing or the
+/// server was.
+///
+/// A tri-state for the same reason [`ReadmeState`] is one: *we hold none* and
+/// *we have not looked* are different answers, and rendering the second as the
+/// first is a definite claim with nothing behind it (RFC 0007 §4.2).
+#[derive(Clone, Serialize, ToSchema)]
+pub struct SbomDto {
+    /// `available` — [`Self::formats`] lists what can be downloaded;
+    /// `none` — this instance holds no SBOM for the version;
+    /// `unknown` — nothing has opened these bytes yet (an upstream-only row),
+    /// or the lookup itself failed.
+    pub state: String,
+    /// The formats actually held, `"spdx"` before `"cyclonedx"`. Empty unless
+    /// `state` is `available`.
+    pub formats: Vec<String>,
+}
+
+impl SbomDto {
+    /// The value every row starts at, before [`enrich_page`] answers for the
+    /// rows that survive to the page.
+    fn unknown() -> Self {
+        Self {
+            state: "unknown".to_owned(),
+            formats: Vec::new(),
+        }
+    }
+}
+
+/// What one version's SBOM availability is, for a row this instance holds bytes
+/// of.
+///
+/// A lookup failure reads as `unknown` rather than as `none`, and rather than
+/// propagating: the SBOM is one control on a page whose job is showing versions,
+/// and an outage should neither error the page nor let it state that a version
+/// has no SBOM when we simply could not ask.
+async fn sbom_state_for(
+    sbom_svc: &Option<web::Data<Arc<SbomService>>>,
+    registry: &str,
+    name: &str,
+    version: &str,
+) -> SbomDto {
+    let Some(svc) = sbom_svc.as_ref() else {
+        // No SBOM service wired at all: nothing generates them here, so there is
+        // definitively nothing to download — a statement, not an unknown.
+        return SbomDto {
+            state: "none".to_owned(),
+            formats: Vec::new(),
+        };
+    };
+    match svc.formats_for_coordinate(registry, name, version).await {
+        Ok(formats) if formats.is_empty() => SbomDto {
+            state: "none".to_owned(),
+            formats: Vec::new(),
+        },
+        Ok(formats) => SbomDto {
+            state: "available".to_owned(),
+            formats: formats.iter().map(|f| f.as_str().to_owned()).collect(),
+        },
+        Err(_) => SbomDto::unknown(),
+    }
+}
+
 /// The recorded licence for one version, or `None` when it is not known.
 ///
 /// A lookup failure reads as unknown rather than propagating: the licence is
@@ -183,6 +252,14 @@ pub struct ExplorePackageDetailResponse {
     /// which is the caller's signal to fall back to `default_version` rather
     /// than mark nothing.
     pub selected_version: Option<String>,
+
+    /// The selected version's row, whatever page it is on.
+    ///
+    /// `selected_version` names it; this *is* it. The console renders its subject
+    /// region from this rather than from whatever happens to be in `versions`,
+    /// because the two are routinely different: the page writes `?version=X&page=N`
+    /// into the URL itself, and X is on page 1 while N is 3.
+    pub selected: Option<ExploreVersionDto>,
     /// `true` when the upstream database was unreachable and this package has no cached data.
     pub upstream_unavailable: bool,
     /// What the discovery read did (RFC 0007 §4.2).
@@ -236,13 +313,19 @@ pub struct FetchOfferDto {
 
 #[derive(Serialize, ToSchema)]
 pub struct GateDto {
-    /// Whether the caller's role can access this registry through the proxy.
-    pub registry_accessible: bool,
     /// Whether the caller is a beta-channel member for this registry.
     pub beta_member: bool,
 }
 
-#[derive(Serialize, ToSchema)]
+// `registry_accessible` used to sit above `beta_member` here, reporting whether
+// the caller's role could proxy from this registry. It was never enforced — the
+// page was served either way — and now that the handler refuses a registry the
+// caller may not browse, it cannot be `false`: the explore set is the proxy set
+// intersected with the role's explore permission, so passing the gate implies
+// proxy access. A flag that is always `true` describes nothing; the console's
+// access-check card went with it.
+
+#[derive(Clone, Serialize, ToSchema)]
 pub struct ExploreVersionDto {
     pub version: String,
     /// `"proxied"` | `"local"` | `"upstream"`
@@ -288,6 +371,9 @@ pub struct ExploreVersionDto {
     /// be read yet. `false` rendered for *"we have not looked"* would be a
     /// definite-looking answer with nothing behind it (RFC 0007 §4.2).
     pub readme: ReadmeState,
+    /// Which SBOM formats this version has here — the answer the console needs
+    /// *before* it draws a download control. See [`SbomDto`].
+    pub sbom: SbomDto,
     /// Whether this version has ever been scanned for vulnerabilities.
     ///
     /// `vulnerabilities: []` means *scanned and clear* only when this is `true`.
@@ -295,9 +381,30 @@ pub struct ExploreVersionDto {
     /// two must not render identically — a green row on a package this instance
     /// has never held is a claim we cannot support.
     pub vulnerabilities_scanned: bool,
+
+    /// `cached` | `pending` | `yanked` | `blocked` — the row's state in
+    /// DESIGN.md's resolution vocabulary, graded here rather than in the
+    /// console.
+    ///
+    /// The console used to derive this from `firewall` alone, over three values,
+    /// and the mapping said *held and verified* — a full 3×3 matrix in ink — for
+    /// a version this instance holds **no bytes of**: an upstream-only candidate
+    /// carries `FirewallDto::Clear`, because the firewall has nothing to refuse
+    /// about a version nobody can download from here yet. The signature device of
+    /// the whole design system was therefore lying on precisely the rows the
+    /// fetch button exists for. Grading it on the side that knows what is held
+    /// is the same correction `ExploreEntry::state` already applies to the
+    /// catalogue's rows.
+    ///
+    /// Two of the six states are deliberately absent. `stale` needs the
+    /// artifact's own fetch time against the registry's TTL, and `held` needs the
+    /// release-age gate evaluated for this viewer — neither is per-version data
+    /// this endpoint holds, and inventing either would be the same class of
+    /// claim this field exists to stop.
+    pub state: String,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Clone, Serialize, ToSchema)]
 #[serde(tag = "status", rename_all = "lowercase")]
 pub enum FirewallDto {
     Clear,
@@ -317,6 +424,8 @@ pub enum FirewallDto {
     params(PackageDetailPath, PackageDetailQuery),
     responses(
         (status = 200, description = "Package detail", body = ExplorePackageDetailResponse),
+        (status = 404, description = "The registry is not browsable by this caller, or the \
+                                     package is not visible to them"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -363,12 +472,39 @@ pub async fn explore_package_detail(
             .and_then(|t| socket_badge_url(t, name, version))
     };
 
-    // Gate: registry-level proxy access
-    let registry_accessible = access
+    // Gate: the catalogue's own registry list, the same set `list.rs` filters
+    // its rows by, `stats.rs` counts over and `resolve_readme` refuses on.
+    //
+    // This endpoint used to only *report* the answer, in `gate.registry_accessible`,
+    // and serve the page either way — so a registry an operator took out of
+    // `rbac.explore` had no rows in the listing, no counts in the stats and a
+    // full detail page for anyone who typed the URL. The README and its images
+    // are refused; refusing them while this still answered left the same facts
+    // reachable one endpoint over, which is not a gate but a speed bump.
+    //
+    // `404` and not `403`, exactly as the visibility check below: denied and
+    // absent look identical from outside, so a refusal does not confirm the
+    // package exists.
+    //
+    // Note this is *narrower* than the proxy access `gate.registry_accessible`
+    // used to report: `explore_accessible_registries_for` is proxy access
+    // intersected with the role's explore permission. Anyone who gets past here
+    // can necessarily proxy from the registry too, which is why the gate card
+    // has nothing left to say and the field is gone from the response.
+    if !access
         .read()
         .await
-        .accessible_registries_for(&identity)
-        .contains(registry);
+        .explore_accessible_registries_for(&identity)
+        .contains(registry)
+    {
+        tracing::debug!(
+            registry = %registry, package = %name,
+            "explore detail: registry not browsable by this caller"
+        );
+        return Err(AppError::not_found(format!(
+            "package '{name}' not found in registry '{registry}'"
+        )));
+    }
 
     // Gate: per-package visibility. The listing filters `internal`/`team`
     // packages out entirely, so the detail view has to agree — otherwise the
@@ -535,6 +671,9 @@ pub async fn explore_package_detail(
             // through, so the scanner has had the bytes and the empty list means
             // "clear" rather than "never looked".
             vulnerabilities_scanned: true,
+            // Graded in `enrich_page`, the one funnel every rendered row passes
+            // through — see `version_state`.
+            state: String::new(),
             version: summary.package_id.version,
             source: "proxied".to_string(),
             firewall,
@@ -545,6 +684,7 @@ pub async fn explore_package_detail(
             // Filled by `enrich_page`, for the rows that survive to the answer.
             vulnerabilities: Vec::new(),
             license: None,
+            sbom: SbomDto::unknown(),
             socket_badge_url: None,
             deprecated: false,
             deprecation_message: None,
@@ -563,6 +703,7 @@ pub async fn explore_package_detail(
         versions.push(ExploreVersionDto {
             readme,
             vulnerabilities_scanned: true,
+            state: String::new(),
             version: pkg.version,
             source: "local".to_string(),
             firewall,
@@ -572,6 +713,7 @@ pub async fn explore_package_detail(
             is_prerelease,
             vulnerabilities: Vec::new(),
             license: None,
+            sbom: SbomDto::unknown(),
             socket_badge_url: None,
             deprecated: pkg.deprecated,
             deprecation_message: pkg.deprecation_message,
@@ -584,6 +726,7 @@ pub async fn explore_package_detail(
     // Everything above is exactly the code this endpoint had before RFC 0007,
     // and the merge below only *adds* rows — so a bug in the new path cannot
     // change what the page says about a version this instance holds (§6.4).
+    let suppress_upstream = published_locally;
     let upstream = discovery_read(
         &proxy_svc,
         &mode_map,
@@ -598,7 +741,21 @@ pub async fn explore_package_detail(
         // same disclosure `sumdb_url = ""` exists for. It would also invite a
         // dependency-confusion answer, where the page shows upstream's versions
         // of a name that means something else here (§4.4, §7.7).
-        published_locally,
+        //
+        // A caller who may not read this registry at all is in the same
+        // position, and *this path cannot check it for itself*:
+        // `upstream_detail` goes through `request_prelude`, which validates the
+        // coordinate and snapshots the hot config and does **not** evaluate the
+        // registry's rules — `RbacRule` is applied in `handle`/
+        // `resolve_metadata_for`, neither of which is on this path. So the
+        // `resource_type: "releases:read"` and the identity it threads through
+        // are never consulted, and an anonymous `GET` against a registry with
+        // `rbac.anonymous = []` made this server fetch upstream on their behalf
+        // and hand back the full version list, publish dates and deprecation
+        // strings. What stops that is the gate at the top of this handler: an
+        // unreachable registry is a `404` long before here, and the explore set
+        // it checks is a subset of the proxy set.
+        suppress_upstream,
     )
     .await;
 
@@ -638,6 +795,7 @@ pub async fn explore_package_detail(
                 // row on a package this instance has never held is a claim we
                 // cannot support.
                 vulnerabilities_scanned: false,
+                state: String::new(),
                 version: candidate.version.clone(),
                 source: "upstream".to_owned(),
                 firewall,
@@ -647,6 +805,11 @@ pub async fn explore_package_detail(
                 is_prerelease: candidate.is_prerelease,
                 vulnerabilities: Vec::new(),
                 license: None,
+                // Left `unknown`: `enrich_page` skips upstream-only rows, and it
+                // must — nothing has ever opened these bytes, so there is no
+                // SBOM to find and *none* would read as a fact about a version
+                // this instance has never held.
+                sbom: SbomDto::unknown(),
                 socket_badge_url: None,
                 deprecated: candidate.deprecated.is_some(),
                 deprecation_message: candidate.deprecated.clone(),
@@ -667,10 +830,16 @@ pub async fn explore_package_detail(
     // the moment the answer is a page, because the order is then what decides
     // which versions page one *is*. On a package like `chalk`, whose betas
     // outnumber its releases, page one was entirely release candidates.
+    //
+    // The second key is a *version* comparison, not a string one, for the same
+    // reason the first was wrong: `"5.6.2" > "5.10.0"` lexicographically, so
+    // `chalk` led with 5.6.2 and `default_selection` below named it as the
+    // version the console should open on. That was invisible while the console
+    // received the whole list and sorted it; it is the answer now.
     versions.sort_by(|a, b| {
         a.is_prerelease
             .cmp(&b.is_prerelease)
-            .then(b.version.cmp(&a.version))
+            .then_with(|| super::newest_first(&a.version, &b.version))
     });
 
     // ── Filter, then page ─────────────────────────────────────────────────────
@@ -694,6 +863,23 @@ pub async fn explore_package_detail(
         .as_deref()
         .filter(|asked| versions.iter().any(|v| v.version == *asked))
         .map(str::to_owned);
+
+    // ── The row the subject renders ───────────────────────────────────────────
+    //
+    // Captured here, from the whole sorted list, *before* the pre-release filter,
+    // `q` and the page slice get to it — because the console's subject region is
+    // about one version and none of those three is.
+    //
+    // Without it, a link the page produces itself — it writes both `version` and
+    // `page` into the URL — could name a version that is not on the page it also
+    // names, and the console had nothing to render the subject from: state,
+    // refusal reason, advisories, install line and fetch button all disappeared
+    // while the README below still rendered that version's text, so the page
+    // looked loaded. Sending the row costs one clone and removes the whole class.
+    let subject_version = selected_version.clone().or_else(|| default_version.clone());
+    let subject_row = subject_version
+        .as_deref()
+        .and_then(|asked| versions.iter().find(|c| c.version == asked).cloned());
 
     // The version the caller is pointing at survives the pre-release filter:
     // a link to `?version=5.0.0-beta.2` must not answer with a list its own
@@ -762,18 +948,31 @@ pub async fn explore_package_detail(
     )
     .await;
 
+    // The subject's row goes through the same enrichment as the page. When it is
+    // on the page there is nothing to do but take the enriched copy; when it is
+    // not, it is enriched alone — one extra vulnerability read and one licence
+    // read, for the one row the reader is actually looking at.
+    let selected = match subject_row {
+        Some(row) => match versions.iter().find(|r| r.version == row.version) {
+            Some(on_page) => Some(on_page.clone()),
+            None => {
+                let mut one = vec![row];
+                enrich_page(&mut one, &admin_svc, &sbom_svc, registry, name, &badge_for).await;
+                Some(one.remove(0))
+            }
+        },
+        None => None,
+    };
+
     // The row the reader is actually looking at, which is what its links should
     // describe: npm carries `repository` per version, and a package that changed
     // forge between releases named the old one in the old version.
-    let selected_version_for_links = selected_version.clone().or_else(|| default_version.clone());
+    let selected_version_for_links = subject_version;
 
     Ok(web::Json(ExplorePackageDetailResponse {
         registry: registry.clone(),
         name: name.clone(),
-        gate: GateDto {
-            registry_accessible,
-            beta_member,
-        },
+        gate: GateDto { beta_member },
         versions,
         versions_page: VersionPageDto {
             page,
@@ -785,6 +984,7 @@ pub async fn explore_package_detail(
         },
         default_version,
         selected_version,
+        selected,
         upstream_unavailable,
         upstream: upstream.dto,
         fetch: fetch_offer(&local_svc, &registry_map, registry.as_str(), &identity.0).await,
@@ -919,8 +1119,16 @@ async fn package_links(input: LinkInput<'_>) -> Option<PackageLinksDto> {
                 };
                 // Denied by a rule, unreachable, unparseable: all the same
                 // answer. This is one field on a page about versions.
+                //
+                // `_uncaptured_`: a page view must write nothing.
+                // `resolve_metadata_for` records whatever README the document
+                // carried, without checking that this instance holds the
+                // version — so opening the page for an upstream-only version of
+                // a kind whose listing carries no links left a `package_readmes`
+                // row nothing ever deletes, and told the next load that version
+                // has a stored README.
                 proxy_svc
-                    .resolve_metadata_for(&req)
+                    .resolve_metadata_uncaptured_for(&req)
                     .await
                     .ok()
                     .as_ref()
@@ -968,13 +1176,14 @@ fn default_selection(versions: &[ExploreVersionDto]) -> Option<String> {
         .map(|v| v.version.clone())
 }
 
-/// Fill in the three per-row fields that cost a query each, for the rows that
+/// Fill in the per-row fields that cost a query each, for the rows that
 /// actually made it into the answer.
 ///
-/// Upstream-only rows are skipped for two of them, and not as an optimisation:
-/// nothing has ever opened those bytes, so an empty vulnerability list there
-/// would be a claim we cannot support (`vulnerabilities_scanned` says so), and
-/// there is no SBOM to read a licence out of.
+/// Upstream-only rows are skipped for the ones that read the SBOM store, and not
+/// as an optimisation: nothing has ever opened those bytes, so an empty
+/// vulnerability list there would be a claim we cannot support
+/// (`vulnerabilities_scanned` says so), and there is no SBOM to read a licence
+/// out of — or to offer as a download, which is why `sbom` stays `unknown`.
 async fn enrich_page(
     versions: &mut [ExploreVersionDto],
     admin_svc: &AdminService,
@@ -985,6 +1194,10 @@ async fn enrich_page(
 ) {
     for row in versions.iter_mut() {
         row.socket_badge_url = badge_for(&row.version);
+        // Graded here because this is the one funnel every row the console draws
+        // passes through — the page, and the selected row when it is on another
+        // one. It reads only fields the row already carries, so it costs nothing.
+        row.state = version_state(row).to_owned();
         if row.source == "upstream" {
             continue;
         }
@@ -996,6 +1209,21 @@ async fn enrich_page(
             .map(VulnerabilityDto::from)
             .collect();
         row.license = license_for(sbom_svc, registry, name, &row.version).await;
+        row.sbom = sbom_state_for(sbom_svc, registry, name, &row.version).await;
+    }
+}
+
+/// One version's state, in the vocabulary the catalogue's rows already use.
+///
+/// Order matters and is the same as [`batlehub_core::entities::resolve_state`]'s:
+/// a refusal outranks a withdrawal, and both outrank whether we hold the bytes.
+fn version_state(row: &ExploreVersionDto) -> &'static str {
+    match row.firewall {
+        FirewallDto::Blocked { .. } => "blocked",
+        FirewallDto::Yanked => "yanked",
+        // No bytes here, and we know about it only because we asked upstream.
+        _ if row.source == "upstream" => "pending",
+        FirewallDto::Clear => "cached",
     }
 }
 
@@ -1091,7 +1319,10 @@ async fn discovery_read(
     name: &str,
     identity: &AuthIdentity,
     mode: UpstreamMode,
-    published_locally: bool,
+    // Every reason not to ask upstream, already decided by the caller: the
+    // package is hosted locally, or this caller may not proxy from the
+    // registry at all.
+    suppress_upstream: bool,
 ) -> DiscoveryResult {
     let not_attempted = |error: Option<String>| DiscoveryResult {
         detail: None,
@@ -1104,7 +1335,7 @@ async fn discovery_read(
         },
     };
 
-    if mode == UpstreamMode::Skip || published_locally {
+    if mode == UpstreamMode::Skip || suppress_upstream {
         return not_attempted(None);
     }
     // A `local`-mode registry has no upstream: there is nothing to ask, and

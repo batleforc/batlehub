@@ -369,6 +369,25 @@ pub(super) fn build_access_config(config: &AppConfig) -> AccessConfig {
         let has_anonymous = !r.rbac.anonymous.is_empty();
         let has_user = has_anonymous || !r.rbac.user.is_empty();
         let has_admin = has_user || !r.rbac.admin.is_empty();
+        // A registry reachable *only* through `[registries.rbac.groups]` — a
+        // team-only registry — has all three role tiers empty. Its proxy access
+        // is granted per-caller by `accessible_registries_for`, which unions the
+        // group grants in, so gating the explore sets on the role tiers alone
+        // left it out of every one of them: `explore_accessible_registries_for`
+        // intersects proxy access with the explore set, so a team member's
+        // explore set came back empty for the one registry they can pull from.
+        //
+        // Harmless while the set was only a listing filter (an empty vector
+        // reads as "no restriction" in `ExploreFilter`); a hard `404` on the
+        // detail, README and image endpoints once those refuse on the set
+        // itself. `rbac.explore.*` documents itself as defaulting to "any role
+        // that has proxy access", and a group member has proxy access.
+        //
+        // Safe to widen here because the intersection still applies: naming a
+        // group-only registry in `explore_user` grants nothing to a caller whose
+        // `accessible_registries_for` does not already contain it, and
+        // `r.rbac.explore.*` is still honoured.
+        let has_group = !r.rbac.groups.is_empty();
 
         if has_anonymous {
             anonymous.insert(r.name.clone());
@@ -379,13 +398,13 @@ pub(super) fn build_access_config(config: &AppConfig) -> AccessConfig {
         if has_admin {
             admin.insert(r.name.clone());
         }
-        if has_anonymous && r.rbac.explore.anonymous {
+        if (has_anonymous || has_group) && r.rbac.explore.anonymous {
             explore_anonymous.insert(r.name.clone());
         }
-        if has_user && r.rbac.explore.user {
+        if (has_user || has_group) && r.rbac.explore.user {
             explore_user.insert(r.name.clone());
         }
-        if has_admin && r.rbac.explore.admin {
+        if (has_admin || has_group) && r.rbac.explore.admin {
             explore_admin.insert(r.name.clone());
         }
     }
@@ -752,5 +771,53 @@ mod tests {
         assert!(!access.explore_anonymous.contains("explore-reg"));
         assert!(access.explore_user.contains("explore-reg"));
         assert!(!access.explore_admin.contains("explore-reg"));
+
+        // A team-only registry is browsable by its team. `group-reg` names no
+        // role tier at all, so gating the explore sets on the tiers alone left
+        // it out of every one of them — and once the detail, README and image
+        // endpoints began refusing on `explore_accessible_registries_for`, that
+        // was a `404` for the only people who can pull from it.
+        assert!(access.explore_anonymous.contains("group-reg"));
+        assert!(access.explore_user.contains("group-reg"));
+        assert!(access.explore_admin.contains("group-reg"));
+    }
+
+    /// The end of that: a `ci-bots` member browses `group-reg`, and nobody else
+    /// does. The set is still an *intersection* with proxy access, so naming a
+    /// group-only registry in every explore tier grants nothing on its own.
+    #[test]
+    fn a_group_only_registry_is_browsable_by_its_group_and_nobody_else() {
+        use batlehub_core::entities::{Identity, Role};
+
+        let cfg = make_app_config(
+            r#"
+            [[registries]]
+            type = "npm"
+            name = "group-reg"
+            [registries.rbac.groups]
+            ci-bots = ["read"]
+            "#,
+        );
+        let access = build_access_config(&cfg);
+
+        let member = Identity {
+            user_id: None,
+            role: Role::User,
+            auth_provider: None,
+            groups: vec!["ci-bots".to_owned()],
+        };
+        let outsider = Identity {
+            user_id: None,
+            role: Role::Admin,
+            auth_provider: None,
+            groups: vec![],
+        };
+
+        assert!(access
+            .explore_accessible_registries_for(&member)
+            .contains("group-reg"));
+        assert!(access
+            .explore_accessible_registries_for(&outsider)
+            .is_empty());
     }
 }

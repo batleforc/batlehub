@@ -200,7 +200,6 @@ Returns all known versions of a package, the caller's gate status, and per-versi
   "registry": "cargo",
   "name": "tokio",
   "gate": {
-    "registry_accessible": true,
     "beta_member": false
   },
   "versions": [

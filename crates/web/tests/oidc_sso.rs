@@ -522,6 +522,43 @@ async fn an_opaque_access_token_fails_the_login_rather_than_the_next_request() {
     assert!(loc.contains("oidc_error="));
 }
 
+#[actix_web::test]
+async fn a_jwt_access_token_with_no_id_token_still_signs_in() {
+    // The configuration the "opaque access token" error message tells operators
+    // to reach for: no `id_token`, but an API audience that yields a JWT access
+    // token. `token_request` falls back to it and `OidcAuthProvider` validates
+    // it like any other JWT, so this has always worked.
+    //
+    // Running the nonce check unconditionally broke it: §3.1.3.7 step 11 is a
+    // rule about *ID tokens*, an access token carries no `nonce` claim, and
+    // demanding one rejected every such deployment with a generic "try again".
+    // What ties this exchange to this login is the one-time `state` and the PKCE
+    // verifier, both already checked above.
+    let mut server = mockito::Server::new_async().await;
+    let _token = server
+        .mock("POST", "/token")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"access_token":"jwt.access.token"}"#)
+        .create_async()
+        .await;
+    let (app, _states) = make_sso_app(&server.url()).await;
+
+    let (state, _) = start_login(&app, "spa").await;
+    let req = TestRequest::get()
+        .uri(&format!(
+            "/api/v1/auth/oidc/callback?code=abc&state={state}"
+        ))
+        .to_request();
+    let loc = location(&call_service(&app, req).await);
+
+    assert!(
+        loc.contains("oidc_access_token=jwt.access.token"),
+        "a JWT access token is a usable session credential: {loc}"
+    );
+    assert!(!loc.contains("oidc_error="), "{loc}");
+}
+
 // ── Refresh throttling ────────────────────────────────────────────────────────
 
 #[actix_web::test]
@@ -557,5 +594,40 @@ async fn the_refresh_endpoint_is_throttled_per_client() {
         statuses.iter().filter(|s| **s != 429).count(),
         30,
         "exactly the ceiling gets through before the window closes"
+    );
+}
+
+/// An oversized `state` is refused before anything is stored.
+///
+/// `GET /api/v1/auth/oidc/login` is unauthenticated by necessity and nothing
+/// throttles it — `RateLimitMiddleware` buckets `/proxy/{registry}/…` only, and
+/// the refresh limiter guards the refresh endpoint alone. It writes a row that
+/// outlives the request by the login TTL, with the caller's `state` stored
+/// verbatim, so without a cap one client can fill the store with rows as large
+/// as the request line allows — thousands of bytes each rather than the ~40 a
+/// real CSRF nonce costs — faster than the prune can reclaim them.
+///
+/// Refused rather than truncated: storing a different `state` than the caller
+/// kept would fail its own round-trip check with nothing to explain it.
+#[actix_web::test]
+async fn an_oversized_state_is_refused_and_stores_nothing() {
+    let server = mockito::Server::new_async().await;
+    let (app, states) = make_sso_app(&server.url()).await;
+
+    let huge = "x".repeat(4_096);
+    let resp = call_service(
+        &app,
+        TestRequest::get()
+            .uri(&format!("/api/v1/auth/oidc/login?state={huge}"))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 400, "an oversized state is a bad request");
+
+    // And a state of a size a real caller sends still starts a login.
+    let (state, _) = start_login(&app, "spa-csrf-value").await;
+    assert!(
+        states.take(&state).await.unwrap().is_some(),
+        "an ordinary login must still be stored"
     );
 }

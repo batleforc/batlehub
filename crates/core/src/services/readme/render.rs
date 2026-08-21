@@ -485,12 +485,34 @@ fn decode_basic_entities(raw: &str) -> String {
 /// Parsed rather than pattern-matched, and `None` for anything that is not an
 /// absolute `http(s)` URL — a relative `src` has no host to report, and a
 /// `javascript:` one is not a host at all.
+///
+/// **This function is a security boundary, not a label.** It is what
+/// [`image_host_allowed`] decides `remote_image_hosts` on, in both places it is
+/// checked — the render pass and `ReadmeService::image_at`'s re-check — while
+/// the *fetch* dials whatever `reqwest::Url` reads. So it has to agree with a
+/// WHATWG parser about where the authority ends, or an operator's allow-list can
+/// be read past:
+///
+/// - `\` terminates the authority exactly like `/` for special schemes (WHATWG
+///   URL §4.4, and `url`'s parser breaks on it in both the userinfo and host
+///   states). Splitting only on `/` read `https://evil.test\@img.shields.io/x`
+///   as the host `img.shields.io` — allow-listed — where `reqwest` reads
+///   `evil.test` and fetches from it. `ensure_public_url` still refuses internal
+///   targets, so this was a policy bypass rather than full SSRF; it defeated the
+///   allow-list completely, and defeated *both* checks identically because both
+///   call this.
+/// - ASCII tab, LF and CR are removed from the URL entirely before parsing, so
+///   they cannot be used to hide the difference either.
 pub(super) fn url_host(url: &str) -> Option<String> {
+    let url: String = url
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
     let rest = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))?;
     let host = rest
-        .split(['/', '?', '#'])
+        .split(['/', '\\', '?', '#'])
         .next()?
         .split('@')
         .next_back()?
@@ -510,6 +532,14 @@ fn chip(alt: &str, host: Option<&str>) -> String {
             .replace('<', "&lt;")
             .replace('>', "&gt;")
             .replace('"', "&quot;")
+            // `'` too, and not for symmetry: `decode_basic_entities` turns
+            // `&apos;`/`&#39;` into a real apostrophe, so an `alt` written as
+            // `&apos; onmouseover=x &apos;` came back out raw and closed the
+            // enclosing single-quoted attribute when this chip was emitted
+            // inside one. Ammonia drops the injected handler afterwards — but
+            // building an injection and relying on the next stage to remove it
+            // is exactly what the comment above says this does not do.
+            .replace('\'', "&#39;")
     };
     let label = if alt.trim().is_empty() {
         "image".to_owned()
@@ -1004,6 +1034,62 @@ mod tests {
         assert_eq!(url_host("data:image/png;base64,AAAA"), None);
         assert_eq!(url_host("javascript:alert(1)"), None);
         assert_eq!(url_host("https://"), None);
+    }
+
+    /// The authority ends where a WHATWG parser says it does, because
+    /// `image_host_allowed` decides an operator's allow-list on this string and
+    /// `reqwest` dials the one its own parser reads. A `\` that this treated as
+    /// part of the host, and `url` treats as the start of the path, is the whole
+    /// bypass: the allow-list saw `img.shields.io`, the fetch went to
+    /// `evil.test`.
+    #[test]
+    fn a_backslash_ends_the_authority_just_as_a_slash_does() {
+        assert_eq!(
+            url_host(r"https://evil.test\@img.shields.io/badge.svg").as_deref(),
+            Some("evil.test")
+        );
+        assert_eq!(
+            url_host(r"https://evil.test\.shields.io/x.svg").as_deref(),
+            Some("evil.test")
+        );
+        // And the same host is still read when there is no backslash to find.
+        assert_eq!(
+            url_host("https://evil.test/@img.shields.io/badge.svg").as_deref(),
+            Some("evil.test")
+        );
+    }
+
+    /// Tab, LF and CR are removed from a URL before it is parsed, so they cannot
+    /// be used to make this and the fetcher read different hosts either.
+    #[test]
+    fn ascii_tab_and_newline_are_stripped_before_the_host_is_read() {
+        assert_eq!(
+            url_host("https://evil.test\t\\@img.shields.io/x.svg").as_deref(),
+            Some("evil.test")
+        );
+        assert_eq!(
+            url_host("https://ev\nil.test/x.svg").as_deref(),
+            Some("evil.test")
+        );
+    }
+
+    /// The allow-list itself, on the same inputs: the point of the fix.
+    #[test]
+    fn the_host_allow_list_is_not_bypassed_by_a_backslash() {
+        let allowed = vec!["shields.io".to_owned()];
+        assert!(!image_host_allowed(
+            r"https://evil.test\@img.shields.io/badge.svg",
+            &allowed
+        ));
+        assert!(!image_host_allowed(
+            r"https://evil.test\.shields.io/x.svg",
+            &allowed
+        ));
+        // Still allowed when it really is the host.
+        assert!(image_host_allowed(
+            "https://img.shields.io/badge.svg",
+            &allowed
+        ));
     }
 
     /// Empty input is an empty rendering, not a panic and not a `<pre></pre>`
