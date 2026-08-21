@@ -158,8 +158,18 @@ pub fn packages_cache_key(filter: &ExploreFilter) -> String {
         ExploreSortBy::Recent => "recent",
         ExploreSortBy::Fetched => "fetched",
     };
+    // The name restriction is part of the key, and not optional to include: two
+    // queries differing only in which packages they name would otherwise share
+    // an entry, and one of them would be served the other's rows. Sorted, so a
+    // search returning the same packages in a different rank order still hits.
+    let mut names: Vec<String> = filter
+        .name_in
+        .iter()
+        .map(|(r, n)| format!("{r}/{n}"))
+        .collect();
+    names.sort();
     format!(
-        "exp:pkg:{}:{}:{}:{}:{}:{}:{}",
+        "exp:pkg:{}:{}:{}:{}:{}:{}:{}:{}",
         filter.registry.as_deref().unwrap_or(""),
         filter.name_contains.as_deref().unwrap_or(""),
         sort,
@@ -167,6 +177,7 @@ pub fn packages_cache_key(filter: &ExploreFilter) -> String {
         filter.offset,
         regs.join(","),
         viewer_key_part(filter),
+        names.join(","),
     )
 }
 
@@ -409,6 +420,7 @@ mod tests {
             registry: None,
             registries: vec!["cargo".into(), "npm".into()],
             name_contains: None,
+            name_in: vec![],
             sort_by: ExploreSortBy::Downloads,
             limit: 20,
             offset: 0,
@@ -427,6 +439,7 @@ mod tests {
             registry: None,
             registries: vec!["npm".into()],
             name_contains: None,
+            name_in: vec![],
             sort_by: ExploreSortBy::Downloads,
             limit: 20,
             offset: 0,
@@ -435,6 +448,7 @@ mod tests {
 
         let with_name = ExploreFilter {
             name_contains: Some("lodash".into()),
+            name_in: vec![],
             ..base.clone()
         };
         let with_sort = ExploreFilter {

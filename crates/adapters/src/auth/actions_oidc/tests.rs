@@ -332,7 +332,7 @@ async fn valid_jwt_no_rules_returns_anonymous_empty_groups() {
     let p = no_rules_provider();
     let token = signed_token(
         Some("test-kid"),
-        json!({ "sub": "ci-bot", "repository": "myorg/myrepo", "ref": "refs/heads/main", "exp": future_exp() }),
+        json!({ "sub": "ci-bot", "repository": "myorg/myrepo", "ref": "refs/heads/main", "exp": future_exp(), "aud": TEST_AUDIENCE }),
     );
     let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
     assert_eq!(id.role, Role::Anonymous);
@@ -360,7 +360,7 @@ async fn matching_rule_grants_group_and_role() {
 
     let token = signed_token(
         Some("test-kid"),
-        json!({ "sub": "bot", "repository_owner": "myorg", "exp": future_exp() }),
+        json!({ "sub": "bot", "repository_owner": "myorg", "exp": future_exp(), "aud": TEST_AUDIENCE }),
     );
     let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
     assert_eq!(id.role, Role::User);
@@ -399,7 +399,7 @@ async fn two_matching_rules_union_groups_max_role() {
 
     let token = signed_token(
         Some("test-kid"),
-        json!({ "sub": "bot", "repository_owner": "myorg", "exp": future_exp() }),
+        json!({ "sub": "bot", "repository_owner": "myorg", "exp": future_exp(), "aud": TEST_AUDIENCE }),
     );
     let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
     assert_eq!(id.role, Role::Admin);
@@ -424,7 +424,7 @@ async fn template_rule_renders_dynamic_group() {
             "sub": "bot",
             "repository": "batleforc/batlehub",
             "ref": "refs/heads/main",
-            "exp": future_exp()
+            "exp": future_exp(), "aud": TEST_AUDIENCE
         }),
     );
     let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
@@ -450,7 +450,7 @@ async fn non_matching_rule_contributes_nothing() {
 
     let token = signed_token(
         Some("test-kid"),
-        json!({ "sub": "bot", "repository_owner": "myorg", "exp": future_exp() }),
+        json!({ "sub": "bot", "repository_owner": "myorg", "exp": future_exp(), "aud": TEST_AUDIENCE }),
     );
     let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
     assert_eq!(id.role, Role::Anonymous);
@@ -460,7 +460,10 @@ async fn non_matching_rule_contributes_nothing() {
 #[tokio::test]
 async fn expired_jwt_returns_none() {
     let p = no_rules_provider();
-    let token = signed_token(Some("test-kid"), json!({ "sub": "bot", "exp": past_exp() }));
+    let token = signed_token(
+        Some("test-kid"),
+        json!({ "sub": "bot", "exp": past_exp(), "aud": TEST_AUDIENCE }),
+    );
     assert!(p.authenticate(&bearer(&token)).await.unwrap().is_none());
 }
 
@@ -469,7 +472,7 @@ async fn unknown_kid_returns_auth_error() {
     let p = no_rules_provider();
     let token = signed_token(
         Some("bad-kid"),
-        json!({ "sub": "bot", "exp": future_exp() }),
+        json!({ "sub": "bot", "exp": future_exp(), "aud": TEST_AUDIENCE }),
     );
     assert!(matches!(
         p.authenticate(&bearer(&token)).await.unwrap_err(),
@@ -511,6 +514,8 @@ async fn new_bootstraps_from_discovery_document() {
     let cfg = ActionsOidcAuthConfig {
         name: "test".to_owned(),
         issuer_url: base.clone(),
+        required: false,
+        audience: TEST_AUDIENCE.to_owned(),
         user_id_claim: "sub".to_owned(),
         rules: vec![],
     };
@@ -528,7 +533,7 @@ async fn bearer_lowercase_prefix_accepted() {
     let p = no_rules_provider();
     let token = signed_token(
         Some("test-kid"),
-        json!({ "sub": "bot", "exp": future_exp() }),
+        json!({ "sub": "bot", "exp": future_exp(), "aud": TEST_AUDIENCE }),
     );
     let req = RawAuthRequest {
         headers: [("authorization".to_owned(), format!("bearer {token}"))].into(),
@@ -543,7 +548,7 @@ async fn authorization_capitalized_header_accepted() {
     let p = no_rules_provider();
     let token = signed_token(
         Some("test-kid"),
-        json!({ "sub": "bot", "exp": future_exp() }),
+        json!({ "sub": "bot", "exp": future_exp(), "aud": TEST_AUDIENCE }),
     );
     let req = RawAuthRequest {
         headers: [("Authorization".to_owned(), format!("Bearer {token}"))].into(),
@@ -559,7 +564,10 @@ async fn authorization_capitalized_header_accepted() {
 async fn no_kid_in_token_uses_first_jwk() {
     let p = no_rules_provider();
     // Token signed with the same key but no kid in the header
-    let token = signed_token(None, json!({ "sub": "bot", "exp": future_exp() }));
+    let token = signed_token(
+        None,
+        json!({ "sub": "bot", "exp": future_exp(), "aud": TEST_AUDIENCE }),
+    );
     let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
     assert_eq!(id.user_id.as_deref(), Some("bot"));
 }
@@ -603,7 +611,7 @@ async fn rule_with_no_role_contributes_group_only() {
 
     let token = signed_token(
         Some("test-kid"),
-        json!({ "sub": "bot", "exp": future_exp() }),
+        json!({ "sub": "bot", "exp": future_exp(), "aud": TEST_AUDIENCE }),
     );
     let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
     assert_eq!(id.role, Role::Anonymous);
@@ -643,7 +651,7 @@ async fn user_id_missing_claim_gives_none() {
     let p = no_rules_provider(); // user_id_claim = "sub"
     let token = signed_token(
         Some("test-kid"),
-        json!({ "exp": future_exp() }), // no "sub"
+        json!({ "exp": future_exp(), "aud": TEST_AUDIENCE }), // no "sub"
     );
     let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
     assert!(id.user_id.is_none());
@@ -654,7 +662,7 @@ async fn user_id_non_string_claim_gives_none() {
     let p = no_rules_provider(); // user_id_claim = "sub"
     let token = signed_token(
         Some("test-kid"),
-        json!({ "sub": 42, "exp": future_exp() }), // "sub" is a number
+        json!({ "sub": 42, "exp": future_exp(), "aud": TEST_AUDIENCE }), // "sub" is a number
     );
     let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
     assert!(id.user_id.is_none());
@@ -686,9 +694,69 @@ async fn jwks_stale_cache_triggers_refresh() {
 
     let token = signed_token(
         Some("test-kid"),
-        json!({ "sub": "bot", "exp": future_exp() }),
+        json!({ "sub": "bot", "exp": future_exp(), "aud": TEST_AUDIENCE }),
     );
     let id = p.authenticate(&bearer(&token)).await.unwrap().unwrap();
     assert_eq!(id.user_id.as_deref(), Some("bot"));
     jwks_mock.assert_async().await;
+}
+
+// ── Audience ──────────────────────────────────────────────────────────────────
+// The load-bearing check for this provider. Its issuer —
+// `token.actions.githubusercontent.com` — signs for every repository on GitHub,
+// and `aud` is the one claim the calling workflow chooses. `validate_aud` used
+// to be off, which left `rules` as the only thing standing between any workflow
+// on the forge and an authenticated identity here.
+
+#[tokio::test]
+async fn a_token_minted_for_another_audience_is_refused() {
+    let p = ActionsOidcAuthProvider::for_testing("gh", "sub", vec![], test_jwks());
+    let token = signed_token(
+        Some("test-kid"),
+        json!({
+            "sub": "repo:someone-else/theirs:ref:refs/heads/main",
+            "repository": "someone-else/theirs",
+            "exp": future_exp(),
+            "aud": "https://some-other-deployment.example",
+        }),
+    );
+    assert!(
+        p.authenticate(&bearer(&token)).await.unwrap().is_none(),
+        "a correctly-signed token from this issuer is not enough — any repo can get one"
+    );
+}
+
+#[tokio::test]
+async fn a_token_with_no_audience_is_refused() {
+    let p = ActionsOidcAuthProvider::for_testing("gh", "sub", vec![], test_jwks());
+    let token = signed_token(
+        Some("test-kid"),
+        json!({ "sub": "repo:o/r:ref:refs/heads/main", "exp": future_exp() }),
+    );
+    assert!(p.authenticate(&bearer(&token)).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn an_empty_audience_is_rejected_at_construction() {
+    // Rejected before any network call: this is a config error, and reporting it
+    // as "the identity provider was unreachable" would send the operator to the
+    // wrong place. `new` warns-and-continues at the call site in `setup.rs`, so
+    // the message has to say what to fix.
+    let cfg = ActionsOidcAuthConfig {
+        name: "forgejo".to_owned(),
+        issuer_url: "https://forge.invalid".to_owned(),
+        required: false,
+        audience: "   ".to_owned(),
+        user_id_claim: "sub".to_owned(),
+        rules: vec![],
+    };
+    let Err(err) = ActionsOidcAuthProvider::new(&cfg).await else {
+        panic!("an empty audience must not produce a working provider");
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("audience"), "got: {msg}");
+    assert!(
+        msg.contains("forgejo"),
+        "names the offending provider: {msg}"
+    );
 }

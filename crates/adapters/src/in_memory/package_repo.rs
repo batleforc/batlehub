@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use batlehub_core::{
     entities::{
-        AccessAction, AccessEvent, AccessResult, EventFilter, PackageFilter, PackageId,
-        PackageStatus, PackageSummary,
+        AccessAction, AccessEvent, AccessResult, EventFilter, ExploreEntry, ExploreFilter,
+        ExploreSortBy, PackageFilter, PackageId, PackageSource, PackageStatus, PackageSummary,
     },
     error::CoreError,
     ports::{PackageRepository, RecentErrorRecord},
@@ -33,8 +33,105 @@ impl InMemoryPackageRepository {
     }
 }
 
+impl InMemoryPackageRepository {
+    /// The catalogue rows this store can account for, before pagination.
+    ///
+    /// Built from the same `PackageSummary` rows `list_packages` reads, so a
+    /// test that seeds one gets it from both. It is deliberately a **partial**
+    /// double: it knows nothing about locally published packages, cached bytes
+    /// or download counts, because those live in stores this one does not have.
+    /// What it does know — which packages exist, in which registry, and how many
+    /// versions — is what the search paths need (RFC 0007-bis §4.3).
+    async fn explore_rows(&self, filter: &ExploreFilter) -> Vec<ExploreEntry> {
+        let summaries = self.summaries.read().await;
+        let mut by_package: HashMap<(String, String), ExploreEntry> = HashMap::new();
+
+        for summary in summaries.values() {
+            let registry = summary.package_id.registry.clone();
+            let name = summary.package_id.name.clone();
+            if filter.registry.as_ref().is_some_and(|r| &registry != r) {
+                continue;
+            }
+            if !filter.registries.is_empty() && !filter.registries.contains(&registry) {
+                continue;
+            }
+            if filter
+                .name_contains
+                .as_ref()
+                .is_some_and(|n| !name.contains(n.as_str()))
+            {
+                continue;
+            }
+            // Empty means no restriction, never "match nothing" — the same
+            // distinction the Postgres side draws by binding `NULL` rather than
+            // an empty array.
+            if !filter.name_in.is_empty()
+                && !filter
+                    .name_in
+                    .iter()
+                    .any(|(r, n)| r == &registry && n == &name)
+            {
+                continue;
+            }
+            let entry = by_package
+                .entry((registry.clone(), name.clone()))
+                .or_insert_with(|| ExploreEntry {
+                    registry,
+                    name,
+                    version_count: 0,
+                    total_downloads: 0,
+                    last_accessed: None,
+                    source: PackageSource::Proxied,
+                    has_blocked: false,
+                    has_yanked: false,
+                    cached_versions: 0,
+                    cached_bytes: None,
+                    last_fetched_at: None,
+                    newest_version: None,
+                    newest_published_at: None,
+                });
+            entry.version_count += 1;
+            entry.has_blocked |= summary.status.is_blocked();
+            if summary.last_accessed > entry.last_accessed {
+                entry.last_accessed = summary.last_accessed;
+            }
+        }
+
+        let mut rows: Vec<ExploreEntry> = by_package.into_values().collect();
+        match filter.sort_by {
+            ExploreSortBy::Name => {
+                rows.sort_by(|a, b| (&a.registry, &a.name).cmp(&(&b.registry, &b.name)))
+            }
+            _ => rows.sort_by(|a, b| {
+                b.last_accessed
+                    .cmp(&a.last_accessed)
+                    .then_with(|| (&a.registry, &a.name).cmp(&(&b.registry, &b.name)))
+            }),
+        }
+        rows
+    }
+}
+
 #[async_trait]
 impl PackageRepository for InMemoryPackageRepository {
+    async fn explore_packages(
+        &self,
+        filter: ExploreFilter,
+    ) -> Result<Vec<ExploreEntry>, CoreError> {
+        let rows = self.explore_rows(&filter).await;
+        let start = (filter.offset as usize).min(rows.len());
+        let end = if filter.limit == 0 {
+            rows.len()
+        } else {
+            (start + filter.limit as usize).min(rows.len())
+        };
+        Ok(rows[start..end].to_vec())
+    }
+
+    async fn count_explore_packages(&self, filter: ExploreFilter) -> Result<u64, CoreError> {
+        Ok(self.explore_rows(&filter).await.len() as u64)
+    }
+
     async fn record_access(&self, event: AccessEvent) -> Result<(), CoreError> {
         // Only actions that always carry a real, version-specific package
         // coordinate should create/update a `PackageSummary` row. Ownership,

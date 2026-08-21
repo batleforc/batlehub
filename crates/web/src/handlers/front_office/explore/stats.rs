@@ -159,6 +159,7 @@ pub async fn explore_upstream_search(
             vec![]
         },
         name_contains: Some(query.name.clone()),
+        name_in: vec![],
         sort_by: ExploreSortBy::Name,
         limit: 500,
         offset: 0,

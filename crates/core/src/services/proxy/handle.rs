@@ -97,13 +97,79 @@ impl ProxyService {
     /// the JetBrains Marketplace per-plugin endpoints). Because it goes through
     /// `resolve_metadata_cached`, anything resolved once keeps resolving from
     /// cache (or stale cache, when `serve_stale` allows) after upstream loss.
+    /// The metadata for a coordinate **if it is already cached**, never fetching.
+    ///
+    /// The sibling of [`Self::resolve_metadata_for`] for callers that must not
+    /// cause egress. The console's package page is the motivating one: it renders
+    /// on a page view, and `explore_upstream_detail.rs` asserts it performs
+    /// **zero** per-version resolves — "filling it for every row would be N
+    /// upstream requests per page view". A cache-*first* read still fetches on a
+    /// cold cache, which is the same defect one request at a time.
+    ///
+    /// So this answers only from what a legitimate resolve already put there: a
+    /// download, a README read, a package manager's request. `None` means *we
+    /// have not looked*, which the caller renders as absence rather than as a
+    /// claim.
+    ///
+    /// No rule evaluation, deliberately. There is no upstream call to authorise
+    /// and nothing is served from it but display metadata the caller has already
+    /// gated by its own visibility check — this returns what is in the cache, and
+    /// deciding who may see the page is the caller's job, as it is for every
+    /// other field on it.
+    pub async fn cached_metadata_for(
+        &self,
+        package_id: &crate::entities::PackageId,
+    ) -> Option<crate::entities::PackageMetadata> {
+        // The same edge chokepoint `request_prelude` applies, for the same
+        // reason: this interpolates the coordinate into a cache key.
+        crate::services::validate_coordinate(
+            &package_id.name,
+            &package_id.version,
+            package_id.artifact.as_deref(),
+        )
+        .ok()?;
+        // Spelled as `request_prelude` spells it — the two must not drift, or
+        // this reads a key nothing ever writes and silently answers `None`.
+        let cache_key = format!("meta:{}", package_id.cache_key());
+        Some(self.cache.get(&cache_key).await.ok()??.metadata)
+    }
+
     pub async fn resolve_metadata_for(
         &self,
         req: &ProxyRequest,
     ) -> Result<crate::entities::PackageMetadata, CoreError> {
+        self.resolve_metadata_for_inner(req, true).await
+    }
+
+    /// [`Self::resolve_metadata_for`] without the README capture.
+    ///
+    /// For the console: a **page view** must write nothing. `resolve_metadata_for`
+    /// runs `maybe_record_readme`, which stores whatever README the upstream
+    /// document carried without checking that this instance holds the version —
+    /// so the package page's homepage/repository lookup left a `package_readmes`
+    /// row for a version nothing here has bytes for, which nothing ever deletes
+    /// (deletion keys on a version being deleted, and a version never held here
+    /// is never deleted). It also flipped that version's `readme_state` from
+    /// `unknown` to `available` on the next load, claiming a stored README for
+    /// bytes we never had.
+    ///
+    /// Everything else is identical, the cache included: N readers of the same
+    /// version during one TTL still produce one upstream request.
+    pub async fn resolve_metadata_uncaptured_for(
+        &self,
+        req: &ProxyRequest,
+    ) -> Result<crate::entities::PackageMetadata, CoreError> {
+        self.resolve_metadata_for_inner(req, false).await
+    }
+
+    async fn resolve_metadata_for_inner(
+        &self,
+        req: &ProxyRequest,
+        capture_readme: bool,
+    ) -> Result<crate::entities::PackageMetadata, CoreError> {
         let prelude = self.request_prelude(req).await?;
-        let metadata = self
-            .resolve_metadata_cached(
+        let metadata = if capture_readme {
+            self.resolve_metadata_cached(
                 &prelude.client,
                 &prelude.policy,
                 req,
@@ -111,7 +177,18 @@ impl ProxyService {
                 prelude.ttl,
                 &prelude.registry_label,
             )
-            .await?;
+            .await?
+        } else {
+            self.resolve_metadata_uncaptured(
+                &prelude.client,
+                &prelude.policy,
+                req,
+                &prelude.cache_key,
+                prelude.ttl,
+                &prelude.registry_label,
+            )
+            .await?
+        };
 
         let empty: Vec<Box<dyn crate::rules::Rule>> = vec![];
         let rules = prelude
@@ -216,7 +293,7 @@ impl ProxyService {
         }
 
         // ── 4. Check artifact cache ────────────────────────────────────────────
-        let artifact_key = format!("artifact:{}", req.package_id.cache_key());
+        let artifact_key = super::proxy_artifact_key(&req.package_id);
         let artifact_ttl = policy.as_ref().and_then(|p| p.artifact_ttl);
         let cached_artifact_is_fresh = self
             .artifact_is_fresh(&artifact_key, artifact_ttl, registry_name)
@@ -659,7 +736,11 @@ impl ProxyService {
     /// On an upstream failure a stale entry is served when the registry's policy
     /// allows it, matching `resolve_metadata_cached`: an upstream outage should
     /// degrade to slightly old version lists, not to a broken registry.
-    async fn cached_version_document(
+    /// `pub(super)` so the console's discovery read can reuse the three rungs
+    /// rather than inventing a second cache policy for the same document
+    /// (RFC 0007 §5.5). Still not public: nothing outside `ProxyService` gets
+    /// to fetch a listing document without going through a path that gates it.
+    pub(super) async fn cached_version_document(
         &self,
         prelude: &RequestPrelude,
         req: &ProxyRequest,

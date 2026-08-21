@@ -520,6 +520,7 @@ mod tests {
         Arc::new(ConfigReloadService::new(ConfigReloadParams {
             hot,
             access,
+            search: crate::new_search_lock(false),
             registry_map: crate::RegistryMap::new(HashMap::new()),
             registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
             upstream_map: crate::UpstreamMap::new(HashMap::new()),
@@ -568,6 +569,7 @@ mod tests {
         let svc = Arc::new(ConfigReloadService::new(ConfigReloadParams {
             hot,
             access,
+            search: crate::new_search_lock(false),
             registry_map: crate::RegistryMap::new(HashMap::new()),
             registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
             upstream_map: crate::UpstreamMap::new(HashMap::new()),

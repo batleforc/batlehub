@@ -24,8 +24,8 @@ use futures::StreamExt;
 
 use crate::{
     entities::{
-        AccessAction, AccessEvent, AccessResult, Identity, PackageId, PublishedPackage, Role,
-        SbomFormat, Visibility,
+        AccessAction, AccessEvent, AccessResult, Identity, PackageId, PublishedPackage,
+        ReadmeFormat, Role, SbomFormat, Visibility,
     },
     error::CoreError,
     ports::{
@@ -36,6 +36,7 @@ use crate::{
         explore_cache::ExploreCache,
         hot_config::{HotConfigLock, VersioningPolicy},
         quota::{QuotaCheck, QuotaService},
+        readme::ReadmeService,
         sbom::{SbomPublishOptions, SbomService},
     },
 };
@@ -213,6 +214,13 @@ pub struct LocalRegistryService {
     pub team_namespace: Option<Arc<dyn TeamNamespacePort>>,
     /// Optional SBOM service; when `None`, SBOM generation is disabled globally.
     pub sbom: Option<Arc<SbomService>>,
+    /// Optional README service; when `None`, README capture is disabled globally.
+    ///
+    /// Used by the publish path — a publish document carries the README text
+    /// (cargo) or the packument root does (npm) — and by delete, which is the
+    /// only thing that removes a stored README: the table has no foreign key,
+    /// because a README outlives the bytes (RFC 0007 §5.4).
+    pub readme: Option<Arc<ReadmeService>>,
     /// Optional explore cache; invalidated automatically on successful publish.
     pub explore_cache: Option<Arc<ExploreCache>>,
     /// The admin package store, serving two purposes for local/hybrid reads.

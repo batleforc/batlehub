@@ -118,9 +118,19 @@ async fn main() -> Result<()> {
     stores::spawn_db_pool_gauge_sampler(repo.pool());
 
     let storage = setup::initialize_storage(&config, repo.pool()).await?;
-    let (mut auth_providers, oidc_sso_flows) = setup::initialize_auth_providers(&config).await?;
+    let setup::AuthSetup {
+        providers: mut auth_providers,
+        sso_flows: oidc_sso_flows,
+        oidc_provider_names,
+    } = setup::initialize_auth_providers(&config).await?;
     let token_repo = repo.clone() as Arc<dyn UserTokenRepository>;
     setup::add_user_token_provider(&mut auth_providers, token_repo.clone());
+
+    // Postgres-backed rather than Redis: the server always has a database, a
+    // login writes one row and deletes it, and `DELETE … RETURNING` gives the
+    // one-time-use guarantee for free across replicas.
+    let login_states = repo.clone() as Arc<dyn batlehub_core::ports::LoginStateStore>;
+    setup::spawn_login_state_prune(Arc::clone(&login_states));
 
     let cache = stores::create_cache_store(&config, repo.pool()).await?;
     let cargo_index_map = setup::build_initial_cargo_index_map(&config)?;
@@ -190,6 +200,51 @@ async fn main() -> Result<()> {
     let hot = new_hot_lock(init_hot);
 
     let sbom_svc = stores::build_sbom_service(repo.pool())?;
+    // Per-registry README capture is configured in `HotConfig::readme` and
+    // defaults to on, so the service is always wired: an absent
+    // `[registries.readme]` block means enabled, not disabled (RFC 0007 §4.1).
+    // Prose search is opt-in, and the index is a generated column built with one
+    // text search configuration. Settling it here — before the repository is
+    // built — is what keeps the column and the query agreeing: searching with
+    // `french` against a column built with `english` matches almost nothing and
+    // reports it as a `200` with an empty list (RFC 0007-bis §5.2).
+    let text_config = if config.search.readmes {
+        batlehub_adapters::db::ensure_readme_text_config(&repo.pool(), &config.search.text_config)
+            .await?
+    } else {
+        batlehub_adapters::db::DEFAULT_TEXT_CONFIG.to_owned()
+    };
+    let mut readme_svc = batlehub_core::services::ReadmeService::new(Arc::new(
+        batlehub_adapters::db::PgReadmeRepository::new(repo.pool()).with_text_config(text_config),
+    ))
+    // The render cache, content-addressed by digest and renderer version
+    // (RFC 0007 §5.3). Also where a proxied image's bytes live, keyed by the
+    // digest of its URL — one entry for the shields.io badge a thousand READMEs
+    // share (RFC 0007-bis §5.1).
+    .with_cache(cache.clone());
+    // One image client for every registry, because an image host is a third
+    // party by construction: it is not the configured upstream, so none of a
+    // registry's credentials apply to it. It does honour the **global** proxy
+    // settings, which are about this network rather than about any one registry.
+    match batlehub_adapters::registry::HttpReadmeImageFetcher::new(
+        &batlehub_adapters::registry::http_client::UpstreamHttpOptions {
+            proxy_url: config.proxy.as_ref().map(|p| p.url.clone()),
+            proxy_username: config.proxy.as_ref().and_then(|p| p.username.clone()),
+            proxy_password: config.proxy.as_ref().and_then(|p| p.password.clone()),
+            no_proxy: config.proxy.as_ref().and_then(|p| p.no_proxy.clone()),
+            ..Default::default()
+        },
+    ) {
+        Ok(fetcher) => readme_svc = readme_svc.with_image_fetcher(Arc::new(fetcher)),
+        // Not fatal, and visible: `remote_images = "proxy"` charts images
+        // instead, which is what `strip` does and is the answer the panel
+        // already knows how to render.
+        Err(e) => tracing::warn!(
+            error = %e,
+            "readme: could not build the image fetcher; images will be charted"
+        ),
+    }
+    let readme_svc = Arc::new(readme_svc);
     let proxy_svc = Arc::new(ProxyService {
         hot: Arc::clone(&hot),
         storage: storage.clone(),
@@ -198,6 +253,8 @@ async fn main() -> Result<()> {
         artifact_meta,
         metrics: Arc::clone(&proxy_metrics),
         sbom: Some(Arc::clone(&sbom_svc)),
+        readme: Some(Arc::clone(&readme_svc)),
+        discovery: Default::default(),
     });
 
     let ip_block_store = stores::create_ip_block_store(&config, repo.pool()).await?;
@@ -220,6 +277,7 @@ async fn main() -> Result<()> {
         ownership: Some(ownership_store),
         team_namespace: Some(Arc::clone(&team_namespace_store)),
         sbom: Some(Arc::clone(&sbom_svc)),
+        readme: Some(Arc::clone(&readme_svc)),
         explore_cache: Some(Arc::clone(&admin_svc.explore_cache)),
         package_repo: Some(repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>),
     });
@@ -235,6 +293,11 @@ async fn main() -> Result<()> {
     );
     let eviction_map = setup::build_eviction_map(&config, storage.clone(), repo.pool());
     let access_config = new_access_lock(init_access);
+    // Prose search, shared between the app and the reload path so an operator
+    // can turn it off without a restart (RFC 0007-bis §4.1). The **index** is
+    // not torn down when it goes off — nothing reads it, and rebuilding it on
+    // the next flip would be a surprise measured in minutes.
+    let search_config = batlehub_web::new_search_lock(config.search.readmes);
 
     let hot_reload_enabled = std::env::var("BATLEHUB_DISABLE_HOT_RELOAD")
         .map(|v| v != "1" && v.to_lowercase() != "true")
@@ -261,6 +324,7 @@ async fn main() -> Result<()> {
     let reload_svc = Arc::new(ConfigReloadService::new(ConfigReloadParams {
         hot: Arc::clone(&hot),
         access: Arc::clone(&access_config),
+        search: Arc::clone(&search_config),
         registry_map: registry_map.clone(),
         registry_mode_map: registry_mode_map.clone(),
         upstream_map: upstream_map.clone(),
@@ -355,11 +419,14 @@ async fn main() -> Result<()> {
         admin_svc,
         token_repo,
         access_config,
+        search_config: Arc::clone(&search_config),
         registry_map,
         upstream_map,
         vuln_db_map,
         sumdb_map,
         oidc_sso_flows,
+        oidc_provider_names,
+        login_states,
         warming_map,
         eviction_map,
         proxy_metrics,

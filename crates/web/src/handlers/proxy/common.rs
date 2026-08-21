@@ -337,6 +337,32 @@ pub async fn fetch_proxy_document(
         .map_err(AppError::from)
 }
 
+/// Name the file this response is, for the routes whose URL does not.
+///
+/// Three of the artifact routes end in a verb rather than a filename —
+/// `…/{version}/tarball`, `…/{version}/download`, `…/{version}/vsix` — because
+/// that is the address the package manager is specified to fetch. A browser
+/// saving one of those has nothing else to go on and writes a file literally
+/// called `tarball`, `download` or `vsix`, with no extension: the console's own
+/// download link produced files nobody could identify, let alone `npm install`.
+///
+/// The package managers themselves are unaffected — none of them reads
+/// `Content-Disposition`; they already know what they asked for. The same
+/// device, for the same reason, as
+/// [`jetbrains_marketplace::files::plugin_attachment_value`].
+///
+/// [`crate::handlers::sanitize_filename`] runs over the name because it is built
+/// from a caller-supplied coordinate: the routes validate the coordinate, but
+/// validation still admits `"` and `/`, and either would break out of the
+/// quoted-string or make the name more than one path segment.
+pub fn attachment_disposition(
+    file_name: &str,
+) -> Result<actix_web::http::header::HeaderValue, AppError> {
+    let safe = crate::handlers::sanitize_filename(file_name);
+    actix_web::http::header::HeaderValue::from_str(&format!("attachment; filename=\"{safe}\""))
+        .map_err(|e| AppError::bad_request(format!("invalid artifact file name: {e}")))
+}
+
 /// Options controlling [`serve_local_or_proxy_artifact`]'s behaviour.
 pub struct LocalOrProxyArtifactOpts<'a> {
     /// Suffix passed to `PackageId::with_artifact(...)` on the proxy fallback,

@@ -258,6 +258,38 @@ pub trait RegistryClient: Send + Sync {
         ))
     }
 
+    /// Read a README the metadata *linked to* rather than carried.
+    ///
+    /// OpenVSX and the VS Code Marketplace give a URL, not text, so reading it
+    /// is an outbound request in its own right. It is never made on the resolve
+    /// path — the link travels on `PackageMetadata::extra` and is followed in
+    /// the detached introspection task (RFC 0007 §5.1).
+    ///
+    /// The implementation is responsible for the guards, because it is the only
+    /// layer that knows this registry's own base URL: the same
+    /// `ensure_same_origin` check tarball URLs already get, so a compromised or
+    /// misconfigured upstream cannot use this to point BatleHub at an internal
+    /// host; the shared `UpstreamHttpOptions` client with its timeouts and SSRF
+    /// guards; and a body read incrementally to `max_bytes` rather than
+    /// buffered-then-truncated.
+    ///
+    /// The response's `Content-Type` must **not** decide the format: the
+    /// protocol's declared one does, so an upstream cannot switch which renderer
+    /// path runs (§7.4).
+    ///
+    /// The default returns [`CoreError::NotSupported`]; only the two linked
+    /// kinds implement it.
+    async fn fetch_linked_readme(
+        &self,
+        url: &str,
+        max_bytes: usize,
+    ) -> Result<Option<String>, CoreError> {
+        let _ = (url, max_bytes);
+        Err(CoreError::NotSupported(
+            "this registry type does not link to a README".to_owned(),
+        ))
+    }
+
     /// Search the upstream registry for packages matching `query`.
     ///
     /// Returns up to `limit` results. The default implementation returns an empty

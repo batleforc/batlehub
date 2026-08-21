@@ -5,8 +5,11 @@ pub mod extractors;
 pub mod handlers;
 pub mod middleware;
 pub mod services;
+pub mod spa;
 
-pub use access::{new_access_lock, AccessConfig, AccessConfigLock};
+pub use access::{
+    new_access_lock, new_search_lock, AccessConfig, AccessConfigLock, SearchConfigLock,
+};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -446,6 +449,7 @@ use batlehub_core::{
 };
 use metrics_exporter_prometheus::PrometheusHandle;
 
+pub use handlers::auth::OidcProviderNames;
 pub use handlers::front_office::cli_download::CliBinaryPath;
 pub use handlers::healthz::{healthz, livez};
 pub use handlers::metrics::prometheus_metrics;
@@ -459,6 +463,7 @@ pub use middleware::ProxyTrust;
 pub use middleware::RateLimitMiddlewareFactory;
 pub use middleware::RateLimitService;
 pub use middleware::UserBlockMiddlewareFactory;
+pub use spa::{configure_spa, narrow_csp, SpaDir};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -563,7 +568,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             banner::get_banner,
             cli_download::download_cli,
             explore::{
-                explore_package_detail, explore_packages, explore_registry_stats,
+                explore_fetch_version, explore_package_detail, explore_package_readme,
+                explore_packages, explore_readme_image, explore_registry_stats,
                 explore_upstream_search,
             },
             me::{me, my_advisories, my_downloads, my_quota},
@@ -936,7 +942,18 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(my_advisories);
     cfg.service(download_cli);
     cfg.service(list_registries);
-    // Explore: detail path before list (more specific first); upstream before list
+    // Explore: detail path before list (more specific first); upstream before
+    // list. The README route is more specific than the detail route it extends,
+    // so it comes first — otherwise `/{registry}/{name}/readme` would match the
+    // detail path with `name = "{name}/readme"` on the registries whose names
+    // contain a slash.
+    cfg.service(explore_package_readme);
+    // Likewise more specific than the detail route, and than the README route:
+    // it carries the version and the index as their own segments.
+    cfg.service(explore_readme_image);
+    // Same shape, same reason: version and action as their own segments, so it
+    // must not be shadowed by the detail route.
+    cfg.service(explore_fetch_version);
     cfg.service(explore_package_detail);
     cfg.service(explore_upstream_search);
     cfg.service(explore_packages);
@@ -1069,6 +1086,13 @@ pub fn configure_app(
     registry_map: RegistryMap,
     upstream_map: UpstreamMap,
     oidc_sso_flows: Vec<OidcSsoFlow>,
+    // Names of the configured OIDC providers — the allow-list `create_token`
+    // checks the caller against. Distinct from `oidc_sso_flows`, which holds
+    // only the providers that also have `redirect_uri` set for browser login.
+    oidc_provider_names: OidcProviderNames,
+    // One-time store for in-flight authorization requests: PKCE verifier, nonce,
+    // provider and the caller's own CSRF value.
+    login_states: Arc<dyn batlehub_core::ports::LoginStateStore>,
     warming_map: WarmingServiceMap,
     eviction_map: EvictionServiceMap,
     proxy_metrics: Arc<ProxyMetrics>,
@@ -1078,20 +1102,30 @@ pub fn configure_app(
     notification_store: Arc<dyn batlehub_core::ports::NotificationPort + 'static>,
     notifications_config: Option<batlehub_config::schema::NotificationsConfig>,
     storage_admin_repo: Option<Arc<dyn StorageAdminRepository>>,
+    // `[search] readmes`. Hot-reloadable, so an operator can turn prose search
+    // off without restarting (RFC 0007-bis §4.1).
+    search_config: SearchConfigLock,
 ) -> impl Fn(&mut UtoipaServiceConfig) + Clone + 'static {
     let audit_client = reqwest::Client::builder()
         .user_agent("batlehub/0.1")
         .build()
         .expect("audit HTTP client");
+    // Per-process, and built here rather than passed in: it holds no
+    // configuration and nothing outside the refresh endpoint reads it.
+    let refresh_limiter = Arc::new(handlers::auth::oidc::RefreshRateLimiter::default());
     move |cfg| {
         cfg.app_data(web::Data::new(proxy_svc.clone()));
         cfg.app_data(web::Data::new(admin_svc.clone()));
         cfg.app_data(web::Data::new(token_repo.clone()));
         cfg.app_data(web::Data::new(Arc::clone(&access_config)));
+        cfg.app_data(web::Data::new(Arc::clone(&search_config)));
         cfg.app_data(web::Data::new(registry_map.clone()));
         cfg.app_data(web::Data::new(upstream_map.clone()));
         cfg.app_data(web::Data::new(audit_client.clone()));
         cfg.app_data(web::Data::new(oidc_sso_flows.clone()));
+        cfg.app_data(web::Data::new(oidc_provider_names.clone()));
+        cfg.app_data(web::Data::new(login_states.clone()));
+        cfg.app_data(web::Data::new(Arc::clone(&refresh_limiter)));
         cfg.app_data(web::Data::new(warming_map.clone()));
         cfg.app_data(web::Data::new(eviction_map.clone()));
         cfg.app_data(web::Data::new(proxy_metrics.clone()));

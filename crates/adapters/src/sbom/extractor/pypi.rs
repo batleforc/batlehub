@@ -1,5 +1,8 @@
-use batlehub_core::ports::{ExtractedManifest, SbomDependency};
+use batlehub_core::ports::{ExtractedManifest, ExtractedReadme, SbomDependency};
 use bytes::Bytes;
+
+use super::readme;
+use batlehub_core::services::readme::detect;
 
 pub(super) fn extract_pypi_manifest(data: &Bytes) -> ExtractedManifest {
     // Try wheel (zip) first, then sdist (tar.gz).
@@ -89,7 +92,63 @@ fn parse_pep_metadata(content: &str) -> ExtractedManifest {
     ExtractedManifest {
         dependencies,
         license: parse_pep_license(content),
+        readme: parse_pep_description(content),
     }
+}
+
+/// The long description a PEP 566 metadata file carries, and its declared
+/// markup.
+///
+/// Two shapes, both current:
+///
+/// - the **body**, everything after the blank line that ends the headers. This
+///   is what every modern build backend writes, and it is why a wheel's
+///   `METADATA` is often mostly prose.
+/// - the `Description:` **header**, with continuation lines indented by eight
+///   spaces. Older setuptools wrote this, and plenty of published sdists still
+///   carry it.
+///
+/// `Description-Content-Type` names the markup in both cases; PEP 566 says an
+/// absent one means plain text, and it is not guessed into a renderer.
+fn parse_pep_description(content: &str) -> Option<ExtractedReadme> {
+    let format = detect::format_from_content_type(
+        content
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("Description-Content-Type:"))
+            .map(str::trim),
+    );
+
+    // The body wins: when a file has both, the header is the legacy copy.
+    let body = content
+        .split_once("\n\n")
+        .map(|(_, body)| body)
+        .filter(|body| !body.trim().is_empty());
+    if let Some(body) = body {
+        return readme::from_manifest_field(body, "METADATA", format);
+    }
+
+    let mut description = String::new();
+    let mut in_description = false;
+    for line in content.lines() {
+        if let Some(first) = line.strip_prefix("Description:") {
+            in_description = true;
+            description.push_str(first.trim_start());
+            continue;
+        }
+        if !in_description {
+            continue;
+        }
+        // A continuation line is indented; anything else ends the field.
+        match line.strip_prefix("        ") {
+            Some(rest) => {
+                description.push('\n');
+                description.push_str(rest);
+            }
+            None if line.trim().is_empty() => description.push('\n'),
+            None => break,
+        }
+    }
+    readme::from_manifest_field(&description, "METADATA", format)
 }
 
 /// setuptools wrote `UNKNOWN` into `License:` (and `Summary:`, `Home-page:`, …)
@@ -280,5 +339,75 @@ mod tests {
             extract_pypi_manifest(&Bytes::from_static(b"not an archive")),
             ExtractedManifest::default()
         );
+    }
+
+    use super::super::readme::fixtures::{targz, zipped};
+    use batlehub_core::entities::ReadmeFormat;
+
+    /// The modern shape: the long description is the METADATA **body**, after
+    /// the blank line that ends the headers, with its markup declared by
+    /// `Description-Content-Type`.
+    #[test]
+    fn a_wheels_metadata_body_is_the_readme() {
+        let data = zipped(&[(
+            "x-1.0.dist-info/METADATA",
+            b"Metadata-Version: 2.1\nName: x\nLicense-Expression: MIT\n\
+              Description-Content-Type: text/markdown\nRequires-Dist: requests\n\
+              \n# x\n\nDoes a thing.\n"
+                .as_slice(),
+        )]);
+        let manifest = extract_pypi_manifest(&data);
+        assert_eq!(manifest.license.as_deref(), Some("MIT"));
+        assert_eq!(manifest.dependencies.len(), 1);
+        let readme = manifest.readme.expect("description read");
+        assert_eq!(readme.content, "# x\n\nDoes a thing.");
+        assert_eq!(readme.format, ReadmeFormat::Markdown);
+        assert_eq!(readme.path, "METADATA");
+    }
+
+    /// The legacy shape older setuptools wrote: a `Description:` header whose
+    /// continuation lines are indented by eight spaces. Plenty of published
+    /// sdists still carry it.
+    #[test]
+    fn the_legacy_description_header_is_read_with_its_continuations() {
+        let data = targz(&[(
+            "x-1.0/PKG-INFO",
+            b"Metadata-Version: 1.2\nName: x\nDescription: First line\n\
+              \x20       Second line\n\x20       Third line\nPlatform: UNKNOWN\n"
+                .as_slice(),
+        )]);
+        let readme = extract_pypi_manifest(&data)
+            .readme
+            .expect("description read");
+        assert_eq!(readme.content, "First line\nSecond line\nThird line");
+        // Nothing declared the markup, and PEP 566 says that means plain text.
+        assert_eq!(readme.format, ReadmeFormat::Plain);
+    }
+
+    /// An RST description is stored as RST and shown as escaped source: docutils
+    /// is the only faithful renderer, and a partial one renders some documents
+    /// subtly wrong (RFC 0007 §3).
+    #[test]
+    fn a_declared_rst_description_stays_rst() {
+        let data = zipped(&[(
+            "x-1.0.dist-info/METADATA",
+            b"Name: x\nDescription-Content-Type: text/x-rst\n\nHeading\n=======\n".as_slice(),
+        )]);
+        assert_eq!(
+            extract_pypi_manifest(&data).readme.unwrap().format,
+            ReadmeFormat::Rst
+        );
+    }
+
+    /// Headers and nothing else is a package with no long description.
+    #[test]
+    fn metadata_with_no_description_reports_none() {
+        let data = zipped(&[(
+            "x-1.0.dist-info/METADATA",
+            b"Metadata-Version: 2.1\nName: x\nLicense-Expression: MIT\n".as_slice(),
+        )]);
+        let manifest = extract_pypi_manifest(&data);
+        assert!(manifest.readme.is_none());
+        assert_eq!(manifest.license.as_deref(), Some("MIT"));
     }
 }

@@ -6,6 +6,11 @@ use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Audience every test provider requires and every test token carries.
+/// `actions-oidc` makes it mandatory: its issuer is shared by every repository
+/// on the forge, so `aud` is what identifies tokens meant for this deployment.
+const TEST_AUDIENCE: &str = "https://batlehub.test";
+
 // ── Test key material ─────────────────────────────────────────────────────────
 
 const TEST_EC_PRIVATE_KEY: &str = "-----BEGIN PRIVATE KEY-----\n\
@@ -86,7 +91,9 @@ async fn full_bootstrap_and_authenticate() {
 
     let cfg = ActionsOidcAuthConfig {
         name: "forgejo-action".to_owned(),
-        issuer_url: base,
+        issuer_url: base.clone(),
+        required: false,
+        audience: TEST_AUDIENCE.to_owned(),
         user_id_claim: "sub".to_owned(),
         rules: vec![],
     };
@@ -99,7 +106,13 @@ async fn full_bootstrap_and_authenticate() {
 
     let token = signed_token(
         Some("test-kid"),
-        json!({ "sub": "ci-bot", "repository": "myorg/myrepo", "exp": future_exp() }),
+        json!({
+            "sub": "ci-bot",
+            "repository": "myorg/myrepo",
+            "exp": future_exp(),
+            "aud": TEST_AUDIENCE,
+            "iss": base,
+        }),
     );
     let id = provider
         .authenticate(&bearer(&token))
@@ -124,6 +137,8 @@ async fn bootstrap_fails_on_discovery_500() {
     let cfg = ActionsOidcAuthConfig {
         name: "test".to_owned(),
         issuer_url: server.url(),
+        required: false,
+        audience: TEST_AUDIENCE.to_owned(),
         user_id_claim: "sub".to_owned(),
         rules: vec![],
     };
@@ -152,7 +167,9 @@ async fn bootstrap_fails_on_jwks_500() {
 
     let cfg = ActionsOidcAuthConfig {
         name: "test".to_owned(),
-        issuer_url: base,
+        issuer_url: base.clone(),
+        required: false,
+        audience: TEST_AUDIENCE.to_owned(),
         user_id_claim: "sub".to_owned(),
         rules: vec![],
     };
@@ -176,6 +193,8 @@ async fn bootstrap_fails_on_malformed_discovery_json() {
     let cfg = ActionsOidcAuthConfig {
         name: "test".to_owned(),
         issuer_url: server.url(),
+        required: false,
+        audience: TEST_AUDIENCE.to_owned(),
         user_id_claim: "sub".to_owned(),
         rules: vec![],
     };
@@ -209,12 +228,14 @@ async fn toml_config_deserialises_and_boots() {
         r#"
 name = "ci-provider"
 issuer_url = "{base}"
+audience = "{aud}"
 user_id_claim = "sub"
 
 [[rules]]
 group = "ci-users"
 role = "user"
-"#
+"#,
+        aud = TEST_AUDIENCE,
     );
 
     let cfg: ActionsOidcAuthConfig = toml::from_str(&toml_src).expect("TOML parse failed");
@@ -227,7 +248,12 @@ role = "user"
 
     let token = signed_token(
         Some("test-kid"),
-        json!({ "sub": "pipeline", "exp": future_exp() }),
+        json!({
+            "sub": "pipeline",
+            "exp": future_exp(),
+            "aud": TEST_AUDIENCE,
+            "iss": base,
+        }),
     );
     let id = provider
         .authenticate(&bearer(&token))

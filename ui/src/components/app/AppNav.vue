@@ -46,10 +46,14 @@ function cellInk(to: string, active: boolean) {
 </script>
 
 <template>
+  <!-- `hidden lg:flex`, not `md`: this segment run is what makes the masthead
+       too wide to fit between 768 and 900 — the labels are translated, and
+       `PAQUETS · CONFIGURATION · ADMINISTRATION` is 362px against the English
+       227px. See the breakpoint note in `AppHeader.vue`. -->
   <nav
     v-if="variant === 'desktop'"
     :aria-label="t('nav.aria')"
-    class="hidden md:flex border border-border"
+    class="hidden lg:flex border border-border"
   >
     <RouterLink
       v-for="link in links"

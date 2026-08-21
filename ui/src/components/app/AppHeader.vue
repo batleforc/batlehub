@@ -74,11 +74,28 @@ function handleLogout() {
          child with `max-width:100%` and `padding: --s3 --s5`, so the wordmark
          is flush to the left edge and the controls to the right: a bar that
          spans the window edge to edge but whose *contents* stop 260px short of
-         it on a wide screen is drawing a frame it does not fill. Edge padding
-         steps 24 → 16 at the same breakpoint the bar already reorganises at,
-         so there is one boundary in this component rather than two (the proof
-         breaks at 900, between our md and lg; md is where our nav collapses). -->
-    <div class="flex h-14 items-center gap-3 px-4 md:gap-6 md:px-6">
+         it on a wide screen is drawing a frame it does not fill.
+
+         **The bar reorganises at `lg`, and it used to be `md`.**
+         The proof collapses its masthead at 900 (`@media (max-width:900px)`),
+         between our `md` and `lg`, and this component took `md` — 132px early.
+         Measured with a session, on any page: the desktop bar's min-content is
+         808px in English (wordmark 181 · nav 227 · controls 304) and **900px in
+         French**, where the same three destinations read `PAQUETS ·
+         CONFIGURATION · ADMINISTRATION` (362px). So every width from 768 to 899
+         made the *document* scroll sideways — the one thing DESIGN.md's
+         Own-Container Overflow Rule forbids it to do — and the dotted spacer,
+         which is the bar's designed slack, was already collapsed to 0.
+         `lg` is the first Tailwind step that fits the widest locale, and it
+         collapses to the hamburger masthead this component already ships rather
+         than putting primary wayfinding behind a scroll.
+         A locale is not a layout variant: the breakpoint has to fit the widest
+         one, not the one the developer happens to be reading in.
+         Edge padding still steps at `md` on purpose — `GlobalBanner` and
+         `AppFooter` both key `px-4 md:px-6` to "the bars it sits with", so
+         moving this one alone would misalign the three vertical edges between
+         768 and 1023. Only the *reorganisation* moved. -->
+    <div class="flex h-14 items-center gap-3 px-4 md:px-6 lg:gap-6">
       <!-- The wordmark goes home. It pointed at /packages from when `/` was a
            blind redirect there; Phase 4 made `/` a real identity-aware surface
            (RFC 0003 §4.3), so the logo had been skipping past it ever since.
@@ -123,25 +140,42 @@ function handleLogout() {
            bar gets tight — the texture is never what survives a narrow
            viewport. Masked to fade at both edges so it reads as a field the bar
            passes through rather than a panel with borders. -->
-      <div class="relative hidden self-stretch md:block md:flex-1" aria-hidden="true">
+      <div class="relative hidden self-stretch lg:block lg:flex-1" aria-hidden="true">
         <span
           class="pointer-events-none absolute inset-0 opacity-55 [background-image:radial-gradient(var(--rule-soft)_1px,transparent_1.5px)] [background-size:9px_9px] [mask-image:linear-gradient(90deg,transparent,#000_40%,transparent)]"
         />
       </div>
 
       <!-- Right side -->
-      <div class="ml-auto flex items-center gap-2 md:ml-0">
+      <div class="ml-auto flex items-center gap-2 lg:ml-0">
         <!-- The proof's `.ctl`: a bordered uppercase cell, the same edge weight
              as the nav segment, so a control and a destination are told apart
-             by shape rather than by two unrelated shapes both being blue-ish. -->
+             by shape rather than by two unrelated shapes both being blue-ish.
+
+             The word is spent from `lg`, the icon carries it below that, and it
+             is `lg` itself that needs this rather than the narrow widths: at
+             exactly 1024 the French bar wants 1061px with the label and 1009
+             without it, so the first width that shows the segment run would have
+             scrolled sideways in French on the day it stopped doing so in
+             English. Collapsing the bar at `lg` fixes 768–899 (see the
+             breakpoint note above); this is what makes the step *into* the
+             desktop layout fit too.
+
+             This label, and not another 50px: the nav is the page's primary
+             wayfinding, the wordmark is identity, and the user cell is already
+             initials-only until `lg`. A convenience link to external docs is the
+             one control here that reads the same as an icon — which is how the
+             two toggles beside it already work — and `aria-label` keeps its name
+             at every width, so nothing is lost but the glyphs. -->
         <a
           :href="DOCS_URL"
           target="_blank"
           rel="noopener noreferrer"
+          :aria-label="t('common.docs')"
           class="hidden sm:flex items-center gap-2 whitespace-nowrap border border-border px-3 py-2 text-xs uppercase tracking-[0.1em] text-muted-foreground transition-colors hover:border-muted-foreground hover:text-foreground"
         >
           <BookOpen class="h-3.5 w-3.5" />
-          {{ t("common.docs") }}
+          <span class="hidden lg:inline">{{ t("common.docs") }}</span>
         </a>
         <LocaleToggle />
         <ThemeToggle />
@@ -152,7 +186,7 @@ function handleLogout() {
         <Button
           variant="ghost"
           size="icon"
-          class="md:hidden"
+          class="lg:hidden"
           :aria-label="mobileOpen ? t('a11y.closeMenu') : t('a11y.openMenu')"
           :aria-expanded="mobileOpen"
           aria-controls="mobile-nav"
@@ -173,7 +207,7 @@ function handleLogout() {
     <div
       v-if="mobileOpen"
       id="mobile-nav"
-      class="md:hidden border-t border-rule-soft bg-ground-sunk px-4 py-4"
+      class="lg:hidden border-t border-rule-soft bg-ground-sunk px-4 py-4"
     >
       <nav :aria-label="t('nav.aria')" class="border border-border divide-y divide-border">
         <AppNav :links="navLinks" variant="mobile" @navigate="mobileOpen = false" />

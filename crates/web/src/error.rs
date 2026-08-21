@@ -8,11 +8,21 @@ use batlehub_core::error::CoreError;
 pub struct ErrorBody {
     pub error: String,
     pub message: String,
+    /// Stable slug identifying *which* refusal this is, when one status covers
+    /// more than one and a client has to tell them apart.
+    ///
+    /// Safe to match on; `message` is not — it is prose and may be reworded.
+    /// The same reasoning `ConfigWarning::code` already carries. Absent on the
+    /// endpoints that have only one way to fail with a given status, so no
+    /// existing response shape changes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
 }
 
 pub struct AppError {
     pub status: StatusCode,
     pub message: String,
+    pub code: Option<String>,
 }
 
 impl AppError {
@@ -20,7 +30,19 @@ impl AppError {
         Self {
             status: StatusCode::NOT_FOUND,
             message: msg.into(),
+            code: None,
         }
+    }
+
+    /// The same refusal, carrying a slug a client can branch on.
+    ///
+    /// For the endpoints where one status covers genuinely different situations
+    /// — a README that is absent because the package has none stored, and one
+    /// that is absent because the registry type has none to give — and a panel
+    /// has to render a statement for one and an error for the other.
+    pub fn coded(mut self, code: impl Into<String>) -> Self {
+        self.code = Some(code.into());
+        self
     }
 
     /// The caller could not be identified at all — distinct from
@@ -30,6 +52,7 @@ impl AppError {
         Self {
             status: StatusCode::UNAUTHORIZED,
             message: msg.into(),
+            code: None,
         }
     }
 
@@ -37,6 +60,7 @@ impl AppError {
         Self {
             status: StatusCode::FORBIDDEN,
             message: msg.into(),
+            code: None,
         }
     }
 
@@ -44,6 +68,7 @@ impl AppError {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: msg.into(),
+            code: None,
         }
     }
 
@@ -51,6 +76,7 @@ impl AppError {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: msg.into(),
+            code: None,
         }
     }
 
@@ -58,6 +84,7 @@ impl AppError {
         Self {
             status: StatusCode::CONFLICT,
             message: msg.into(),
+            code: None,
         }
     }
 
@@ -69,6 +96,7 @@ impl AppError {
         Self {
             status: StatusCode::NOT_IMPLEMENTED,
             message: msg.into(),
+            code: None,
         }
     }
 
@@ -76,6 +104,15 @@ impl AppError {
         Self {
             status: StatusCode::UNPROCESSABLE_ENTITY,
             message: msg.into(),
+            code: None,
+        }
+    }
+
+    pub fn too_many_requests(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: msg.into(),
+            code: None,
         }
     }
 
@@ -83,6 +120,7 @@ impl AppError {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
             message: msg.into(),
+            code: None,
         }
     }
 
@@ -90,6 +128,7 @@ impl AppError {
         Self {
             status: StatusCode::BAD_GATEWAY,
             message: msg.into(),
+            code: None,
         }
     }
 }
@@ -103,6 +142,7 @@ impl actix_web::ResponseError for AppError {
         let body = ErrorBody {
             error: self.status.canonical_reason().unwrap_or("error").to_owned(),
             message: self.message.clone(),
+            code: self.code.clone(),
         };
         HttpResponse::build(self.status).json(body)
     }
@@ -132,31 +172,37 @@ impl From<CoreError> for AppError {
             CoreError::PayloadTooLarge(msg) => Self {
                 status: StatusCode::PAYLOAD_TOO_LARGE,
                 message: msg,
+                code: None,
             },
             CoreError::QuotaExceeded(msg) => Self {
                 status: StatusCode::TOO_MANY_REQUESTS,
                 message: msg,
+                code: None,
             },
             CoreError::InvalidVersion(msg) => Self::unprocessable(msg),
             CoreError::InvalidInput(msg) => Self::bad_request(msg),
             CoreError::Registry(msg) => Self {
                 status: StatusCode::BAD_GATEWAY,
                 message: msg,
+                code: None,
             },
             // Upstream served bytes that fail their advertised checksum (or
             // provided none when one is required) → 502, never the bad artifact.
             CoreError::IntegrityFailure(msg) => Self {
                 status: StatusCode::BAD_GATEWAY,
                 message: msg,
+                code: None,
             },
             // Dependency unavailability → 503 so load-balancers can retry elsewhere.
             CoreError::Storage(msg) | CoreError::Cache(msg) => Self {
                 status: StatusCode::SERVICE_UNAVAILABLE,
                 message: msg,
+                code: None,
             },
             CoreError::Database(msg) => Self {
                 status: StatusCode::SERVICE_UNAVAILABLE,
                 message: msg,
+                code: None,
             },
             // Reaching HTTP at all means a handler asked a registry type for
             // something its protocol has no answer for; 501 says that plainly
@@ -164,6 +210,7 @@ impl From<CoreError> for AppError {
             CoreError::NotSupported(msg) => Self {
                 status: StatusCode::NOT_IMPLEMENTED,
                 message: msg,
+                code: None,
             },
             other => {
                 tracing::error!(error = %other, "internal error");

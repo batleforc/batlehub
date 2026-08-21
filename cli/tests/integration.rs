@@ -61,6 +61,11 @@ struct TestServer {
     /// This is necessary because in-memory local-registry and admin-service
     /// backends are separate stores (in Postgres they share the same tables).
     repo: Arc<InMemoryPackageRepository>,
+    /// Exposed for the same reason `repo` is: `package readme` reads the README
+    /// store, and nothing a CLI test can do through the HTTP surface puts a row
+    /// in it — the capture paths are a proxied resolve and a publish, neither of
+    /// which this harness runs.
+    readme_repo: Arc<batlehub_adapters::in_memory::InMemoryReadmeRepository>,
     _runtime: tokio::runtime::Runtime,
 }
 
@@ -133,6 +138,12 @@ impl TestServer {
             })
             .collect();
 
+        let readme_repo = batlehub_adapters::in_memory::InMemoryReadmeRepository::new();
+        let readme_svc = Arc::new(batlehub_core::services::ReadmeService::new(Arc::clone(
+            &readme_repo,
+        )
+            as Arc<dyn batlehub_core::ports::ReadmeRepository>));
+
         let local_svc = Arc::new(LocalRegistryService {
             backend: Arc::new(InMemoryLocalRegistry::new()),
             storage: storage.clone(),
@@ -147,6 +158,7 @@ impl TestServer {
             sbom: None,
             explore_cache: None,
             package_repo: None,
+            readme: Some(Arc::clone(&readme_svc)),
         });
 
         let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
@@ -162,19 +174,27 @@ impl TestServer {
             artifact_meta: NoopArtifactMetaRepository::arc(),
             metrics: Arc::new(ProxyMetrics::new(&[])),
             sbom: None,
+            readme: Some(Arc::clone(&readme_svc)),
+            discovery: Default::default(),
         });
 
         let admin_svc = Arc::new(AdminService::new(repo.clone()));
         let token_repo = NullUserTokenRepository::arc();
 
+        // Explore follows proxy access, as `build_access_config` makes it in an
+        // unconfigured server: `rbac.explore.*` all default to `true`. Leaving
+        // these three empty modelled a server where nothing is browsable by
+        // anyone, which is not what the CLI's catalogue commands run against —
+        // `package readme` reads the set directly and would get the `404` an
+        // operator gets for a registry they took out of the console.
         let access_config = new_access_lock(AccessConfig {
             anonymous: registry_names.iter().cloned().collect(),
             user: registry_names.iter().cloned().collect(),
             admin: registry_names.iter().cloned().collect(),
             groups: HashMap::new(),
-            explore_anonymous: std::collections::HashSet::new(),
-            explore_user: std::collections::HashSet::new(),
-            explore_admin: std::collections::HashSet::new(),
+            explore_anonymous: registry_names.iter().cloned().collect(),
+            explore_user: registry_names.iter().cloned().collect(),
+            explore_admin: registry_names.iter().cloned().collect(),
         });
 
         let auth_providers: Vec<Arc<dyn AuthProvider>> =
@@ -205,6 +225,7 @@ impl TestServer {
         let reload_svc = Arc::new(ConfigReloadService::new(ConfigReloadParams {
             hot: proxy_svc.hot.clone(),
             access: access_config.clone(),
+            search: batlehub_web::new_search_lock(false),
             registry_map: registry_map.clone(),
             registry_mode_map: mode_map.clone(),
             upstream_map: UpstreamMap::default(),
@@ -230,6 +251,8 @@ impl TestServer {
             registry_map,
             UpstreamMap::default(),
             vec![],
+            batlehub_web::OidcProviderNames::default(),
+            batlehub_adapters::in_memory::InMemoryLoginStateStore::arc(),
             HashMap::new(), // warming_map
             HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
@@ -238,7 +261,9 @@ impl TestServer {
             None,
             Arc::new(InMemoryNotificationStore::new()),
             None,
-            None, // storage_admin_repo
+            None, // storage_admin_repo,
+            // Prose search off, matching the shipped default.
+            batlehub_web::new_search_lock(false),
         );
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -289,6 +314,7 @@ impl TestServer {
         Self {
             port,
             repo,
+            readme_repo,
             _runtime: rt,
         }
     }
@@ -316,6 +342,34 @@ impl TestServer {
             .unwrap()
             .block_on(async move { repo.record_access(event).await.unwrap() });
     }
+
+    /// Seed a README directly into the store, for the same reason
+    /// [`Self::seed_package`] exists: the capture paths are a proxied resolve
+    /// and a publish, and this harness runs neither.
+    fn seed_readme(&self, name: &str, version: &str, body: &str) {
+        use batlehub_core::entities::{readme_digest, PackageReadme, ReadmeFormat, ReadmeSource};
+
+        let readme = PackageReadme {
+            registry: REGISTRY.to_owned(),
+            name: name.to_owned(),
+            version: version.to_owned(),
+            content: body.to_owned(),
+            format: ReadmeFormat::Markdown,
+            source: ReadmeSource::LocalPublish,
+            digest: readme_digest(body),
+            truncated: false,
+            package_level: false,
+            extracted_at: chrono::Utc::now(),
+        };
+        let repo = Arc::clone(&self.readme_repo);
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(async move {
+                use batlehub_core::ports::ReadmeRepository;
+                repo.upsert(readme).await.unwrap()
+            });
+    }
 }
 
 fn wait_for_port(port: u16, timeout: Duration) -> bool {
@@ -331,26 +385,54 @@ fn wait_for_port(port: u16, timeout: Duration) -> bool {
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
+/// A `HOME` for one CLI subprocess that nothing else can see.
+///
+/// **`mktemp`, not `/tmp`.** Every test here runs the real binary, and the
+/// binary reads its `HOME`: `~/.netrc`, and `~/.config` whenever
+/// `XDG_CONFIG_HOME` does not decide the question. Handing them all the literal
+/// `/tmp` made that one directory shared state between processes that know
+/// nothing about each other — not only the tests in this file but every other
+/// suite `cargo test --workspace` runs at the same time, plus whatever else is
+/// already in `/tmp` on the machine. It held: two `setup detect` tests failed
+/// under a loaded parallel run and passed in isolation, which is the shape of a
+/// flake nobody can reproduce.
+///
+/// The returned handle must stay alive for the whole call — dropping it deletes
+/// the directory — which is why every caller binds it before spawning.
+fn scratch_home() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("batlehub-cli-home-")
+        .tempdir()
+        .expect("scratch HOME")
+}
+
 /// Run the CLI binary with env-injected server/token and return (success, stdout, stderr).
+///
+/// A fresh config directory per call, because none of these commands carries
+/// state from one invocation to the next: the token arrives in the environment
+/// and everything else is asked of the server. A test that *does* need a config
+/// directory to survive two calls uses [`cli_cmd_in`] with its own.
 fn cli_cmd(args: &[&str], server: &str, token: &str) -> (bool, String, String) {
-    cli_cmd_in(args, server, token, "/tmp/.xdg-batlehub-test")
+    let config = scratch_home();
+    cli_cmd_in(args, server, token, config.path().to_str().unwrap())
 }
 
 /// [`cli_cmd`] with a config directory of the caller's choosing.
 ///
 /// The auth tests read and write stored credentials, so each needs its own —
-/// sharing the default one would let a login in one test satisfy another.
+/// sharing one would let a login in one test satisfy another.
 fn cli_cmd_in(
     args: &[&str],
     server: &str,
     token: &str,
     config_home: &str,
 ) -> (bool, String, String) {
+    let home = scratch_home();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
         .args(args)
         .env("BATLEHUB_SERVER", server)
         .env("BATLEHUB_TOKEN", token)
-        .env("HOME", "/tmp")
+        .env("HOME", home.path())
         .env("XDG_CONFIG_HOME", config_home)
         .output()
         .expect("failed to run batlehub-cli binary");
@@ -692,28 +774,25 @@ fn auth_whoami_table_mode() {
     assert!(stdout.contains("static-token"), "stdout: {stdout}");
 }
 
+// Managing personal access tokens takes an interactive OIDC login — creating,
+// listing *and* revoking. `AUTH_TOKEN` here is a static token from config, i.e.
+// a machine credential, and none of the three are open to it. Listing and
+// revoking used to be: a leaked PAT or a copied static token could enumerate its
+// victim's other tokens and revoke them.
+
 #[test]
-fn auth_token_list_empty_json() {
+fn auth_token_list_requires_oidc_fails() {
     let srv = TestServer::start();
-    let (ok, stdout, stderr) = cli_cmd(
+    let (ok, _stdout, stderr) = cli_cmd(
         &["auth", "token", "list", "--json"],
         &srv.base_url(),
         AUTH_TOKEN,
     );
+    assert!(!ok, "token list with a static token session should fail");
     assert!(
-        ok,
-        "auth token list --json should succeed; stderr: {stderr}"
+        stderr.to_lowercase().contains("oidc"),
+        "stderr should mention OIDC, got: {stderr}"
     );
-    let arr: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON array");
-    assert!(arr.is_empty(), "expected empty token list, got: {stdout}");
-}
-
-#[test]
-fn auth_token_list_empty_table() {
-    let srv = TestServer::start();
-    let (ok, stdout, stderr) = cli_cmd(&["auth", "token", "list"], &srv.base_url(), AUTH_TOKEN);
-    assert!(ok, "auth token list should succeed; stderr: {stderr}");
-    assert!(stdout.contains("0 token(s)"), "stdout: {stdout}");
 }
 
 #[test]
@@ -732,7 +811,7 @@ fn auth_token_create_requires_oidc_fails() {
 }
 
 #[test]
-fn auth_token_revoke_not_found_fails() {
+fn auth_token_revoke_requires_oidc_fails() {
     let srv = TestServer::start();
     let id = uuid::Uuid::new_v4().to_string();
     let (ok, _stdout, stderr) = cli_cmd(
@@ -740,10 +819,10 @@ fn auth_token_revoke_not_found_fails() {
         &srv.base_url(),
         AUTH_TOKEN,
     );
-    assert!(!ok, "revoking a non-existent token should fail");
+    assert!(!ok, "token revoke with a static token session should fail");
     assert!(
-        stderr.to_lowercase().contains("not found"),
-        "stderr should mention 'not found', got: {stderr}"
+        stderr.to_lowercase().contains("oidc"),
+        "stderr should mention OIDC, got: {stderr}"
     );
 }
 
@@ -1033,11 +1112,12 @@ fn auth_login_kubernetes_saves_config() {
     let token_path = token_file.to_str().unwrap();
     let srv = TestServer::start();
 
+    let home = scratch_home();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
         .args(["auth", "login", "--kubernetes-token-path", token_path])
         .env("BATLEHUB_SERVER", srv.base_url())
         .env("BATLEHUB_TOKEN", AUTH_TOKEN)
-        .env("HOME", "/tmp")
+        .env("HOME", home.path())
         .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())
         .output()
         .expect("failed to run batlehub-cli");
@@ -1853,9 +1933,10 @@ fn admin_export_audit_log_csv_to_file() {
 #[test]
 fn config_show_defaults() {
     let config_dir = tempfile::tempdir().unwrap();
+    let home = scratch_home();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
         .args(["config", "show"])
-        .env("HOME", "/tmp")
+        .env("HOME", home.path())
         .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())
         .output()
         .expect("failed to run batlehub-cli");
@@ -1876,10 +1957,14 @@ fn config_show_defaults() {
 #[test]
 fn config_set_then_show_masks_token() {
     let config_dir = tempfile::tempdir().unwrap();
+    // One `HOME` for all four calls — the config directory below is what has to
+    // persist between them, and this keeps them equally isolated from everything
+    // outside this test.
+    let home = scratch_home();
     let run = |args: &[&str]| {
         std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
             .args(args)
-            .env("HOME", "/tmp")
+            .env("HOME", home.path())
             .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())
             .output()
             .expect("failed to run batlehub-cli")
@@ -1912,9 +1997,10 @@ fn config_set_then_show_masks_token() {
 #[test]
 fn config_set_unknown_key_fails() {
     let config_dir = tempfile::tempdir().unwrap();
+    let home = scratch_home();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
         .args(["config", "set", "bogus", "value"])
-        .env("HOME", "/tmp")
+        .env("HOME", home.path())
         .env("XDG_CONFIG_HOME", config_dir.path().to_str().unwrap())
         .output()
         .expect("failed to run batlehub-cli");
@@ -1940,35 +2026,66 @@ fn setup_detect_json(dir: &std::path::Path) -> (bool, Vec<serde_json::Value>, St
 
 /// `setup detect` against `server` in `dir`, with `extra` flags in between.
 ///
-/// Each caller passes its own `config_home`: these run as subprocesses against
-/// the real binary, and a shared config directory would let one test's cached
-/// registry list answer another's question.
-fn setup_detect(
-    server: &str,
-    dir: &std::path::Path,
-    extra: &[&str],
-    config_home: &str,
-) -> (bool, String) {
+/// Its own `HOME` and its own config directory, both from `mktemp`: these run as
+/// subprocesses against the real binary, and a shared config directory would let
+/// one test's cached registry list answer another's question. The detection
+/// walks `HOME` too, so a shared one lets anything already sitting in `/tmp`
+/// decide what this test sees.
+fn setup_detect(server: &str, dir: &std::path::Path, extra: &[&str]) -> (bool, String, String) {
     let mut args: Vec<&str> = vec!["--server", server, "setup", "detect"];
     args.extend_from_slice(extra);
     args.push("--dir");
+    let home = scratch_home();
+    let config = scratch_home();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
         .args(&args)
         .arg(dir)
-        .env("HOME", "/tmp")
-        .env("XDG_CONFIG_HOME", config_home)
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", config.path())
         .output()
         .expect("failed to run batlehub-cli");
     (
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
     )
+}
+
+/// The marker `load_registries` prints on both of its fallback arms.
+const PLACEHOLDER_NOTE: &str = "using placeholders.";
+
+/// [`setup_detect`], for the tests that assert on what the *server* answered.
+///
+/// `load_registries` gives the server five seconds and then prints instructions
+/// carrying `<registry>` rather than failing — the right behaviour for a wizard,
+/// and a trap for a test that asserts on the resolved name. On a loaded machine
+/// (two test binaries at once, each starting its own in-process server) that
+/// deadline is missable, and the assertion then fails on the *snippet* while the
+/// reason sits in a stderr this helper used to throw away. So: retry, and if it
+/// never gets an answer, fail with the note rather than with a diff of the
+/// snippet.
+///
+/// The retry is for the deadline, not for a wrong answer — a server that
+/// responds with the wrong registry still fails on the first pass.
+fn setup_detect_resolved(server: &str, dir: &std::path::Path, extra: &[&str]) -> String {
+    let mut note = String::new();
+    for _ in 0..4 {
+        let (ok, stdout, stderr) = setup_detect(server, dir, extra);
+        assert!(ok, "setup detect failed: {stdout}\nstderr: {stderr}");
+        if !stderr.contains(PLACEHOLDER_NOTE) {
+            return stdout;
+        }
+        note = stderr;
+    }
+    panic!("setup detect never got an answer out of the test server: {note}");
 }
 
 fn setup_detect_json_depth(
     dir: &std::path::Path,
     depth: usize,
 ) -> (bool, Vec<serde_json::Value>, String) {
+    let home = scratch_home();
+    let config = scratch_home();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_batlehub-cli"))
         .args([
             "setup",
@@ -1980,8 +2097,8 @@ fn setup_detect_json_depth(
             &depth.to_string(),
         ])
         .env("BATLEHUB_SERVER", "http://127.0.0.1:1") // no real server needed
-        .env("HOME", "/tmp")
-        .env("XDG_CONFIG_HOME", "/tmp/.xdg-batlehub-detect-test")
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", config.path())
         .output()
         .expect("failed to run batlehub-cli");
     let ok = out.status.success();
@@ -2061,14 +2178,8 @@ fn setup_detect_names_the_configured_registry() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("package.json"), r#"{"name":"my-app"}"#).unwrap();
 
-    let (ok, stdout) = setup_detect(
-        &server.base_url(),
-        dir.path(),
-        &[],
-        "/tmp/.xdg-batlehub-detect-named",
-    );
+    let stdout = setup_detect_resolved(&server.base_url(), dir.path(), &[]);
 
-    assert!(ok, "setup detect failed: {stdout}");
     assert!(
         stdout.contains(&format!("registry={}/proxy/npm1/npm/", server.base_url())),
         "expected the configured registry name in the snippet; got:\n{stdout}"
@@ -2092,14 +2203,8 @@ fn setup_detect_uses_the_registry_subdomain_and_netrc_host() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("package.json"), r#"{"name":"my-app"}"#).unwrap();
 
-    let (ok, stdout) = setup_detect(
-        &server.base_url(),
-        dir.path(),
-        &[],
-        "/tmp/.xdg-batlehub-detect-subdomain",
-    );
+    let stdout = setup_detect_resolved(&server.base_url(), dir.path(), &[]);
 
-    assert!(ok, "setup detect failed: {stdout}");
     assert!(
         stdout.contains("registry=https://npm1.batlehub.example.com/npm/"),
         "expected the registry's own host in the snippet; got:\n{stdout}"
@@ -2128,14 +2233,8 @@ fn setup_detect_json_reports_the_resolved_registry() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"c\"\n").unwrap();
 
-    let (ok, stdout) = setup_detect(
-        &server.base_url(),
-        dir.path(),
-        &["--json"],
-        "/tmp/.xdg-batlehub-detect-json-reg",
-    );
+    let stdout = setup_detect_resolved(&server.base_url(), dir.path(), &["--json"]);
 
-    assert!(ok);
     let items: Vec<serde_json::Value> =
         serde_json::from_str(&stdout).expect("stdout should be a JSON array");
     assert_eq!(items[0]["registry_name"], serde_json::json!("cargo1"));
@@ -2153,17 +2252,19 @@ fn setup_detect_offline_keeps_the_placeholder() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("package.json"), r#"{"name":"my-app"}"#).unwrap();
 
-    let (ok, stdout) = setup_detect(
-        &server.base_url(),
-        dir.path(),
-        &["--offline"],
-        "/tmp/.xdg-batlehub-detect-offline",
-    );
+    let (ok, stdout, stderr) = setup_detect(&server.base_url(), dir.path(), &["--offline"]);
 
     assert!(ok, "setup detect failed: {stdout}");
     assert!(
         stdout.contains("/proxy/<registry>/npm/"),
         "expected the placeholder; got:\n{stdout}"
+    );
+    // The placeholder came from `--offline`, not from a fetch that failed or
+    // timed out — without this the test passes for the wrong reason on exactly
+    // the loaded machine where the distinction matters.
+    assert!(
+        !stderr.contains(PLACEHOLDER_NOTE),
+        "--offline must not contact the server at all; stderr: {stderr}"
     );
 }
 
@@ -2579,4 +2680,143 @@ fn publish_nuget_package_accessible_via_proxy() {
         versions.iter().any(|v| v == "4.0.0"),
         "expected 4.0.0 in flat index versions: {versions:?}"
     );
+}
+
+// ── `package readme` (RFC 0007 §6.6) ──────────────────────────────────────────
+
+/// The source, not a rendering: markdown in a terminal is readable, and turning
+/// it into ANSI is a separate concern.
+#[test]
+fn package_readme_prints_the_source_for_an_explicit_version() {
+    let srv = TestServer::start();
+    srv.seed_readme("mylib", "1.0.0", "# mylib\n\nDoes a thing.");
+    srv.seed_readme("mylib", "2.0.0", "# mylib 2\n\nDoes another thing.");
+
+    let (ok, stdout, _stderr) = cli_cmd(
+        &["package", "readme", &format!("{REGISTRY}/mylib@1.0.0")],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "package readme should succeed");
+    assert!(stdout.contains("# mylib"), "{stdout}");
+    assert!(stdout.contains("Does a thing."), "{stdout}");
+    // Each version's own text, which is the whole point of the version key.
+    assert!(!stdout.contains("Does another thing."), "{stdout}");
+}
+
+/// Without a version, the newest that has a README answers.
+#[test]
+fn package_readme_without_a_version_prints_one_anyway() {
+    let srv = TestServer::start();
+    srv.seed_readme("mylib", "1.0.0", "# the only one");
+
+    let (ok, stdout, _stderr) = cli_cmd(
+        &["package", "readme", &format!("{REGISTRY}/mylib")],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "package readme should succeed");
+    assert!(stdout.contains("# the only one"), "{stdout}");
+}
+
+/// The qualifications go to stderr, so `batlehub package readme x/y > README.md`
+/// writes the document and not a header — while a reader at a terminal still
+/// sees that they are looking at another version's prose.
+#[test]
+fn package_readme_puts_the_fallback_note_on_stderr_and_the_text_on_stdout() {
+    let srv = TestServer::start();
+    srv.seed_readme("mylib", "1.4.2", "# 1.4.2 documentation");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["package", "readme", &format!("{REGISTRY}/mylib@2.0.0-rc1")],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "package readme should succeed");
+    assert!(stdout.contains("# 1.4.2 documentation"), "{stdout}");
+    assert!(
+        !stdout.contains("note:"),
+        "the note leaked into stdout: {stdout}"
+    );
+    assert!(stderr.contains("1.4.2"), "{stderr}");
+    assert!(stderr.contains("2.0.0-rc1"), "{stderr}");
+}
+
+/// An unknown coordinate exits non-zero with something a person can act on.
+#[test]
+fn package_readme_for_an_unknown_package_fails_readably() {
+    let srv = TestServer::start();
+
+    let (ok, _stdout, stderr) = cli_cmd(
+        &["package", "readme", &format!("{REGISTRY}/no-such-package")],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(!ok, "an unknown package should exit non-zero");
+    assert!(
+        stderr.to_lowercase().contains("readme") || stderr.contains("404"),
+        "the message should say what was not found: {stderr}"
+    );
+}
+
+/// A malformed coordinate is rejected before any request is made.
+#[test]
+fn package_readme_rejects_a_coordinate_with_no_registry() {
+    let srv = TestServer::start();
+
+    let (ok, _stdout, stderr) = cli_cmd(
+        &["package", "readme", "just-a-name"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(!ok);
+    assert!(stderr.contains("registry/name"), "{stderr}");
+}
+
+/// `--json` prints the whole response, so a script can read `is_fallback` and
+/// `stored` rather than parsing the notes.
+#[test]
+fn package_readme_json_carries_the_qualifiers() {
+    let srv = TestServer::start();
+    srv.seed_readme("mylib", "1.0.0", "# mylib");
+
+    let (ok, stdout, _stderr) = cli_cmd(
+        &[
+            "package",
+            "readme",
+            &format!("{REGISTRY}/mylib@1.0.0"),
+            "--json",
+        ],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "package readme --json should succeed");
+    let body: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(body["version"], "1.0.0");
+    assert_eq!(body["is_fallback"], false);
+    assert_eq!(body["stored"], true);
+    assert_eq!(body["source_text"], "# mylib");
+}
+
+/// `--no-upstream` maps to `?upstream=skip`. This harness has no upstream at
+/// all, so the assertion is that the flag is accepted and still answers from
+/// what is held — the "makes no upstream call" half is asserted on a mock in
+/// `crates/web/tests/explore_upstream_detail.rs`, which can count requests.
+#[test]
+fn package_readme_no_upstream_still_answers_from_what_is_held() {
+    let srv = TestServer::start();
+    srv.seed_readme("mylib", "1.0.0", "# held here");
+
+    let (ok, stdout, _stderr) = cli_cmd(
+        &[
+            "package",
+            "readme",
+            &format!("{REGISTRY}/mylib@1.0.0"),
+            "--no-upstream",
+        ],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "package readme --no-upstream should succeed");
+    assert!(stdout.contains("# held here"), "{stdout}");
 }

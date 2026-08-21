@@ -180,6 +180,17 @@ some-crate = { version = "1", optional = true }
 
 `crates/config/src/schema/mod.rs`'s `AppConfig::validate()` rejects unknown registry types at startup — but it does so generically, by parsing the configured string into `RegistryKind` (`registry.registry_type.parse::<RegistryKind>()?`). There's no per-type string list to edit here: add the new variant to the `RegistryKind` enum and its `ALL` slice in `crates/core/src/entities/registry_kind.rs`, and this validation (plus anything else that matches on `RegistryKind`, like `server/src/builders.rs`'s client-construction match) picks it up automatically — the compiler will point you at every match that needs a new arm.
 
+Four of those matches are **exhaustive on purpose**, with no wildcard arm, because each one is generated into a published table and a table that claims coverage dispatch cannot deliver is the failure RFC 0009 was written about:
+
+| Accessor | Answers | Appears in |
+| --- | --- | --- |
+| `listing_filter()` | how a version listing is filtered | the [listing-filter table](/registries/#version-listings) |
+| `readme_support()` | where this kind's README comes from | the [README support table](/registries/#readmes) |
+| `upstream_detail()` | whether the console may ask upstream about a package held nowhere here | the same table's *Held nowhere here* column |
+| `fetchable_by_version()` | whether *Fetch this version* has a single meaning | the same table's *Fetchable* column |
+
+Each `None` variant carries the **reason** as a `&'static str`, and the endpoint, the config warning and the generated table all quote it — so there is one sentence about why a kind does not do something, not three that can drift apart. Write the reason for a reader who is looking for a gap, not for a compiler.
+
 ---
 
 ## 7. Step 5 — Wire up the server

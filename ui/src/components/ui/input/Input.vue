@@ -27,7 +27,7 @@ const delegatedProps = computed(() => {
     :value="modelValue"
     :class="
       cn(
-        'flex h-9 w-full rounded-sm border border-input bg-background px-3 py-2 font-mono text-sm ring-offset-background placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-50 file:border-0 file:bg-transparent file:text-sm file:font-medium',
+        'flex h-9 w-full rounded-sm border border-input bg-background px-3 py-2 font-mono text-sm ring-offset-background placeholder:text-muted-foreground/60 disabled:cursor-not-allowed disabled:opacity-50 file:border-0 file:bg-transparent file:text-sm file:font-medium',
         props.class,
       )
     "

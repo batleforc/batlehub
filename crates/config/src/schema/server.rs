@@ -163,3 +163,100 @@ pub struct OtelConfig {
 pub fn default_service_name() -> String {
     "batlehub".to_owned()
 }
+
+/// Whether an OIDC `issuer_url` is safe to fetch a discovery document from.
+///
+/// HTTPS anywhere, or plain HTTP on loopback only. Loopback is exempt because
+/// that is how the test suites and a developer's local Keycloak run, and there
+/// is no network path for anyone to sit on.
+///
+/// Deliberately a string check rather than a URL parse: the only question is
+/// which transport will be used, and a parser would introduce its own opinions
+/// about hosts this function has none about.
+pub fn is_secure_issuer_url(url: &str) -> bool {
+    if url.starts_with("https://") {
+        return true;
+    }
+    let Some(rest) = url.strip_prefix("http://") else {
+        // Neither scheme: `OidcAuthProvider::new` will fail to fetch it anyway,
+        // and reporting "must use https" is the more useful message.
+        return false;
+    };
+    // `\` ends the authority for a special scheme exactly as `/` does (WHATWG
+    // URL §4.4), and userinfo is everything before the last `@` — both are how
+    // an authority is read past. `http://localhost:8080@evil.example/realm`
+    // split on `:` alone yields the host `localhost`, so this answered "safe"
+    // for a URL `reqwest` dials in cleartext to `evil.example`, which is the one
+    // thing the function exists to refuse.
+    let authority = rest.split(['/', '\\', '?', '#']).next().unwrap_or_default();
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    // The port, without mistaking an IPv6 literal's own colons for one: a
+    // bracketed host ends at `]`, and `http://[::1]/realm` — no port at all —
+    // read as the host `[:` before this.
+    let host = match authority.strip_prefix('[') {
+        Some(inner) => inner
+            .split_once(']')
+            .map_or(authority, |(h, _)| &authority[..h.len() + 2]),
+        None => authority.rsplit_once(':').map_or(authority, |(h, _)| h),
+    };
+    matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1")
+}
+
+#[cfg(test)]
+mod issuer_url_tests {
+    use super::is_secure_issuer_url;
+
+    #[test]
+    fn https_is_always_fine() {
+        assert!(is_secure_issuer_url("https://idp.example.com"));
+        assert!(is_secure_issuer_url("https://idp.example.com/realms/main"));
+        assert!(is_secure_issuer_url("https://idp.example.com:8443"));
+    }
+
+    #[test]
+    fn plain_http_is_loopback_only() {
+        assert!(is_secure_issuer_url("http://localhost:8080/realms/main"));
+        assert!(is_secure_issuer_url("http://127.0.0.1:9000"));
+        assert!(is_secure_issuer_url("http://[::1]:9000"));
+
+        assert!(!is_secure_issuer_url("http://idp.example.com"));
+        assert!(!is_secure_issuer_url("http://10.0.0.5:8080"));
+        assert!(
+            !is_secure_issuer_url("http://localhost.evil.example"),
+            "a host that merely starts with localhost is not loopback"
+        );
+    }
+
+    #[test]
+    fn a_missing_scheme_is_refused() {
+        assert!(!is_secure_issuer_url("idp.example.com"));
+        assert!(!is_secure_issuer_url(""));
+    }
+
+    /// Userinfo is not the host. `http://localhost:8080@evil.example/realm` is
+    /// a cleartext fetch from `evil.example` that read as loopback while the
+    /// port was split off the whole authority.
+    #[test]
+    fn userinfo_cannot_impersonate_loopback() {
+        assert!(!is_secure_issuer_url(
+            "http://localhost:8080@evil.example/x"
+        ));
+        assert!(!is_secure_issuer_url("http://127.0.0.1@evil.example/x"));
+        assert!(!is_secure_issuer_url("http://[::1]@evil.example/x"));
+        // A `\` ends the authority for a special scheme just as `/` does
+        // (WHATWG URL §4.4), so this one really *is* loopback — `@evil.example`
+        // is path, and that is where `reqwest` puts it too. Asserted so the two
+        // readings are pinned as agreeing rather than left to chance.
+        assert!(is_secure_issuer_url(r"http://localhost\@evil.example/x"));
+        assert!(!is_secure_issuer_url(r"http://evil.example\@localhost/x"));
+    }
+
+    /// A loopback literal with no port is loopback. `rsplit_once(':')` on
+    /// `[::1]` read the host as `[:` and refused a legitimate URL.
+    #[test]
+    fn a_bracketed_ipv6_without_a_port_is_still_loopback() {
+        assert!(is_secure_issuer_url("http://[::1]/realms/main"));
+        assert!(is_secure_issuer_url("http://[::1]"));
+        assert!(!is_secure_issuer_url("http://[2001:db8::1]/realms/main"));
+    }
+}

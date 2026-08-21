@@ -131,6 +131,31 @@ pub fn embedded_migrator() -> Migrator {
             "stats history listing reads",
             "../migrations/033_stats_history_listing_reads.sql"
         ),
+        mig!(
+            34,
+            "package readmes",
+            "../migrations/034_package_readmes.sql"
+        ),
+        mig!(
+            35,
+            "package readme full-text search",
+            "../migrations/035_package_readmes_fts.sql"
+        ),
+        mig!(
+            36,
+            "oidc login states",
+            "../migrations/036_oidc_login_states.sql"
+        ),
+        mig!(
+            37,
+            "user tokens qualified by provider",
+            "../migrations/037_user_tokens_provider.sql"
+        ),
+        mig!(
+            38,
+            "user token last used",
+            "../migrations/038_user_tokens_last_used.sql"
+        ),
     ])
 }
 

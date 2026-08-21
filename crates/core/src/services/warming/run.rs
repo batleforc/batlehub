@@ -4,7 +4,7 @@ use tokio::sync::Semaphore;
 
 use super::{WarmingReport, WarmingService, WARM_CLAIM_TTL};
 use crate::{
-    entities::{PackageId, RegistryKind},
+    entities::{FetchArtifact, PackageId, RegistryKind},
     ports::{ArtifactMetaRecord, StorageMeta},
 };
 
@@ -151,12 +151,13 @@ async fn warm_one_version_inner(
 }
 
 impl WarmingService {
-    /// The artifact sub-coordinate this registry's primary artifact is cached
-    /// under, derived from the client's `registry_type()` — `Some("plugin")`
-    /// for JetBrains Marketplace, `None` for kinds addressed by name/version
-    /// alone. An unrecognised type (test doubles, future kinds) yields `None`,
-    /// which is the historical behaviour.
-    fn warm_artifact(&self) -> Option<&'static str> {
+    /// How this registry's primary artifact is addressed, derived from the
+    /// client's `registry_type()` — `Fixed("plugin")` for JetBrains
+    /// Marketplace, `Fixed("tarball")` for npm, `NugetFlat` for NuGet. `None`
+    /// for a kind that cannot name one artifact per version (PyPI, conda,
+    /// Maven, Terraform), and for an unrecognised type (test doubles, future
+    /// kinds), which is the historical behaviour.
+    fn warm_artifact(&self) -> Option<FetchArtifact> {
         self.client
             .registry_type()
             .parse::<RegistryKind>()
@@ -233,11 +234,12 @@ impl WarmingService {
         let artifact = self.warm_artifact();
 
         for version in versions {
-            let mut pkg =
-                PackageId::new(self.registry_name.clone(), name.to_owned(), version.clone());
-            if let Some(a) = artifact {
-                pkg = pkg.with_artifact(a);
-            }
+            let pkg = match artifact {
+                Some(a) => a.coordinate(&self.registry_name, name, &version),
+                None => {
+                    PackageId::new(self.registry_name.clone(), name.to_owned(), version.clone())
+                }
+            };
             let artifact_key = format!("artifact:{}", pkg.cache_key());
             handles.push(tokio::spawn(warm_one_version(
                 self.clone(),

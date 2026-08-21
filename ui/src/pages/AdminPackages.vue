@@ -492,9 +492,18 @@ async function runPending(): Promise<void> {
     <p class="text-sm text-muted-foreground">
       <i18n-t keypath="adminPackages.blockNotHereYet" tag="span">
         <template #link>
-          <RouterLink to="/admin/packages/bulk" class="text-primary hover:underline">{{
-            t("adminNav.bulkBlock")
-          }}</RouterLink>
+          <!-- Underlined at rest, not on hover. Crimson on this sentence's dim
+               ink measures 1.28:1 against the surrounding text, so colour alone
+               cannot mark it as a link: axe's `link-in-text-block` wants 3:1 or
+               a non-colour cue. The same fix the catalog's denial notes already
+               carry — and the reason it went unnoticed here is that the gate
+               measures 1440 and 390, where this sentence does not wrap into a
+               text block; it fails at 820–1023, which nothing measured. -->
+          <RouterLink
+            to="/admin/packages/bulk"
+            class="text-primary underline underline-offset-[3px]"
+            >{{ t("adminNav.bulkBlock") }}</RouterLink
+          >
         </template>
       </i18n-t>
     </p>

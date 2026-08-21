@@ -9,6 +9,12 @@
       vite.config.ts and substituted here at build time — see that function for
       why the policy lives in the document rather than in a response header, and
       why `connect-src` is derived from VITE_API_BASE_URL rather than hard-coded.
+
+      What is built here is the *maximum*. When the server serves this document
+      it narrows the policy to the running configuration (`crates/web/src/spa.rs`);
+      it can remove a source but has no way to add one. Under `vite dev` nothing
+      narrows it, which is why the dev console admits what the widest deployment
+      would.
     -->
     <meta http-equiv="Content-Security-Policy" content="%VITE_CSP%" />
 

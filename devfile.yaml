@@ -60,6 +60,51 @@ components:
           targetPort: 9515
           exposure: internal
           protocol: http
+  # Dex — an OIDC provider for the [[auth]] stack, on the same port 9000 the
+  # compose Authentik uses. Authentik is four containers and a Postgres of its
+  # own: a compose stack, not something a workspace can carry. Dex is one
+  # container with in-memory storage, so it fits here and starts with the pod.
+  #
+  # It listens on 9000 for the backend and the che-browser sidecar (one pod, one
+  # network namespace), and is published through the gateway so browser SSO
+  # works from a real browser too. The endpoint is deliberately NOT `secure`:
+  # the backend fetches the discovery document unauthenticated, and Che's auth
+  # in front of it would answer that fetch with a login page. What is exposed is
+  # a throwaway IdP holding two accounts whose password is "password" — do not
+  # add anything to it you would mind a passer-by reaching, and use
+  # `task dex:config LOCAL=1` plus `exposure: internal` if you want it sealed
+  # inside the pod.
+  #
+  # The config is rendered, not committed — the issuer is this workspace's FQDN.
+  # `task dex:config` writes it; until then the container sits in the wait loop
+  # below rather than crash-looping, which would leave the pod short of Ready
+  # and the workspace unable to start.
+  - name: dex
+    container:
+      image: ghcr.io/dexidp/dex:v2.45.0
+      memoryLimit: 256Mi
+      memoryRequest: 64Mi
+      cpuLimit: "500m"
+      cpuRequest: 50m
+      # For dev/dex/config.yaml, which `task dex:config` writes from the tools
+      # container into the shared /projects volume.
+      mountSources: true
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          cfg="${PROJECTS_ROOT:-/projects}/proxy-cache/dev/dex/config.yaml"
+          while [ ! -f "$cfg" ]; do
+            echo "dex: waiting for $cfg — run 'task dex:config' in the tools container"
+            sleep 5
+          done
+          echo "dex: starting with $cfg"
+          exec /usr/local/bin/dex serve "$cfg"
+      endpoints:
+        - name: dex
+          targetPort: 9000
+          exposure: public
+          protocol: https
+          secure: false
   - name: postgres
     container:
       image: postgres:17-alpine

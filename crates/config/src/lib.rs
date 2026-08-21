@@ -1385,4 +1385,85 @@ path = "./tmp"
             .iter()
             .any(|r| r.registry_type == "rpm" && r.repo_signing.is_some()));
     }
+
+    /// The workspace config (`task run:space`), which unlike the others is *not*
+    /// self-contained: it names no workspace, and reads the three URLs a Che
+    /// workspace decides out of the environment. The task exports them; this
+    /// test does the same so the file is still exercised by `cargo test`.
+    ///
+    /// The assertions are the two things that were silently wrong before, and
+    /// that nothing else would catch — a config only has to parse to be broken
+    /// here:
+    ///
+    ///   * both providers share ONE `redirect_uri`. There is a single callback
+    ///     route and the provider comes from the stored login state, so a
+    ///     per-provider path (`/auth/oidc2/callback`) is a 404 the browser
+    ///     reaches after the password has already been typed.
+    ///   * roles map off `email`. Dex's password DB emits no groups, so
+    ///     `role_claim = "groups"` would resolve every login to anonymous.
+    #[test]
+    fn example_space_config_loads_and_validates() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        for (k, v) in [
+            ("BATLEHUB_FRONT_URL", "https://front.example.invalid"),
+            ("BATLEHUB_BACK_URL", "https://back.example.invalid"),
+            ("BATLEHUB_DEX_ISSUER", "https://dex.example.invalid"),
+            ("OIDC_CLIENT_SECRET", "s"),
+            ("OIDC2_CLIENT_SECRET", "s"),
+        ] {
+            std::env::set_var(k, v);
+        }
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../config.example-space.toml"
+        );
+        let cfg = load(path).expect("config.example-space.toml must load and validate");
+
+        let oidc: Vec<_> = cfg
+            .auth
+            .iter()
+            .filter_map(|a| match a {
+                AuthConfig::Oidc(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(oidc.len(), 2, "the workspace config declares oidc + oidc2");
+
+        for c in &oidc {
+            assert_eq!(
+                c.redirect_uri.as_deref(),
+                Some("https://back.example.invalid/api/v1/auth/oidc/callback"),
+                "provider '{}' must come back to the one callback route",
+                c.name
+            );
+            assert_eq!(c.issuer_url, "https://dex.example.invalid");
+            assert_eq!(c.frontend_url, "https://front.example.invalid");
+            assert_eq!(c.role_claim, "email", "dex's password DB emits no groups");
+            assert_eq!(c.user_id_claim, "email");
+            assert_eq!(
+                c.role_mappings.get("admin@example.com").map(String::as_str),
+                Some("admin")
+            );
+        }
+
+        // The SPA is served from a different origin than the API in a workspace;
+        // without its origin here every call fails on the preflight.
+        let cors = cfg
+            .server
+            .cors_allowed_origins
+            .as_ref()
+            .expect("the workspace config must allow the front's origin");
+        assert!(cors.iter().any(|o| o == "https://front.example.invalid"));
+
+        for k in [
+            "BATLEHUB_FRONT_URL",
+            "BATLEHUB_BACK_URL",
+            "BATLEHUB_DEX_ISSUER",
+            "OIDC_CLIENT_SECRET",
+            "OIDC2_CLIENT_SECRET",
+        ] {
+            std::env::remove_var(k);
+        }
+    }
 }

@@ -1,4 +1,41 @@
 /**
+ * The one third-party image origin this policy admits.
+ *
+ * `socket_badge` is a per-registry feature flag, on by default, and the version
+ * table renders `<img src="https://badge.socket.dev/…">` for every row of a
+ * package on a supported ecosystem. Under `img-src 'self' data:` not one of them
+ * could ever load: the feature shipped as a broken-image box per row, in every
+ * deployment, because the policy the document carries forbids what the server
+ * tells it to fetch.
+ *
+ * **This is a decision with a cost, taken deliberately.** Each badge is a request
+ * to a third party naming the package and version being read, made on page load
+ * rather than on a click — so an operator's browsing of their own estate is
+ * described to socket.dev, one row at a time. RFC 0007-bis refused exactly this
+ * for README images and proxies them server-side instead. The alternative here
+ * was the same proxy, or dropping the `<img>` and keeping the link; the badge was
+ * kept visible instead.
+ *
+ * The split that keeps this honest: the **policy** says what the page *may*
+ * load, the **config** says what it *does*. An instance that sets
+ * `[registries.feature_flags] socket_badge = false` everywhere emits no badge
+ * URL, so nothing is fetched and this entry is inert — it never makes a request
+ * happen, it only stops one being blocked. An air-gapped instance is in that
+ * position by force: the origin is unreachable, and the row falls back to its
+ * text.
+ *
+ * Since RFC 0013 phase 12 the two are not merely consistent but connected: the
+ * server narrows this policy to the running config when it serves the document
+ * (`crates/web/src/spa.rs`), so an instance with the badge off everywhere drops
+ * this origin from the policy as well as from the page. That narrowing can only
+ * ever *subtract* — what is built here is the maximum, and nothing in a config
+ * file can widen it. Keep this origin spelled exactly as the Rust constant
+ * `SOCKET_BADGE_ORIGIN`; if the two drift, the narrowing simply stops matching
+ * and the built policy is served intact, which is the safe direction to fail.
+ */
+const SOCKET_BADGE_ORIGIN = "https://badge.socket.dev";
+
+/**
  * Content-Security-Policy for the SPA document.
  *
  * Lives in the document (a `<meta http-equiv>` substituted at build time) rather
@@ -15,6 +52,20 @@
  * blocks every `fetch`, and the symptom reads as "the backend is down" rather
  * than "the CSP refused it". Deriving both from one variable keeps the policy
  * and the client from disagreeing.
+ *
+ * `img-src` gets that same origin, and for a reason that is easy to miss because
+ * it only appears on a split-origin deployment. Under
+ * `[registries.readme] remote_images = "proxy"` the server does not hand the
+ * page a third-party URL — it rewrites every `<img>` to point back at
+ * `/api/v1/explore/packages/…/readme-image/{n}` on **its own** origin
+ * (`image_prefix` in `crates/web/src/handlers/front_office/explore/readme.rs`
+ * builds it absolute, from the request's trusted origin). When the API is the
+ * same origin as the SPA that is `'self'` and nothing is needed; when it is not
+ * — the two-dev-server setup, and any deployment serving the console and the API
+ * on separate hostnames — every proxied README image is blocked, and the console
+ * reports a CSP violation for a URL pointing at this project's own backend.
+ * This is the one directive where 'self' and "the API" are different things and
+ * the page needs both.
  *
  * `style-src` needs `'unsafe-inline'`: the Vue/Tailwind build emits inline style
  * attributes and shiki injects inline styles for highlighting. Scripts get no
@@ -35,20 +86,28 @@
  * refuses in a production build.
  */
 export function buildCsp(apiBaseUrl: string, livePort?: number | null): string {
-  const connectSrc = ["'self'"];
+  // Resolved once and used by two directives: `connect-src` for the SDK's
+  // `fetch`, `img-src` for the README images the server proxies from this
+  // origin. `null` when the base is relative or unparseable — both mean
+  // same-origin, which `'self'` already covers in either directive.
+  let apiOrigin: string | null = null;
   const trimmed = apiBaseUrl.trim();
   if (trimmed) {
     try {
       // Only an origin is a valid CSP source expression; leaving a path on it
       // would invalidate the directive rather than narrow it.
-      connectSrc.push(new URL(trimmed).origin);
+      apiOrigin = new URL(trimmed).origin;
     } catch {
       // Relative base (e.g. "/api") — same-origin, already covered by 'self'.
     }
   }
 
+  const connectSrc = ["'self'"];
+  if (apiOrigin) connectSrc.push(apiOrigin);
+
   const scriptSrc = ["'self'"];
-  const imgSrc = ["'self'", "data:"];
+  const imgSrc = ["'self'", "data:", SOCKET_BADGE_ORIGIN];
+  if (apiOrigin) imgSrc.push(apiOrigin);
   if (isUsablePort(livePort)) {
     const liveOrigin = `http://localhost:${livePort}`;
     scriptSrc.push(liveOrigin);
@@ -62,7 +121,7 @@ export function buildCsp(apiBaseUrl: string, livePort?: number | null): string {
     "default-src 'self'",
     `script-src ${scriptSrc.join(" ")}`,
     "style-src 'self' 'unsafe-inline'",
-    `img-src ${imgSrc.join(" ")}`,
+    `img-src ${[...new Set(imgSrc)].join(" ")}`,
     "font-src 'self' data:",
     `connect-src ${[...new Set(connectSrc)].join(" ")}`,
     "object-src 'none'",

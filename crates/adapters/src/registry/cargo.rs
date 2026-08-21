@@ -4,7 +4,7 @@ use futures::TryStreamExt;
 use serde::Deserialize;
 
 use batlehub_core::{
-    entities::{PackageId, PackageMetadata},
+    entities::{MetadataLinks, PackageId, PackageMetadata},
     error::CoreError,
     ports::{DocumentKind, FetchedArtifact, RegistryClient, UpstreamPackage, VersionDocument},
 };
@@ -84,6 +84,12 @@ struct CratesIoResponse {
 #[derive(Debug, Deserialize)]
 struct CrateInfo {
     max_version: String,
+    /// crates.io carries these on the crate, not the version: `Cargo.toml`'s
+    /// `[package] repository` and `homepage` as of the most recent publish.
+    #[serde(default)]
+    repository: Option<String>,
+    #[serde(default)]
+    homepage: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,6 +132,10 @@ impl RegistryClient for CargoRegistryClient {
             "resolved_version": resolved_version,
             "dl_path": version.dl_path,
             "yanked": version.yanked,
+            "links": MetadataLinks::new(
+                resp.krate.repository.as_deref(),
+                resp.krate.homepage.as_deref(),
+            ),
         });
 
         Ok(PackageMetadata {
@@ -301,6 +311,8 @@ mod tests {
         CratesIoResponse {
             krate: CrateInfo {
                 max_version: max.to_string(),
+                repository: None,
+                homepage: None,
             },
             versions: versions
                 .iter()

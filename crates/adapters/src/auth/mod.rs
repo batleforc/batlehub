@@ -6,7 +6,9 @@ pub use token::{hash_static_token, StaticTokenAuthProvider};
 #[cfg(feature = "auth-oidc")]
 pub mod oidc;
 #[cfg(feature = "auth-oidc")]
-pub use oidc::{OidcAuthProvider, OidcSsoFlow, OidcTokens};
+pub use oidc::{
+    random_urlsafe, OidcAuthProvider, OidcSsoFlow, OidcSsoFlowParams, OidcTokens, PkceChallenge,
+};
 
 #[cfg(feature = "auth-kubernetes")]
 pub mod kubernetes;

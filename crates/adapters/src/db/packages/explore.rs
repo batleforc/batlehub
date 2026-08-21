@@ -236,6 +236,16 @@ fn explore_sql(order: &str, visibility: &str) -> String {
                 BOOL_OR(has_local) AS has_local
             FROM combined
             GROUP BY registry, package_name
+            -- The `name_in` restriction, applied once here rather than in each
+            -- CTE: it is only ever set by the README search, whose candidate
+            -- list is capped, so an aggregate-level filter is correct and the
+            -- CTEs stay the shape every other query reads them in.
+            --
+            -- One array of `registry/name` rather than two parallel arrays: a
+            -- registry name cannot contain a `/`, so the concatenation is
+            -- unambiguous even for a scoped package like `npm/@scope/pkg`.
+            HAVING ($9::text[] IS NULL
+                    OR (registry || '/' || package_name) = ANY($9::text[]))
         )
         SELECT
             agg.registry,
@@ -319,6 +329,24 @@ fn explore_sql(order: &str, visibility: &str) -> String {
     )
 }
 
+/// `name_in` as the array the query binds, or `None` for "no restriction".
+///
+/// `None` rather than an empty array: `= ANY('{}')` is false for every row, so
+/// an empty array would silently return nothing where the caller meant
+/// everything — which is the difference between a filter that is off and a
+/// filter that rejects.
+fn prepare_name_in_param(name_in: &[(String, String)]) -> Option<Vec<String>> {
+    if name_in.is_empty() {
+        return None;
+    }
+    Some(
+        name_in
+            .iter()
+            .map(|(registry, name)| format!("{registry}/{name}"))
+            .collect(),
+    )
+}
+
 pub(super) async fn explore_packages_impl(
     pool: &PgPool,
     filter: ExploreFilter,
@@ -341,6 +369,7 @@ pub(super) async fn explore_packages_impl(
         .bind(&groups)
         .bind(filter.limit as i64)
         .bind(filter.offset as i64)
+        .bind(prepare_name_in_param(&filter.name_in))
         .fetch_all(pool)
         .await
         .db_err()?;
@@ -378,6 +407,12 @@ fn count_explore_sql(visibility: &str) -> String {
             UNION
             SELECT registry, package_name FROM local_pkgs
         ) combined
+        -- The same `name_in` restriction `explore_sql` applies, so the reported
+        -- total cannot disagree with the rows returned. Its parameter number
+        -- differs because this query has no limit/offset — the two are kept in
+        -- step by `the_two_queries_apply_the_same_name_restriction`.
+        WHERE ($7::text[] IS NULL
+               OR (combined.registry || '/' || combined.package_name) = ANY($7::text[]))
         "#
     )
 }
@@ -397,6 +432,7 @@ pub(super) async fn count_explore_packages_impl(
         .bind(filter.viewer.is_admin)
         .bind(filter.viewer.is_authenticated)
         .bind(&groups)
+        .bind(prepare_name_in_param(&filter.name_in))
         .fetch_one(pool)
         .await
         .db_err()?;

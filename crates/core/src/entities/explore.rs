@@ -272,6 +272,16 @@ pub struct ExploreFilter {
     /// Access-control allow-list. Empty means "all accessible registries".
     pub registries: Vec<String>,
     pub name_contains: Option<String>,
+    /// Restrict to these exact `(registry, name)` pairs. Empty means no
+    /// restriction.
+    ///
+    /// How a README search's hits become catalogue rows: the search names the
+    /// packages, and this query supplies everything the listing shows about
+    /// them — **through the same visibility gate**, so a package hidden from the
+    /// listing does not become visible by quoting a phrase from its README
+    /// (RFC 0007-bis §7.3). ANDed with `name_contains` when both are set, which
+    /// no caller does.
+    pub name_in: Vec<(String, String)>,
     pub sort_by: ExploreSortBy,
     pub limit: u64,
     pub offset: u64,

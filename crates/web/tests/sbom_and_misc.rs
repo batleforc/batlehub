@@ -150,6 +150,149 @@ async fn export_org_sbom_returns_attachment() {
     assert!(disposition.ends_with("spdx.json\""));
 }
 
+// ── What the package page is told about SBOMs ────────────────────────────────
+//
+// The console draws a download control per format. It used to draw both
+// unconditionally and discover on the click which of them existed — so an
+// SPDX-only registry offered a CycloneDX download whose only possible outcome
+// was a `404` behind a spinner, and every version this instance holds no bytes
+// of offered two. Which formats a registry records is `[registries.sbom]`, and
+// whether *this* version has any depends on whether we ever held it: both are
+// facts only the server has, so the detail endpoint states them.
+
+/// Publish `name`/`version` to the local cargo registry, so the detail endpoint
+/// has a row this instance holds rather than an upstream-only candidate.
+async fn publish_crate(
+    app: &impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+    name: &str,
+    version: &str,
+) {
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(make_publish_payload(name, version))
+        .to_request();
+    assert_eq!(call_service(app, req).await.status(), 200);
+}
+
+fn recorded_sbom(name: &str, version: &str, format: SbomFormat) -> ArtifactSbom {
+    ArtifactSbom {
+        id: Uuid::new_v4(),
+        artifact_key: format!("local-cargo/{name}/{version}"),
+        registry: "local-cargo".to_owned(),
+        package_name: name.to_owned(),
+        version: version.to_owned(),
+        spec_version: format.spec_version().to_owned(),
+        format,
+        document: serde_json::json!({"name": name}),
+        source: SbomSource::Generated,
+        created_at: Utc::now(),
+        license: None,
+    }
+}
+
+async fn detail_of(
+    app: &impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+    name: &str,
+) -> Value {
+    let req = TestRequest::get()
+        .uri(&format!("/api/v1/explore/packages/local-cargo/{name}"))
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(app, req).await;
+    assert_eq!(resp.status(), 200);
+    read_body_json(resp).await
+}
+
+#[actix_web::test]
+async fn explore_detail_offers_only_the_sbom_format_recorded() {
+    let repo = InMemorySbomRepository::new();
+    repo.upsert_sbom(recorded_sbom("my-crate", "0.1.0", SbomFormat::Spdx))
+        .await
+        .unwrap();
+    let sbom_svc = Arc::new(SbomService::new(repo, None, None));
+    let app = make_local_registry_app_with_sbom(RegistryMode::Local, Some(sbom_svc)).await;
+    publish_crate(&app, "my-crate", "0.1.0").await;
+
+    let body = detail_of(&app, "my-crate").await;
+
+    assert_eq!(body["versions"][0]["sbom"]["state"], "available");
+    assert_eq!(
+        body["versions"][0]["sbom"]["formats"],
+        serde_json::json!(["spdx"]),
+        "a CycloneDX button here would be a link that can only 404"
+    );
+}
+
+/// Ordered by the format, not by whatever the store returned, so the two
+/// controls do not swap places between rows.
+#[actix_web::test]
+async fn explore_detail_lists_both_sbom_formats_when_both_were_recorded() {
+    let repo = InMemorySbomRepository::new();
+    for format in [SbomFormat::CycloneDx, SbomFormat::Spdx] {
+        repo.upsert_sbom(recorded_sbom("my-crate", "0.1.0", format))
+            .await
+            .unwrap();
+    }
+    let sbom_svc = Arc::new(SbomService::new(repo, None, None));
+    let app = make_local_registry_app_with_sbom(RegistryMode::Local, Some(sbom_svc)).await;
+    publish_crate(&app, "my-crate", "0.1.0").await;
+
+    let body = detail_of(&app, "my-crate").await;
+
+    assert_eq!(
+        body["versions"][0]["sbom"]["formats"],
+        serde_json::json!(["spdx", "cyclonedx"])
+    );
+}
+
+/// A version we hold with nothing recorded is a definite `none` — the console
+/// says so instead of offering a download.
+#[actix_web::test]
+async fn explore_detail_says_none_for_a_held_version_with_no_sbom() {
+    let sbom_svc = Arc::new(SbomService::new(InMemorySbomRepository::new(), None, None));
+    let app = make_local_registry_app_with_sbom(RegistryMode::Local, Some(sbom_svc)).await;
+    publish_crate(&app, "my-crate", "0.1.0").await;
+
+    let body = detail_of(&app, "my-crate").await;
+
+    assert_eq!(body["versions"][0]["sbom"]["state"], "none");
+    assert_eq!(
+        body["versions"][0]["sbom"]["formats"],
+        serde_json::json!([])
+    );
+}
+
+/// An SBOM recorded for *another* version is not this version's.
+#[actix_web::test]
+async fn explore_detail_does_not_borrow_another_versions_sbom() {
+    let repo = InMemorySbomRepository::new();
+    repo.upsert_sbom(recorded_sbom("my-crate", "0.1.0", SbomFormat::Spdx))
+        .await
+        .unwrap();
+    let sbom_svc = Arc::new(SbomService::new(repo, None, None));
+    let app = make_local_registry_app_with_sbom(RegistryMode::Local, Some(sbom_svc)).await;
+    publish_crate(&app, "my-crate", "0.2.0").await;
+
+    let body = detail_of(&app, "my-crate").await;
+
+    let row = body["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["version"] == "0.2.0")
+        .expect("the published version is on the page");
+    assert_eq!(row["sbom"]["state"], "none");
+}
+
 // ── Concurrent load smoke test ───────────────────────────────────────────────
 //
 // Stands in for the k6/Podman perf harness (`perf/k6`, `task perf:run:*`) in

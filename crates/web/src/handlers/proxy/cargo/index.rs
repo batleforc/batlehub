@@ -202,7 +202,7 @@ pub async fn download_crate(
     let (registry, name, version) = path.into_inner();
     require_cargo(&registry, &map)?;
 
-    serve_local_or_proxy_artifact(
+    let mut resp = serve_local_or_proxy_artifact(
         svc,
         local_svc,
         &mode_map,
@@ -219,5 +219,12 @@ pub async fn download_crate(
             append_signature: true,
         },
     )
-    .await
+    .await?;
+    // The route ends in `/download`, so a browser saving it writes a file called
+    // `download`. cargo does not read this header; the console's link does.
+    resp.headers_mut().insert(
+        actix_web::http::header::CONTENT_DISPOSITION,
+        crate::handlers::proxy::common::attachment_disposition(&format!("{name}-{version}.crate"))?,
+    );
+    Ok(resp)
 }

@@ -160,6 +160,11 @@ fn parse_maven_pom(content: &str) -> ExtractedManifest {
 
     ExtractedManifest {
         dependencies: deps,
+        // Maven has no README: the POM carries `<description>`, which is a
+        // sentence rather than a document, and putting one where a reader
+        // expects the other makes every package look thinly documented
+        // (RFC 0007 §4.3).
+        readme: None,
         // Several `<license>` entries mean the consumer may pick one, so they
         // join with the SPDX operator that says exactly that.
         license: if licenses.is_empty() {

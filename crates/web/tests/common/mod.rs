@@ -48,7 +48,7 @@ use batlehub_core::{
     rules::{BlockListRule, RbacRule},
     services::{
         new_hot_lock, AdminService, HotConfig, LocalRegistryService, ProxyMetrics, ProxyService,
-        RegistryPolicy, SbomService,
+        ReadmeService, RegistryPolicy, SbomService,
     },
 };
 use batlehub_web::handlers::back_office::ops::eviction::EvictionServiceMap;
@@ -148,11 +148,20 @@ impl RegistryClient for FixedRegistry {
                 let tarball = |v: &str| {
                     serde_json::json!({
                         "version": v,
+                        // Per-version READMEs, because a packument carries them
+                        // and the discovery read's whole argument is that one
+                        // cached fetch answers both halves of the page
+                        // (RFC 0007 §2.3).
+                        "readme": format!("# {package} {v}"),
                         "dist": { "tarball": format!("https://upstream.invalid/{package}/-/{package}-{v}.tgz") }
                     })
                 };
                 Ok(VersionDocument::json(serde_json::json!({
                     "name": package,
+                    // In npm's canonical spelling, which is not a URL a browser
+                    // opens — the page must show the rewritten form.
+                    "repository": { "type": "git", "url": format!("git+https://github.com/acme/{package}.git") },
+                    "homepage": format!("https://acme.example/{package}"),
                     "dist-tags": { "latest": "1.1.0", "next": "2.0.0-beta.1" },
                     "versions": {
                         "1.0.0": tarball("1.0.0"),
@@ -492,6 +501,8 @@ pub fn one_registry_proxy(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[name.to_owned()])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     (proxy_svc, repo, local_svc)
 }
@@ -602,6 +613,20 @@ pub const TEAM_AB_TOKEN: &str = "team-ab-token";
 pub fn bearer(token: &str) -> String {
     format!("Bearer {token}")
 }
+/// `AccessConfig` for registries reachable anonymously and by user/admin.
+///
+/// **Explore follows proxy access here, because that is what a server does.**
+/// `rbac.explore.{anonymous,user,admin}` all default to `true`, so
+/// `build_access_config` puts a registry in the explore set of every tier that
+/// can reach it unless an operator says otherwise — an unconfigured deployment
+/// browses everything it can proxy. This helper used to leave the three explore
+/// sets empty, which is not a weaker default but a *different* server: one where
+/// no registry is browsable by anyone. That was invisible for as long as the
+/// catalogue's only reader was `ExploreFilter::registries`, where an empty
+/// vector means "no restriction" rather than "nothing"; it stopped being
+/// invisible once endpoints began refusing on the set itself, and a suite that
+/// wants explore denied should build the denial explicitly rather than inherit
+/// it from a helper's silence.
 pub fn access_config(anonymous: &[&str], user_admin: &[&str]) -> batlehub_web::AccessConfigLock {
     let to_set = |names: &[&str]| -> std::collections::HashSet<String> {
         names.iter().map(|s| s.to_string()).collect()
@@ -611,19 +636,24 @@ pub fn access_config(anonymous: &[&str], user_admin: &[&str]) -> batlehub_web::A
         user: to_set(user_admin),
         admin: to_set(user_admin),
         groups: std::collections::HashMap::new(),
-        explore_anonymous: std::collections::HashSet::new(),
-        explore_user: std::collections::HashSet::new(),
-        explore_admin: std::collections::HashSet::new(),
+        explore_anonymous: to_set(anonymous),
+        explore_user: to_set(user_admin),
+        explore_admin: to_set(user_admin),
     })
 }
 
 /// `AccessConfig` granting anonymous/user/admin access to exactly `names`,
-/// with empty groups and explore overrides.
+/// with empty groups.
 pub fn access_config_for(names: &[&str]) -> batlehub_web::AccessConfigLock {
     access_config(names, names)
 }
 
-/// Like [`access_config_for`], but also grants explore access to `names` for every role.
+/// [`access_config_for`], spelled out.
+///
+/// Identical to it now that [`access_config`] no longer leaves the explore sets
+/// empty. Kept as its own name because the suites that call it — README search,
+/// the catalogue scopes — are the ones that read the explore set *directly*, and
+/// the call site saying so is worth a line of indirection.
 pub fn access_config_with_explore(names: &[&str]) -> batlehub_web::AccessConfigLock {
     let set: std::collections::HashSet<String> = names.iter().map(|s| s.to_string()).collect();
     new_access_lock(batlehub_web::AccessConfig {
@@ -636,6 +666,25 @@ pub fn access_config_with_explore(names: &[&str]) -> batlehub_web::AccessConfigL
         explore_admin: set,
     })
 }
+/// Full proxy access to `names`, and no explore access to any of them.
+///
+/// What `[registries.rbac.explore] anonymous = false, user = false, admin =
+/// false` produces: a registry package managers may pull from and the console
+/// may not browse. Spelled out here rather than left to a helper's default, so a
+/// test asserting the catalogue's refusal says which setting it is asserting.
+pub fn access_config_explore_denied(names: &[&str]) -> batlehub_web::AccessConfigLock {
+    let set: std::collections::HashSet<String> = names.iter().map(|s| s.to_string()).collect();
+    new_access_lock(batlehub_web::AccessConfig {
+        anonymous: set.clone(),
+        user: set.clone(),
+        admin: set,
+        groups: std::collections::HashMap::new(),
+        explore_anonymous: std::collections::HashSet::new(),
+        explore_user: std::collections::HashSet::new(),
+        explore_admin: std::collections::HashSet::new(),
+    })
+}
+
 pub fn registry_map_for(pairs: &[(&str, &str)]) -> batlehub_web::RegistryMap {
     batlehub_web::RegistryMap::from(
         pairs
@@ -670,6 +719,19 @@ pub fn make_local_svc_with_repo(
     storage: Arc<dyn StorageBackend>,
     package_repo: Option<Arc<dyn PackageRepository>>,
 ) -> Arc<LocalRegistryService> {
+    make_local_svc_with_readme(storage, package_repo, None)
+}
+
+/// [`make_local_svc_with_repo`] with a README store wired in.
+///
+/// Separate rather than a fourth parameter on the common helper: only the
+/// README suite reads the store back, and every other caller would have to pass
+/// a `None` that means nothing to it.
+pub fn make_local_svc_with_readme(
+    storage: Arc<dyn StorageBackend>,
+    package_repo: Option<Arc<dyn PackageRepository>>,
+    readme: Option<Arc<ReadmeService>>,
+) -> Arc<LocalRegistryService> {
     Arc::new(LocalRegistryService {
         backend: Arc::new(InMemoryLocalRegistry::new()),
         storage,
@@ -684,6 +746,7 @@ pub fn make_local_svc_with_repo(
         sbom: None,
         explore_cache: None,
         package_repo,
+        readme,
     })
 }
 pub fn rbac_policy(repo: Arc<dyn PackageRepository>) -> RegistryPolicy {
@@ -749,6 +812,21 @@ pub struct ConfigureAppDefaults {
     /// and so a test can seed one and assert the simulator changes its answer.
     pub user_block_repo: Arc<dyn UserBlockRepository>,
     pub ip_block_store: Arc<dyn IpBlockStore>,
+    /// `[search] readmes`. **Off**, matching the shipped default, so every
+    /// existing explore assertion keeps meaning what it meant; a file that is
+    /// about prose search turns it on for its own app.
+    pub readme_search: bool,
+    /// The configured OIDC provider names `POST /api/v1/auth/tokens` accepts.
+    /// **Empty by default** — no OIDC configured means nobody mints a PAT, which
+    /// is what an app that isn't about token creation should model. The token
+    /// suite sets it to whatever its OIDC-style provider calls itself.
+    pub oidc_provider_names: batlehub_web::OidcProviderNames,
+    /// One-time store for in-flight OIDC logins. Process-local by default; the
+    /// SSO suite keeps its own handle so it can seed and inspect entries.
+    pub login_states: Arc<dyn batlehub_core::ports::LoginStateStore>,
+    /// Browser-login flows. Empty by default, so `/auth/oidc/*` answers 503 in
+    /// every suite that is not about SSO; the SSO suite points one at a mock IdP.
+    pub sso_flows: Vec<batlehub_adapters::auth::OidcSsoFlow>,
 }
 
 impl Default for ConfigureAppDefaults {
@@ -764,6 +842,10 @@ impl Default for ConfigureAppDefaults {
             eviction_map: EvictionServiceMap::default(),
             user_block_repo: Arc::new(InMemoryUserBlockRepository::new()),
             ip_block_store: Arc::new(InMemoryIpBlockStore::new()),
+            readme_search: false,
+            oidc_provider_names: batlehub_web::OidcProviderNames::default(),
+            login_states: batlehub_adapters::in_memory::InMemoryLoginStateStore::arc(),
+            sso_flows: Vec::new(),
         }
     }
 }
@@ -783,7 +865,9 @@ pub fn configure_test_app(
         access_config,
         registry_map,
         defaults.upstream_map,
-        vec![],
+        defaults.sso_flows,
+        defaults.oidc_provider_names,
+        defaults.login_states,
         defaults.warming_map,
         defaults.eviction_map,
         defaults.proxy_metrics,
@@ -793,6 +877,10 @@ pub fn configure_test_app(
         defaults.notification_store,
         defaults.notifications_config,
         None, // storage_admin_repo
+        // Prose search off, matching the shipped default. A file that wants it
+        // on builds its own app — leaving it on here would change what every
+        // other explore test is asserting about.
+        batlehub_web::new_search_lock(defaults.readme_search),
     )
 }
 #[allow(clippy::too_many_arguments)]
@@ -1046,6 +1134,8 @@ pub async fn make_app_with_defaults(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: proxy_metrics.clone(),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
 
@@ -1099,6 +1189,21 @@ pub fn local_registry_app_parts(
     mode: RegistryMode,
     sbom_svc: Option<Arc<SbomService>>,
 ) -> LocalRegistryAppParts {
+    local_registry_app_parts_with_readme(name, registry_type, mode, sbom_svc, None)
+}
+
+/// [`local_registry_app_parts`] with a README store wired into both services.
+///
+/// Both, because the two capture paths are different: publish records through
+/// `LocalRegistryService`, a proxied resolve records through `ProxyService`, and
+/// a test that wired only one would pass while the other stored nothing.
+pub fn local_registry_app_parts_with_readme(
+    name: &str,
+    registry_type: &str,
+    mode: RegistryMode,
+    sbom_svc: Option<Arc<SbomService>>,
+    readme_svc: Option<Arc<ReadmeService>>,
+) -> LocalRegistryAppParts {
     let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
@@ -1111,7 +1216,8 @@ pub fn local_registry_app_parts(
     let policies: HashMap<String, Arc<RegistryPolicy>> =
         [(name.to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
 
-    let local_svc = make_local_svc_with_repo(storage.clone(), Some(repo_dyn.clone()));
+    let local_svc =
+        make_local_svc_with_readme(storage.clone(), Some(repo_dyn.clone()), readme_svc.clone());
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
             registries,
@@ -1128,6 +1234,8 @@ pub fn local_registry_app_parts(
         // pass vacuously.
         metrics: Arc::new(ProxyMetrics::new(&[name.to_owned()])),
         sbom: sbom_svc,
+        readme: readme_svc,
+        discovery: Default::default(),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
 
@@ -1185,6 +1293,8 @@ pub fn local_only_app_parts(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[name.to_owned()])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     let mode_map = RegistryModeMap::default();
     mode_map.insert(name.to_owned(), mode);
@@ -1212,6 +1322,64 @@ pub async fn build_local_registry_app(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
+    build_local_registry_app_with(parts, cargo_indexes, sbom_svc, false).await
+}
+
+/// [`build_local_registry_app`], with the whole `ConfigureAppDefaults` supplied.
+///
+/// For suites that need to configure something the two narrower entry points do
+/// not expose — the SSO suite wiring a browser-login flow at a mock identity
+/// provider, for instance. Everything else should keep using the narrow ones,
+/// so a new default reaches every suite without each of them restating it.
+pub async fn build_local_registry_app_with_defaults(
+    parts: LocalRegistryAppParts,
+    cargo_indexes: batlehub_web::CargoIndexMap,
+    defaults: ConfigureAppDefaults,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    let LocalRegistryAppParts {
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        mode_map,
+    } = parts;
+
+    finish_test_app(
+        proxy_svc,
+        admin_svc,
+        token_repo,
+        access_config,
+        registry_map,
+        local_svc,
+        mode_map,
+        cargo_indexes,
+        defaults,
+        test_auth_providers(),
+    )
+    .await
+}
+
+/// [`build_local_registry_app`], with `[search] readmes` set explicitly.
+///
+/// A separate entry point rather than a parameter on the common one: prose
+/// search is off in every existing suite and should stay off there, so a file
+/// that is about it opts in rather than every other file opting out.
+pub async fn build_local_registry_app_with(
+    parts: LocalRegistryAppParts,
+    cargo_indexes: batlehub_web::CargoIndexMap,
+    sbom_svc: Option<Arc<SbomService>>,
+    readme_search: bool,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
     let LocalRegistryAppParts {
         proxy_svc,
         admin_svc,
@@ -1233,6 +1401,7 @@ pub async fn build_local_registry_app(
         cargo_indexes,
         ConfigureAppDefaults {
             sbom_svc,
+            readme_search,
             ..Default::default()
         },
         test_auth_providers(),
@@ -1265,6 +1434,8 @@ pub fn empty_app_parts() -> EmptyAppParts {
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     EmptyAppParts {
         proxy_svc,
@@ -1373,6 +1544,8 @@ pub async fn make_app_with_eviction(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -1425,6 +1598,8 @@ pub async fn make_app_with_warming(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -1659,6 +1834,8 @@ pub async fn make_local_nuget_app(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let mode_map = RegistryModeMap::default();

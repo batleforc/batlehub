@@ -292,3 +292,127 @@ fn rewrite_simple_json_leaves_slashless_url_unchanged() {
     let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(parsed["files"][0]["url"].as_str().unwrap(), "no-slash-url");
 }
+
+// ── README capture (RFC 0007 §2.1) ────────────────────────────────────────
+
+/// `info.description` is the long description and `info.description_content_type`
+/// names its markup. Both are per-version by construction — a wheel's `METADATA`
+/// ships inside the wheel — so this is this version's own account of itself.
+#[tokio::test]
+async fn the_long_description_reaches_the_extra_channel_with_its_declared_markup() {
+    for (declared, expected) in [
+        (
+            "text/markdown",
+            batlehub_core::entities::ReadmeFormat::Markdown,
+        ),
+        ("text/x-rst", batlehub_core::entities::ReadmeFormat::Rst),
+        ("text/plain", batlehub_core::entities::ReadmeFormat::Plain),
+        // A parameterised type is still that type.
+        (
+            "text/markdown; charset=UTF-8; variant=GFM",
+            batlehub_core::entities::ReadmeFormat::Markdown,
+        ),
+    ] {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/pypi/requests/2.28.0/json")
+            .with_status(200)
+            .with_body(
+                serde_json::to_string(&serde_json::json!({
+                    "info": {
+                        "description": "Requests is an elegant HTTP library.",
+                        "description_content_type": declared,
+                    },
+                    "urls": [{
+                        "filename": "requests-2.28.0-py3-none-any.whl",
+                        "url": "https://files.pythonhosted.org/packages/requests-2.28.0.whl",
+                        "digests": { "sha256": "abc123" }
+                    }]
+                }))
+                .unwrap(),
+            )
+            .create_async()
+            .await;
+
+        let client =
+            PypiRegistryClient::new(server.url(), &UpstreamHttpOptions::default()).unwrap();
+        let meta = client
+            .resolve_metadata(&PackageId::new("my-pypi", "requests", "2.28.0"))
+            .await
+            .unwrap();
+
+        let found = batlehub_core::entities::MetadataReadme::from_extra(&meta.extra)
+            .expect("description captured");
+        assert_eq!(
+            found.content.as_deref(),
+            Some("Requests is an elegant HTTP library.")
+        );
+        assert_eq!(found.format, expected, "declared {declared}");
+        assert!(!found.package_level);
+    }
+}
+
+/// PEP 566 says an absent `Description-Content-Type` means plain text. It must
+/// not be guessed into a renderer.
+#[tokio::test]
+async fn an_undeclared_content_type_is_plain_not_markdown() {
+    let mut server = mockito::Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/pypi/requests/2.28.0/json")
+        .with_status(200)
+        .with_body(
+            serde_json::to_string(&serde_json::json!({
+                "info": { "description": "plain prose" },
+                "urls": []
+            }))
+            .unwrap(),
+        )
+        .create_async()
+        .await;
+
+    let client = PypiRegistryClient::new(server.url(), &UpstreamHttpOptions::default()).unwrap();
+    let meta = client
+        .resolve_metadata(&PackageId::new("my-pypi", "requests", "2.28.0"))
+        .await
+        .unwrap();
+    assert_eq!(
+        batlehub_core::entities::MetadataReadme::from_extra(&meta.extra)
+            .unwrap()
+            .format,
+        batlehub_core::entities::ReadmeFormat::Plain
+    );
+}
+
+/// An absent or empty `description` captures nothing: an empty panel and a
+/// panel showing whitespace look identical to a reader, and only one of them is
+/// honest about there being no README.
+#[tokio::test]
+async fn an_empty_or_absent_description_captures_nothing() {
+    for info in [
+        serde_json::json!({}),
+        serde_json::json!({ "description": "" }),
+        serde_json::json!({ "description": "   \n  " }),
+        serde_json::json!({ "description": null }),
+    ] {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/pypi/requests/2.28.0/json")
+            .with_status(200)
+            .with_body(
+                serde_json::to_string(&serde_json::json!({ "info": info, "urls": [] })).unwrap(),
+            )
+            .create_async()
+            .await;
+
+        let client =
+            PypiRegistryClient::new(server.url(), &UpstreamHttpOptions::default()).unwrap();
+        let meta = client
+            .resolve_metadata(&PackageId::new("my-pypi", "requests", "2.28.0"))
+            .await
+            .unwrap();
+        assert_eq!(
+            batlehub_core::entities::MetadataReadme::from_extra(&meta.extra),
+            None
+        );
+    }
+}

@@ -244,18 +244,52 @@ async fn try_refresh_token(
     }
 }
 
+/// What the user pasted back after completing an OIDC login in their browser.
+pub struct OidcPaste {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    pub expires_at: Option<i64>,
+    /// The `oidc_state` echoed back by the server, when a full URL was pasted.
+    ///
+    /// `None` for a bare token, which carries no state to check — see
+    /// `handle_auth_login`, which decides what to do about that.
+    pub state: Option<String>,
+    /// The name of the provider that actually signed the user in, echoed back
+    /// as `oidc_provider`.
+    ///
+    /// Stored in the profile because `resolve_token` sends it with every refresh:
+    /// without it the server falls back to `flows.first()`, so on a deployment
+    /// with more than one provider the refresh token is presented to the wrong
+    /// token endpoint and every session silently stops renewing.
+    pub provider: Option<String>,
+}
+
 /// Parse a token value or full SPA redirect URL pasted by the user after OIDC login.
-/// Returns `(access_token, refresh_token, expires_at_unix)`.
-pub fn parse_oidc_paste(input: &str) -> (String, Option<String>, Option<i64>) {
+///
+/// Reads the parameters wherever they appear in the pasted string. The server
+/// puts them in the URL fragment rather than the query; both parse the same way
+/// here, since a pasted URL is just a string and `#` only ever terminates a
+/// value, never starts one that matters.
+pub fn parse_oidc_paste(input: &str) -> OidcPaste {
     if input.contains("oidc_access_token=") {
-        let token = extract_param(input, "oidc_access_token").unwrap_or_else(|| input.to_string());
-        let refresh = extract_param(input, "oidc_refresh_token");
-        let expires_at = extract_param(input, "oidc_expires_in")
-            .and_then(|s| s.parse::<i64>().ok())
-            .map(|secs| Utc::now().timestamp() + secs);
-        (token, refresh, expires_at)
+        OidcPaste {
+            access_token: extract_param(input, "oidc_access_token")
+                .unwrap_or_else(|| input.to_string()),
+            refresh_token: extract_param(input, "oidc_refresh_token"),
+            expires_at: extract_param(input, "oidc_expires_in")
+                .and_then(|s| s.parse::<i64>().ok())
+                .map(|secs| Utc::now().timestamp() + secs),
+            state: extract_param(input, "oidc_state"),
+            provider: extract_param(input, "oidc_provider"),
+        }
     } else {
-        (input.to_string(), None, None)
+        OidcPaste {
+            access_token: input.to_string(),
+            refresh_token: None,
+            expires_at: None,
+            state: None,
+            provider: None,
+        }
     }
 }
 
@@ -298,7 +332,12 @@ fn url_decode(s: &str) -> String {
     String::from_utf8_lossy(&decoded).into_owned()
 }
 
-fn percent_encode(s: &str) -> String {
+/// Percent-encode one path or query segment.
+///
+/// `pub(crate)` rather than private: `package.rs` needs the same rule for a
+/// scoped npm name (`@scope/pkg`), whose slash would otherwise split a path
+/// segment, and a second copy of an encoder is how two of them come to disagree.
+pub(crate) fn percent_encode(s: &str) -> String {
     s.chars()
         .flat_map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
@@ -319,21 +358,26 @@ mod tests {
 
     #[test]
     fn parse_oidc_paste_bare_token() {
-        let (token, refresh, expires) = parse_oidc_paste("mytoken123");
-        assert_eq!(token, "mytoken123");
-        assert!(refresh.is_none());
-        assert!(expires.is_none());
+        let p = parse_oidc_paste("mytoken123");
+        assert_eq!(p.access_token, "mytoken123");
+        assert!(p.refresh_token.is_none());
+        assert!(p.expires_at.is_none());
+        assert!(p.state.is_none(), "a bare token carries no state to check");
     }
 
     #[test]
     fn parse_oidc_paste_full_url() {
-        let url = "http://app.example.com/callback?\
-                   oidc_access_token=ACCESS&oidc_refresh_token=REFRESH&oidc_expires_in=3600";
-        let (token, refresh, expires) = parse_oidc_paste(url);
-        assert_eq!(token, "ACCESS");
-        assert_eq!(refresh.as_deref(), Some("REFRESH"));
+        // The server delivers these in the fragment now; the parser reads the
+        // pasted string wherever they sit, so both shapes are covered.
+        let url = "http://app.example.com/callback#\
+                   oidc_access_token=ACCESS&oidc_refresh_token=REFRESH&oidc_expires_in=3600\
+                   &oidc_state=STATE";
+        let p = parse_oidc_paste(url);
+        assert_eq!(p.access_token, "ACCESS");
+        assert_eq!(p.refresh_token.as_deref(), Some("REFRESH"));
+        assert_eq!(p.state.as_deref(), Some("STATE"));
         let now = Utc::now().timestamp();
-        let exp = expires.unwrap();
+        let exp = p.expires_at.unwrap();
         assert!(
             exp > now + 3500 && exp <= now + 3601,
             "expires_at={exp} should be near now+3600"
@@ -342,15 +386,15 @@ mod tests {
 
     #[test]
     fn parse_oidc_paste_url_encoded_token() {
-        let url = "http://app.example.com/?oidc_access_token=tok%2Fbar%3Dbaz";
-        let (token, _refresh, _expires) = parse_oidc_paste(url);
-        assert_eq!(token, "tok/bar=baz");
+        let url = "http://app.example.com/#oidc_access_token=tok%2Fbar%3Dbaz";
+        assert_eq!(parse_oidc_paste(url).access_token, "tok/bar=baz");
     }
 
     #[test]
     fn parse_oidc_paste_no_refresh_no_expiry() {
-        let url = "http://app.example.com/?oidc_access_token=ONLYACCESS";
-        let (token, refresh, expires) = parse_oidc_paste(url);
+        let url = "http://app.example.com/#oidc_access_token=ONLYACCESS";
+        let p = parse_oidc_paste(url);
+        let (token, refresh, expires) = (p.access_token, p.refresh_token, p.expires_at);
         assert_eq!(token, "ONLYACCESS");
         assert!(refresh.is_none());
         assert!(expires.is_none());

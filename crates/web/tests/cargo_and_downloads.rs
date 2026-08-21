@@ -60,6 +60,8 @@ async fn make_app_with_cargo_index(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -291,6 +293,54 @@ async fn proxy_npm_tarball_accessible_by_user() {
     assert_eq!(resp.status(), 200);
     let body = actix_web::test::read_body(resp).await;
     assert!(std::str::from_utf8(&body).unwrap().contains("lodash"));
+}
+
+// ── The name the saved file gets ──────────────────────────────────────────────
+//
+// `…/{version}/tarball`, `…/{version}/download` and `…/{version}/vsix` end in a
+// verb, because that is the address the package manager is specified to fetch.
+// A browser saving one has nothing else to go on and writes a file called
+// `tarball` or `download`, with no extension and no coordinate — which is what
+// the console's own download link produced. `Content-Disposition` is the only
+// place the answer can come from; the package managers never read it.
+
+fn disposition_of(resp: &actix_web::dev::ServiceResponse<actix_web::body::BoxBody>) -> String {
+    resp.headers()
+        .get("Content-Disposition")
+        .expect("a nameless download route must name its file")
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[actix_web::test]
+async fn proxy_cargo_download_names_the_crate_file() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/cargo/serde/1.0.0/download")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        disposition_of(&resp),
+        "attachment; filename=\"serde-1.0.0.crate\""
+    );
+}
+
+#[actix_web::test]
+async fn proxy_npm_tarball_names_the_tgz() {
+    let app = make_app(InMemoryRepo::new()).await;
+    let req = TestRequest::get()
+        .uri("/proxy/npm/lodash/4.17.21/tarball")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        disposition_of(&resp),
+        "attachment; filename=\"lodash-4.17.21.tgz\""
+    );
 }
 
 // ── GitHub download routes ────────────────────────────────────────────────────
