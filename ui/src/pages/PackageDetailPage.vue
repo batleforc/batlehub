@@ -519,10 +519,13 @@ function versionQuery(): Record<string, string | number> {
  * is still the truth.
  */
 let versionSeq = 0;
+/** The `versionSeq` of the fetch that currently owns `loading`. */
+let loadingSeq = 0;
 
 async function fetchDetail(opts: { silent?: boolean } = {}) {
   const seq = ++versionSeq;
   if (!opts.silent) {
+    loadingSeq = seq;
     loading.value = true;
     error.value = null;
   }
@@ -571,7 +574,14 @@ async function fetchDetail(opts: { silent?: boolean } = {}) {
     }
     error.value = extractMessage(e);
   } finally {
-    if (seq === versionSeq && !opts.silent) loading.value = false;
+    // Keyed on `loadingSeq`, not on `versionSeq`. A non-silent fetch superseded
+    // by a *silent* one — Refresh, then any version control — failed the
+    // `seq === versionSeq` test and skipped this line, leaving `loading` true
+    // forever: it gates the whole reader half of the page, so Refresh and Retry
+    // both left the DOM and only a browser reload recovered. `loadingSeq` moves
+    // only when a non-silent fetch takes the flag, so a silent successor cannot
+    // orphan it and a non-silent one still owns clearing it.
+    if (!opts.silent && loadingSeq === seq) loading.value = false;
   }
 }
 

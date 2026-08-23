@@ -173,7 +173,19 @@ impl ProxyService {
             let outcome = if found.content.is_some() {
                 svc.record_from_metadata(&meta, &cfg).await
             } else if let Some(url) = found.url.as_deref() {
-                match client.fetch_linked_readme(url, cfg.max_bytes).await {
+                // **One byte past the cap.** `record` decides `truncated` with
+                // `truncate_to(text, cfg.max_bytes)`, which reports `false` for
+                // anything that fits — and the fetch already guaranteed it fits.
+                // So a linked README the read had cut was stored as complete,
+                // and the panel showed a document stopping mid-sentence against
+                // a `truncated` column whose whole point is that a cut is never
+                // silent. Asking for one more byte is what lets the writer tell
+                // "exactly the cap" from "longer than the cap"; it still does
+                // the real cut, on a character boundary.
+                match client
+                    .fetch_linked_readme(url, cfg.max_bytes.saturating_add(1))
+                    .await
+                {
                     Ok(Some(text)) => {
                         svc.record_from_linked(&meta.id, text, found.format, &cfg)
                             .await
@@ -265,9 +277,37 @@ impl ProxyService {
         // Absent config means enabled — the opposite of SBOM — so a registry
         // with no entry still captures, and `from_archive` is what decides
         // whether the archive is opened for it.
+        //
+        // Two further gates, and both are about the *read* rather than about the
+        // capture. `ReadmeConfig::default()` is `enabled: true, from_archive:
+        // true`, and `build_readme_map` writes an entry for every registry, so
+        // without them this job is `Some` for every registry on the instance and
+        // the early return below never fires: every artifact newly written to
+        // the cache is pulled straight back out of storage and buffered whole,
+        // by a detached task with no concurrency bound, for a consumer that
+        // cannot use it. A `generic` registry proxying a 1.5 GB image was paying
+        // a full extra copy of it in RAM per download and discarding the lot.
+        //
+        // - `extractor` is what `capture_readme_from_archive` needs and it comes
+        //   off the *SBOM* service, so an instance with README on and SBOM off
+        //   read the bytes only to find it had nothing to read them with;
+        // - `reads_the_archive()` is the kind's own answer to "is the README in
+        //   the artifact at all". For `MetadataLinked` and the kinds with no
+        //   README at all, opening the archive can only ever find nothing.
+        //
+        // A `registry_type` that is not a `RegistryKind` is not a case any
+        // configured registry reaches — `validate()` parses every one at load —
+        // so the permissive reading there costs nothing real and keeps a test
+        // double's made-up type behaving as it did.
+        let archive_can_hold_a_readme = registry_type
+            .parse::<crate::entities::RegistryKind>()
+            .map(|kind| kind.readme_support().reads_the_archive())
+            .unwrap_or(true);
+        let have_extractor = self.sbom.as_ref().is_some_and(|s| s.extractor.is_some());
         let readme_job = self
             .readme
             .as_ref()
+            .filter(|_| archive_can_hold_a_readme && have_extractor)
             .map(|svc| (Arc::clone(svc), readme_cfg.unwrap_or_default()))
             .filter(|(_, cfg)| cfg.enabled && cfg.from_archive);
 

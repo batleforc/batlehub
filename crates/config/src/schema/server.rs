@@ -174,6 +174,13 @@ pub fn default_service_name() -> String {
 /// which transport will be used, and a parser would introduce its own opinions
 /// about hosts this function has none about.
 pub fn is_secure_issuer_url(url: &str) -> bool {
+    // Scheme and host are case-insensitive (RFC 3986 §3.1, §3.2.2), and the
+    // comparisons below were not: `HTTPS://idp.example.com` is a URL `reqwest`
+    // dials over TLS, and this refused it with "must use https" — a valid config
+    // that will not boot. Lowercased for the *decision* only; the URL itself is
+    // untouched, because a path is case-sensitive.
+    let lowered = url.to_ascii_lowercase();
+    let url = lowered.as_str();
     if url.starts_with("https://") {
         return true;
     }
@@ -205,6 +212,19 @@ pub fn is_secure_issuer_url(url: &str) -> bool {
 #[cfg(test)]
 mod issuer_url_tests {
     use super::is_secure_issuer_url;
+
+    /// Scheme and host are case-insensitive; the check was not, and refused a
+    /// URL `reqwest` dials over TLS.
+    #[test]
+    fn the_scheme_and_the_loopback_host_are_case_insensitive() {
+        assert!(is_secure_issuer_url("HTTPS://idp.example.com/realms/main"));
+        assert!(is_secure_issuer_url("HtTpS://idp.example.com"));
+        assert!(is_secure_issuer_url("HTTP://LOCALHOST:8080/realms/main"));
+        // And still no widening: a non-loopback host over plain HTTP is refused
+        // however it is spelled.
+        assert!(!is_secure_issuer_url("HTTP://idp.example.com"));
+        assert!(!is_secure_issuer_url("HTTP://localhost.evil.example"));
+    }
 
     #[test]
     fn https_is_always_fine() {

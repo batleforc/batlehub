@@ -426,15 +426,32 @@ fn find_img_tag(html: &str, from: usize) -> Option<usize> {
 /// The offset just past the `>` that closes the tag opening at `start`.
 ///
 /// Quote-aware, so a `>` inside an attribute value does not end the tag early.
+///
+/// A quote opens a quoted value **only where a value can start** — immediately
+/// after the `=`, whitespace allowed. Inside an *unquoted* value HTML treats `'`
+/// and `"` as literal characters (a parse error, but a literal), so `alt=it's`
+/// ends at its own `>`. Opening a quote on that apostrophe ran the scan on to
+/// the next quote-balanced `>` further down the document, and
+/// [`chip_html_images`] then replaced the whole span — headings, paragraphs, the
+/// next image — with a single chip, silently.
 fn tag_end(bytes: &[u8], start: usize) -> Option<usize> {
     let mut quote: Option<u8> = None;
+    let mut value_may_start = false;
     for (offset, byte) in bytes[start..].iter().enumerate() {
-        match (quote, byte) {
-            (Some(q), b) if *b == q => quote = None,
+        let b = *byte;
+        match (quote, b) {
+            (Some(q), c) if c == q => quote = None,
             (Some(_), _) => {}
-            (None, b'"') | (None, b'\'') => quote = Some(*byte),
+            (None, b'"') | (None, b'\'') if value_may_start => {
+                quote = Some(b);
+                value_may_start = false;
+            }
             (None, b'>') => return Some(start + offset + 1),
-            (None, _) => {}
+            (None, b'=') => value_may_start = true,
+            // `= "x"` is still a value: whitespace neither opens nor closes the
+            // window the `=` opened.
+            (None, c) if c.is_ascii_whitespace() => {}
+            (None, _) => value_may_start = false,
         }
     }
     None
@@ -1178,6 +1195,31 @@ mod tests {
 
     /// Empty input is an empty rendering, not a panic and not a `<pre></pre>`
     /// full of nothing.
+    /// An apostrophe in an *unquoted* attribute value is a literal, not an
+    /// opening quote. Read as one, `tag_end` ran past the tag's own `>` to the
+    /// next quote-balanced one, and the chip pass replaced everything in
+    /// between — heading, paragraph and the following image — with one chip.
+    #[test]
+    fn a_bare_apostrophe_does_not_swallow_the_rest_of_the_document() {
+        let src = "<p>keep</p><img src=https://a.example/1.png alt=it's>\
+<h1>Important</h1><p>lots of docs</p><img src=https://a.example/2.png alt=b'c><p>after</p>";
+        for format in [ReadmeFormat::Markdown, ReadmeFormat::Html] {
+            let out = render(src, format, &RenderOptions::default());
+            assert!(out.contains("Important"), "{format:?} → {out}");
+            assert!(out.contains("lots of docs"), "{format:?} → {out}");
+            assert!(out.contains("after"), "{format:?} → {out}");
+            // Both images are still chipped, one each.
+            assert_eq!(out.matches("readme-stripped-image").count(), 2, "{out}");
+        }
+        // …and the index the image endpoint resolves still agrees with what was
+        // emitted, which is the property that keeps `readme-image/{n}` honest.
+        assert_eq!(
+            image_urls(src, ReadmeFormat::Html, &[]).len(),
+            2,
+            "image_urls disagrees with the rendering"
+        );
+    }
+
     #[test]
     fn empty_source_renders_to_nothing_much() {
         assert!(md("").trim().is_empty());

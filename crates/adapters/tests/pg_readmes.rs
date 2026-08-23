@@ -539,6 +539,29 @@ async fn the_text_configuration_can_be_changed_and_settling_on_one_is_idempotent
             .expect("english exists on every Postgres");
         assert_eq!(chosen, "english");
     }
+
+    // What the column reports about itself is what was settled — the property
+    // the startup path relies on to answer "which configuration do queries use"
+    // when prose search is off and nothing was rebuilt. It is also what makes
+    // the no-op above a no-op: read it wrong and every startup drops and rebuilds
+    // the generated column.
+    assert_eq!(
+        batlehub_adapters::db::column_text_config(&pool)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("english")
+    );
+
+    // The list a reload validates a candidate `[search] text_config` against.
+    let names = batlehub_adapters::db::text_config_names(&pool)
+        .await
+        .unwrap();
+    assert!(names.iter().any(|n| n == "english"), "{names:?}");
+    assert!(
+        !names.iter().any(|n| n == "not_a_configuration"),
+        "{names:?}"
+    );
     // And the search still works afterwards.
     assert_eq!(
         t.repo

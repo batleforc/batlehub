@@ -229,7 +229,7 @@ impl ReadmeService {
         cfg: &ReadmeImageConfig,
     ) -> Option<image::FetchedImage> {
         let fetcher = self.image_fetcher.as_ref()?;
-        let urls = render::image_urls(&readme.content, readme.format, &cfg.allowed_hosts);
+        let urls = self.image_urls_cached(readme, &cfg.allowed_hosts).await;
         let url = urls.get(index)?;
 
         // Belt and braces: the walk above already excludes a disallowed host, so
@@ -286,6 +286,66 @@ impl ReadmeService {
             }
         }
         fetched
+    }
+
+    /// The image URLs of `readme`, in the order the rendering emits them, from
+    /// the cache where there is one.
+    ///
+    /// [`render::image_urls`] is a **full pipeline run** — parse, chip pass,
+    /// complete sanitise — over the whole stored document, and it was being run
+    /// once per image request, ahead of the per-image cache. Both the number of
+    /// images on a page and the size of the document are chosen by whoever
+    /// published the package: a 256 KiB README (the `max_bytes` default) holding
+    /// a few thousand `![](…)` costs tens of milliseconds a call, so one reader
+    /// opening that panel cost minutes of CPU, and a warm image cache changed
+    /// nothing because the render happened first.
+    ///
+    /// Content-addressed exactly as [`render_cached`](Self::render_cached) is —
+    /// digest, renderer version and the host list, which is the only option that
+    /// changes the answer — so it needs no TTL and a sanitiser fix invalidates it
+    /// by bumping [`sanitize::RENDERER_VERSION`].
+    async fn image_urls_cached(
+        &self,
+        readme: &PackageReadme,
+        allowed_hosts: &[String],
+    ) -> Vec<String> {
+        let key = image_urls_cache_key(&readme.digest, readme.format, allowed_hosts);
+        if let Some(cache) = &self.cache {
+            if let Ok(Some(entry)) = cache.get(&key).await {
+                if let Some(urls) = entry
+                    .metadata
+                    .extra
+                    .get("readme_image_urls")
+                    .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+                {
+                    return urls;
+                }
+            }
+        }
+        let urls = render::image_urls(&readme.content, readme.format, allowed_hosts);
+        if let Some(cache) = &self.cache {
+            let entry = CacheEntry {
+                metadata: PackageMetadata {
+                    id: crate::entities::PackageId::new(
+                        &readme.registry,
+                        &readme.name,
+                        &readme.version,
+                    ),
+                    published_at: None,
+                    download_url: None,
+                    checksum: None,
+                    is_signed: None,
+                    extra: serde_json::json!({ "readme_image_urls": urls }),
+                    cache_control: None,
+                },
+                cached_at: Utc::now(),
+                expires_at: None,
+            };
+            if let Err(e) = cache.set(&key, entry, None).await {
+                tracing::debug!(error = %e, "readme: image-url cache write failed (non-fatal)");
+            }
+        }
+        urls
     }
 
     /// Record the README a registry client parsed out of a metadata document.
@@ -571,6 +631,24 @@ fn render_cache_key(digest: &str, format: ReadmeFormat, opts: &render::RenderOpt
     ));
     format!(
         "readme-html:{}:{}:{digest}",
+        sanitize::RENDERER_VERSION,
+        &variant[..16]
+    )
+}
+
+/// The key for [`ReadmeService::image_urls_cached`].
+///
+/// The same content-addressed shape as [`render_cache_key`], over the only two
+/// inputs `image_urls` reads besides the document: the format, and the host
+/// allow-list that decides which `<img>` survive the chip pass.
+fn image_urls_cache_key(digest: &str, format: ReadmeFormat, allowed_hosts: &[String]) -> String {
+    let variant = readme_digest(&format!(
+        "{}|{}",
+        format.as_str(),
+        allowed_hosts.join("\u{1f}")
+    ));
+    format!(
+        "readme-images:{}:{}:{digest}",
         sanitize::RENDERER_VERSION,
         &variant[..16]
     )

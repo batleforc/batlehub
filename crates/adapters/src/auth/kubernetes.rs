@@ -37,6 +37,56 @@ fn looks_like_a_jwt(token: &str) -> bool {
     ok && parts.next().is_none()
 }
 
+/// The two claims that decide whether a JWT is even *addressed to us*.
+///
+/// [`looks_like_a_jwt`] keeps a personal access token out of a TokenReview body,
+/// and stops there: an OIDC ID token and a GitHub Actions token are both
+/// perfectly JWT-shaped. With `type = "kubernetes"` ordered before
+/// `type = "oidc"` — the natural order for a cluster deployment — every browser
+/// request's ID token was therefore POSTed verbatim to the cluster API server,
+/// and because only *successes* are cached it was re-shipped on every single
+/// request, which is precisely the amplification [`TOKENREVIEW_CACHE_TTL`]
+/// exists to prevent.
+struct PeekedClaims {
+    iss: Option<String>,
+    aud: Vec<String>,
+}
+
+/// Read `iss`/`aud` out of a JWT payload **without verifying anything**.
+///
+/// Safe because nothing is granted on the result: it can only make this provider
+/// decline to ask the API server about a token. A forged payload buys an
+/// attacker a TokenReview that rejects them, which is what they get by sending
+/// no claims at all.
+fn peek_claims(token: &str) -> Option<PeekedClaims> {
+    use base64::Engine as _;
+
+    let payload = token.split('.').nth(1)?;
+    // JWT mandates unpadded base64url; tolerate padding rather than treat a
+    // padded token as unreadable.
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.trim_end_matches('='))
+        .ok()?;
+    let claims: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(&bytes).ok()?;
+
+    // `aud` is a string or an array of strings (RFC 7519 §4.1.3).
+    let aud = match claims.get("aud") {
+        Some(serde_json::Value::String(s)) => vec![s.clone()],
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect(),
+        _ => vec![],
+    };
+    Some(PeekedClaims {
+        iss: claims
+            .get("iss")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
+        aud,
+    })
+}
+
 // ── TokenReview wire types ────────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -88,14 +138,39 @@ struct UserInfo {
 /// control plane, and makes the API server a hard dependency of every artifact
 /// download. Well under the lifetime of a projected token (an hour is typical),
 /// so a revoked service account still loses access promptly.
-///
-/// Only *successful* verdicts are cached: a rejection is cheap to repeat and
-/// caching it would delay a newly-granted service account by up to a minute.
 const TOKENREVIEW_CACHE_TTL: Duration = Duration::from_secs(60);
 
+/// How long a *rejection* is reused.
+///
+/// Rejections used not to be cached at all, on the grounds that repeating one is
+/// cheap and caching it would delay a newly-granted service account by a minute.
+/// The first half is only true per *token*: a client that keeps presenting the
+/// same rejected credential — which is what a misconfigured CI job and a browser
+/// session both do — put one TokenReview on the API server per request, with no
+/// ceiling. The answer is not "do not cache" but "cache briefly": ten seconds
+/// takes the amplification factor to at most one review per token per ten
+/// seconds, and is short enough that a RoleBinding landing mid-CI-run is not
+/// something anyone notices.
+const TOKENREVIEW_REJECT_TTL: Duration = Duration::from_secs(10);
+
+/// What a TokenReview concluded about a token, as cached.
+enum Verdict {
+    Granted(Identity),
+    Refused,
+}
+
 struct CachedReview {
-    identity: Identity,
+    verdict: Verdict,
     at: Instant,
+}
+
+impl CachedReview {
+    fn ttl(&self) -> Duration {
+        match self.verdict {
+            Verdict::Granted(_) => TOKENREVIEW_CACHE_TTL,
+            Verdict::Refused => TOKENREVIEW_REJECT_TTL,
+        }
+    }
 }
 
 pub struct KubernetesAuthProvider {
@@ -104,6 +179,8 @@ pub struct KubernetesAuthProvider {
     tokenreview_url: String,
     self_token_path: String,
     audiences: Vec<String>,
+    /// Accepted token issuers; empty means "any" — see `KubernetesAuthConfig`.
+    issuers: Vec<String>,
     role_mappings: HashMap<String, Role>,
     /// Keyed by SHA-256 of the presented token, so the credential itself is not
     /// held in memory beyond the request that carried it.
@@ -169,6 +246,7 @@ impl KubernetesAuthProvider {
             tokenreview_url: format!("{api_server}/apis/authentication.k8s.io/v1/tokenreviews"),
             self_token_path,
             audiences,
+            issuers: cfg.issuers.clone(),
             role_mappings,
             review_cache: Mutex::new(HashMap::new()),
         })
@@ -204,25 +282,64 @@ impl KubernetesAuthProvider {
         confirmed.iter().any(|a| self.audiences.contains(a))
     }
 
-    /// The identity a recent TokenReview produced for this token, if still fresh.
+    /// Whether a token's own claims say it could be meant for this provider.
     ///
-    /// Sweeps expired entries as it looks, so a churn of short-lived service
-    /// account tokens cannot grow the map without bound.
-    fn cached_review(&self, token_hash: &str) -> Option<Identity> {
-        let now = Instant::now();
-        let mut cache = self.review_cache.lock().expect("tokenreview cache mutex");
-        cache.retain(|_, entry| now.duration_since(entry.at) < TOKENREVIEW_CACHE_TTL);
-        cache.get(token_hash).map(|e| e.identity.clone())
+    /// Decided locally, before any round trip, and deliberately in terms of the
+    /// same two properties the API server is asked about:
+    ///
+    /// - **issuer** — checked only when `issuers` is configured, because there is
+    ///   no way to guess a cluster's issuer URL (it is `kubernetes.default.svc`
+    ///   in one deployment and an S3-hosted OIDC document in the next);
+    /// - **audience** — always. A projected token minted for this server carries
+    ///   `aud: ["batlehub"]`; a browser's ID token carries the OIDC client id and
+    ///   the cluster's default service account token carries the API server's own
+    ///   audience. This rejects exactly what `audiences_are_confirmed` would
+    ///   reject after the round trip — `status.audiences` is the intersection of
+    ///   `spec.audiences` and the token's `aud`, so a token with no audience in
+    ///   common could never come back confirmed — which is what makes skipping
+    ///   the call safe rather than merely cheap.
+    ///
+    /// A token whose payload cannot be read at all is refused here too: it is not
+    /// something the API server could authenticate either.
+    fn token_may_be_ours(&self, token: &str) -> bool {
+        let Some(claims) = peek_claims(token) else {
+            return false;
+        };
+        if !self.issuers.is_empty() {
+            let issued_by_us = claims
+                .iss
+                .as_deref()
+                .is_some_and(|iss| self.issuers.iter().any(|known| known == iss));
+            if !issued_by_us {
+                return false;
+            }
+        }
+        claims.aud.iter().any(|a| self.audiences.contains(a))
     }
 
-    fn cache_review(&self, token_hash: String, identity: &Identity) {
+    /// The verdict a recent TokenReview produced for this token, if still fresh.
+    ///
+    /// Sweeps expired entries as it looks, so a churn of short-lived service
+    /// account tokens cannot grow the map without bound. Each entry expires on
+    /// its own kind's TTL — see [`TOKENREVIEW_REJECT_TTL`].
+    fn cached_review(&self, token_hash: &str) -> Option<Verdict> {
+        let now = Instant::now();
+        let mut cache = self.review_cache.lock().expect("tokenreview cache mutex");
+        cache.retain(|_, entry| now.duration_since(entry.at) < entry.ttl());
+        cache.get(token_hash).map(|e| match &e.verdict {
+            Verdict::Granted(identity) => Verdict::Granted(identity.clone()),
+            Verdict::Refused => Verdict::Refused,
+        })
+    }
+
+    fn cache_review(&self, token_hash: String, verdict: Verdict) {
         self.review_cache
             .lock()
             .expect("tokenreview cache mutex")
             .insert(
                 token_hash,
                 CachedReview {
-                    identity: identity.clone(),
+                    verdict,
                     at: Instant::now(),
                 },
             );
@@ -256,16 +373,20 @@ impl AuthProvider for KubernetesAuthProvider {
         };
 
         // Never forward a credential that cannot be a service account token to
-        // the API server — see `looks_like_a_jwt`.
-        if !looks_like_a_jwt(token) {
+        // the API server — see `looks_like_a_jwt`, then `token_may_be_ours` for
+        // the JWTs that are not ours either. Both run before the cache: a token
+        // this provider will never ask about does not deserve an entry in it.
+        if !looks_like_a_jwt(token) || !self.token_may_be_ours(token) {
             return Ok(None);
         }
 
         // Hashed, not stored raw: the cache outlives the request, the credential
         // should not.
         let token_hash = hex::encode(Sha256::digest(token.as_bytes()));
-        if let Some(identity) = self.cached_review(&token_hash) {
-            return Ok(Some(identity));
+        match self.cached_review(&token_hash) {
+            Some(Verdict::Granted(identity)) => return Ok(Some(identity)),
+            Some(Verdict::Refused) => return Ok(None),
+            None => {}
         }
 
         // Re-read the service account token each call — Kubernetes rotates it.
@@ -297,7 +418,10 @@ impl AuthProvider for KubernetesAuthProvider {
             })?;
 
         if !resp.status.authenticated {
-            // Not a valid k8s token — let other providers have a turn.
+            // Not a valid k8s token — let other providers have a turn, and
+            // remember the "no" briefly so a client that keeps presenting it
+            // cannot turn one request into one TokenReview each.
+            self.cache_review(token_hash, Verdict::Refused);
             return Ok(None);
         }
 
@@ -309,6 +433,7 @@ impl AuthProvider for KubernetesAuthProvider {
                 "TokenReview authenticated a token the API server did not confirm \
                  is bound to a requested audience — rejecting"
             );
+            self.cache_review(token_hash, Verdict::Refused);
             return Ok(None);
         }
 
@@ -326,7 +451,7 @@ impl AuthProvider for KubernetesAuthProvider {
             auth_provider: Some(self.name.clone()),
             groups,
         };
-        self.cache_review(token_hash, &identity);
+        self.cache_review(token_hash, Verdict::Granted(identity.clone()));
         Ok(Some(identity))
     }
 }
@@ -365,9 +490,15 @@ impl KubernetesAuthProvider {
             tokenreview_url: tokenreview_url.into(),
             self_token_path: self_token_path.into(),
             audiences,
+            issuers: vec![],
             role_mappings,
             review_cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn with_issuers(mut self, issuers: &[&str]) -> Self {
+        self.issuers = issuers.iter().map(|s| (*s).to_owned()).collect();
+        self
     }
 }
 
@@ -428,13 +559,32 @@ mod tests {
         }
     }
 
-    /// A JWT-shaped stand-in for a projected service account token.
+    /// An unsigned JWT carrying `claims`.
     ///
-    /// The contents never matter — the API server is mocked and it is the one
-    /// that would verify the signature. Only the *shape* matters, because
-    /// `looks_like_a_jwt` decides whether the credential is even offered to it.
+    /// The signature never matters — the API server is mocked and it is the one
+    /// that would verify it. The *claims* do: `looks_like_a_jwt` and
+    /// `token_may_be_ours` both decide from them whether the credential is
+    /// offered to the API server at all.
+    pub(super) fn jwt(claims: serde_json::Value) -> String {
+        use base64::Engine as _;
+        let b64 = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+        format!(
+            "{}.{}.{}",
+            b64(br#"{"alg":"RS256","typ":"JWT"}"#),
+            b64(&serde_json::to_vec(&claims).unwrap()),
+            b64(b"not-a-real-signature")
+        )
+    }
+
+    pub(super) const CLUSTER_ISSUER: &str = "https://kubernetes.default.svc.cluster.local";
+
+    /// A projected service account token bound to this server's audience.
     pub(super) fn sa_token() -> String {
-        "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJzeXN0ZW06c2VydmljZWFjY291bnQifQ.c2ln".to_owned()
+        jwt(serde_json::json!({
+            "iss": CLUSTER_ISSUER,
+            "aud": ["batlehub"],
+            "sub": "system:serviceaccount:prod:ci-deployer",
+        }))
     }
 
     /// A TokenReview response that authenticates `username` for our audience.
@@ -499,6 +649,116 @@ mod tests {
         let pat = "a".repeat(64);
         assert!(p.authenticate(&bearer(&pat)).await.unwrap().is_none());
         review.assert_async().await;
+    }
+
+    // ── JWTs that are not ours never reach the API server either ──────────────
+    // `looks_like_a_jwt` only keeps *non*-JWTs out. An OIDC ID token is a JWT,
+    // and with `type = "kubernetes"` ordered before `type = "oidc"` — the
+    // natural order in a cluster — every browser request's ID token was POSTed
+    // verbatim to the cluster control plane, on every single request, since only
+    // successes were cached.
+
+    #[tokio::test]
+    async fn an_oidc_id_token_is_never_sent_to_the_api_server() {
+        let mut server = Server::new_async().await;
+        let review = server
+            .mock("POST", "/apis/authentication.k8s.io/v1/tokenreviews")
+            .expect(0)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":{"authenticated":false}}"#)
+            .create_async()
+            .await;
+
+        let tf = write_temp_token("self-token").await;
+        let p = make_provider(&server, &tf.0);
+
+        // What a browser session carries: a real JWT, audienced to the console's
+        // OIDC client rather than to this server.
+        let id_token = jwt(serde_json::json!({
+            "iss": "https://login.example.com/",
+            "aud": "batlehub-console",
+            "sub": "user@example.com",
+        }));
+        assert!(p.authenticate(&bearer(&id_token)).await.unwrap().is_none());
+        review.assert_async().await;
+    }
+
+    /// The audience check is not a guess about what the API server would say —
+    /// it is the same one, moved earlier. `status.audiences` is the intersection
+    /// of `spec.audiences` and the token's own `aud`, so a token with nothing in
+    /// common could never come back confirmed.
+    #[tokio::test]
+    async fn a_token_bound_to_no_audience_of_ours_is_not_worth_a_round_trip() {
+        let mut server = Server::new_async().await;
+        let review = server
+            .mock("POST", "/apis/authentication.k8s.io/v1/tokenreviews")
+            .expect(0)
+            .create_async()
+            .await;
+
+        let tf = write_temp_token("self-token").await;
+        let p = make_provider(&server, &tf.0);
+
+        for claims in [
+            // The default service account token every pod carries: bound to the
+            // API server, not to us.
+            serde_json::json!({"iss": CLUSTER_ISSUER, "aud": ["https://kubernetes.default.svc"]}),
+            // A legacy, unbound token: no audience at all.
+            serde_json::json!({"iss": CLUSTER_ISSUER, "sub": "system:serviceaccount:x:y"}),
+            // Not a readable payload — not something the API server could
+            // authenticate either.
+            serde_json::json!(null),
+        ] {
+            let token = jwt(claims);
+            assert!(p.authenticate(&bearer(&token)).await.unwrap().is_none());
+        }
+        review.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn a_configured_issuer_narrows_further_and_still_admits_its_own_tokens() {
+        let mut server = Server::new_async().await;
+        let review = server
+            .mock("POST", "/apis/authentication.k8s.io/v1/tokenreviews")
+            // Exactly one: the token from the configured issuer. The other one
+            // is refused before any request is made.
+            .expect(1)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(authenticated_body("system:serviceaccount:prod:ci-deployer"))
+            .create_async()
+            .await;
+
+        let tf = write_temp_token("self-token").await;
+        let p = make_provider(&server, &tf.0).with_issuers(&[CLUSTER_ISSUER]);
+
+        // Another cluster's token, bound to the same audience name — the case
+        // the audience check alone cannot see.
+        let foreign = jwt(serde_json::json!({
+            "iss": "https://oidc.eks.eu-west-1.amazonaws.com/id/OTHER",
+            "aud": ["batlehub"],
+            "sub": "system:serviceaccount:prod:ci-deployer",
+        }));
+        assert!(p.authenticate(&bearer(&foreign)).await.unwrap().is_none());
+
+        let id = p.authenticate(&bearer(&sa_token())).await.unwrap().unwrap();
+        assert_eq!(id.role, Role::Admin);
+        review.assert_async().await;
+    }
+
+    #[test]
+    fn peek_claims_reads_both_audience_spellings_and_nothing_else() {
+        let one = peek_claims(&jwt(serde_json::json!({"aud": "batlehub"}))).unwrap();
+        assert_eq!(one.aud, vec!["batlehub".to_owned()]);
+        assert_eq!(one.iss, None);
+
+        let many = peek_claims(&jwt(serde_json::json!({"iss": "x", "aud": ["a", "b"]}))).unwrap();
+        assert_eq!(many.aud, vec!["a".to_owned(), "b".to_owned()]);
+        assert_eq!(many.iss.as_deref(), Some("x"));
+
+        assert!(peek_claims("not.a.jwt").is_none());
+        assert!(peek_claims("only-one-part").is_none());
     }
 
     #[test]
@@ -1017,25 +1277,54 @@ mod cache_tests {
         let tf = write_temp_token("self-token").await;
         let p = make_provider(&server, &tf.0);
 
-        // Same shape, different payload segment.
+        // Same audience and issuer, different subject.
         p.authenticate(&bearer(&sa_token())).await.unwrap();
-        p.authenticate(&bearer("eyJhbGciOiJSUzI1NiJ9.ZGlmZmVyZW50.c2ln"))
-            .await
-            .unwrap();
+        let other = super::tests::jwt(serde_json::json!({
+            "iss": super::tests::CLUSTER_ISSUER,
+            "aud": ["batlehub"],
+            "sub": "system:serviceaccount:dev:my-app",
+        }));
+        p.authenticate(&bearer(&other)).await.unwrap();
         review.assert_async().await;
     }
 
     #[tokio::test]
-    async fn a_rejection_is_not_cached() {
-        // Caching a "no" would leave a service account locked out for a minute
-        // after its RoleBinding lands — and a rejection is cheap to repeat.
+    async fn a_repeated_rejection_costs_one_review_not_one_per_request() {
+        // Not caching a "no" at all was one TokenReview per request for as long
+        // as a client kept presenting the same refused credential — which is
+        // what a misconfigured CI job does, forever. `TOKENREVIEW_REJECT_TTL`
+        // keeps the lockout window after a RoleBinding lands to ten seconds.
         let mut server = Server::new_async().await;
         let review = server
             .mock("POST", "/apis/authentication.k8s.io/v1/tokenreviews")
-            .expect(3)
+            .expect(1)
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"status":{"authenticated":false}}"#)
+            .create_async()
+            .await;
+
+        let tf = write_temp_token("self-token").await;
+        let p = make_provider(&server, &tf.0);
+        let token = sa_token();
+        for _ in 0..3 {
+            assert!(p.authenticate(&bearer(&token)).await.unwrap().is_none());
+        }
+        review.assert_async().await;
+    }
+
+    /// A token the API server authenticated but did not confirm an audience for
+    /// is refused — and that refusal is remembered too, or the narrowest case
+    /// left is still one round trip per request.
+    #[tokio::test]
+    async fn an_unconfirmed_audience_is_refused_once() {
+        let mut server = Server::new_async().await;
+        let review = server
+            .mock("POST", "/apis/authentication.k8s.io/v1/tokenreviews")
+            .expect(1)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":{"authenticated":true,"user":{"username":"system:serviceaccount:prod:ci-deployer","groups":[]}}}"#)
             .create_async()
             .await;
 
@@ -1057,9 +1346,8 @@ mod cache_tests {
             vec!["batlehub".to_owned()],
             HashMap::new(),
         );
-        let identity = Identity::anonymous();
         let hash = hex::encode(Sha256::digest(b"a-secret-token"));
-        p.cache_review(hash.clone(), &identity);
+        p.cache_review(hash.clone(), Verdict::Granted(Identity::anonymous()));
 
         let keys: Vec<String> = p.review_cache.lock().unwrap().keys().cloned().collect();
         assert_eq!(keys, vec![hash]);

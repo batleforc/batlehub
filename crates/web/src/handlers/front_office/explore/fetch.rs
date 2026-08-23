@@ -215,6 +215,14 @@ pub async fn explore_fetch_version(
             "registry '{registry}' not found"
         )));
     };
+    // Validated at the edge, before anything is built from it. The two deeper
+    // funnels do run — `ProxyService::handle` calls `validate_coordinate` and
+    // `ensure_safe_key` guards the storage backends — but the `storage.exists()`
+    // below builds a key from these bytes and asks the backend about it *first*,
+    // which is the handler-builds-a-key case CLAUDE.md says must validate here
+    // for a clean `400` rather than lean on the guards behind it.
+    batlehub_core::services::validate_coordinate(&name, &version, None).map_err(AppError::from)?;
+
     // The coordinate comes from the kind's own table rather than being built
     // here, because it has to be *byte-identical* to the one the package
     // manager's download builds — sub-coordinate and normalisation included.

@@ -366,6 +366,7 @@ type = "kubernetes"
 # ca_cert_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 # token_path   = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 # audiences    = ["batlehub"]
+# issuers      = []     # any issuer; see below
 
 [auth.role_mappings]
 "system:serviceaccount:prod:ci-deployer" = "admin"
@@ -380,6 +381,7 @@ type = "kubernetes"
 | `ca_cert_path` | string | `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt` | CA cert for API server TLS verification |
 | `token_path` | string | `/var/run/secrets/kubernetes.io/serviceaccount/token` | batlehub's own service account token for TokenReview calls; re-read each request to handle automatic rotation |
 | `audiences` | string[] | `["batlehub"]` | Audiences sent in the TokenReview request, **and required back in its response** — see below |
+| `issuers` | string[] | `[]` (any) | Token issuers (`iss`) worth a TokenReview. Set it when this server sees tokens from more than one issuer — see below |
 | `role_mappings` | map | `{}` | Maps Kubernetes usernames or group names to proxy roles |
 
 **`api_server` must be `https://`, and the server refuses to start otherwise** (plain HTTP is accepted for `localhost` and `127.0.0.1` only, as it is for an OIDC `issuer_url`). The rule is stricter here than it looks: every TokenReview carries BatleHub's *own* service account token, and the reply decides the caller's identity. Anyone sitting on a cleartext path both learns that token and can answer `authenticated: true` with `system:serviceaccount:…`, which `role_mappings` will translate into whatever role that key names — up to `admin`. Leave `api_server` unset in-cluster and the default is `https://` by construction.
@@ -407,7 +409,15 @@ volumes:
 
 Point the client at `/var/run/secrets/batlehub/token` (`batlehub-cli auth login --kubernetes-token-path`). If authentication starts failing with `TokenReview authenticated a token the API server did not confirm is bound to a requested audience` in the logs, the workload is sending the default token and needs the projected volume above.
 
-**Only JWT-shaped credentials are sent to the API server.** A bearer token that is not three dot-separated parts cannot be a service account token, so it is passed to the next provider untouched rather than forwarded in a TokenReview body — this keeps personal access tokens out of the control plane's request logs.
+**Only credentials that could be ours are sent to the API server.** Three filters run before any TokenReview, in order:
+
+- a bearer token that is not three dot-separated parts cannot be a service account token, so it is passed to the next provider untouched — this keeps personal access tokens out of the control plane's request logs;
+- a JWT whose own `aud` claim shares nothing with `audiences` is refused locally. This is the same check `status.audiences` gets after the round trip (that field is the intersection of `spec.audiences` and the token's `aud`, so such a token could never come back confirmed), moved earlier. It matters because an OIDC ID token *is* JWT-shaped: with `type = "kubernetes"` listed before `type = "oidc"` — the natural order in a cluster — every browser request's ID token would otherwise be POSTed verbatim to the API server;
+- when `issuers` is set, a JWT from any other issuer is refused locally too. Leave it empty unless this server sees tokens from more than one issuer with the same audience name (federated clusters, a cloud OIDC provider alongside the in-cluster one). Read it with `kubectl get --raw /.well-known/openid-configuration | jq -r .issuer`.
+
+None of this grants anything: claims are read without verifying the signature, and can only make BatleHub decline to *ask*. The TokenReview verdict remains what authenticates.
+
+**Verdicts are cached, both kinds.** A success is reused for 60 seconds, a rejection for 10 — keyed by the SHA-256 of the token, never by the token itself. Without the second, a client repeating a credential the cluster refuses (a misconfigured CI job, a stale token in a loop) put one TokenReview on the API server per proxied request with no ceiling. Ten seconds is also the longest a service account waits after its RoleBinding lands.
 
 #### 3.3.4 Actions OIDC auth (`type = "actions-oidc"`)
 

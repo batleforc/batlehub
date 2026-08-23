@@ -42,6 +42,10 @@ use batlehub_core::services::LocalRegistryService;
 
 use crate::error::AppError;
 
+/// The console document's file name, in the one place both the reader and the
+/// static-file filter get it from.
+const SPA_INDEX: &str = "index.html";
+
 /// The directory the built SPA is served from — `[server].static_dir`.
 #[derive(Clone)]
 pub struct SpaDir(pub PathBuf);
@@ -113,7 +117,18 @@ fn drop_source(policy: &str, source: &str) -> String {
         .filter_map(|directive| {
             let mut tokens = directive.split_whitespace();
             let name = tokens.next()?;
-            let kept: Vec<&str> = tokens.filter(|t| *t != source).collect();
+            let rest: Vec<&str> = tokens.collect();
+            // A directive that never had a source is not one this removed the
+            // last source from. `upgrade-insecure-requests`, `sandbox` and
+            // `block-all-mixed-content` carry no value at all, and the
+            // `kept.is_empty()` branch below would have deleted them outright —
+            // a *widening*, which is the one thing this module says it cannot
+            // do. `ui/build/csp.ts` emits none of them today, so this is the
+            // guard that keeps that from mattering the day it does.
+            if rest.is_empty() {
+                return Some(name.to_owned());
+            }
+            let kept: Vec<&str> = rest.into_iter().filter(|t| *t != source).collect();
             if kept.is_empty() {
                 // The directive named nothing but the source we removed. Leaving
                 // `img-src` empty would block every image including `'self'`;
@@ -155,7 +170,7 @@ async fn serve_index(
     dir: web::Data<SpaDir>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
 ) -> Result<impl Responder, AppError> {
-    let path = dir.0.join("index.html");
+    let path = dir.0.join(SPA_INDEX);
     let html = tokio::fs::read_to_string(&path).await.map_err(|e| {
         tracing::error!(path = %path.display(), error = %e, "spa: index.html unreadable");
         AppError::not_found("index.html not found")
@@ -224,11 +239,46 @@ const RESERVED_PREFIXES: &[&str] = &[
 /// console rather than a request that plainly failed.
 const ASSET_PREFIXES: &[&str] = &["/assets/", "/fonts/"];
 
+/// `path` with its `%XX` escapes resolved, lossily.
+///
+/// Only used to make [`is_console_route`] read a path the way the router did.
+/// Lossy on purpose: a malformed or non-UTF-8 escape is not a reason to serve
+/// the document, and the raw spelling still gets its own say.
+fn percent_decoded(path: &str) -> String {
+    let bytes = path.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = |b: u8| (b as char).to_digit(16);
+            if let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Whether this path should be answered with the console's document.
 ///
 /// Split out and pure so the decision can be tested exhaustively without a
 /// server: it is the part where being wrong is expensive.
 fn is_console_route(path: &str) -> bool {
+    // The path as actix matched it, too. Routing happens against the *requoted*
+    // path — actix decodes every escape except `%`, `/` and `+` before it looks
+    // for a route — so `/%61pi/v1/nope` matches no API route, falls through to
+    // here, and does not start with `/api`. It was answered `200 text/html`,
+    // which is the one outcome the four conditions below exist to prevent: an
+    // API `404` dressed as the console, and a package manager handed markup
+    // where an artifact was refused. Both spellings have to pass.
+    let decoded = percent_decoded(path);
+    if decoded != path && !is_console_route(&decoded) {
+        return false;
+    }
     if RESERVED_PREFIXES
         .iter()
         .any(|p| path == *p || path.starts_with(&format!("{p}/")))
@@ -302,8 +352,19 @@ pub fn configure_spa(cfg: &mut web::ServiceConfig, dir: PathBuf) {
         .service(spa_index_html)
         .service(
             actix_files::Files::new("/", dir)
-                .index_file("index.html")
+                .index_file(SPA_INDEX)
                 .use_last_modified(true)
+                // The document never comes off disk, whatever it is spelled
+                // like. Registering `spa_root` and `spa_index_html` first covers
+                // `/` and `/index.html` and nothing else: `PathBufWrap::parse_path`
+                // skips empty segments, so `//index.html` and `/index.html/`
+                // matched no route, resolved to the same file, and were served
+                // with the **un-narrowed** policy the build emitted — still
+                // admitting `https://badge.socket.dev` on an instance where every
+                // registry has the badge off. A rejected path falls to
+                // `default_handler`, which is `spa_fallback`, which serves the
+                // narrowed document.
+                .path_filter(|path, _| path.file_name() != Some(SPA_INDEX.as_ref()))
                 .default_handler(fn_service(spa_fallback)),
         );
 }

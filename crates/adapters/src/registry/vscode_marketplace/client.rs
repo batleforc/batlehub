@@ -9,7 +9,8 @@ use batlehub_core::{
 };
 
 use super::super::http_client::{
-    fetch_linked_text, new_http_client, to_registry_error, UpstreamHttpOptions,
+    fetch_linked_text, new_http_client, no_redirect_client_pair, to_registry_error,
+    UpstreamHttpOptions,
 };
 use super::models::{
     ExtensionQueryCriteria, ExtensionQueryFilter, ExtensionQueryRequest, ExtensionQueryResponse,
@@ -27,6 +28,14 @@ use super::models::{
 /// - `artifact = Some("vsix")` → stream the `.vsix` extension package
 pub struct VsCodeMarketplaceRegistryClient {
     http: reqwest::Client,
+    /// The linked-asset pair: redirects disabled so the SSRF guard validates
+    /// every hop, credentials attached only while the chain stays on `base_url`
+    /// (see [`fetch_linked_text`]). The public gallery's assets live off that
+    /// origin by construction, so on a public-gallery deployment the README read
+    /// is credential-free — which is what it should be: the CDN is not the host
+    /// the operator configured a token for.
+    readme_credentialed: reqwest::Client,
+    readme_plain: reqwest::Client,
     base_url: String,
 }
 
@@ -49,8 +58,11 @@ const GALLERY_CDN_HOST_SUFFIX: &str = "gallerycdn.vsassets.io";
 impl VsCodeMarketplaceRegistryClient {
     pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Result<Self, CoreError> {
         let http = new_http_client(Some(10), opts)?;
+        let (readme_credentialed, readme_plain) = no_redirect_client_pair(opts)?;
         Ok(Self {
             http,
+            readme_credentialed,
+            readme_plain,
             base_url: base_url.into(),
         })
     }
@@ -240,7 +252,9 @@ impl RegistryClient for VsCodeMarketplaceRegistryClient {
         max_bytes: usize,
     ) -> Result<Option<String>, CoreError> {
         fetch_linked_text(
-            self.http.get(url),
+            &self.readme_credentialed,
+            &self.readme_plain,
+            &None,
             url,
             &self.base_url,
             self.asset_host_suffixes(),

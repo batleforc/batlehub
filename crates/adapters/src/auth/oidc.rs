@@ -282,18 +282,57 @@ impl OidcSsoFlow {
 
         let id_token = resp["id_token"].as_str().map(str::to_owned);
 
+        // Prefer the ID token; fall back to the access token so a provider that
+        // returns none (or a refresh that omits it) still works, as it did
+        // before. `session_token_is_a_jwt` is what tells an operator when that
+        // fallback has landed them on an opaque credential.
+        let session_token = id_token.clone().unwrap_or_else(|| access_token.clone());
+
+        // `expires_in` describes the **access** token, and the credential the
+        // clients hold is the **ID** token. Both schedule their refresh off this
+        // number (`useAuth.ts`, `cli/src/api/auth.rs`), so on any provider whose
+        // ID token is the shorter of the two — Entra ID, Auth0 — the session
+        // expired while the client still believed it live. `authenticate` then
+        // answers `Ok(None)` and the middleware falls through to *anonymous*
+        // rather than `401`: the user silently loses their role and sees 403s,
+        // with nothing to trigger a refresh. Take the smaller of the two.
+        let expires_in = min_with_id_token_exp(resp["expires_in"].as_u64(), &session_token);
+
         Ok(OidcTokens {
-            // Prefer the ID token; fall back to the access token so a provider
-            // that returns none (or a refresh that omits it) still works, as it
-            // did before. `session_token_is_a_jwt` is what tells an operator
-            // when that fallback has landed them on an opaque credential.
-            session_token: id_token.clone().unwrap_or_else(|| access_token.clone()),
+            session_token,
             has_id_token: id_token.is_some(),
             access_token,
             refresh_token: resp["refresh_token"].as_str().map(str::to_owned),
-            expires_in: resp["expires_in"].as_u64(),
+            expires_in,
         })
     }
+}
+
+/// `reported`, capped by the session token's own `exp` when it has one.
+///
+/// Reading a claim without verifying the signature is safe here for the reason
+/// `verify_nonce` gives: the token arrived over TLS straight from the token
+/// endpoint, in response to a request only this server could make, and nothing
+/// is *authenticated* on the strength of this read — it only shortens a client's
+/// refresh timer, which is the safe direction to be wrong in. A token that is
+/// not a JWT, or carries no `exp`, leaves the provider's own number alone.
+fn min_with_id_token_exp(reported: Option<u64>, session_token: &str) -> Option<u64> {
+    let decoded: Option<jsonwebtoken::TokenData<serde_json::Map<String, serde_json::Value>>> =
+        jsonwebtoken::dangerous::insecure_decode(session_token).ok();
+    let Some(exp) = decoded
+        .as_ref()
+        .and_then(|d| d.claims.get("exp"))
+        .and_then(serde_json::Value::as_u64)
+    else {
+        // Not a JWT, or a JWT with no `exp` — the opaque-access-token fallback.
+        // The provider's own number is all there is.
+        return reported;
+    };
+    let now = chrono::Utc::now().timestamp().max(0) as u64;
+    // An already-expired ID token yields `0`, which is a client that refreshes
+    // at once rather than one that waits out an access token it is not using.
+    let remaining = exp.saturating_sub(now);
+    Some(reported.map_or(remaining, |reported| reported.min(remaining)))
 }
 
 struct JwksCache {

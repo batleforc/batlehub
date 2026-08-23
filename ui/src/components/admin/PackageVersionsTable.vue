@@ -10,6 +10,7 @@ import {
   invalidatePackage,
 } from "@/client/sdk.gen";
 import type { PackageVersionDetail } from "@/client/types.gen";
+import { extractMessage } from "@/composables/useApi";
 import { formatDate as fmtDate } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -70,13 +71,26 @@ function viewArtifact(v: PackageVersionDetail) {
 
 // ── Single-item actions ──────────────────────────────────────────────────────
 
+/**
+ * The server's refusal, or `null` when it did as it was asked.
+ *
+ * The generated client is built without `throwOnError`, so a `403`, a `409` or a
+ * `500` resolves normally with the failure sitting in `error`. Discarding it made
+ * the confirmation dialog close on `actionError === null` and the table redraw
+ * unchanged — an operator was told a block had happened when the server had
+ * refused it.
+ */
+function refusal(res: { error?: unknown }): string | null {
+  return res.error ? extractMessage(res.error) : null;
+}
+
 async function doBlock(v: PackageVersionDetail) {
   const reason = blockReason.value.trim();
   if (!reason) {
     actionError.value = t("packageVersionsTable.blockNeedsReason");
     return;
   }
-  await blockPackage({
+  const res = await blockPackage({
     body: {
       registry: props.registry,
       name: props.name,
@@ -85,11 +99,13 @@ async function doBlock(v: PackageVersionDetail) {
       reason,
     },
   });
+  actionError.value = refusal(res);
+  if (actionError.value) return;
   emit("reload");
 }
 
 async function doUnblock(v: PackageVersionDetail) {
-  await unblockPackage({
+  const res = await unblockPackage({
     body: {
       registry: props.registry,
       name: props.name,
@@ -97,11 +113,13 @@ async function doUnblock(v: PackageVersionDetail) {
       artifact: v.artifact ?? undefined,
     },
   });
+  actionError.value = refusal(res);
+  if (actionError.value) return;
   emit("reload");
 }
 
 async function doInvalidate(v: PackageVersionDetail) {
-  await invalidatePackage({
+  const res = await invalidatePackage({
     body: {
       registry: props.registry,
       name: props.name,
@@ -109,6 +127,8 @@ async function doInvalidate(v: PackageVersionDetail) {
       artifact: v.artifact ?? undefined,
     },
   });
+  actionError.value = refusal(res);
+  if (actionError.value) return;
   emit("reload");
 }
 
@@ -240,10 +260,18 @@ async function runPending(): Promise<void> {
   // A missing reason is refused *in* the dialog rather than by closing it —
   // `doBlock` and `bulkBlock` write `actionError` and return.
   actionError.value = null;
-  if (action.kind === "block-one") await doBlock(action.version);
-  else if (action.kind === "purge-one") await doInvalidate(action.version);
-  else if (action.kind === "bulk-block") await bulkBlock();
-  else await bulkUnblock();
+  // `@confirm` binds this directly, so an unhandled rejection would leave the
+  // dialog open, the button live and nothing on screen saying why: the client
+  // rejects (rather than resolving with `error`) when `fetch` itself fails —
+  // offline, DNS, TLS.
+  try {
+    if (action.kind === "block-one") await doBlock(action.version);
+    else if (action.kind === "purge-one") await doInvalidate(action.version);
+    else if (action.kind === "bulk-block") await bulkBlock();
+    else await bulkUnblock();
+  } catch (e) {
+    actionError.value = extractMessage(e);
+  }
   if (!actionError.value) pending.value = null;
 }
 
@@ -270,10 +298,16 @@ async function bulkBlock() {
     const r = res.data;
     if (r) {
       bulkMsg.value = bulkOutcome("blocked", r.succeeded_count, r.failed_count);
+    } else {
+      // No body means the request itself was refused; `finally` still clears the
+      // selection and reloads, so without this the dialog closed on silence.
+      actionError.value = refusal(res) ?? t("packageVersionsTable.bulkFailed");
     }
   } finally {
     bulkLoading.value = false;
-    selectedIds.value = new Set();
+    // The selection survives a refusal, so the operator can fix the cause and
+    // press the button again rather than re-tick every row.
+    if (!actionError.value) selectedIds.value = new Set();
     emit("reload");
   }
 }
@@ -295,10 +329,12 @@ async function bulkUnblock() {
     const r = res.data;
     if (r) {
       bulkMsg.value = bulkOutcome("unblocked", r.succeeded_count, r.failed_count);
+    } else {
+      actionError.value = refusal(res) ?? t("packageVersionsTable.bulkFailed");
     }
   } finally {
     bulkLoading.value = false;
-    selectedIds.value = new Set();
+    if (!actionError.value) selectedIds.value = new Set();
     emit("reload");
   }
 }

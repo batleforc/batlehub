@@ -794,6 +794,7 @@
     "bulkBlocked": "{count} version bloquée. | {count} versions bloquées.",
     "bulkUnblocked": "{count} version débloquée. | {count} versions débloquées.",
     "bulkWithFailures": "{done} {failed} en échec. | {done} {failed} en échec.",
+    "bulkFailed": "Le serveur a refusé cette action groupée.",
     "fixedIn": " (corrigé dans {version})",
     "lastAccessed": "Dernier accès",
     "lastPulledBy": "Dernier pull par",

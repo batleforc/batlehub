@@ -82,18 +82,14 @@ pub async fn explore_readme_image(
     let registry = &path.registry;
     let name = &path.name;
 
-    // Read the policy first. Under `strip` no rendering ever emitted a URL
-    // pointing here, so a request is either stale markup from before an operator
-    // flipped the switch or somebody probing — and neither should cause this
-    // server to talk to a third-party host. Flipping to `strip` therefore stops
-    // the egress immediately, which is what an operator setting it expects.
-    let (policy, image_cfg) = image_config(&local_svc, registry).await;
-    if policy != RemoteImagePolicy::Proxy {
-        return Err(unavailable(
-            "images are charted rather than fetched for this registry",
-        ));
-    }
-
+    // The access gate first, and the policy second. Read the other way round,
+    // the two 404s differed: a registry with `remote_images = "proxy"` fell
+    // through to `resolve_readme`'s uncoded visibility 404, while everything
+    // else — including every name that does not exist — got this one, with
+    // `code: "readme.image-unavailable"`. That is one config bit of every
+    // registry name a caller cares to guess, readable anonymously on an instance
+    // with `rbac.explore.anonymous = false`, and the whole file is built on
+    // denied and absent being indistinguishable.
     let Resolved { answer, .. } = resolve_readme(ResolveInput {
         registry,
         name,
@@ -112,6 +108,18 @@ pub async fn explore_readme_image(
         mode_map: &mode_map,
     })
     .await?;
+
+    // Under `strip` no rendering ever emitted a URL pointing here, so a request
+    // is either stale markup from before an operator flipped the switch or
+    // somebody probing — and neither should cause this server to talk to a
+    // third-party host. Flipping to `strip` therefore stops the egress
+    // immediately, which is what an operator setting it expects.
+    let (policy, image_cfg) = image_config(&local_svc, registry).await;
+    if policy != RemoteImagePolicy::Proxy {
+        return Err(unavailable(
+            "images are charted rather than fetched for this registry",
+        ));
+    }
 
     let Some(readme_svc) = proxy_svc.readme.as_ref() else {
         return Err(unavailable("this instance stores no READMEs"));

@@ -66,38 +66,14 @@ pub const DEFAULT_TEXT_CONFIG: &str = "english";
 /// Idempotent: the common case is that the column already matches and this runs
 /// two catalogue queries and returns.
 pub async fn ensure_readme_text_config(pool: &PgPool, config: &str) -> Result<String, CoreError> {
-    let known: Option<String> =
-        sqlx::query_scalar("SELECT cfgname::text FROM pg_ts_config WHERE cfgname = $1")
-            .bind(config)
-            .fetch_optional(pool)
-            .await
-            .db_err()?;
-    let Some(config) = known else {
+    let Some(config) = known_text_config(pool, config).await? else {
         return Err(CoreError::Config(format!(
             "[search] text_config = '{config}' is not a text search configuration on this \
              Postgres server; `SELECT cfgname FROM pg_ts_config` lists the available ones"
         )));
     };
 
-    // The generated column's own expression, which names the configuration it
-    // was built with. Asking the catalogue rather than remembering: an instance
-    // that has been through two different settings is exactly the case where a
-    // remembered value would be wrong.
-    let current: Option<String> = sqlx::query_scalar(
-        "SELECT pg_get_expr(d.adbin, d.adrelid) \
-         FROM pg_attrdef d \
-         JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum \
-         WHERE d.adrelid = 'package_readmes'::regclass AND a.attname = 'content_tsv'",
-    )
-    .fetch_optional(pool)
-    .await
-    .db_err()?
-    .flatten();
-
-    let matches = current
-        .as_deref()
-        .is_some_and(|expr| expr.contains(&format!("'{config}'")));
-    if matches {
+    if column_text_config(pool).await?.as_deref() == Some(config.as_str()) {
         return Ok(config);
     }
 
@@ -127,6 +103,70 @@ pub async fn ensure_readme_text_config(pool: &PgPool, config: &str) -> Result<St
         .await
         .db_err()?;
     Ok(config)
+}
+
+/// `config` as `pg_ts_config` spells it, or `None` if this server has no such
+/// text search configuration.
+///
+/// The name comes back from the catalogue rather than being echoed, which is
+/// what makes it safe to interpolate into the DDL `ensure_readme_text_config`
+/// builds: what is returned is an identifier this server already has.
+pub async fn known_text_config(pool: &PgPool, config: &str) -> Result<Option<String>, CoreError> {
+    sqlx::query_scalar("SELECT cfgname::text FROM pg_ts_config WHERE cfgname = $1")
+        .bind(config)
+        .fetch_optional(pool)
+        .await
+        .db_err()
+}
+
+/// Every text search configuration this server knows.
+///
+/// Read once at startup so a *reload* can refuse a `[search] text_config` this
+/// Postgres has never heard of, instead of accepting it, running with the old
+/// one, and only failing on the next restart — which is where an operator finds
+/// out about a typo hours after making it, from a server that will not come back
+/// up.
+pub async fn text_config_names(pool: &PgPool) -> Result<Vec<String>, CoreError> {
+    sqlx::query_scalar("SELECT cfgname::text FROM pg_ts_config ORDER BY 1")
+        .fetch_all(pool)
+        .await
+        .db_err()
+}
+
+/// The text search configuration the FTS column is **actually** built with.
+///
+/// Read back from the generated column's own expression rather than remembered:
+/// an instance that has been through two different settings is exactly the case
+/// where a remembered value would be wrong, and searching with a configuration
+/// the column was not built with silently matches almost nothing.
+///
+/// `None` when the column does not exist (a database that has not run migration
+/// `035` yet).
+pub async fn column_text_config(pool: &PgPool) -> Result<Option<String>, CoreError> {
+    let expr: Option<String> = sqlx::query_scalar(
+        "SELECT pg_get_expr(d.adbin, d.adrelid) \
+         FROM pg_attrdef d \
+         JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum \
+         WHERE d.adrelid = 'package_readmes'::regclass AND a.attname = 'content_tsv'",
+    )
+    .fetch_optional(pool)
+    .await
+    .db_err()?
+    .flatten();
+    Ok(expr.as_deref().and_then(text_config_from_expr))
+}
+
+/// The configuration name inside a `to_tsvector('english'::regconfig, content)`
+/// default expression.
+///
+/// Substring-matching the expression for `'{name}'` — what this replaced — is a
+/// near-miss rather than a check: `content` is in there too, and any name that
+/// happens to be a substring of the column list would match a column built with
+/// something else.
+fn text_config_from_expr(expr: &str) -> Option<String> {
+    let rest = expr.split_once('\'')?.1;
+    let (name, _) = rest.split_once('\'')?;
+    (!name.is_empty()).then(|| name.to_owned())
 }
 
 fn row_to_readme(r: &sqlx::postgres::PgRow) -> PackageReadme {
@@ -396,6 +436,22 @@ mod tests {
         ] {
             assert_eq!(ReadmeSource::parse(s.as_str()), Some(s));
         }
+    }
+
+    /// The shape Postgres actually renders a generated column's default as.
+    #[test]
+    fn the_column_expression_names_its_own_configuration() {
+        assert_eq!(
+            text_config_from_expr("to_tsvector('english'::regconfig, content)").as_deref(),
+            Some("english")
+        );
+        assert_eq!(
+            text_config_from_expr("to_tsvector('french'::regconfig, content)").as_deref(),
+            Some("french")
+        );
+        // No literal to read: not a `to_tsvector` default at all.
+        assert_eq!(text_config_from_expr("content"), None);
+        assert_eq!(text_config_from_expr("to_tsvector(content)"), None);
     }
 
     /// An unreadable discriminant degrades to the renderer that interprets
