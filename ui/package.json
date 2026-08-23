@@ -54,7 +54,7 @@
     "eslint-plugin-vue": "^10.10.0",
     "jsdom": "^30.0.1",
     "oxfmt": "^0.63.0",
-    "oxlint": "^1.78.0",
+    "oxlint": "^1.79.0",
     "puppeteer-core": "^25.7.0",
     "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
