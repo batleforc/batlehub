@@ -152,8 +152,16 @@ role_claim = "groups"
 # # ca_cert_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 # # token_path   = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 #
-# # Audiences passed to the TokenReview API (defaults to ["batlehub"]).
+# # Audiences passed to the TokenReview API (defaults to ["batlehub"]), and
+# # required back in its response. A token whose own `aud` shares nothing with
+# # this list is refused locally, without a round trip.
 # audiences = ["batlehub"]
+#
+# # Token issuers worth a TokenReview. Empty (the default) means any issuer.
+# # Set it when this server sees tokens from more than one issuer with the same
+# # audience name — read yours with:
+# #   kubectl get --raw /.well-known/openid-configuration | jq -r .issuer
+# issuers = ["https://kubernetes.default.svc.cluster.local"]
 #
 # # Map Kubernetes usernames or group names to proxy roles.
 # # Kubernetes sets:

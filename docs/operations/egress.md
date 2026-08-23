@@ -138,8 +138,17 @@ OpenVSX and the VS Code Marketplace give a *URL* for an extension's README rathe
 than the text. Following it is one outbound request, made in a background task
 rather than on the request path a package manager is waiting on, and only for a
 version this instance is caching. The URL is checked to be on the same origin as
-the configured registry, so a compromised or misconfigured upstream cannot use it
-to point BatleHub at an internal host.
+the configured registry — widened, for the public VS Code Marketplace only, to
+its `*.gallerycdn.vsassets.io` asset CDN — so a compromised or misconfigured
+upstream cannot use it to point BatleHub at an internal host.
+
+Redirects are followed by BatleHub rather than by its HTTP client, one hop at a
+time, and each hop is re-checked before it is dialled: an upstream that answers
+its own README URL with `302 Location: http://169.254.169.254/…` gets no request
+at all. The registry's configured credentials travel with the read while it stays
+on that registry's own origin — it is a request to the upstream they were
+configured for, and the anonymous read is the one that gets rate-limited — and
+are dropped the moment a redirect leaves it.
 
 ## Vulnerability scanning
 

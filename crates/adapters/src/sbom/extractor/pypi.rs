@@ -111,16 +111,30 @@ fn parse_pep_metadata(content: &str) -> ExtractedManifest {
 /// `Description-Content-Type` names the markup in both cases; PEP 566 says an
 /// absent one means plain text, and it is not guessed into a renderer.
 fn parse_pep_description(content: &str) -> Option<ExtractedReadme> {
+    // Split first, and read the header **only out of the headers**. Scanning the
+    // whole file let the long description choose its own renderer: a README
+    // containing a line `Description-Content-Type: text/html` — entirely
+    // ordinary in a packaging tool's own README — was read as the declaration,
+    // and prose that should have been escaped as `Plain` went down the HTML
+    // path. An upstream must not be able to pick which renderer runs.
+    //
+    // `\r\n\r\n` as well as `\n\n`: a CRLF-encoded `METADATA`/`PKG-INFO` matched
+    // neither the split nor, therefore, the body — it fell through to the legacy
+    // `Description:` branch, found nothing, and reported no README at all.
+    let split = content
+        .split_once("\r\n\r\n")
+        .or_else(|| content.split_once("\n\n"));
+    let headers = split.map_or(content, |(headers, _)| headers);
+
     let format = detect::format_from_content_type(
-        content
+        headers
             .lines()
             .find_map(|l| l.trim().strip_prefix("Description-Content-Type:"))
             .map(str::trim),
     );
 
     // The body wins: when a file has both, the header is the legacy copy.
-    let body = content
-        .split_once("\n\n")
+    let body = split
         .map(|(_, body)| body)
         .filter(|body| !body.trim().is_empty());
     if let Some(body) = body {
@@ -219,6 +233,29 @@ fn parse_pep_license(content: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// The long description must not be able to choose its own renderer. A
+    /// README that *discusses* `Description-Content-Type` was being read as
+    /// declaring it, and HTML-escaped prose went down the HTML path instead.
+    #[test]
+    fn a_content_type_in_the_body_is_not_a_header() {
+        let meta = "Metadata-Version: 2.1\nName: demo\nVersion: 1.0\n\n                    Set this in your pyproject:\n\nDescription-Content-Type: text/html\n";
+        let found = parse_pep_description(meta).expect("a README");
+        assert_eq!(found.format, batlehub_core::entities::ReadmeFormat::Plain);
+    }
+
+    /// A CRLF-encoded `METADATA` has a body too. It matched neither split, fell
+    /// through to the legacy `Description:` branch, and reported no README.
+    #[test]
+    fn a_crlf_metadata_still_has_a_body() {
+        let meta = "Metadata-Version: 2.1\r\nName: demo\r\n                    Description-Content-Type: text/markdown\r\n\r\n# Demo\r\n";
+        let found = parse_pep_description(meta).expect("a README");
+        assert_eq!(
+            found.format,
+            batlehub_core::entities::ReadmeFormat::Markdown
+        );
+        assert!(found.content.contains("# Demo"), "{:?}", found.content);
+    }
+
     use super::*;
 
     #[test]

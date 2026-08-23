@@ -12,7 +12,7 @@ use batlehub_core::{
 
 use super::http_client::{
     basic_auth_get, cache_control, ensure_same_origin, fetch_linked_text, new_http_client,
-    percent_encode, to_registry_error, UpstreamHttpOptions,
+    no_redirect_client_pair, percent_encode, to_registry_error, UpstreamHttpOptions,
 };
 
 /// OpenVSX registry client (open-vsx.org or compatible).
@@ -24,6 +24,11 @@ use super::http_client::{
 /// - `artifact = Some("vsix")` → stream the `.vsix` extension package
 pub struct OpenVsxRegistryClient {
     http: reqwest::Client,
+    /// The linked-README pair: redirects disabled so the SSRF guard validates
+    /// every hop, credentials attached only while the chain stays on `base_url`
+    /// (see [`fetch_linked_text`]).
+    readme_credentialed: reqwest::Client,
+    readme_plain: reqwest::Client,
     base_url: String,
     basic_auth: Option<(String, String)>,
 }
@@ -31,8 +36,11 @@ pub struct OpenVsxRegistryClient {
 impl OpenVsxRegistryClient {
     pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Result<Self, CoreError> {
         let http = new_http_client(Some(10), opts)?;
+        let (readme_credentialed, readme_plain) = no_redirect_client_pair(opts)?;
         Ok(Self {
             http,
+            readme_credentialed,
+            readme_plain,
             base_url: base_url.into(),
             basic_auth: opts.basic_auth.clone(),
         })
@@ -166,8 +174,21 @@ impl RegistryClient for OpenVsxRegistryClient {
         max_bytes: usize,
     ) -> Result<Option<String>, CoreError> {
         // No widening: Open VSX serves its `files.readme` from the same origin
-        // as the API, unlike the VS Code Marketplace's asset CDN.
-        fetch_linked_text(self.get(url), url, &self.base_url, &[], max_bytes).await
+        // as the API, unlike the VS Code Marketplace's asset CDN — so a
+        // configured credential does travel with this read (it is a request to
+        // the registry it was configured for, and the anonymous read is the one
+        // that gets rate-limited), and stops at the first redirect that leaves
+        // that origin.
+        fetch_linked_text(
+            &self.readme_credentialed,
+            &self.readme_plain,
+            &self.basic_auth,
+            url,
+            &self.base_url,
+            &[],
+            max_bytes,
+        )
+        .await
     }
 
     async fn list_versions(&self, package: &str) -> Result<Vec<String>, CoreError> {

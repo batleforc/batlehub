@@ -506,6 +506,13 @@ async function fetchUpstream() {
   const cached = upstreamCache.get(name, reg);
   if (cached) {
     upstreamResults.value = cached;
+    // Cleared here for the reason `fetchPackages` clears it on its own cache
+    // hit: this call already bumped `upstreamSeq`, so a request still in flight
+    // fails its `seq === upstreamSeq` check and skips the `finally` below. Left
+    // set, "Searching upstream registries…" never goes away and the empty state
+    // — gated on `!loadingUpstream` — can never render again for the life of
+    // the page.
+    loadingUpstream.value = false;
     return;
   }
 

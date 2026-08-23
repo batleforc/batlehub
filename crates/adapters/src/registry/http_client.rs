@@ -130,6 +130,35 @@ pub fn new_http_client(
     apply_upstream_options(builder, opts)
 }
 
+/// The client pair a manually-followed redirect chain needs.
+///
+/// [`super::ssrf::fetch_following_redirects`] decides *per hop* which of the two
+/// to send a request with — the credentialed one while the URL is still on the
+/// configured upstream's own origin, the credential-free one once a `Location`
+/// takes it off — so both have to exist, and **both must have reqwest's own
+/// redirect following disabled**: a policy that follows a `302` itself does so
+/// before the per-hop [`super::ssrf::ensure_public_url`] check can run, which is
+/// the whole thing the guard exists to prevent.
+///
+/// `plain` keeps the TLS and proxy settings (a private CA and an egress proxy
+/// are properties of this network, not credentials) and drops only the auth
+/// headers `upstream_auth_headers` would have injected.
+pub fn no_redirect_client_pair(
+    opts: &UpstreamHttpOptions,
+) -> Result<(reqwest::Client, reqwest::Client), CoreError> {
+    let base = || {
+        reqwest::Client::builder()
+            .user_agent("batlehub/0.1")
+            .redirect(reqwest::redirect::Policy::none())
+    };
+    let credentialed = apply_upstream_options(base(), opts).map_err(CoreError::Other)?;
+    let plain = apply_upstream_tls(base(), opts)
+        .map_err(CoreError::Other)?
+        .build()
+        .map_err(|e| CoreError::Other(e.into()))?;
+    Ok((credentialed, plain))
+}
+
 /// Builds a GET request, applying HTTP Basic auth credentials if configured.
 pub fn basic_auth_get(
     http: &reqwest::Client,
@@ -289,29 +318,44 @@ async fn fetch_document_body(
 
 /// Read a linked README, same-origin checked and bounded.
 ///
-/// The three guards RFC 0007 §7.4 requires of every linked-README fetch, in one
-/// place so the two kinds that have one cannot implement them differently:
+/// The guards RFC 0007 §7.4 requires of every linked-README fetch, in one place
+/// so the two kinds that have one cannot implement them differently:
 ///
 /// - [`ensure_linked_origin`] against the registry's own base URL, the guard
 ///   `npm.rs` already applies to tarball URLs, so a compromised or misconfigured
 ///   upstream cannot point BatleHub at an internal host — checked on the URL
-///   asked for **and on the one that answered**. The clients these callers build
-///   carry `redirect::Policy::limited(10)`, so reqwest follows a `Location`
-///   itself with no second look: checking only the first URL let an upstream
-///   answer its own README URL with `302 Location: http://169.254.169.254/…`
-///   and have the body stored as the package's README. `extra_host_suffixes`
-///   widens that origin for a caller whose protocol *specifies* a second host —
-///   see [`ensure_linked_origin`];
+///   asked for **and on the one that answered**. `extra_host_suffixes` widens
+///   that origin for a caller whose protocol *specifies* a second host — see
+///   [`ensure_linked_origin`];
+/// - the redirect chain walked by [`super::ssrf::fetch_following_redirects`]
+///   rather than by reqwest, which is what makes the two guarantees above real
+///   rather than retrospective. Checked only after the fact — the shape this had
+///   while the callers' clients carried `redirect::Policy::limited(10)` — an
+///   upstream answering its own README URL with
+///   `302 Location: http://169.254.169.254/…` still had that address *dialled*
+///   (only the stored body was refused), and reqwest, which strips
+///   `Authorization` across hosts but not a configured `custom_header`
+///   (`PRIVATE-TOKEN`, `X-API-Key`), had already handed the operator's token to
+///   whatever host the `Location` named. Now every hop is validated before it is
+///   dialled, and **the credentials stop at the configured origin**: they still
+///   travel there, because a linked README is a request to the registry the
+///   operator configured them for and an anonymous one is the one that gets
+///   rate-limited, and they travel nowhere else;
 /// - the body read **incrementally** to `max_bytes` rather than `bytes()`-then-
 ///   truncate, so an upstream cannot make this buffer a gigabyte to keep 256 KiB
 ///   of it;
 /// - the response `Content-Type` ignored entirely — the caller states the format
 ///   from the protocol, and this returns text.
 ///
+/// `credentialed`/`plain` are the pair [`no_redirect_client_pair`] builds; both
+/// must have reqwest's redirect following disabled.
+///
 /// `Ok(None)` for a `404`: an extension whose README asset has gone is a fact
 /// about that extension, not a failure worth logging as one.
 pub async fn fetch_linked_text(
-    req: reqwest::RequestBuilder,
+    credentialed: &reqwest::Client,
+    plain: &reqwest::Client,
+    basic_auth: &Option<(String, String)>,
     url: &str,
     base_url: &str,
     extra_host_suffixes: &[&str],
@@ -320,17 +364,18 @@ pub async fn fetch_linked_text(
     use futures::StreamExt;
 
     ensure_linked_origin(url, base_url, extra_host_suffixes)?;
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| CoreError::Registry(format!("invalid readme URL '{url}': {e}")))?;
 
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| CoreError::Registry(format!("readme request failed: {e}")))?;
+    let resp =
+        super::ssrf::fetch_following_redirects(credentialed, plain, basic_auth, base_url, parsed)
+            .await?;
 
-    // The origin that actually answered, which is not necessarily the one asked:
-    // the caller's client follows redirects on its own. A README is not worth a
-    // second HTTP client with its own redirect policy, so the chain is allowed to
-    // happen and its *result* is refused — nothing off-origin is ever read into a
-    // stored document.
+    // The origin that actually answered, which is not necessarily the one asked.
+    // Every hop was already SSRF-checked and left the credentials behind the
+    // moment it went off-origin; this is the narrower question of which hosts a
+    // *stored document* may be read from, and the answer is the same list the
+    // URL in the metadata had to be on.
     ensure_linked_origin(resp.url().as_str(), base_url, extra_host_suffixes)?;
 
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
@@ -457,8 +502,7 @@ pub async fn fetch_image(
     // Every hop is still *dialled*: `ensure_public_url` refuses a private or
     // loopback target on each one, so what a redirect can still cost is a
     // request to a public host — the same residue `fetch_linked_text` accepts,
-    // and for the same reason (a second HTTP client with its own redirect
-    // policy is a larger surface than the thing it would protect).
+    // which walks its chain through the same guard.
     if !image_host_allowed(resp.url().as_str(), allowed_hosts) {
         tracing::debug!(
             url,
@@ -707,6 +751,94 @@ mod tests {
             &[]
         )
         .is_err());
+    }
+
+    // ── The linked-README redirect chain ─────────────────────────────────────
+
+    /// The credential still travels while the chain stays on the configured
+    /// upstream: a linked README is a request to the registry the operator
+    /// configured that token for, and the anonymous read is the one that gets
+    /// rate-limited.
+    #[tokio::test]
+    async fn a_same_origin_readme_redirect_still_carries_the_credential() {
+        let mut server = mockito::Server::new_async().await;
+        let redirect = server
+            .mock("GET", "/readme")
+            .with_status(302)
+            .with_header("location", "/readme-final")
+            .create_async()
+            .await;
+        let served = server
+            .mock("GET", "/readme-final")
+            .match_header("x-api-key", "secret")
+            .with_status(200)
+            .with_body("# hi")
+            .create_async()
+            .await;
+
+        let opts = UpstreamHttpOptions {
+            custom_header: Some(("X-Api-Key".to_owned(), "secret".to_owned())),
+            ..Default::default()
+        };
+        let (credentialed, plain) = no_redirect_client_pair(&opts).unwrap();
+        let url = format!("{}/readme", server.url());
+        let text = fetch_linked_text(&credentialed, &plain, &None, &url, &server.url(), &[], 4096)
+            .await
+            .unwrap();
+
+        assert_eq!(text.as_deref(), Some("# hi"));
+        redirect.assert_async().await;
+        served.assert_async().await;
+    }
+
+    /// A `302` off the configured origin is refused **before it is dialled**.
+    ///
+    /// While the chain was reqwest's to follow, the target was requested — and
+    /// handed the configured `custom_header`, which reqwest does not strip
+    /// cross-host — and only the *stored body* was refused afterwards. `expect(0)`
+    /// is the whole point of this test: the redirect target must see no request
+    /// at all, so there is nothing for it to log a token from.
+    #[tokio::test]
+    async fn a_readme_redirect_off_origin_is_refused_before_it_is_dialled() {
+        let mut attacker = mockito::Server::new_async().await;
+        let stolen = attacker
+            .mock("GET", "/steal")
+            .expect(0)
+            .with_status(200)
+            .with_body("owned")
+            .create_async()
+            .await;
+
+        let mut upstream = mockito::Server::new_async().await;
+        let _redirect = upstream
+            .mock("GET", "/readme")
+            .with_status(302)
+            .with_header("location", &format!("{}/steal", attacker.url()))
+            .create_async()
+            .await;
+
+        let opts = UpstreamHttpOptions {
+            custom_header: Some(("X-Api-Key".to_owned(), "secret".to_owned())),
+            ..Default::default()
+        };
+        let (credentialed, plain) = no_redirect_client_pair(&opts).unwrap();
+        let url = format!("{}/readme", upstream.url());
+        let result = fetch_linked_text(
+            &credentialed,
+            &plain,
+            &None,
+            &url,
+            &upstream.url(),
+            &[],
+            4096,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(CoreError::Registry(_))),
+            "an off-origin redirect target must not become a stored README"
+        );
+        stolen.assert_async().await;
     }
 
     #[test]

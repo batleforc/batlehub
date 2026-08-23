@@ -207,15 +207,16 @@ async fn main() -> Result<()> {
     // text search configuration. Settling it here — before the repository is
     // built — is what keeps the column and the query agreeing: searching with
     // `french` against a column built with `english` matches almost nothing and
-    // reports it as a `200` with an empty list (RFC 0007-bis §5.2).
-    let text_config = if config.search.readmes {
-        batlehub_adapters::db::ensure_readme_text_config(&repo.pool(), &config.search.text_config)
-            .await?
-    } else {
-        batlehub_adapters::db::DEFAULT_TEXT_CONFIG.to_owned()
-    };
+    // reports it as a `200` with an empty list (RFC 0007-bis §5.2). The
+    // repository queries with the configuration the column *actually* has, so a
+    // reload that turns `[search] readmes` on cannot reintroduce that mismatch,
+    // and the settled name is handed to the hot builder so a reload naming a
+    // configuration this server does not have is refused rather than deferred to
+    // the next restart — see `SettledTextConfig`.
+    let settled_text_config = hot_config::settle_text_config(&repo.pool(), &config.search).await?;
     let mut readme_svc = batlehub_core::services::ReadmeService::new(Arc::new(
-        batlehub_adapters::db::PgReadmeRepository::new(repo.pool()).with_text_config(text_config),
+        batlehub_adapters::db::PgReadmeRepository::new(repo.pool())
+            .with_text_config(settled_text_config.in_force()),
     ))
     // The render cache, content-addressed by digest and renderer version
     // (RFC 0007 §5.3). Also where a proxied image's bytes live, keyed by the
@@ -313,6 +314,7 @@ async fn main() -> Result<()> {
         repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>,
         Arc::clone(&vuln_repo),
         Arc::clone(&sbom_repo),
+        settled_text_config,
     );
     // Built once here so the same instance is shared with the reload service (for
     // hot-swapping) and registered as actix app_data below.

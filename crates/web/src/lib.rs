@@ -1110,9 +1110,20 @@ pub fn configure_app(
         .user_agent("batlehub/0.1")
         .build()
         .expect("audit HTTP client");
-    // Per-process, and built here rather than passed in: it holds no
-    // configuration and nothing outside the refresh endpoint reads it.
-    let refresh_limiter = Arc::new(handlers::auth::oidc::RefreshRateLimiter::default());
+    // Per-process, and it has to be said in code rather than in a comment:
+    // `configure_app` is called from inside `HttpServer::new(move || …)`, which
+    // actix invokes **once per worker thread**. A limiter built here plainly got
+    // one bucket map per worker, so the 30-attempts-a-minute ceiling was really
+    // `30 × num_workers` per IP — 480 on a 16-core box — and actix spreading
+    // connections across workers meant no single bucket ever filled first. A
+    // process-wide `OnceLock` keeps the one map every worker shares without
+    // changing this function's signature or its callers.
+    static REFRESH_LIMITER: std::sync::OnceLock<Arc<handlers::auth::oidc::RefreshRateLimiter>> =
+        std::sync::OnceLock::new();
+    let refresh_limiter = Arc::clone(
+        REFRESH_LIMITER
+            .get_or_init(|| Arc::new(handlers::auth::oidc::RefreshRateLimiter::default())),
+    );
     move |cfg| {
         cfg.app_data(web::Data::new(proxy_svc.clone()));
         cfg.app_data(web::Data::new(admin_svc.clone()));

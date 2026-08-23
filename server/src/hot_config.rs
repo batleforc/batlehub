@@ -420,13 +420,139 @@ pub(super) fn build_access_config(config: &AppConfig) -> AccessConfig {
     }
 }
 
+/// What startup settled about `[search] text_config`, so a *reload* can be told
+/// no.
+///
+/// `[search] readmes` is hot-reloadable and `text_config` is not — the index is
+/// a generated column, and changing the configuration means dropping and
+/// re-adding it, which rewrites every stored README under a lock. Two things
+/// followed from that being unchecked on the reload path:
+///
+/// - a **typo** reloaded green. `validate()` only checks the value is non-empty,
+///   nothing else on that path talks to Postgres, and the name is only resolved
+///   at boot — so the server kept running and refused to start the next time it
+///   was restarted, hours or weeks later;
+/// - a reload that turned prose search **on** ran queries with the configured
+///   name against a column built with a different one, which matches almost
+///   nothing and reports it as a `200` with an empty list.
+///
+/// [`settle_text_config`] closes the second at its root — what the repository
+/// queries with is what the column actually has — and this closes the first.
+#[derive(Clone)]
+pub(super) struct SettledTextConfig {
+    /// Every name `pg_ts_config` listed at boot.
+    known: Arc<HashSet<String>>,
+    /// The configuration the FTS column is built with, i.e. the one every query
+    /// uses for as long as this process runs.
+    in_force: String,
+}
+
+impl SettledTextConfig {
+    /// The configuration to query with — the column's own, never merely the
+    /// configured one.
+    pub(super) fn in_force(&self) -> &str {
+        &self.in_force
+    }
+
+    /// Refuse a candidate config whose `[search] text_config` this Postgres has
+    /// never heard of; warn when it names a real configuration that is not the
+    /// one in force.
+    ///
+    /// A warning rather than a refusal for the second case: the change is
+    /// legitimate, it simply cannot take effect without the rebuild a restart
+    /// does, and refusing would leave an operator who set it before enabling
+    /// search unable to reload *anything* until they restarted.
+    fn check(&self, search: &batlehub_config::schema::SearchConfig) -> anyhow::Result<()> {
+        if !self.known.contains(&search.text_config) {
+            let mut known: Vec<&str> = self.known.iter().map(String::as_str).collect();
+            known.sort_unstable();
+            anyhow::bail!(
+                "[search] text_config = '{}' is not a text search configuration on this Postgres \
+                 server (known: {}); refusing the reload rather than accepting a value that would \
+                 only fail on the next restart",
+                search.text_config,
+                known.join(", ")
+            );
+        }
+        if search.text_config != self.in_force {
+            tracing::warn!(
+                configured = %search.text_config,
+                in_force = %self.in_force,
+                "search: [search] text_config changed, and changing it rebuilds the README \
+                 full-text column — queries keep using the configuration the column was built \
+                 with until this server is restarted"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Resolve `[search] text_config` against the database at startup.
+///
+/// Always validates the name, whether or not prose search is on: the whole point
+/// is that a value which cannot work is refused when it is written rather than
+/// at the next restart.
+///
+/// The column is only *rebuilt* when search is on — that rewrites every stored
+/// README and holds a lock, which is not a thing to do for a feature that is
+/// switched off. With search off, what comes back is what the column actually
+/// has, so a reload that turns search on cannot end up searching `english`
+/// against a `french` column.
+pub(super) async fn settle_text_config(
+    pool: &sqlx::PgPool,
+    search: &batlehub_config::schema::SearchConfig,
+) -> anyhow::Result<SettledTextConfig> {
+    let known: HashSet<String> = batlehub_adapters::db::text_config_names(pool)
+        .await?
+        .into_iter()
+        .collect();
+    if !known.contains(&search.text_config) {
+        let mut names: Vec<&str> = known.iter().map(String::as_str).collect();
+        names.sort_unstable();
+        anyhow::bail!(
+            "[search] text_config = '{}' is not a text search configuration on this Postgres \
+             server; known: {}",
+            search.text_config,
+            names.join(", ")
+        );
+    }
+
+    let in_force = if search.readmes {
+        batlehub_adapters::db::ensure_readme_text_config(pool, &search.text_config).await?
+    } else {
+        let current = batlehub_adapters::db::column_text_config(pool)
+            .await?
+            .unwrap_or_else(|| batlehub_adapters::db::DEFAULT_TEXT_CONFIG.to_owned());
+        if current != search.text_config {
+            tracing::warn!(
+                configured = %search.text_config,
+                in_force = %current,
+                "search: [search] readmes is off, so the README full-text column was not rebuilt \
+                 for the configured text_config — enabling prose search by reload will query with \
+                 the configuration the column already has; restart with readmes = true to rebuild"
+            );
+        }
+        current
+    };
+
+    Ok(SettledTextConfig {
+        known: Arc::new(known),
+        in_force,
+    })
+}
+
 pub(super) fn make_hot_builder(
     beta_channel_store: Arc<dyn BetaChannelPort>,
     repo: Arc<dyn PackageRepository>,
     vuln_repo: Arc<dyn VulnerabilityRepository>,
     sbom_repo: Arc<dyn SbomRepository>,
+    text_config: SettledTextConfig,
 ) -> batlehub_web::services::HotConfigBuilder {
     Arc::new(move |cfg: &AppConfig| {
+        // Before anything is built: a reload carrying a text search
+        // configuration this server does not have is refused here, on the same
+        // path the config editor's "validate" button takes.
+        text_config.check(&cfg.search)?;
         let (hot, access, rm, rmm, um, vuln_db, sumdb) =
             build_hot_bundle(cfg, &beta_channel_store, &repo, &vuln_repo, &sbom_repo)?;
         let mut cargo_map: HashMap<String, CargoIndexProxy> = HashMap::new();
@@ -497,6 +623,49 @@ mod tests {
             "#
         );
         toml::from_str(&toml_str).expect("valid app config toml")
+    }
+
+    // ── [search] text_config on the reload path ──────────────────────────────
+
+    fn settled(in_force: &str, known: &[&str]) -> SettledTextConfig {
+        SettledTextConfig {
+            known: Arc::new(known.iter().map(|s| (*s).to_owned()).collect()),
+            in_force: in_force.to_owned(),
+        }
+    }
+
+    fn search(text_config: &str) -> batlehub_config::schema::SearchConfig {
+        batlehub_config::schema::SearchConfig {
+            readmes: true,
+            text_config: text_config.to_owned(),
+        }
+    }
+
+    /// The typo case. `validate()` only checks the value is non-empty, so before
+    /// this the reload was accepted, ran on with the old configuration, and the
+    /// server refused to start the next time it was restarted — which is where
+    /// an operator finds out, hours later, from a server that will not come back.
+    #[test]
+    fn a_reload_naming_an_unknown_text_configuration_is_refused() {
+        let s = settled("english", &["english", "french", "simple"]);
+        let err = s
+            .check(&search("englsh"))
+            .expect_err("an unknown configuration must be refused");
+        let msg = err.to_string();
+        assert!(msg.contains("englsh"), "{msg}");
+        // And it says which ones exist, so the fix does not need a psql session.
+        assert!(msg.contains("english, french, simple"), "{msg}");
+    }
+
+    /// A real configuration that is not the one the column was built with is a
+    /// legitimate change that simply needs a restart. Refusing it would leave an
+    /// operator who set it *before* enabling search unable to reload anything at
+    /// all until they restarted.
+    #[test]
+    fn a_known_text_configuration_that_is_not_in_force_is_allowed_through() {
+        let s = settled("english", &["english", "french"]);
+        assert!(s.check(&search("french")).is_ok());
+        assert!(s.check(&search("english")).is_ok());
     }
 
     #[test]

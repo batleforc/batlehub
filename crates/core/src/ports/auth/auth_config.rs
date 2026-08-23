@@ -189,6 +189,21 @@ pub struct KubernetesAuthConfig {
     /// Defaults to `["batlehub"]` when empty.
     #[serde(default)]
     pub audiences: Vec<String>,
+    /// Token issuers (`iss`) this provider will spend a TokenReview on.
+    ///
+    /// Empty (the default) means "any issuer": the provider then narrows on the
+    /// audience alone, which is enough to keep a browser's OIDC ID token out of
+    /// a TokenReview body but still lets any *other* cluster's bound token be
+    /// forwarded. Set it to the cluster's issuer —
+    /// `kubectl get --raw /.well-known/openid-configuration | jq -r .issuer`,
+    /// typically `https://kubernetes.default.svc.cluster.local` — when this
+    /// server sees tokens from more than one issuer.
+    ///
+    /// Read from the token without verifying its signature, and used only to
+    /// decide whether to *ask* the API server. Nothing is granted on it: the
+    /// TokenReview verdict is still what authenticates.
+    #[serde(default)]
+    pub issuers: Vec<String>,
     /// Maps Kubernetes usernames or group names to proxy roles.
     ///
     /// Kubernetes populates:

@@ -31,10 +31,18 @@ use std::cmp::Ordering;
 ///   put `1.1.1` first, because an unparseable version sorts below every
 ///   parseable one, and `default_version` then named an older release.
 ///
-/// What still does not parse — NuGet's four-part numbers, PyPI's `1.0rc1`,
-/// anything with a letter in the core — sorts below what does, ordered among
-/// itself by a reversed string compare. Arbitrary but total and stable, which
-/// is what a fallback owes the caller.
+/// - a numeric core of **four or more** components — NuGet's dominant scheme,
+///   and every `AssemblyVersion`-shaped release — keeps its first three as the
+///   semver core and the rest as a numeric tie-break. Without it those versions
+///   were unparseable and fell to the reversed *string* compare below, which
+///   reads `1.0.0.10` as older than `1.0.0.9`; `capped` sorts with this same
+///   comparator before it truncates, so on a package with more releases than
+///   `max_versions` every `*.10`–`*.99` build was the row thrown away.
+///
+/// What still does not parse — PyPI's `1.0rc1`, anything with a letter in the
+/// core — sorts below what does, ordered among itself by a reversed string
+/// compare. Arbitrary but total and stable, which is what a fallback owes the
+/// caller.
 pub fn newest_first(a: &str, b: &str) -> Ordering {
     match (parse(a), parse(b)) {
         (Some(a), Some(b)) => b.cmp(&a),
@@ -47,31 +55,48 @@ pub fn newest_first(a: &str, b: &str) -> Ordering {
     }
 }
 
-/// `semver::Version`, after the two normalisations [`newest_first`] documents.
-fn parse(raw: &str) -> Option<semver::Version> {
+/// A version this order can read: a semver, plus the numeric components beyond
+/// the third that semver has nowhere to put.
+///
+/// The extra components are compared **after** the semver, so `1.0.0.10` and
+/// `1.0.0.9` differ by the tie-break alone while `1.1.0.0` still beats
+/// `1.0.0.99` on the core. A version with only three components carries an
+/// empty tail, which sorts below any non-empty one — `1.0.0.1` is a later build
+/// of `1.0.0`, which is how NuGet reads it too.
+type Parsed = (semver::Version, Vec<u64>);
+
+/// `semver::Version`, after the normalisations [`newest_first`] documents.
+fn parse(raw: &str) -> Option<Parsed> {
     let v = raw.strip_prefix('v').unwrap_or(raw);
     if let Ok(parsed) = semver::Version::parse(v) {
-        return Some(parsed);
+        return Some((parsed, Vec::new()));
     }
     // Split the numeric core off the pre-release/build suffix before padding,
     // so `1.0-SNAPSHOT` becomes `1.0.0-SNAPSHOT` and not `1.0-SNAPSHOT.0`.
     let end = v.find(['-', '+']).unwrap_or(v.len());
     let (core, suffix) = v.split_at(end);
     let parts: Vec<&str> = core.split('.').collect();
-    if parts.len() >= 3
-        || parts.is_empty()
+    if parts.is_empty()
         || parts
             .iter()
             .any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()))
     {
         return None;
     }
-    let mut padded = core.to_owned();
-    for _ in parts.len()..3 {
+    // Four or more components: the first three are the semver core, the rest is
+    // the tie-break. A component too large for a `u64` is not a version number
+    // anybody published — treat the whole string as unreadable rather than
+    // silently comparing a saturated value.
+    let mut extra = Vec::new();
+    for part in parts.iter().skip(3) {
+        extra.push(part.parse::<u64>().ok()?);
+    }
+    let mut padded: String = parts.iter().take(3).copied().collect::<Vec<_>>().join(".");
+    for _ in parts.len().min(3)..3 {
         padded.push_str(".0");
     }
     padded.push_str(suffix);
-    semver::Version::parse(&padded).ok()
+    semver::Version::parse(&padded).ok().map(|v| (v, extra))
 }
 
 #[cfg(test)]
@@ -117,12 +142,31 @@ mod tests {
     fn unparseable_versions_are_ordered_and_come_last() {
         assert_eq!(newest_first("1.0.0", "1.0.0rc1"), Ordering::Less);
         assert_eq!(newest_first("1.0.0rc1", "1.0.0"), Ordering::Greater);
-        assert_eq!(newest_first("1.0.0.4", "1.0.0.3"), Ordering::Less);
         assert_eq!(
             newest_first("1.0-SNAPSHOT", "1.0-SNAPSHOT"),
             Ordering::Equal
         );
         assert_eq!(newest_first("2026.1.3", "2025.1.3"), Ordering::Less);
+    }
+
+    /// NuGet's four-part number is a version, not an unreadable string. It was
+    /// falling through to the reversed *string* compare, which reads
+    /// `1.0.0.10` as older than `1.0.0.9` — and `discovery::capped` truncates
+    /// with this comparator, so on a package with more releases than
+    /// `max_versions` every `*.10`–`*.99` build was the row thrown away.
+    #[test]
+    fn a_four_component_version_is_read_as_one() {
+        assert_eq!(newest_first("1.0.0.10", "1.0.0.9"), Ordering::Less);
+        assert_eq!(newest_first("1.0.0.9", "1.0.0.10"), Ordering::Greater);
+        // The first three components still decide when they differ.
+        assert_eq!(newest_first("1.1.0.0", "1.0.0.99"), Ordering::Less);
+        // A fourth component makes it a later build of the same release, which
+        // is how NuGet reads it too.
+        assert_eq!(newest_first("1.0.0.1", "1.0.0"), Ordering::Less);
+        // …and it still outranks anything genuinely unreadable.
+        assert_eq!(newest_first("14.0.1.0", "13.0.3rc1"), Ordering::Less);
+        // Five components, and the tie-break keeps going.
+        assert_eq!(newest_first("1.0.0.0.2", "1.0.0.0.10"), Ordering::Greater);
     }
 
     /// Maven's `-SNAPSHOT` is a pre-release of the release it names, and after

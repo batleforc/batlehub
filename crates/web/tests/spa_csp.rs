@@ -251,3 +251,51 @@ async fn an_existing_asset_still_wins_over_the_fallback() {
         "export const a = 1\n"
     );
 }
+
+/// The document never comes off disk, whatever it is spelled like.
+///
+/// `PathBufWrap::parse_path` skips empty segments, so `//index.html` and
+/// `/index.html/` matched neither narrow route, resolved to the same file, and
+/// were served with the **built** policy — still admitting the badge origin on
+/// an instance where no registry draws one.
+#[actix_web::test]
+async fn the_index_is_narrowed_by_every_spelling_that_reaches_it() {
+    let (_dir, app) = app_with(svc_with_badge(false).await).await;
+    // The two canonical spellings answer the document, narrowed.
+    for uri in ["/", "/index.html"] {
+        let html = body_of(&app, uri).await;
+        assert!(
+            !html.contains("badge.socket.dev"),
+            "GET {uri} served the un-narrowed policy: {html}"
+        );
+    }
+    // The odd ones no longer answer it off disk at all. `404` is a narrowing and
+    // therefore allowed; serving the built policy was not.
+    for uri in ["//index.html", "/index.html/"] {
+        let resp = call_service(&app, TestRequest::get().uri(uri).to_request()).await;
+        let status = resp.status();
+        let body = String::from_utf8(read_body(resp).await.to_vec()).expect("utf-8");
+        assert!(
+            !body.contains("badge.socket.dev"),
+            "GET {uri} → {status} served the un-narrowed policy: {body}"
+        );
+    }
+}
+
+/// A percent-encoded reserved prefix is still a reserved prefix.
+///
+/// Routing happens against the requoted path, so `/%61pi/v1/nope` matches no API
+/// route and reaches the fallback — where the raw spelling does not start with
+/// `/api`. It was answered `200 text/html`: an API `404` dressed as the console,
+/// and, under `/%70roxy/…`, markup where a package manager expected an artifact.
+#[actix_web::test]
+async fn an_encoded_reserved_prefix_is_not_the_console() {
+    let (_dir, app) = app_with(svc_with_badge(false).await).await;
+    for uri in ["/%61pi/v1/nope", "/%70roxy/npm/lodash", "/%2561pi/v1/nope"] {
+        let resp = call_service(&app, TestRequest::get().uri(uri).to_request()).await;
+        assert_eq!(resp.status(), 404, "GET {uri} was answered with a page");
+    }
+    // …and an ordinary deep link still is one.
+    let html = body_of(&app, "/packages/npm/lodash.merge").await;
+    assert!(html.contains("<div id=\"app\">"), "{html}");
+}
