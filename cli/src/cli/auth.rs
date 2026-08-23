@@ -224,15 +224,43 @@ async fn handle_auth_login(
         anyhow::bail!("No input provided — login cancelled.");
     }
 
-    let (access_token, refresh_token, expires_at) = parse_oidc_paste(input);
+    let paste = parse_oidc_paste(input);
+
+    // The `csrf` value above was generated, sent, and until now never checked.
+    // The server confirms the state is one it issued and has not already
+    // redeemed, but it cannot tell that the login started in *this* process —
+    // this comparison is the half only the client can do.
+    //
+    // A bare token carries no state, so it cannot be checked. That is accepted
+    // rather than refused: it is the escape hatch for a user whose browser
+    // mangled the URL, and it is their own terminal they would be attacking.
+    match paste.state.as_deref() {
+        Some(state) if state == csrf => {}
+        Some(_) => anyhow::bail!(
+            "The pasted URL is from a different sign-in than the one just started. \
+             Run `auth login` again and paste the URL it sends you to."
+        ),
+        None => eprintln!(
+            "Warning: pasted a bare token, so this sign-in could not be matched \
+             to the one just started. Paste the full URL to have it checked."
+        ),
+    }
 
     let entry = match target_profile {
         Some(n) => cfg.profiles.entry(n.to_string()).or_default(),
         None => &mut cfg.default,
     };
+    let access_token = paste.access_token;
     entry.token = Some(access_token.clone());
-    entry.oidc_refresh_token = refresh_token;
-    entry.oidc_expires_at = expires_at;
+    entry.oidc_refresh_token = paste.refresh_token;
+    entry.oidc_expires_at = paste.expires_at;
+    // Recorded, because `resolve_token` sends it with every refresh. Without it
+    // the server falls back to `flows.first()`, so on a deployment with more
+    // than one provider the refresh token goes to the wrong token endpoint,
+    // comes back `400`, and the CLI keeps presenting an expired access token.
+    // The server's own echo wins over `--provider`: it names the flow that
+    // actually issued this token.
+    entry.oidc_provider = paste.provider.or_else(|| provider.clone());
     entry.kubernetes_token_path = None;
     cfg.save()?;
 

@@ -40,7 +40,7 @@ const props = withDefaults(
     /** Classes for `<code>` spans. Descriptions pass the `text-xs` variant. */
     codeClass?: string;
   }>(),
-  { codeClass: "font-mono bg-muted px-1 rounded" },
+  { codeClass: "font-mono bg-muted px-1 rounded-sm" },
 );
 
 const LINK_CLASS = "underline underline-offset-2 hover:text-foreground transition-colors";

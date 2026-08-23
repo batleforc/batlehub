@@ -20,4 +20,13 @@ paths = [
     # `curl -H "Authorization: Bearer <token>"` usage examples in the docs.
     '''docs/guide/installation\.md''',
     '''docs/guide/configuration\.md''',
+    # The same two documents at the paths they had before RFC 0005 merged
+    # `website/` into `docs/`. The scan walks full history (`fetch-depth: 0`),
+    # and history keeps the old path, so allowlisting only the current one
+    # leaves the placeholder `my-admin-token` flagged forever — which is what
+    # has been failing the nightly full scan on main since 2026-08-17.
+    '''website/guide/installation\.md''',
+    '''website/guide/configuration\.md''',
+    '''docs/configuration\.md''',
+    '''docs/installation\.md''',
 ]

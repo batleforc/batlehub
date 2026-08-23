@@ -36,7 +36,7 @@ function toggle() {
     <span
       :class="
         cn(
-          'pointer-events-none block h-3.5 w-3.5 rounded-sm bg-background shadow transition-transform',
+          'pointer-events-none block h-3.5 w-3.5 rounded-sm bg-background transition-transform',
           modelValue ? 'translate-x-4' : 'translate-x-0.5',
         )
       "

@@ -23,8 +23,8 @@ pub use notifications::{
 };
 pub use registry::{
     default_true, BetaChannelConfig, CachePolicy, FeatureFlagsConfig, IntegrityConfig, QuotaConfig,
-    QuotaEnforcement, RegistryConfig, RegistryMode, RepoSigningConfig, SbomConfig, SigningConfig,
-    VersioningPolicy,
+    QuotaEnforcement, ReadmeConfig, RegistryConfig, RegistryMode, RepoSigningConfig, SbomConfig,
+    SigningConfig, UpstreamDetailConfig, VersioningPolicy,
 };
 pub use routing::{
     is_dns_label, normalise_host, validate_host_entry, wildcard_host, HostSyntaxError,
@@ -36,8 +36,8 @@ pub use rules::{
     VersionGateConfig,
 };
 pub use server::{
-    default_service_name, parse_trusted_proxies, CacheConfig, DatabaseConfig, OtelConfig,
-    ServerConfig,
+    default_service_name, is_secure_issuer_url, parse_trusted_proxies, CacheConfig, DatabaseConfig,
+    OtelConfig, ServerConfig,
 };
 pub use warnings::ConfigWarning;
 
@@ -105,6 +105,75 @@ pub struct AppConfig {
     /// behaviour: `/metrics` served, history recorded, 30 days retained.
     #[serde(default)]
     pub stats: StatsConfig,
+    /// What the catalogue's search box can see. Absent means names only, which
+    /// is what it has always matched.
+    #[serde(default)]
+    pub search: SearchConfig,
+}
+
+// ── Search ────────────────────────────────────────────────────────────────────
+
+fn default_text_config() -> String {
+    batlehub_adapters_text_config().to_owned()
+}
+
+/// The default Postgres text search configuration, named in one place.
+///
+/// `english`, and RFC 0007-bis was drafted arguing for `simple`. The draft's
+/// reasoning was that stemming mangles identifiers — `axios` becomes `axio` —
+/// which is true and does not follow: the *query* is stemmed by the same
+/// configuration, so it still matches. Measured, `english` answered all seven
+/// test queries and `simple` failed two, including `retry` against a README that
+/// says `retrying` (RFC 0007-bis §13.3).
+fn batlehub_adapters_text_config() -> &'static str {
+    "english"
+}
+
+/// What the catalogue's search matches (RFC 0007-bis §4.1).
+///
+/// ```toml
+/// [search]
+/// readmes     = true        # match README prose as well as package names
+/// text_config = "english"   # the Postgres text search configuration
+/// ```
+///
+/// **Off by default**, unlike README *capture*, which RFC 0007 defaulted on
+/// because it costs one already-parsed field. This builds an index over prose,
+/// and the cost is storage plus write amplification on every capture. An
+/// operator should choose it.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SearchConfig {
+    /// Match README prose as well as package names.
+    ///
+    /// With this off, `?in=readme` and `?in=both` are accepted and answer
+    /// exactly as `?in=name` does, plus a response field saying so. A parameter
+    /// that silently means something else is the failure this whole RFC family
+    /// keeps finding; one that says *"prose search is not enabled on this
+    /// instance"* is one an operator can act on.
+    #[serde(default)]
+    pub readmes: bool,
+
+    /// The Postgres text search configuration the index is built with.
+    ///
+    /// Settable because an estate whose internal packages are documented in
+    /// another language is precisely the kind of deployment that self-hosts.
+    /// Changing it **rebuilds the generated column** — `to_tsvector` in one must
+    /// be IMMUTABLE, so the configuration has to be a literal — which makes this
+    /// a decision to take at install rather than to tune later. The server does
+    /// the rebuild on startup and says so in the log rather than leaving an
+    /// operator to find out during a migration.
+    #[serde(default = "default_text_config")]
+    pub text_config: String,
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            readmes: false,
+            text_config: default_text_config(),
+        }
+    }
 }
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
@@ -211,12 +280,61 @@ pub struct VulnerabilityScanConfig {
 /// ```toml
 /// [limits]
 /// max_artifact_size_bytes = 524288000  # 500 MiB
+/// versions_per_page       = 100        # rows in one package-detail answer
+/// packages_per_page       = 20         # rows in one catalog answer
 /// ```
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
+#[serde(default)]
 pub struct LimitsConfig {
     /// Maximum artifact size for proxy downloads and local publishes.
     /// Defaults to 500 MiB when absent.
     pub max_artifact_size_bytes: Option<u64>,
+    /// How many versions `GET /api/v1/explore/packages/{registry}/{name}`
+    /// returns in one answer.
+    ///
+    /// Two things at once, deliberately: the number a caller that asks for no
+    /// `per_page` gets, **and** the most any caller may ask for. A ceiling and a
+    /// default expressed as two keys would let them contradict each other, and
+    /// the question an operator actually has is one question — how much of a
+    /// version list this server is willing to build, hold in memory and
+    /// serialise for one request. `@babel/plugin-transform-runtime` has 169
+    /// versions and the enrichment behind each row is a database read.
+    ///
+    /// The console asks for the number of rows it draws, which is its own
+    /// business and smaller than this; it reads back the `per_page` the server
+    /// actually applied rather than assuming it got what it asked for.
+    pub versions_per_page: u64,
+    /// How many packages `GET /api/v1/explore/packages` returns in one answer.
+    ///
+    /// The same two readings as `versions_per_page` — the unasked-for default
+    /// and the ceiling — for the other list, and a separate key because the two
+    /// are not the same question. A catalog row is a name and a few counts; 20
+    /// of them is a screenful, which is why that is the default and has always
+    /// been what the console drew. A version row costs a vulnerability read and
+    /// a licence read. An operator sizing a screen should not be sizing a query
+    /// at the same time.
+    ///
+    /// The console does **not** ask for a number here, unlike the version table:
+    /// the catalog *is* the list, so the operator's number is the right one, and
+    /// the console reads it back out of the answer to size its pager.
+    pub packages_per_page: u64,
+}
+
+/// Re-exported from `core`, which owns it because `HotConfig` has to answer with
+/// the same number when a test or an embedder builds one without a config file.
+/// A second literal here would be a second source of truth for one default.
+pub use batlehub_core::services::hot_config::{
+    DEFAULT_PACKAGES_PER_PAGE, DEFAULT_VERSIONS_PER_PAGE,
+};
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        Self {
+            max_artifact_size_bytes: None,
+            versions_per_page: DEFAULT_VERSIONS_PER_PAGE,
+            packages_per_page: DEFAULT_PACKAGES_PER_PAGE,
+        }
+    }
 }
 
 impl AppConfig {
@@ -366,7 +484,184 @@ impl AppConfig {
         self.subdomain_warnings(&mut out);
         self.cors_warnings(&mut out);
         self.license_gate_warnings(&mut out);
+        self.readme_warnings(&mut out);
+        self.upstream_detail_warnings(&mut out);
+        self.search_warnings(&mut out);
         out
+    }
+
+    /// Prose search enabled over a store nothing writes to.
+    ///
+    /// Only raised when **every** registry has README capture explicitly off: a
+    /// single such registry is an ordinary choice, and warning about it would put
+    /// a notice on the admin panel for a configuration that works.
+    fn search_warnings(&self, out: &mut Vec<ConfigWarning>) {
+        if !self.search.readmes || self.registries.is_empty() {
+            return;
+        }
+        let any_capture = self
+            .registries
+            .iter()
+            .any(|r| r.readme.as_ref().is_none_or(|c| c.enabled));
+        if any_capture {
+            return;
+        }
+        out.push(ConfigWarning::new(
+            warnings::SEARCH_READMES_NOTHING_STORED,
+            "search.readmes",
+            "[search] readmes = true, but every registry has [registries.readme] enabled = false. \
+             The index will be built and stay empty: nothing is ever stored to put in it, so the \
+             search box gains an option that can only answer 'no package here says that'.",
+        ));
+    }
+
+    /// A `[registries.upstream_detail]` block that cannot do what it says.
+    ///
+    /// Only raised for blocks the operator **wrote down**, for the same reason
+    /// [`Self::readme_warnings`] is: the discovery read is on by default, so
+    /// warning about the implicit default would put a notice on the admin panel
+    /// for every `local`-mode registry in every deployment.
+    fn upstream_detail_warnings(&self, out: &mut Vec<ConfigWarning>) {
+        use batlehub_core::entities::{RegistryKind, UpstreamDetailSupport};
+
+        for (index, registry) in self.registries.iter().enumerate() {
+            let Some(detail) = &registry.upstream_detail else {
+                continue;
+            };
+            if !detail.enabled {
+                continue;
+            }
+            let path = format!("registries[{index}].upstream_detail");
+
+            if registry.mode == RegistryMode::Local {
+                out.push(ConfigWarning::new(
+                    warnings::UPSTREAM_DETAIL_LOCAL_MODE,
+                    path,
+                    format!(
+                        "registry '{}' is in local mode, so there is no upstream to ask. The \
+                         block is accepted and inert: the package page is already complete from \
+                         the versions published here.",
+                        registry.name,
+                    ),
+                ));
+                continue;
+            }
+
+            if let Ok(kind) = registry.registry_type.parse::<RegistryKind>() {
+                if let UpstreamDetailSupport::None(reason) = kind.upstream_detail() {
+                    out.push(ConfigWarning::new(
+                        warnings::UPSTREAM_DETAIL_UNSUPPORTED_KIND,
+                        path,
+                        format!(
+                            "registry '{}' has type '{kind}', which cannot be asked about a \
+                             package — {reason}. The block is accepted and inert: the detail page \
+                             answers from local rows only.",
+                            registry.name,
+                        ),
+                    ));
+                    continue;
+                }
+            }
+
+            // An estate with no route off site is a supported deployment, so
+            // this is a warning about what the operator will observe — one
+            // failed attempt per TTL — rather than a refusal to start.
+            if registry.upstreams.iter().all(|u| u.trim().is_empty())
+                && registry
+                    .registry_type
+                    .parse::<RegistryKind>()
+                    .is_ok_and(|k| k.requires_explicit_upstream_in_proxy_mode())
+            {
+                out.push(ConfigWarning::new(
+                    warnings::UPSTREAM_DETAIL_NO_UPSTREAM,
+                    path,
+                    format!(
+                        "registry '{}' has no upstream configured, so every discovery read will \
+                         fail. The page falls back to local rows and says the upstream could not \
+                         be reached; set enabled = false to stop it trying.",
+                        registry.name,
+                    ),
+                ));
+            }
+        }
+    }
+
+    /// A `[registries.readme]` block that cannot do what it says.
+    ///
+    /// Only raised for blocks the operator **wrote down**. README capture is on
+    /// by default (RFC 0007 §4.1), so warning about the implicit default would
+    /// put a notice on the admin panel for every `maven` and every `github`
+    /// registry in every deployment — noise, and the operator expressed no
+    /// belief to correct. A block written by hand is a belief.
+    fn readme_warnings(&self, out: &mut Vec<ConfigWarning>) {
+        for (index, registry) in self.registries.iter().enumerate() {
+            let Some(readme) = &registry.readme else {
+                continue;
+            };
+            if !readme.enabled {
+                continue;
+            }
+            let Ok(kind) = registry
+                .registry_type
+                .parse::<batlehub_core::entities::RegistryKind>()
+            else {
+                // An unknown type is a hard error from `validate()`; nothing
+                // useful to say about its README support here.
+                continue;
+            };
+            let path = format!("registries[{index}].readme");
+            let support = kind.readme_support();
+
+            if let batlehub_core::entities::ReadmeSupport::None(reason) = support {
+                out.push(ConfigWarning::new(
+                    warnings::README_UNSUPPORTED_TYPE,
+                    path,
+                    format!(
+                        "registry '{}' has type '{kind}', which carries no README — {reason}. The \
+                         block is accepted and inert: nothing will ever be stored for this \
+                         registry, and the package page will say so rather than showing an empty \
+                         panel.",
+                        registry.name,
+                    ),
+                ));
+                continue;
+            }
+
+            if !readme.from_archive {
+                continue;
+            }
+
+            if !support.reads_the_archive() {
+                out.push(ConfigWarning::new(
+                    warnings::README_FROM_ARCHIVE_INERT,
+                    path,
+                    format!(
+                        "registry '{}' has type '{kind}', whose README arrives in a metadata \
+                         document the proxy already fetches. 'from_archive' is accepted and \
+                         inert here — the artifact is never opened for it, and READMEs are \
+                         stored either way.",
+                        registry.name,
+                    ),
+                ));
+            } else if registry.firewall_only {
+                out.push(ConfigWarning::new(
+                    warnings::README_FROM_ARCHIVE_FIREWALL_ONLY,
+                    path,
+                    format!(
+                        "registry '{}' is firewall_only, so artifacts are streamed without ever \
+                         being cached and there is nothing for 'from_archive' to read. {}",
+                        registry.name,
+                        if support.answers_for_unheld_versions() {
+                            "Its metadata-borne READMEs still work; the archive-borne fallback \
+                             never will."
+                        } else {
+                            "This registry type has no other source, so no README will ever be \
+                             stored for it."
+                        },
+                    ),
+                ));
+            }
+        }
     }
 
     /// A `license_gate` on a registry type with no manifest parser.
@@ -558,6 +853,141 @@ impl AppConfig {
         }
     }
 
+    /// Every JWT-validating provider must fetch its keys over a channel that
+    /// cannot be rewritten in flight.
+    ///
+    /// `issuer_url` is where the discovery document comes from, and that document
+    /// names both the `iss` the provider will go on to enforce and the `jwks_uri`
+    /// whose keys it will trust. Over plain HTTP, anyone on the path chooses both
+    /// — which is to say, chooses who is allowed to authenticate.
+    ///
+    /// Loopback is allowed unencrypted, because that is how the test suites and a
+    /// local Keycloak run and there is no network to be on the path of.
+    fn validate_auth_issuers(&self) -> Result<()> {
+        /// Why an OIDC issuer cannot be plain HTTP.
+        const DISCOVERY: &str = "The discovery document it serves decides which issuer and which \
+                                 signing keys this server trusts, so it cannot travel over plain \
+                                 HTTP.";
+        /// Why the Kubernetes API server cannot be either.
+        ///
+        /// A stronger case than the OIDC one, if anything: the request carries
+        /// this server's own service account token, and the *answer* decides the
+        /// caller's identity. Anyone on that path both learns the token and can
+        /// reply `authenticated: true` with `system:serviceaccount:…`, which
+        /// `resolve_role` will map straight to `Role::Admin`.
+        const TOKENREVIEW: &str = "Every TokenReview carries this server's own service account \
+                                   token, and the answer decides the caller's role — so a plain \
+                                   HTTP path both leaks that token and lets anyone on it grant \
+                                   themselves any role this provider maps.";
+
+        for auth in &self.auth {
+            let (kind, name, key, url, why) = match auth {
+                AuthConfig::Oidc(cfg) => {
+                    ("oidc", &cfg.name, "issuer_url", &cfg.issuer_url, DISCOVERY)
+                }
+                AuthConfig::ActionsOidc(cfg) => (
+                    "actions-oidc",
+                    &cfg.name,
+                    "issuer_url",
+                    &cfg.issuer_url,
+                    DISCOVERY,
+                ),
+                // Only when it is set. An absent `api_server` means the
+                // in-cluster default built from `KUBERNETES_SERVICE_HOST`, which
+                // is `https://` by construction — there is nothing to check and
+                // nothing an operator could have got wrong.
+                AuthConfig::Kubernetes(cfg) => match cfg.api_server.as_ref() {
+                    Some(api_server) => (
+                        "kubernetes",
+                        &cfg.name,
+                        "api_server",
+                        api_server,
+                        TOKENREVIEW,
+                    ),
+                    None => continue,
+                },
+                AuthConfig::Token(_) => continue,
+            };
+            if !is_secure_issuer_url(url) {
+                bail!(
+                    "[[auth]] type = \"{kind}\" name = \"{name}\": {key} '{url}' must use https. \
+                     {why} (http:// is accepted for localhost and 127.0.0.1 only.)"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// An `actions-oidc` provider names a non-blank `audience`.
+    ///
+    /// `ActionsOidcAuthProvider::new` already refuses a blank one, but that error
+    /// travels through `provider_unavailable(…, cfg.required, e)` in
+    /// `server/src/setup.rs`, and `required` defaults to `false` for this kind —
+    /// so a blank `audience` logged one warning and the server came up *without*
+    /// the provider. Every CI caller then resolved to anonymous and publishes
+    /// started returning `403` with nothing in the configuration to point at.
+    ///
+    /// Checked here instead, where it is a configuration error rather than an
+    /// "identity provider unreachable" one, so `required` never gets a say:
+    /// `docs/guide/configuration.md` says startup fails on a blank `audience`,
+    /// and this is what makes that true. `serde` already rejects the key being
+    /// absent — the field has no default — so only blank needs saying.
+    fn validate_actions_oidc_audience(&self) -> Result<()> {
+        for auth in &self.auth {
+            let AuthConfig::ActionsOidc(cfg) = auth else {
+                continue;
+            };
+            if cfg.audience.trim().is_empty() {
+                bail!(
+                    "[[auth]] type = \"actions-oidc\" name = \"{}\": `audience` must not be \
+                     blank. The issuer is shared by every repository on the forge, so `audience` \
+                     is the only claim that says a token was minted for this deployment — \
+                     without it, `iss` proves nothing more than \"some CI job somewhere\".",
+                    cfg.name
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// `[[auth]]` names are unique across every provider kind.
+    ///
+    /// The name is not a label: it is the identity a session is attributed to.
+    /// `oidc_session_owner` keys stored refresh tokens and OIDC-issued PATs on
+    /// `(provider_name, username)` and documents that a non-OIDC provider named
+    /// `"oidc"` "does not pass" — but nothing made that true. Two providers of
+    /// different kinds sharing one name let the weaker one act as the stronger:
+    /// a `type = "kubernetes" name = "corp"` service account whose TokenReview
+    /// returns a username an OIDC user also has could mint 90-day personal
+    /// access tokens as that user and manage the tokens they own.
+    ///
+    /// It is also the prefix for unmapped groups (`"k8s-prod:team-a"`), so two
+    /// providers sharing a name merge their group namespaces into one — which
+    /// silently widens whatever `[registries.rbac.groups]` grants.
+    fn validate_auth_names(&self) -> Result<()> {
+        let mut seen: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        for auth in &self.auth {
+            let (kind, name) = match auth {
+                AuthConfig::Oidc(cfg) => ("oidc", cfg.name.as_str()),
+                AuthConfig::ActionsOidc(cfg) => ("actions-oidc", cfg.name.as_str()),
+                AuthConfig::Kubernetes(cfg) => ("kubernetes", cfg.name.as_str()),
+                // The static-token provider carries no name of its own, so it
+                // has no identity to collide with.
+                AuthConfig::Token(_) => continue,
+            };
+            if let Some(first) = seen.insert(name, kind) {
+                bail!(
+                    "[[auth]] name = \"{name}\" is used by both type = \"{first}\" and type = \
+                     \"{kind}\". The name is what a session, a stored refresh token and an \
+                     unmapped group are attributed to, so two providers sharing one are one \
+                     provider as far as everything downstream is concerned — give them distinct \
+                     names."
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Fail-fast checks for host-based routing (RFC 0001 §4.3).
     ///
     /// Every condition here is one where the deployment would come up looking
@@ -699,7 +1129,72 @@ impl AppConfig {
         // an upgrade into a boot failure for a config that never changed; the
         // entry is dropped as before and surfaced as
         // `PROXY_TRUST_INVALID_DEPRECATED_ENTRY` instead.
+        self.validate_auth_issuers()?;
+        self.validate_auth_names()?;
+        self.validate_actions_oidc_audience()?;
         self.validate_host_routing()?;
+
+        // A page size of zero is a list that can never answer, and the failure
+        // would land on a page rather than at startup. The ceiling is the same
+        // argument `upstream_detail.max_versions` makes one level up: every row
+        // is built, held in memory and serialised, and these keys are the *most*
+        // any caller may ask for.
+        const PER_PAGE_CEILING: u64 = 1_000;
+        for (key, value, default, empties) in [
+            (
+                "versions_per_page",
+                self.limits.versions_per_page,
+                DEFAULT_VERSIONS_PER_PAGE,
+                "version list",
+            ),
+            (
+                "packages_per_page",
+                self.limits.packages_per_page,
+                DEFAULT_PACKAGES_PER_PAGE,
+                "package catalog",
+            ),
+        ] {
+            if value == 0 {
+                bail!(
+                    "[limits].{key} = 0 would return an empty {empties} to every caller; \
+                     omit the key for the default of {default}"
+                );
+            }
+            if value > PER_PAGE_CEILING {
+                bail!(
+                    "[limits].{key} = {value} exceeds the {PER_PAGE_CEILING} ceiling; every row \
+                     in the answer is built and serialised, and this is the most one request \
+                     may ask for"
+                );
+            }
+        }
+
+        // The index is a Postgres generated column with a GIN index. There is no
+        // other backend to put it in, and failing at startup beats a search that
+        // quietly matches nothing (RFC 0007-bis §4.5).
+        // Both spellings, because `[database] type` is documented as
+        // `postgresql` and written as `postgres` about as often. Nothing else
+        // reads this field — the adapter layer is Postgres-only — so the check
+        // exists to give an operator who wrote something else an answer here
+        // rather than a search that quietly matches nothing.
+        let postgres = matches!(
+            self.database.db_type.to_ascii_lowercase().as_str(),
+            "postgres" | "postgresql"
+        );
+        if self.search.readmes && !postgres {
+            bail!(
+                "[search] readmes = true needs a Postgres database — the README index is a \
+                 generated tsvector column with a GIN index, and [database] type = '{}' has \
+                 nowhere to put it",
+                self.database.db_type
+            );
+        }
+        if self.search.text_config.trim().is_empty() {
+            bail!(
+                "[search] text_config must name a Postgres text search configuration (e.g. \
+                 \"english\", \"simple\", \"french\"); an empty value is not one"
+            );
+        }
 
         // The set of storage backend names a registry's `storage` field may
         // reference. In single-backend mode only the implicit "default" exists;
@@ -807,6 +1302,87 @@ impl AppConfig {
                         registry.name
                     )
                 })?;
+            }
+            if let Some(readme) = &registry.readme {
+                // An unrecognised `remote_images` must not silently become the
+                // default: the two behaviours differ in what leaves the network,
+                // and an operator who typed `"allow"` expecting images believes
+                // the opposite of what they would get.
+                if batlehub_core::services::RemoteImagePolicy::parse(&readme.remote_images)
+                    .is_none()
+                {
+                    bail!(
+                        "registry '{}': invalid readme.remote_images '{}' (expected \"strip\" or \
+                         \"proxy\"; there is no \"allow\" — the console's CSP is baked in at build \
+                         time, so it could only ever show broken images)",
+                        registry.name,
+                        readme.remote_images
+                    );
+                }
+                if readme.enabled && readme.max_bytes == 0 {
+                    bail!(
+                        "registry '{}': readme.max_bytes = 0 with enabled = true stores nothing \
+                         while claiming to be on; set enabled = false to turn the feature off",
+                        registry.name
+                    );
+                }
+                // The value is a row in a transactional store, read on a page
+                // load and held in memory while it renders.
+                const README_MAX_BYTES_CEILING: usize = 4 * 1024 * 1024;
+                if readme.max_bytes > README_MAX_BYTES_CEILING {
+                    bail!(
+                        "registry '{}': readme.max_bytes = {} exceeds the {README_MAX_BYTES_CEILING} \
+                         byte ceiling; a README is a database row read on every page load",
+                        registry.name,
+                        readme.max_bytes
+                    );
+                }
+                // The image cap is a separate number from `max_bytes` because
+                // the two bound different things, and it gets the same two
+                // guards for the same reasons (RFC 0007-bis §4.5).
+                if readme.remote_images == "proxy" && readme.image_max_bytes == 0 {
+                    bail!(
+                        "registry '{}': readme.image_max_bytes = 0 with remote_images = \"proxy\" \
+                         serves no image while claiming to render them; set remote_images = \
+                         \"strip\" to chart them instead",
+                        registry.name
+                    );
+                }
+                // The bytes are buffered in memory to check the type and the cap
+                // before anything is stored, so a ceiling makes that bound a
+                // statement rather than a hope.
+                const IMAGE_MAX_BYTES_CEILING: usize = 16 * 1024 * 1024;
+                if readme.image_max_bytes > IMAGE_MAX_BYTES_CEILING {
+                    bail!(
+                        "registry '{}': readme.image_max_bytes = {} exceeds the \
+                         {IMAGE_MAX_BYTES_CEILING} byte ceiling; an image is held in memory while \
+                         its type and size are checked",
+                        registry.name,
+                        readme.image_max_bytes
+                    );
+                }
+            }
+            if let Some(detail) = &registry.upstream_detail {
+                if detail.enabled && detail.max_versions == 0 {
+                    bail!(
+                        "registry '{}': upstream_detail.max_versions = 0 with enabled = true \
+                         attempts the fetch and discards every result — the egress happens and \
+                         nothing is shown; set enabled = false instead",
+                        registry.name
+                    );
+                }
+                // One page's version table, held in memory and serialised to
+                // JSON per request.
+                const UPSTREAM_MAX_VERSIONS_CEILING: usize = 5_000;
+                if detail.max_versions > UPSTREAM_MAX_VERSIONS_CEILING {
+                    bail!(
+                        "registry '{}': upstream_detail.max_versions = {} exceeds the \
+                         {UPSTREAM_MAX_VERSIONS_CEILING} ceiling; one page's version table is \
+                         held in memory and serialised to JSON on every request",
+                        registry.name,
+                        detail.max_versions
+                    );
+                }
             }
             // `version_pattern` is a publish-time restriction (a security
             // control), so an uncompilable regex must fail the config load

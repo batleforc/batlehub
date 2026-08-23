@@ -68,37 +68,6 @@ fn bulk_response(result: BulkResult) -> BulkPackageResponse {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::require_admin;
-    use crate::extractors::AuthIdentity;
-    use batlehub_core::entities::{Identity, Role};
-
-    fn id(role: Role) -> AuthIdentity {
-        AuthIdentity(Identity {
-            user_id: Some("u".into()),
-            role,
-            auth_provider: None,
-            groups: vec![],
-        })
-    }
-
-    #[test]
-    fn require_admin_passes_for_admin() {
-        assert!(require_admin(&id(Role::Admin)).is_ok());
-    }
-
-    #[test]
-    fn require_admin_fails_for_user() {
-        assert!(require_admin(&id(Role::User)).is_err());
-    }
-
-    #[test]
-    fn require_admin_fails_for_anonymous() {
-        assert!(require_admin(&id(Role::Anonymous)).is_err());
-    }
-}
-
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct BulkPackageItem {
     pub name: String,
@@ -232,6 +201,22 @@ pub async fn bulk_delete(
         .bulk_remove_versions(&registry, &items)
         .await
         .map_err(AppError::from)?;
+    // A README is deleted with its version. `package_readmes` has no foreign
+    // key — a cascade from anything evictable would take the README with the
+    // bytes, which RFC 0007 §5.4 rules out — so the delete is explicit, and
+    // only for the items that actually went.
+    let failed: std::collections::HashSet<(&str, &str)> = result
+        .failed
+        .iter()
+        .map(|(name, version, _)| (name.as_str(), version.as_str()))
+        .collect();
+    for (name, version) in &items {
+        if !failed.contains(&(name.as_str(), version.as_str())) {
+            local_svc
+                .delete_readme_for_version(&registry, name, version)
+                .await;
+        }
+    }
     record_bulk_lifecycle_audit(
         &local_svc,
         &registry,
@@ -387,4 +372,35 @@ pub async fn relist(
         .await
         .map_err(AppError::from)?;
     Ok(HttpResponse::Ok().json(OkResponse::new()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::require_admin;
+    use crate::extractors::AuthIdentity;
+    use batlehub_core::entities::{Identity, Role};
+
+    fn id(role: Role) -> AuthIdentity {
+        AuthIdentity(Identity {
+            user_id: Some("u".into()),
+            role,
+            auth_provider: None,
+            groups: vec![],
+        })
+    }
+
+    #[test]
+    fn require_admin_passes_for_admin() {
+        assert!(require_admin(&id(Role::Admin)).is_ok());
+    }
+
+    #[test]
+    fn require_admin_fails_for_user() {
+        assert!(require_admin(&id(Role::User)).is_err());
+    }
+
+    #[test]
+    fn require_admin_fails_for_anonymous() {
+        assert!(require_admin(&id(Role::Anonymous)).is_err());
+    }
 }

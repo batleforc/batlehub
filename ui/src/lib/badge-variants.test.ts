@@ -40,8 +40,24 @@ describe("severityVariant", () => {
   it("maps severities", () => {
     expect(severityVariant("critical")).toBe("destructive");
     expect(severityVariant("high")).toBe("destructive");
-    expect(severityVariant("medium")).toBe("default");
+    expect(severityVariant("medium")).toBe("copper");
     expect(severityVariant("low")).toBe("secondary");
+  });
+
+  /**
+   * `default` and `destructive` both resolve to `--accent` — `assets/index.css`
+   * sets `--destructive: var(--accent)`. So `medium` returning `default`
+   * painted it the identical crimson as `critical` and `high`, and the three
+   * severities were distinguishable only by reading their own text.
+   *
+   * Asserted as a property of the *set* rather than value by value: a fourth
+   * severity mapped to `default` tomorrow would pass the test above and
+   * re-introduce exactly this.
+   */
+  it("does not paint a non-critical severity in the refusal hue", () => {
+    const crimson = new Set(["default", "destructive"]);
+    expect(crimson.has(severityVariant("medium"))).toBe(false);
+    expect(crimson.has(severityVariant("low"))).toBe(false);
   });
 });
 

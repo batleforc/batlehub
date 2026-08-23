@@ -16,6 +16,18 @@ node_modules/
 # Config (contains secrets)
 /config.toml
 
+# Rendered by `task dex:config` from dev/dex/config.tmpl.yaml. Both name this
+# workspace's gateway FQDN, so they are per-clone and mean nothing to anyone
+# else. The template IS tracked.
+dev/dex/config.yaml
+dev/dex/auth.toml
+dev/dex/config.yaml.tmp
+# The two files `task dex:reload` and the sidecar's supervisor talk over: a
+# reload request and the acknowledgement that dex was started again. Both are
+# runtime state of one running pod.
+dev/dex/reload
+dev/dex/state
+
 # Frontend
 ui/node_modules/
 ui/dist/

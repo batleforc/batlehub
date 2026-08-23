@@ -7,6 +7,7 @@
 /// Re-exported at the crate root as `batlehub_adapters::in_memory::*`.
 pub mod artifact_meta;
 pub mod package_repo;
+pub mod readme_repo;
 pub mod sbom;
 pub mod stats_history;
 pub mod vulnerability;
@@ -20,12 +21,14 @@ pub mod ops;
 pub mod storage;
 
 pub use artifact_meta::NoopArtifactMetaRepository;
+pub use auth::login_states::InMemoryLoginStateStore;
 pub use auth::user_tokens::NullUserTokenRepository;
 pub use governance::beta_channel::InMemoryBetaChannelStore;
 pub use governance::ownership::InMemoryOwnershipStore;
 pub use governance::team_namespace::InMemoryTeamNamespaceStore;
 pub use ops::quota::InMemoryQuotaRepository;
 pub use package_repo::InMemoryPackageRepository;
+pub use readme_repo::{InMemoryReadmeRepository, NoopReadmeRepository};
 pub use sbom::{InMemorySbomRepository, NoopSbomRepository};
 pub use stats_history::InMemoryStatsHistory;
 pub use storage::backend::InMemoryStorageBackend;

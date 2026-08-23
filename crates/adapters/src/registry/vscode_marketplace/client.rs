@@ -3,17 +3,19 @@ use chrono::DateTime;
 use futures::TryStreamExt;
 
 use batlehub_core::{
-    entities::{PackageId, PackageMetadata},
+    entities::{MetadataReadme, PackageId, PackageMetadata, ReadmeFormat},
     error::CoreError,
     ports::{FetchedArtifact, RegistryClient},
 };
 
-use super::super::http_client::{new_http_client, to_registry_error, UpstreamHttpOptions};
+use super::super::http_client::{
+    fetch_linked_text, new_http_client, to_registry_error, UpstreamHttpOptions,
+};
 use super::models::{
     ExtensionQueryCriteria, ExtensionQueryFilter, ExtensionQueryRequest, ExtensionQueryResponse,
     ResolvedExtension, FILTER_EXTENSION_NAME, FILTER_VERSION, FLAG_INCLUDE_ASSET_URI,
     FLAG_INCLUDE_FILES, FLAG_INCLUDE_LATEST_ONLY, FLAG_INCLUDE_VERSIONS, GALLERY_API_ACCEPT,
-    VSIX_ASSET_TYPE,
+    README_ASSET_TYPE, VSIX_ASSET_TYPE,
 };
 
 /// VS Code Marketplace registry client (marketplace.visualstudio.com or compatible).
@@ -28,6 +30,22 @@ pub struct VsCodeMarketplaceRegistryClient {
     base_url: String,
 }
 
+/// The host the public gallery API answers on.
+///
+/// The asset exception below is granted only when this *is* the configured
+/// base: a self-hosted mirror serves its own assets from its own origin, and
+/// has no business being pointed at Microsoft's CDN by a response it proxies.
+const PUBLIC_GALLERY_HOST: &str = "marketplace.visualstudio.com";
+
+/// The gallery's asset CDN, one sub-domain per publisher —
+/// `ms-python.gallerycdn.vsassets.io`, and so on.
+///
+/// `files[].source` — the `Content.Details` README included — always points
+/// here, never at the API host, so checking the asset URL strictly against
+/// `base_url` refused *every* linked README this kind has: none was ever stored,
+/// while `readme_support()` advertised `MetadataLinked`.
+const GALLERY_CDN_HOST_SUFFIX: &str = "gallerycdn.vsassets.io";
+
 impl VsCodeMarketplaceRegistryClient {
     pub fn new(base_url: impl Into<String>, opts: &UpstreamHttpOptions) -> Result<Self, CoreError> {
         let http = new_http_client(Some(10), opts)?;
@@ -35,6 +53,21 @@ impl VsCodeMarketplaceRegistryClient {
             http,
             base_url: base_url.into(),
         })
+    }
+
+    /// Hosts a linked asset may be read from besides the base URL's own origin.
+    ///
+    /// Empty for anything but the public gallery — see [`PUBLIC_GALLERY_HOST`].
+    fn asset_host_suffixes(&self) -> &'static [&'static str] {
+        let is_public_gallery = reqwest::Url::parse(&self.base_url)
+            .ok()
+            .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+            .is_some_and(|host| host == PUBLIC_GALLERY_HOST);
+        if is_public_gallery {
+            &[GALLERY_CDN_HOST_SUFFIX]
+        } else {
+            &[]
+        }
     }
 
     fn parse_id(name: &str) -> Result<(&str, &str), CoreError> {
@@ -167,10 +200,20 @@ impl RegistryClient for VsCodeMarketplaceRegistryClient {
             None
         };
 
+        let readme = resolved
+            .version_info
+            .files
+            .iter()
+            .find(|f| f.asset_type == README_ASSET_TYPE)
+            // Markdown by protocol, whatever `Content-Type` the asset URL
+            // answers with when it is read.
+            .map(|f| MetadataReadme::linked(&f.source, ReadmeFormat::Markdown));
+
         let extra = serde_json::json!({
             "resolved_version": resolved.version_info.version,
             "display_name": resolved.display_name,
             "description": resolved.description,
+            "readme": readme,
         });
 
         Ok(PackageMetadata {
@@ -185,6 +228,25 @@ impl RegistryClient for VsCodeMarketplaceRegistryClient {
             extra,
             cache_control: None,
         })
+    }
+
+    /// Read the `Content.Details` asset the gallery response linked to.
+    ///
+    /// Never called on the resolve path — the link travels on `extra` and this
+    /// runs in the detached introspection task (RFC 0007 §5.1).
+    async fn fetch_linked_readme(
+        &self,
+        url: &str,
+        max_bytes: usize,
+    ) -> Result<Option<String>, CoreError> {
+        fetch_linked_text(
+            self.http.get(url),
+            url,
+            &self.base_url,
+            self.asset_host_suffixes(),
+            max_bytes,
+        )
+        .await
     }
 
     async fn fetch_artifact(&self, pkg: &PackageId) -> Result<FetchedArtifact, CoreError> {
@@ -296,6 +358,43 @@ mod tests {
     }
 
     const EMPTY_RESULTS: &str = r#"{"results":[{"extensions":[]}]}"#;
+
+    /// The gallery names its README on a CDN the API host does not share, so a
+    /// strict same-origin check refused every one of them — no VS Code
+    /// Marketplace README was ever stored, while the support table advertised
+    /// `MetadataLinked`. The exception is granted only to the public gallery: a
+    /// mirror serves its own assets from its own origin.
+    #[test]
+    fn the_asset_cdn_is_trusted_only_when_the_base_is_the_public_gallery() {
+        let public = VsCodeMarketplaceRegistryClient::new(
+            "https://marketplace.visualstudio.com",
+            &UpstreamHttpOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(public.asset_host_suffixes(), &[GALLERY_CDN_HOST_SUFFIX]);
+
+        let readme_url =
+            "https://ms-python.gallerycdn.vsassets.io/extensions/ms-python/python/1.0.0/Details";
+        assert!(crate::registry::http_client::ensure_linked_origin(
+            readme_url,
+            "https://marketplace.visualstudio.com",
+            public.asset_host_suffixes(),
+        )
+        .is_ok());
+
+        let mirror = VsCodeMarketplaceRegistryClient::new(
+            "https://gallery.corp.example",
+            &UpstreamHttpOptions::default(),
+        )
+        .unwrap();
+        assert!(mirror.asset_host_suffixes().is_empty());
+        assert!(crate::registry::http_client::ensure_linked_origin(
+            readme_url,
+            "https://gallery.corp.example",
+            mirror.asset_host_suffixes(),
+        )
+        .is_err());
+    }
 
     #[test]
     fn parse_id_valid() {
@@ -579,5 +678,88 @@ mod tests {
             VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
         let versions = client.list_versions("unknown.extension").await.unwrap();
         assert!(versions.is_empty());
+    }
+    // ── README capture (RFC 0007 §2.1, §7.4) ─────────────────────────────────
+
+    /// The `Content.Details` asset is a URL, so it travels as a link and is
+    /// read in the detached introspection task — not on the resolve path.
+    #[tokio::test]
+    async fn the_content_details_asset_travels_as_a_link() {
+        let mut server = Server::new_async().await;
+        let body = format!(
+            r#"{{"results":[{{"extensions":[{{"displayName":"Python",
+                "shortDescription":"Python language support",
+                "publisher":{{"publisherName":"ms-python"}},
+                "versions":[{{"version":"2024.1.0","lastUpdated":"2024-01-01T00:00:00Z",
+                "files":[
+                  {{"assetType":"Microsoft.VisualStudio.Services.VSIXPackage","source":"{url}/python.vsix"}},
+                  {{"assetType":"Microsoft.VisualStudio.Services.Content.Details","source":"{url}/README.md"}}
+                ]}}]}}]}}]}}"#,
+            url = server.url()
+        );
+        let _mock = server
+            .mock("POST", "/_apis/public/gallery/extensionquery")
+            .with_status(200)
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client =
+            VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let meta = client
+            .resolve_metadata(&pkg("ms-python.python", "2024.1.0"))
+            .await
+            .unwrap();
+
+        let found = MetadataReadme::from_extra(&meta.extra).expect("readme link captured");
+        assert_eq!(
+            found.url.as_deref(),
+            Some(format!("{}/README.md", server.url()).as_str())
+        );
+        assert_eq!(found.content, None);
+        assert_eq!(found.format, ReadmeFormat::Markdown);
+    }
+
+    /// An extension whose gallery entry lists no `Content.Details` asset claims
+    /// nothing rather than falling back to the VSIX URL.
+    #[tokio::test]
+    async fn an_extension_without_a_readme_asset_captures_nothing() {
+        let mut server = Server::new_async().await;
+        let body = format!(
+            r#"{{"results":[{{"extensions":[{{"displayName":"Python",
+                "shortDescription":"desc","publisher":{{"publisherName":"ms-python"}},
+                "versions":[{{"version":"2024.1.0","lastUpdated":"2024-01-01T00:00:00Z",
+                "files":[{{"assetType":"Microsoft.VisualStudio.Services.VSIXPackage","source":"{url}/python.vsix"}}]}}]}}]}}]}}"#,
+            url = server.url()
+        );
+        let _mock = server
+            .mock("POST", "/_apis/public/gallery/extensionquery")
+            .with_status(200)
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client =
+            VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let meta = client
+            .resolve_metadata(&pkg("ms-python.python", "2024.1.0"))
+            .await
+            .unwrap();
+        assert_eq!(MetadataReadme::from_extra(&meta.extra), None);
+    }
+
+    /// A compromised or misconfigured gallery must not be able to use the
+    /// README asset URL to point BatleHub at an internal host.
+    #[tokio::test]
+    async fn a_cross_origin_readme_asset_is_refused() {
+        let server = Server::new_async().await;
+        let client =
+            VsCodeMarketplaceRegistryClient::new(server.url(), &Default::default()).unwrap();
+        assert!(matches!(
+            client
+                .fetch_linked_readme("http://169.254.169.254/latest/meta-data/", 4096)
+                .await,
+            Err(CoreError::Registry(_))
+        ));
     }
 }

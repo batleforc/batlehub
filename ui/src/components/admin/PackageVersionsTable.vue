@@ -14,6 +14,9 @@ import { formatDate as fmtDate } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { DestructiveConfirm } from "@/components/ui/destructive-confirm";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Table,
   TableHeader,
@@ -68,17 +71,11 @@ function viewArtifact(v: PackageVersionDetail) {
 // ── Single-item actions ──────────────────────────────────────────────────────
 
 async function doBlock(v: PackageVersionDetail) {
-  // State what a block does before it is made. A block has two halves — the
-  // version stops being listed, and downloading it returns 403 with this reason
-  // — and the artifact-scoped case is the surprising one: blocking a single
-  // file hides the whole version from listings, because a resolver that picks a
-  // version whose bytes are partly refused has no way to know which of its
-  // files it may have.
-  const effect = v.artifact
-    ? t("packageVersionsTable.blockEffectArtifact", { version: v.version, artifact: v.artifact })
-    : t("packageVersionsTable.blockEffect");
-  const reason = globalThis.prompt(`${effect}\n\n${t("packageVersionsTable.blockReasonPrompt")}`);
-  if (!reason) return;
+  const reason = blockReason.value.trim();
+  if (!reason) {
+    actionError.value = t("packageVersionsTable.blockNeedsReason");
+    return;
+  }
   await blockPackage({
     body: {
       registry: props.registry,
@@ -104,7 +101,6 @@ async function doUnblock(v: PackageVersionDetail) {
 }
 
 async function doInvalidate(v: PackageVersionDetail) {
-  if (!confirm(t("packageVersionsTable.purgeArtifactConfirm", { version: v.version }))) return;
   await invalidatePackage({
     body: {
       registry: props.registry,
@@ -149,16 +145,114 @@ function toggle(v: PackageVersionDetail) {
 
 const selected = computed(() => props.versions.filter((v) => selectedIds.value.has(v.id)));
 
+// ── The destructive contract ─────────────────────────────────────────────────
+//
+// These four actions went through `prompt()` and `confirm()`. A native dialog
+// cannot state a count, a scope or a consequence; it is not translated, it
+// cannot be styled, and Firefox and Chrome both let a page suppress it after
+// the second one — so the third block of a session could go through with no
+// prompt at all. `DestructiveConfirm` is the primitive RFC 0003 §4.5 built for
+// this, and the sibling admin pages already route every comparable verb
+// through it.
+//
+// The block effect text is not lost in the move: it was the most useful thing
+// the old prompt said, and it is exactly what `consequence` is for.
+
+type PendingAction =
+  | { kind: "block-one"; version: PackageVersionDetail }
+  | { kind: "purge-one"; version: PackageVersionDetail }
+  | { kind: "bulk-block" }
+  | { kind: "bulk-unblock" };
+
+const pending = ref<PendingAction | null>(null);
+/** The reason a block carries, collected by the dialog rather than a prompt. */
+const blockReason = ref("");
+const actionError = ref<string | null>(null);
+
+/** Open the dialog for one action, from a clean slate. */
+function ask(action: PendingAction): void {
+  blockReason.value = "";
+  actionError.value = null;
+  pending.value = action;
+}
+
+const needsReason = computed(
+  () => pending.value?.kind === "block-one" || pending.value?.kind === "bulk-block",
+);
+
+/** What a block does, in the words the old prompt used. */
+function blockEffect(v?: PackageVersionDetail): string {
+  return v?.artifact
+    ? t("packageVersionsTable.blockEffectArtifact", { version: v.version, artifact: v.artifact })
+    : t("packageVersionsTable.blockEffect");
+}
+
+const confirmProps = computed(() => {
+  const action = pending.value;
+  if (!action) return null;
+
+  if (action.kind === "block-one") {
+    return {
+      action: t("common.block"),
+      count: 1,
+      itemNoun: t("packageVersionsTable.versionNoun"),
+      scope: action.version.artifact ?? action.version.version,
+      consequence: blockEffect(action.version),
+      reversible: true,
+    };
+  }
+  if (action.kind === "purge-one") {
+    return {
+      action: t("packageVersionsTable.purge"),
+      count: 1,
+      itemNoun: t("packageVersionsTable.artifactNoun"),
+      scope: action.version.version,
+      // Not irreversible: the bytes come back on the next download. What it
+      // costs is one upstream round trip, which is the fact worth stating.
+      consequence: t("packageVersionsTable.purgeEffect"),
+      reversible: true,
+    };
+  }
+  if (action.kind === "bulk-block") {
+    return {
+      action: t("common.block"),
+      count: selectedIds.value.size,
+      itemNoun: t("packageVersionsTable.versionNoun"),
+      itemNounPlural: t("packageVersionsTable.versionNounPlural"),
+      scope: props.name,
+      consequence: blockEffect(),
+      reversible: true,
+    };
+  }
+  return {
+    action: t("common.unblock"),
+    count: selectedIds.value.size,
+    itemNoun: t("packageVersionsTable.versionNoun"),
+    itemNounPlural: t("packageVersionsTable.versionNounPlural"),
+    scope: props.name,
+    reversible: true,
+  };
+});
+
+async function runPending(): Promise<void> {
+  const action = pending.value;
+  if (!action) return;
+  // A missing reason is refused *in* the dialog rather than by closing it —
+  // `doBlock` and `bulkBlock` write `actionError` and return.
+  actionError.value = null;
+  if (action.kind === "block-one") await doBlock(action.version);
+  else if (action.kind === "purge-one") await doInvalidate(action.version);
+  else if (action.kind === "bulk-block") await bulkBlock();
+  else await bulkUnblock();
+  if (!actionError.value) pending.value = null;
+}
+
 async function bulkBlock() {
-  // Stated once, above the list, rather than per row.
-  const reason = globalThis.prompt(
-    `${t("packageVersionsTable.blockEffect")}\n\n${t(
-      "packageVersionsTable.bulkBlockReasonPrompt",
-      { count: selectedIds.value.size },
-      selectedIds.value.size,
-    )}`,
-  );
-  if (!reason) return;
+  const reason = blockReason.value.trim();
+  if (!reason) {
+    actionError.value = t("packageVersionsTable.blockNeedsReason");
+    return;
+  }
   bulkLoading.value = true;
   bulkMsg.value = null;
   try {
@@ -185,16 +279,6 @@ async function bulkBlock() {
 }
 
 async function bulkUnblock() {
-  if (
-    !confirm(
-      t(
-        "packageVersionsTable.bulkUnblockConfirm",
-        { count: selectedIds.value.size },
-        selectedIds.value.size,
-      ),
-    )
-  )
-    return;
   bulkLoading.value = true;
   bulkMsg.value = null;
   try {
@@ -224,17 +308,25 @@ async function bulkUnblock() {
   <!-- Bulk action bar -->
   <div
     v-if="selectedIds.size > 0"
-    class="sticky top-16 z-30 flex items-center gap-3 rounded-sm border bg-card px-4 py-2.5 shadow-sm"
+    class="sticky top-16 z-30 flex items-center gap-3 rounded-sm border bg-card px-4 py-2.5"
   >
     <span class="text-sm font-medium">{{
       t("packageVersionsTable.versionsSelected", selectedIds.size)
     }}</span>
-    <Button size="sm" variant="destructive" :disabled="bulkLoading" @click="bulkBlock">{{
-      t("packageVersionsTable.blockSelected")
-    }}</Button>
-    <Button size="sm" variant="outline" :disabled="bulkLoading" @click="bulkUnblock">{{
-      t("packageVersionsTable.unblockSelected")
-    }}</Button>
+    <Button
+      size="sm"
+      variant="destructive"
+      :disabled="bulkLoading"
+      @click="ask({ kind: 'bulk-block' })"
+      >{{ t("packageVersionsTable.blockSelected") }}</Button
+    >
+    <Button
+      size="sm"
+      variant="outline"
+      :disabled="bulkLoading"
+      @click="ask({ kind: 'bulk-unblock' })"
+      >{{ t("packageVersionsTable.unblockSelected") }}</Button
+    >
     <Button size="sm" variant="ghost" @click="selectedIds = new Set()">{{
       t("common.clearAction")
     }}</Button>
@@ -247,7 +339,7 @@ async function bulkUnblock() {
       <CardTitle class="text-base">{{ t("packageVersionsTable.versionsArtifacts") }}</CardTitle>
     </CardHeader>
     <CardContent class="p-0">
-      <Table>
+      <Table :label="t('a11y.versionsTableLabel')">
         <TableHeader>
           <TableRow>
             <TableHead class="w-8">
@@ -272,11 +364,9 @@ async function bulkUnblock() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          <TableRow
-            v-for="v in versions"
-            :key="v.id"
-            :class="v.status.status === 'blocked' ? 'bg-destructive/5' : ''"
-          >
+          <!-- No row tint: 1.03:1 is not a channel. The status cell below
+               carries it in words and in hue. -->
+          <TableRow v-for="v in versions" :key="v.id">
             <TableCell class="w-8">
               <input
                 type="checkbox"
@@ -387,9 +477,13 @@ async function bulkUnblock() {
                 <Button variant="ghost" size="sm" @click="viewArtifact(v)">{{
                   t("common.view")
                 }}</Button>
-                <Button v-if="v.cached" variant="outline" size="sm" @click="doInvalidate(v)">{{
-                  t("packageVersionsTable.purgeCache")
-                }}</Button>
+                <Button
+                  v-if="v.cached"
+                  variant="outline"
+                  size="sm"
+                  @click="ask({ kind: 'purge-one', version: v })"
+                  >{{ t("packageVersionsTable.purgeCache") }}</Button
+                >
                 <Button
                   v-if="v.status.status === 'blocked'"
                   variant="outline"
@@ -397,9 +491,13 @@ async function bulkUnblock() {
                   @click="doUnblock(v)"
                   >{{ t("common.unblock") }}</Button
                 >
-                <Button v-else variant="destructive" size="sm" @click="doBlock(v)">{{
-                  t("common.block")
-                }}</Button>
+                <Button
+                  v-else
+                  variant="destructive"
+                  size="sm"
+                  @click="ask({ kind: 'block-one', version: v })"
+                  >{{ t("common.block") }}</Button
+                >
               </div>
             </TableCell>
           </TableRow>
@@ -410,4 +508,29 @@ async function bulkUnblock() {
       </p>
     </CardContent>
   </Card>
+
+  <!--
+    One dialog for all four verbs. The reason field renders only for the two
+    that need it, which is the same slot `AdminPackages` uses for the same
+    purpose — a block reason is read back by whoever hits the 403, so it is
+    collected rather than invented.
+  -->
+  <DestructiveConfirm
+    v-if="confirmProps"
+    :open="pending !== null"
+    v-bind="confirmProps"
+    :loading="bulkLoading"
+    :error="actionError"
+    @update:open="(open: boolean) => !open && (pending = null)"
+    @confirm="runPending"
+  >
+    <div v-if="needsReason" class="space-y-1">
+      <Label for="version-block-reason">{{ t("common.reason") }}</Label>
+      <Input
+        id="version-block-reason"
+        v-model="blockReason"
+        :placeholder="t('packageVersionsTable.blockReasonPlaceholder')"
+      />
+    </div>
+  </DestructiveConfirm>
 </template>

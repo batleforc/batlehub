@@ -96,7 +96,10 @@ mod tests {
     fn the_vsix_artifact_slot_is_shared_with_the_download_route() {
         assert_eq!(VSIX_ARTIFACT, "vsix");
         for kind in [RegistryKind::Openvsx, RegistryKind::VscodeMarketplace] {
-            assert_eq!(kind.warm_artifact(), Some(VSIX_ARTIFACT));
+            assert_eq!(
+                kind.warm_artifact(),
+                Some(batlehub_core::entities::FetchArtifact::Fixed(VSIX_ARTIFACT))
+            );
         }
     }
 

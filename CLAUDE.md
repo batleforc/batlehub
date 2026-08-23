@@ -17,6 +17,9 @@ cargo test --package batlehub-web nuget            # single package, filter by n
 cargo test --package batlehub-adapters --lib rbac  # lib-only tests (no integration)
 cargo test -p batlehub-cli --test integration      # CLI integration tests (subprocess binary)
 
+# Housekeeping — cargo never garbage-collects target/
+task clean:stale     # cargo sweep --time 1: drop artefacts not touched since yesterday
+
 # Linting (CI fails on any warning)
 cargo clippy --workspace -- -D warnings
 cargo fmt --all --check
@@ -48,8 +51,9 @@ task ui:dev:local             # 5174 → API on localhost:8080, for in-pod tools
 cd ui && pnpm run generate    # regenerate TypeScript client from ui/openapi.json
 task dump-spec                # refresh ui/openapi.json from running server
 
-# Fuzz (nightly)
-task fuzz TARGET=fuzz_rbac_evaluate MAX_TIME=30
+# Fuzz
+task fuzz:check                                 # every target compiles — the per-PR CI gate
+task fuzz TARGET=fuzz_rbac_evaluate MAX_TIME=30 # actually fuzz one (nightly)
 ```
 
 ## Architecture
@@ -113,6 +117,9 @@ For **local/hybrid mode**, additionally implement `get_<name>_versions` (and rel
 - **CLI integration tests**: `cli/tests/integration.rs` — builds the CLI binary then invokes it as a subprocess against an in-memory actix-web server (same pattern as the web tests). Uses `env!("CARGO_BIN_EXE_batlehub-cli")` so cargo builds the binary automatically before running. See architecture note below about in-memory store separation.
 - **External integration tests**: `crates/adapters/tests/pg_*.rs`, `s3_storage.rs` — require real Postgres/MinIO (run via `task test:pg-*` / `task test:s3`).
 - **Fuzz targets**: `fuzz/fuzz_targets/` — run with nightly via `task fuzz`.
+  `fuzz/` is a **separate workspace**, so `cargo check/clippy/test --workspace`
+  never compiles it: after changing a type a fuzz target constructs, run
+  `task fuzz:check` (no nightly needed) or CI's `Fuzz targets` job will.
 
 #### CLI test architecture — in-memory store separation
 
@@ -136,7 +143,9 @@ SQL migrations live in `crates/adapters/migrations/`. They are embedded via `cra
 
 `aws-sdk-s3` and `aws-config` use `default-features = false` to avoid `legacy-rustls-ring` (RUSTSEC-2026-0098/0099/0104). Do not enable default features on these crates.
 
-The two invariants above are now also enforced by `cargo-deny`: `rsa`, `sqlx-mysql`, `sqlx-macros-core` and the legacy `rustls 0.21` / `rustls-webpki 0.101` line are in the `[bans].deny` list in `deny.toml`. If a dependency bump silently drags one back into the tree, `cargo deny check` (and CI) fails.
+`actix-web` uses `default-features = false` with actix-web 4.14's default feature set **minus `http2`**, because that feature is the only thing pulling `h2 0.3` (RUSTSEC-2026-0258) into the tree — the fix is in h2 0.4.16, `actix-http` still requires the 0.3 line, and there is no 0.3 backport. Nothing is lost: this process never terminates TLS, so its HTTP/2 would only ever be h2c, and real deployments terminate HTTP/2 at the ingress. Do not enable default features on `actix-web` unless the server gains `bind_rustls`/`bind_openssl`, and re-open the advisory with actix if it does.
+
+The three invariants above are now also enforced by `cargo-deny`: `rsa`, `sqlx-mysql`, `sqlx-macros-core`, the legacy `rustls 0.21` / `rustls-webpki 0.101` line, and `h2 <0.4` are in the `[bans].deny` list in `deny.toml`. If a dependency bump silently drags one back into the tree, `cargo deny check` (and CI) fails.
 
 ### Vulnerability scanning
 

@@ -23,8 +23,8 @@ use batlehub_core::{
     entities::{AccessEvent, PackageId, PackageStatus, Role},
     error::CoreError,
     ports::{
-        AuthProvider, CacheStore, PackageRepository, RegistryClient, StorageBackend, UserToken,
-        UserTokenRepository,
+        AuthProvider, CacheStore, PackageRepository, RegistryClient, StorageBackend, TokenOwner,
+        UserToken, UserTokenRepository,
     },
     services::{new_hot_lock, AdminService, HotConfig, ProxyMetrics, ProxyService, RegistryPolicy},
 };
@@ -50,17 +50,18 @@ impl UserTokenRepository for InMemoryTokenRepository {
     async fn create_token(
         &self,
         id: Uuid,
-        user_id: &str,
+        owner: &TokenOwner,
         name: &str,
         _token_hash: &str,
         role: Role,
         expires_at: chrono::DateTime<Utc>,
     ) -> Result<UserToken, CoreError> {
-        // Check uniqueness by name per user
+        // Names are unique per *principal*, and a principal is (provider,
+        // user_id) — matching the `uq_user_token_name` index in Postgres.
         let mut tokens = self.tokens.lock().unwrap();
         if tokens
             .iter()
-            .any(|t| t.user_id == user_id && t.name == name && t.revoked_at.is_none())
+            .any(|t| owns(t, owner) && t.name == name && t.revoked_at.is_none())
         {
             return Err(CoreError::Conflict(format!(
                 "a token named '{}' already exists",
@@ -69,12 +70,14 @@ impl UserTokenRepository for InMemoryTokenRepository {
         }
         let tok = UserToken {
             id,
-            user_id: user_id.to_owned(),
+            user_id: owner.user_id.clone(),
+            provider: owner.provider.clone(),
             name: name.to_owned(),
             role,
             expires_at,
             created_at: Utc::now(),
             revoked_at: None,
+            last_used_at: None,
         };
         tokens.push(tok);
         Ok(tokens.last().unwrap().clone_token())
@@ -84,25 +87,36 @@ impl UserTokenRepository for InMemoryTokenRepository {
         Ok(None)
     }
 
-    async fn list_for_user(&self, user_id: &str) -> Result<Vec<UserToken>, CoreError> {
+    async fn list_for_user(&self, owner: &TokenOwner) -> Result<Vec<UserToken>, CoreError> {
         let tokens = self.tokens.lock().unwrap();
         Ok(tokens
             .iter()
-            .filter(|t| t.user_id == user_id && t.revoked_at.is_none())
+            .filter(|t| owns(t, owner) && t.revoked_at.is_none())
             .map(|t| t.clone_token())
             .collect())
     }
 
-    async fn revoke(&self, id: Uuid, user_id: &str) -> Result<bool, CoreError> {
+    async fn touch_last_used(&self, _id: Uuid) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    async fn revoke(&self, id: Uuid, owner: &TokenOwner) -> Result<bool, CoreError> {
         let mut tokens = self.tokens.lock().unwrap();
         for t in tokens.iter_mut() {
-            if t.id == id && t.user_id == user_id && t.revoked_at.is_none() {
+            if t.id == id && owns(t, owner) && t.revoked_at.is_none() {
                 t.revoked_at = Some(Utc::now());
                 return Ok(true);
             }
         }
         Ok(false)
     }
+}
+
+/// Ownership is both halves. Matching on `user_id` alone is exactly the bug the
+/// `provider` column exists to close, so the test double must not take the
+/// shortcut either.
+fn owns(token: &UserToken, owner: &TokenOwner) -> bool {
+    token.user_id == owner.user_id && token.provider == owner.provider
 }
 
 // UserToken doesn't derive Clone; add a helper method instead.
@@ -115,30 +129,39 @@ impl CloneToken for UserToken {
         UserToken {
             id: self.id,
             user_id: self.user_id.clone(),
+            provider: self.provider.clone(),
             name: self.name.clone(),
             role: self.role.clone(),
             expires_at: self.expires_at,
             created_at: self.created_at,
             revoked_at: self.revoked_at,
+            last_used_at: self.last_used_at,
         }
     }
 }
 
 // ── OIDC-style test auth provider ─────────────────────────────────────────────
-// The token endpoint only accepts identities whose auth_provider == "oidc".
-// StaticTokenAuthProvider sets "static-token", so we use a thin wrapper.
+// The token endpoint only accepts identities coming from a *configured* OIDC
+// provider. StaticTokenAuthProvider sets "static-token", so we use a thin
+// wrapper — parameterised by name, because the provider name is operator-chosen
+// (`name = "authentik"`) and the endpoint must not hardcode any one value.
 
 use batlehub_core::ports::RawAuthRequest;
 
 const OIDC_USER_TOKEN: &str = "oidc-user-token";
 const OIDC_ADMIN_TOKEN: &str = "oidc-admin-token";
 
-struct OidcStyleAuthProvider;
+/// The name the OIDC-style provider reports for most of this suite. Deliberately
+/// *not* `"oidc"`: a renamed provider is the common deployment, and the endpoint
+/// used to 403 every one of them.
+const OIDC_PROVIDER_NAME: &str = "authentik";
+
+struct OidcStyleAuthProvider(&'static str);
 
 #[async_trait]
 impl AuthProvider for OidcStyleAuthProvider {
     fn name(&self) -> &str {
-        "oidc"
+        self.0
     }
 
     async fn authenticate(
@@ -155,13 +178,13 @@ impl AuthProvider for OidcStyleAuthProvider {
             Some(OIDC_USER_TOKEN) => Ok(Some(Identity {
                 user_id: Some("oidc-user".to_owned()),
                 role: Role::User,
-                auth_provider: Some("oidc".to_owned()),
+                auth_provider: Some(self.0.to_owned()),
                 groups: vec![],
             })),
             Some(OIDC_ADMIN_TOKEN) => Ok(Some(Identity {
                 user_id: Some("oidc-admin".to_owned()),
                 role: Role::Admin,
-                auth_provider: Some("oidc".to_owned()),
+                auth_provider: Some(self.0.to_owned()),
                 groups: vec![],
             })),
             _ => Ok(None),
@@ -173,6 +196,23 @@ impl AuthProvider for OidcStyleAuthProvider {
 async fn make_app_with_tokens(
     repo: Arc<InMemoryRepo>,
     token_repo: Arc<InMemoryTokenRepository>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    make_app_with_oidc_provider(repo, token_repo, OIDC_PROVIDER_NAME, &[OIDC_PROVIDER_NAME]).await
+}
+
+/// As [`make_app_with_tokens`], but the caller chooses what the OIDC-style
+/// provider calls itself and which names the server has configured. The two
+/// differ in the negative tests: an identity claiming a provider the server does
+/// not know must not be able to mint a token.
+async fn make_app_with_oidc_provider(
+    repo: Arc<InMemoryRepo>,
+    token_repo: Arc<InMemoryTokenRepository>,
+    provider_name: &'static str,
+    configured_names: &[&str],
 ) -> impl actix_web::dev::Service<
     actix_http::Request,
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
@@ -203,6 +243,8 @@ async fn make_app_with_tokens(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let tok_repo: Arc<dyn UserTokenRepository> = token_repo;
@@ -219,7 +261,7 @@ async fn make_app_with_tokens(
             ),
             (USER_TOKEN.to_owned(), Some("user-1".to_owned()), Role::User),
         ])),
-        Arc::new(OidcStyleAuthProvider),
+        Arc::new(OidcStyleAuthProvider(provider_name)),
     ];
 
     finish_test_app(
@@ -231,7 +273,12 @@ async fn make_app_with_tokens(
         local_svc,
         RegistryModeMap::default(),
         cargo_indexes,
-        ConfigureAppDefaults::default(),
+        ConfigureAppDefaults {
+            oidc_provider_names: batlehub_web::OidcProviderNames::new(
+                configured_names.iter().copied(),
+            ),
+            ..Default::default()
+        },
         providers,
     )
     .await
@@ -276,6 +323,215 @@ async fn create_token_succeeds_for_oidc_user() {
     let body: Value = read_body_json(resp).await;
     assert_eq!(body["name"], "ci-token");
     assert!(body["token"].is_string(), "raw token should be returned");
+}
+
+// ── Provider-name matching (regression) ───────────────────────────────────────
+// `create_token` used to compare `auth_provider` against the literal `"oidc"`.
+// The name is operator-chosen and defaults to `"oidc"` only when unset, so every
+// deployment that wrote `name = "authentik"` — or configured two providers — got
+// a blanket 403 with no explanation, and fell back to the non-expiring static
+// tokens in config.toml. The whole suite above now runs on a provider named
+// "authentik"; these three pin the edges.
+
+#[actix_web::test]
+async fn create_token_succeeds_for_a_second_configured_oidc_provider() {
+    // Two providers configured, the caller arrives through the second one.
+    let app = make_app_with_oidc_provider(
+        InMemoryRepo::new(),
+        InMemoryTokenRepository::new(),
+        "keycloak",
+        &["authentik", "keycloak"],
+    )
+    .await;
+    let req = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .set_json(serde_json::json!({"name": "ci-token", "expires_in_days": 30, "role": "user"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(
+        resp.status(),
+        201,
+        "a caller from any configured OIDC provider may mint a token"
+    );
+}
+
+#[actix_web::test]
+async fn create_token_rejects_provider_name_the_server_did_not_configure() {
+    // The fix is an allow-list, not a rename: an identity reporting a provider
+    // the server has no `[[auth]] type = "oidc"` entry for is still refused —
+    // including one that calls itself the historical "oidc".
+    let app = make_app_with_oidc_provider(
+        InMemoryRepo::new(),
+        InMemoryTokenRepository::new(),
+        "oidc",
+        &["authentik"],
+    )
+    .await;
+    let req = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .set_json(serde_json::json!({"name": "ci-token", "expires_in_days": 30, "role": "user"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn create_token_rejects_everyone_when_no_oidc_provider_is_configured() {
+    // Absent configuration denies rather than admits.
+    let app = make_app_with_oidc_provider(
+        InMemoryRepo::new(),
+        InMemoryTokenRepository::new(),
+        "authentik",
+        &[],
+    )
+    .await;
+    let req = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .set_json(serde_json::json!({"name": "ci-token", "expires_in_days": 30, "role": "user"}))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+// ── Ownership is (provider, user_id) ──────────────────────────────────────────
+// `user_id` is a bare string each provider picks for itself, so it is not an
+// identity on its own. Listing and revoking used to match on it alone, and
+// accepted any authenticated caller — so a static `[[auth.tokens]]` entry with
+// `user_id = "oidc-user"`, or a service account whose username happened to equal
+// an OIDC `sub`, could enumerate and destroy that person's tokens.
+
+#[actix_web::test]
+async fn tokens_are_invisible_to_the_same_user_id_from_another_provider() {
+    let token_repo = InMemoryTokenRepository::new();
+    let app = make_app_with_oidc_provider(
+        InMemoryRepo::new(),
+        token_repo.clone(),
+        "authentik",
+        // Both providers are legitimate OIDC providers here — the point is that
+        // the *same* user_id under a different one is a different principal.
+        &["authentik", "keycloak"],
+    )
+    .await;
+
+    let create = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .set_json(serde_json::json!({"name": "mine", "expires_in_days": 7, "role": "user"}))
+        .to_request();
+    assert_eq!(call_service(&app, create).await.status(), 201);
+
+    // Same user_id ("oidc-user"), different provider.
+    let other = make_app_with_oidc_provider(
+        InMemoryRepo::new(),
+        token_repo.clone(),
+        "keycloak",
+        &["authentik", "keycloak"],
+    )
+    .await;
+    let list = TestRequest::get()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .to_request();
+    let body: Value = read_body_json(call_service(&other, list).await).await;
+    assert_eq!(
+        body.as_array().unwrap().len(),
+        0,
+        "the same user_id from another provider is a different principal"
+    );
+}
+
+#[actix_web::test]
+async fn a_token_cannot_be_revoked_from_another_provider() {
+    let token_repo = InMemoryTokenRepository::new();
+    let app = make_app_with_oidc_provider(
+        InMemoryRepo::new(),
+        token_repo.clone(),
+        "authentik",
+        &["authentik", "keycloak"],
+    )
+    .await;
+
+    let create = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .set_json(serde_json::json!({"name": "mine", "expires_in_days": 7, "role": "user"}))
+        .to_request();
+    let created: Value = read_body_json(call_service(&app, create).await).await;
+    let id = created["id"].as_str().unwrap();
+
+    let other = make_app_with_oidc_provider(
+        InMemoryRepo::new(),
+        token_repo.clone(),
+        "keycloak",
+        &["authentik", "keycloak"],
+    )
+    .await;
+    let revoke = TestRequest::delete()
+        .uri(&format!("/api/v1/auth/tokens/{id}"))
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&other, revoke).await.status(), 404);
+
+    // And the owner can still revoke it, so the scoping did not simply break.
+    let mine = TestRequest::delete()
+        .uri(&format!("/api/v1/auth/tokens/{id}"))
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, mine).await.status(), 204);
+}
+
+#[actix_web::test]
+async fn a_static_token_session_cannot_list_or_revoke() {
+    // Managing tokens takes an interactive login. A leaked machine credential
+    // must not be able to enumerate its victim's other tokens, nor revoke them.
+    let app = make_app_with_tokens(InMemoryRepo::new(), InMemoryTokenRepository::new()).await;
+    for req in [
+        TestRequest::get()
+            .uri("/api/v1/auth/tokens")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+        TestRequest::delete()
+            .uri(&format!("/api/v1/auth/tokens/{}", Uuid::new_v4()))
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    ] {
+        assert_eq!(call_service(&app, req).await.status(), 403);
+    }
+}
+
+#[actix_web::test]
+async fn the_same_name_is_free_for_a_different_provider() {
+    // Uniqueness is per principal, matching the `uq_user_token_name` index.
+    let token_repo = InMemoryTokenRepository::new();
+    let body = serde_json::json!({"name": "ci", "expires_in_days": 7, "role": "user"});
+
+    for provider in ["authentik", "keycloak"] {
+        let app = make_app_with_oidc_provider(
+            InMemoryRepo::new(),
+            token_repo.clone(),
+            // `make_app_with_oidc_provider` takes &'static str, so match on it.
+            if provider == "authentik" {
+                "authentik"
+            } else {
+                "keycloak"
+            },
+            &["authentik", "keycloak"],
+        )
+        .await;
+        let req = TestRequest::post()
+            .uri("/api/v1/auth/tokens")
+            .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+            .set_json(&body)
+            .to_request();
+        assert_eq!(
+            call_service(&app, req).await.status(),
+            201,
+            "'ci' must be free under {provider}"
+        );
+    }
 }
 
 #[actix_web::test]

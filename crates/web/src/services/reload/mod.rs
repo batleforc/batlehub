@@ -114,6 +114,7 @@ pub struct PendingReload {
     /// Pre-built, ready to swap in — no async work required during apply.
     pub new_hot: HotConfig,
     pub new_access: AccessConfig,
+    pub new_search_readmes: bool,
     pub new_registry_map: RegistryMap,
     pub new_registry_mode_map: RegistryModeMap,
     pub new_upstream_map: UpstreamMap,
@@ -165,6 +166,13 @@ pub struct BuiltHotState {
     /// Go checksum database URLs (RFC 0009 §7.4).
     pub sumdb_map: SumDbMap,
     pub registry_host_map: RegistryHostMap,
+    /// `[search] readmes` (RFC 0007-bis §4.1).
+    ///
+    /// Carried through the reload path rather than read once at startup because
+    /// it governs an index read on the catalogue's busiest endpoint, and
+    /// "restart the server to stop searching prose" is not an answer an operator
+    /// should have to accept.
+    pub search_readmes: bool,
 }
 
 /// Builds a new hot-reloadable bundle from an `AppConfig`.
@@ -179,6 +187,7 @@ pub type HotConfigBuilder =
 pub struct ConfigReloadService {
     pub(super) hot: HotConfigLock,
     pub(super) access: AccessConfigLock,
+    pub(super) search: crate::SearchConfigLock,
     pub(super) registry_map: RegistryMap,
     pub(super) registry_mode_map: RegistryModeMap,
     pub(super) upstream_map: UpstreamMap,
@@ -233,6 +242,9 @@ pub struct ConfigReloadService {
 pub struct ConfigReloadParams {
     pub hot: HotConfigLock,
     pub access: AccessConfigLock,
+    /// The app's live `[search] readmes` handle — the same one registered as
+    /// `app_data`, not a fresh one, for the reason `proxy_trust` gives below.
+    pub search: crate::SearchConfigLock,
     pub registry_map: RegistryMap,
     pub registry_mode_map: RegistryModeMap,
     pub upstream_map: UpstreamMap,
@@ -259,6 +271,7 @@ impl ConfigReloadService {
         let ConfigReloadParams {
             hot,
             access,
+            search,
             registry_map,
             registry_mode_map,
             upstream_map,
@@ -277,6 +290,7 @@ impl ConfigReloadService {
         Self {
             hot,
             access,
+            search,
             registry_map,
             registry_mode_map,
             upstream_map,

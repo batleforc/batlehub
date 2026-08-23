@@ -5,7 +5,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 use batlehub_core::{
-    entities::{PackageId, PackageMetadata},
+    entities::{MetadataLinks, MetadataReadme, PackageId, PackageMetadata, ReadmeFormat},
     error::CoreError,
     ports::{DocumentKind, FetchedArtifact, RegistryClient, UpstreamPackage, VersionDocument},
 };
@@ -55,6 +55,42 @@ struct NpmPackument {
     /// (`application/json`); absent in the abbreviated install manifest.
     #[serde(default)]
     time: HashMap<String, String>,
+    /// The package's README, at the document root.
+    ///
+    /// Package-level, not per-version: npm carries both, and this one describes
+    /// whatever `dist-tags.latest` currently points at. It is attributed to that
+    /// version and to no other (RFC 0007, decision 6) — inventing a per-version
+    /// claim from a package-level field would be a guess presented as a fact.
+    #[serde(default)]
+    readme: Option<String>,
+    /// The package's repository, at the document root — the fallback when the
+    /// version's own entry omits it, which is common for older publishes.
+    #[serde(default)]
+    repository: Option<NpmRepository>,
+    #[serde(default)]
+    homepage: Option<String>,
+}
+
+/// npm spells this two ways and both are in the wild: a bare string (often the
+/// `github:user/repo` shorthand) or `{ "type": "git", "url": "git+https://…" }`.
+/// `MetadataLinks` untangles the spelling; this only has to accept both shapes.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum NpmRepository {
+    Url(String),
+    Object {
+        #[serde(default)]
+        url: Option<String>,
+    },
+}
+
+impl NpmRepository {
+    fn url(&self) -> Option<&str> {
+        match self {
+            Self::Url(url) => Some(url),
+            Self::Object { url } => url.as_deref(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,6 +100,20 @@ struct NpmVersionMeta {
     dist: NpmDist,
     #[serde(rename = "_npmUser")]
     npm_user: Option<NpmUser>,
+    /// This version's own README, when the packument carries one.
+    ///
+    /// Often absent or the placeholder `"ERROR: No README data found!"` for
+    /// versions published by tooling that only wrote the tarball — which is why
+    /// npm's `readme_support()` is `MetadataThenArchive` and not `Metadata`.
+    #[serde(default)]
+    readme: Option<String>,
+    /// This version's own repository. Preferred over the document root's: a
+    /// package that moved forge between releases named the old one in the old
+    /// version, and that is the honest answer for *that* version.
+    #[serde(default)]
+    repository: Option<NpmRepository>,
+    #[serde(default)]
+    homepage: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,6 +163,19 @@ impl RegistryClient for NpmRegistryClient {
             "resolved_version": resolved_version,
             "tarball": version_meta.dist.tarball,
             "publisher": version_meta.npm_user.as_ref().and_then(|u| u.name.as_deref()),
+            "readme": packument_readme(&packument, version_meta, &resolved_version),
+            // The version's own, falling back to the document root's.
+            "links": MetadataLinks::new(
+                version_meta
+                    .repository
+                    .as_ref()
+                    .or(packument.repository.as_ref())
+                    .and_then(NpmRepository::url),
+                version_meta
+                    .homepage
+                    .as_deref()
+                    .or(packument.homepage.as_deref()),
+            ),
         });
 
         let published_at = packument
@@ -259,6 +322,45 @@ fn resolve_dist_tag<'a>(dist_tags: &'a HashMap<String, String>, version: &'a str
         .unwrap_or(version)
 }
 
+/// npm's own placeholder for "the tarball had no README".
+///
+/// It is a string, so a naïve `Option::is_some` would store it and the console
+/// would render an error message as documentation.
+const NPM_MISSING_README: &str = "ERROR: No README data found!";
+
+/// The README to attribute to `resolved_version`, from a packument.
+///
+/// Two sources, in order: the version's own `readme`, and — only when this
+/// version is the one `dist-tags.latest` names — the document root's, flagged
+/// as package-level so the panel can say which it is showing. There is no third
+/// case: attributing the root README to an arbitrary version would show `2.x`'s
+/// API to a `1.x` reader, which is the failure RFC 0007 §2.4 is about.
+///
+/// Returns `None` when neither carries one; npm's tarball still might, and
+/// `readme_support()` says `MetadataThenArchive` for exactly that reason.
+fn packument_readme(
+    packument: &NpmPackument,
+    version_meta: &NpmVersionMeta,
+    resolved_version: &str,
+) -> Option<MetadataReadme> {
+    let usable = |s: &Option<String>| {
+        s.as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty() && *t != NPM_MISSING_README)
+            .map(str::to_owned)
+    };
+
+    if let Some(text) = usable(&version_meta.readme) {
+        return Some(MetadataReadme::text(text, ReadmeFormat::Markdown));
+    }
+    if packument.dist_tags.get("latest").map(String::as_str) == Some(resolved_version) {
+        if let Some(text) = usable(&packument.readme) {
+            return Some(MetadataReadme::text(text, ReadmeFormat::Markdown).package_level());
+        }
+    }
+    None
+}
+
 /// Select the best checksum available: `integrity` (preferred) over `shasum`.
 fn pick_checksum(dist: &NpmDist) -> Option<String> {
     if !dist.integrity.is_empty() {
@@ -383,5 +485,151 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(CoreError::Registry(_))));
+    }
+    // ── README capture (RFC 0007 §2.1) ────────────────────────────────────────
+
+    /// A packument that carries the text per version answers with that
+    /// version's own README, not the package's.
+    #[tokio::test]
+    async fn a_per_version_readme_reaches_the_extra_channel() {
+        let mut server = mockito::Server::new_async().await;
+        let body = r##"{
+            "dist-tags": {"latest": "2.0.0"},
+            "readme": "# the package README",
+            "versions": {
+                "1.0.0": {
+                    "version": "1.0.0",
+                    "readme": "# the 1.x README",
+                    "dist": {"tarball": "URL/lodash-1.0.0.tgz"}
+                },
+                "2.0.0": {
+                    "version": "2.0.0",
+                    "readme": "# the 2.x README",
+                    "dist": {"tarball": "URL/lodash-2.0.0.tgz"}
+                }
+            }
+        }"##
+        .replace("URL", &server.url());
+        let _mock = server
+            .mock("GET", "/lodash")
+            .with_status(200)
+            .with_body(body)
+            .expect(2)
+            .create_async()
+            .await;
+
+        let client = NpmRegistryClient::new(server.url(), &Default::default()).unwrap();
+
+        for (version, expected) in [("1.0.0", "# the 1.x README"), ("2.0.0", "# the 2.x README")] {
+            let meta = client
+                .resolve_metadata(&PackageId::new("npm", "lodash", version))
+                .await
+                .unwrap();
+            let found = MetadataReadme::from_extra(&meta.extra).expect("readme captured");
+            assert_eq!(found.content.as_deref(), Some(expected));
+            assert_eq!(found.format, ReadmeFormat::Markdown);
+            // A version's own README is its own, not a package-level guess —
+            // even for the version `dist-tags.latest` names.
+            assert!(!found.package_level);
+        }
+    }
+
+    /// The document-root README is attributed to the version `dist-tags.latest`
+    /// names, labelled as package-level, and **not** to any other version:
+    /// inventing a per-version claim from a package-level field would show
+    /// 2.x's API to a 1.x reader (RFC 0007 §2.4).
+    #[tokio::test]
+    async fn the_root_readme_is_attributed_only_to_latest_and_labelled() {
+        let mut server = mockito::Server::new_async().await;
+        let body = r##"{
+            "dist-tags": {"latest": "2.0.0"},
+            "readme": "# the package README",
+            "versions": {
+                "1.0.0": {"version": "1.0.0", "dist": {"tarball": "URL/a.tgz"}},
+                "2.0.0": {"version": "2.0.0", "dist": {"tarball": "URL/b.tgz"}}
+            }
+        }"##
+        .replace("URL", &server.url());
+        let _mock = server
+            .mock("GET", "/lodash")
+            .with_status(200)
+            .with_body(body)
+            .expect(2)
+            .create_async()
+            .await;
+
+        let client = NpmRegistryClient::new(server.url(), &Default::default()).unwrap();
+
+        let latest = client
+            .resolve_metadata(&PackageId::new("npm", "lodash", "2.0.0"))
+            .await
+            .unwrap();
+        let found = MetadataReadme::from_extra(&latest.extra).expect("readme captured");
+        assert_eq!(found.content.as_deref(), Some("# the package README"));
+        assert!(found.package_level);
+
+        let older = client
+            .resolve_metadata(&PackageId::new("npm", "lodash", "1.0.0"))
+            .await
+            .unwrap();
+        assert_eq!(MetadataReadme::from_extra(&older.extra), None);
+    }
+
+    /// npm writes a *string* when the tarball had no README, so a naïve
+    /// `Option::is_some` would store an error message as documentation.
+    #[tokio::test]
+    async fn npms_missing_readme_placeholder_is_not_a_readme() {
+        let mut server = mockito::Server::new_async().await;
+        let body = r##"{
+            "dist-tags": {"latest": "1.0.0"},
+            "readme": "ERROR: No README data found!",
+            "versions": {
+                "1.0.0": {
+                    "version": "1.0.0",
+                    "readme": "   ",
+                    "dist": {"tarball": "URL/a.tgz"}
+                }
+            }
+        }"##
+        .replace("URL", &server.url());
+        let _mock = server
+            .mock("GET", "/lodash")
+            .with_status(200)
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = NpmRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let meta = client
+            .resolve_metadata(&PackageId::new("npm", "lodash", "1.0.0"))
+            .await
+            .unwrap();
+        assert_eq!(MetadataReadme::from_extra(&meta.extra), None);
+    }
+
+    /// A packument with no README anywhere costs nothing and claims nothing —
+    /// npm's tarball may still have one, which is why its support is
+    /// `MetadataThenArchive`.
+    #[tokio::test]
+    async fn a_packument_without_a_readme_captures_nothing() {
+        let mut server = mockito::Server::new_async().await;
+        let body = r##"{
+            "dist-tags": {"latest": "1.0.0"},
+            "versions": {"1.0.0": {"version": "1.0.0", "dist": {"tarball": "URL/a.tgz"}}}
+        }"##
+        .replace("URL", &server.url());
+        let _mock = server
+            .mock("GET", "/lodash")
+            .with_status(200)
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = NpmRegistryClient::new(server.url(), &Default::default()).unwrap();
+        let meta = client
+            .resolve_metadata(&PackageId::new("npm", "lodash", "1.0.0"))
+            .await
+            .unwrap();
+        assert_eq!(MetadataReadme::from_extra(&meta.extra), None);
     }
 }

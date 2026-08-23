@@ -1815,3 +1815,53 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
     ],
   },
 ];
+
+/**
+ * The one line that installs *this* version, per registry type.
+ *
+ * Data, not a `switch` in a page: the detail page's own `downloadUrl` was a
+ * hand-written switch covering eight of the twenty-one protocols, and the other
+ * thirteen rendered an em dash under a column headed "Download". Adding a
+ * registry type should not mean editing a component — that is the defect
+ * PRODUCT principle 5 names.
+ *
+ * **`null` is a real answer and the common one.** Maven declares a dependency in
+ * a POM rather than installing it from a shell, Terraform pins a module in HCL,
+ * a JetBrains plugin is installed from inside the IDE, and Pacman has no syntax
+ * for pinning a version at all. A wrong-but-plausible command is worse than
+ * none on a page whose whole discipline is not claiming what it cannot support —
+ * so a type with no honest one-liner gets no line, and the page says which.
+ *
+ * Every command assumes the registry is already configured, which is the Setup
+ * Guide's subject and not this one's; the caller says so beside the snippet.
+ */
+export type InstallCommand = { command: string; lang: string };
+
+const INSTALL_COMMANDS: Record<string, (name: string, version: string) => InstallCommand> = {
+  npm: (n, v) => ({ command: `npm install ${n}@${v}`, lang: "bash" }),
+  cargo: (n, v) => ({ command: `cargo add ${n}@${v}`, lang: "bash" }),
+  pypi: (n, v) => ({ command: `pip install ${n}==${v}`, lang: "bash" }),
+  rubygems: (n, v) => ({ command: `gem install ${n} -v ${v}`, lang: "bash" }),
+  nuget: (n, v) => ({ command: `dotnet add package ${n} --version ${v}`, lang: "bash" }),
+  goproxy: (n, v) => ({ command: `go get ${n}@${v}`, lang: "bash" }),
+  composer: (n, v) => ({ command: `composer require ${n}:${v}`, lang: "bash" }),
+  conda: (n, v) => ({ command: `conda install ${n}=${v}`, lang: "bash" }),
+  deb: (n, v) => ({ command: `apt install ${n}=${v}`, lang: "bash" }),
+  rpm: (n, v) => ({ command: `dnf install ${n}-${v}`, lang: "bash" }),
+  // `mvn dependency:get` takes the coordinate whole, and a Maven package's name
+  // in this console *is* `group:artifact` — so the one shell command Maven has
+  // for "fetch exactly this" composes without parsing the name apart.
+  maven: (n, v) => ({ command: `mvn dependency:get -Dartifact=${n}:${v}`, lang: "bash" }),
+  openvsx: (n, v) => ({ command: `code --install-extension ${n}@${v}`, lang: "bash" }),
+  "vscode-marketplace": (n, v) => ({ command: `code --install-extension ${n}@${v}`, lang: "bash" }),
+};
+
+/** The install line for a coordinate, or `null` where the type has no honest one. */
+export function installCommandFor(
+  apiType: string | null | undefined,
+  name: string,
+  version: string,
+): InstallCommand | null {
+  if (!apiType) return null;
+  return INSTALL_COMMANDS[apiType]?.(name, version) ?? null;
+}

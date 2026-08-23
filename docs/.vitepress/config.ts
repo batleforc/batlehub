@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitepress";
+import { withMermaid } from "vitepress-plugin-mermaid";
 
 /**
  * The RFC status vocabulary, exactly as `internal/0000-rfc-template.md` defines
@@ -62,7 +63,14 @@ function rfcStatus(srcDir: string, filePath: string) {
   return { state, note, settled: SETTLED.test(state) };
 }
 
-export default defineConfig({
+// `withMermaid` turns every ```mermaid fence into a rendered diagram. Without
+// it the fences shipped as syntax-highlighted source: valid, readable, and not
+// what a reader of an architecture section is looking for. It only wraps the
+// config — `defineConfig` still types everything below.
+//
+// Diagram *syntax* is not checked by the build (the plugin renders on the
+// client), which is why `task docs:mermaid` parses every fence separately.
+const config = withMermaid(defineConfig({
   appearance: "dark",
   title: "BatleHub",
   description:
@@ -435,6 +443,7 @@ export default defineConfig({
           items: [
             { text: "Incident response", link: "/operations/incident-response" },
             { text: "Disaster recovery", link: "/operations/disaster-recovery" },
+            { text: "What leaves this instance", link: "/operations/egress" },
             {
               text: "Production hardening",
               link: "/operations/production-hardening",
@@ -512,12 +521,36 @@ export default defineConfig({
               link: "/rfc/0007-package-readmes",
             },
             {
+              text: "0007-bis — The three 0007 deferred",
+              link: "/rfc/0007-bis-images-search-and-fetch",
+            },
+            {
               text: "0008 — mise in an air-gapped estate",
               link: "/rfc/0008-mise-in-an-air-gapped-estate",
             },
             {
               text: "0009 — Every endpoint the client actually calls",
               link: "/rfc/0009-protocol-coverage",
+            },
+            {
+              text: "0010 — The toolchain layer",
+              link: "/rfc/0010-toolchain-managers",
+            },
+            {
+              text: "0011 — Authenticated OpenVSX access",
+              link: "/rfc/0011-openvsx-login",
+            },
+            {
+              text: "0011-bis — Namespace-scoped visibility",
+              link: "/rfc/0011-bis-namespace-scoped-visibility",
+            },
+            {
+              text: "0012 — Signed URLs for the credential-less request",
+              link: "/rfc/0012-signed-urls-for-terraform",
+            },
+            {
+              text: "0013 — What the console owes a reader",
+              link: "/rfc/0013-console-answers-for-a-package",
             },
           ],
         },
@@ -539,4 +572,39 @@ export default defineConfig({
       provider: "local",
     },
   },
-});
+}));
+
+// `withMermaid` pre-declares mermaid's CommonJS dependencies for the dev
+// server's dependency optimiser, and it does so with bare names —
+// `optimizeDeps.include = ["@braintree/sanitize-url", "dayjs", "debug",
+// "cytoscape", "cytoscape-cose-bilkent"]`. Those names resolve from the project
+// root, and under pnpm's isolated `node_modules` none of them are there: they
+// are mermaid's dependencies, not the docs site's, so they only exist under
+// `.pnpm/…/node_modules/mermaid/node_modules`. Vite skips every entry it cannot
+// resolve, so nothing gets pre-bundled.
+//
+// What that costs is not a warning, it is a broken page. `mermaid` itself is
+// never scanned — the plugin injects its import from a `transform` hook with
+// `enforce: "post"`, after the optimiser's scan — so it is served straight from
+// source, and its `import dayjs from "dayjs"` lands on dayjs's raw UMD file.
+// That file has no ESM exports, and the browser fails the module with
+// "doesn't provide an export named: 'default'".
+//
+// Naming `mermaid` is the fix, and the reason the nested `mermaid > …` entries
+// are here too rather than deleted: esbuild bundles mermaid *and* its CJS
+// dependencies into one pre-bundled ESM chunk, so the interop happens at build
+// time and no raw CJS file is ever requested. The `mermaid > x` form is Vite's
+// own syntax for "resolve x the way mermaid would", which is exactly the step
+// pnpm's layout breaks.
+//
+// `debug` is dropped rather than rewritten: mermaid 11 no longer depends on it,
+// and an unresolvable entry is exactly the failure being fixed here.
+config.vite!.optimizeDeps!.include = [
+  "mermaid",
+  "mermaid > @braintree/sanitize-url",
+  "mermaid > dayjs",
+  "mermaid > cytoscape",
+  "mermaid > cytoscape-cose-bilkent",
+];
+
+export default config;

@@ -29,6 +29,8 @@ and to what your organisation has actually agreed with its own users.
 - **[Production hardening](/operations/production-hardening)** — the settings
   that differ between a working instance and one you would put in front of a
   company.
+- **[What leaves this instance](/operations/egress)** — every outbound request
+  this server makes, what starts it, and how to stop it.
 
 ## Compliance
 

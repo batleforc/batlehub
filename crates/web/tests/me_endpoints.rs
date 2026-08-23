@@ -115,6 +115,8 @@ async fn make_me_app(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     let admin_svc =
         Arc::new(AdminService::new(repo_dyn).with_vulnerability_repo(Arc::clone(&vuln_dyn)));
@@ -157,6 +159,7 @@ fn me_app_parts() -> MeApp {
         sbom: None,
         explore_cache: None,
         package_repo: None,
+        readme: None,
     });
     MeApp {
         repo: InMemoryRepo::new(),

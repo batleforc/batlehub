@@ -71,6 +71,8 @@ async fn cargo_registry_index_fetches_from_upstream_and_returns_content() {
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);

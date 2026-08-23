@@ -1,4 +1,11 @@
-export type BadgeVariant = "default" | "secondary" | "destructive" | "outline" | "copper";
+export type BadgeVariant =
+  | "default"
+  | "secondary"
+  | "destructive"
+  | "outline"
+  | "copper"
+  /** An affirmative answer: full ink on a rule. See `Badge.vue`. */
+  | "known";
 
 /** Looks up a badge variant from a `key -> variant` map, falling back when the key is unmapped. */
 export function variantFromMap<K extends string>(
@@ -37,14 +44,22 @@ export function firewallVariant(status: string | undefined): BadgeVariant {
   return "outline";
 }
 
-/** Vulnerability severity badge. */
+/**
+ * Vulnerability severity badge.
+ *
+ * `medium` used to be `default`, which resolves to the same `--accent` as
+ * `destructive` — so critical, high and medium all rendered in one crimson and
+ * the badge distinguished nothing but its own text. Copper is what DESIGN.md
+ * extended to "a value going the wrong way without being a refusal yet", which
+ * is exactly what a medium finding is.
+ */
 export function severityVariant(severity: string): BadgeVariant {
   switch (severity) {
     case "critical":
     case "high":
       return "destructive";
     case "medium":
-      return "default";
+      return "copper";
     default:
       return "secondary";
   }

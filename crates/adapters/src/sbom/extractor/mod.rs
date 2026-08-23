@@ -3,10 +3,16 @@ use bytes::Bytes;
 use batlehub_core::ports::ExtractedManifest;
 
 mod cargo;
+mod composer;
+mod conda;
+mod goproxy;
 mod maven;
 mod npm;
 mod nuget;
 mod pypi;
+mod readme;
+mod rubygems;
+mod terraform;
 
 /// Archive-based SBOM manifest extractor.
 ///
@@ -23,9 +29,18 @@ impl batlehub_core::ports::SbomExtractor for ArchiveSbomExtractor {
             "maven" => maven::extract_maven_manifest(data),
             "pypi" => pypi::extract_pypi_manifest(data),
             "nuget" => nuget::extract_nuget_manifest(data),
-            // The other sixteen registry types have no manifest parser, so
-            // they report an unknown licence rather than an absent one — which
-            // is why `license_gate.allow_unknown` defaults to true.
+            // The five below answer only for the README: their archives carry
+            // no manifest this reads dependencies or a licence out of, which is
+            // why `README_EXTRACTION_TYPES` and `LICENSE_EXTRACTION_TYPES` are
+            // different lists (RFC 0007 §5.2).
+            "goproxy" => goproxy::extract_goproxy_manifest(data),
+            "composer" => composer::extract_composer_manifest(data),
+            "terraform" => terraform::extract_terraform_manifest(data),
+            "conda" => conda::extract_conda_manifest(data),
+            "rubygems" => rubygems::extract_rubygems_manifest(data),
+            // The remaining registry types have no parser at all, so they report
+            // an unknown licence rather than an absent one — which is why
+            // `license_gate.allow_unknown` defaults to true — and no README.
             _ => ExtractedManifest::default(),
         }
     }
@@ -45,6 +60,55 @@ mod tests {
             extractor.extract(&data, "unknown"),
             ExtractedManifest::default()
         );
+    }
+
+    /// The README half of the same contract.
+    ///
+    /// A different list from the licence one, and deliberately so: five kinds
+    /// answer here and nowhere else, because their archives carry a README and
+    /// no machine-readable manifest. A type listed with no parser would make the
+    /// published support table claim coverage dispatch cannot deliver, which is
+    /// the failure RFC 0009 was written about.
+    #[test]
+    fn dispatch_matches_the_declared_readme_types() {
+        let mut dispatched = [
+            "cargo",
+            "npm",
+            "pypi",
+            "nuget",
+            "goproxy",
+            "composer",
+            "terraform",
+            "conda",
+            "rubygems",
+        ];
+        dispatched.sort_unstable();
+        let mut declared = batlehub_core::ports::README_EXTRACTION_TYPES.to_vec();
+        declared.sort_unstable();
+        assert_eq!(
+            dispatched.as_slice(),
+            declared.as_slice(),
+            "update README_EXTRACTION_TYPES when adding or removing a README parser"
+        );
+    }
+
+    /// The adapter's list and the user-facing `readme_support()` answer the same
+    /// question from two sides, and an operator reads the second one. A kind
+    /// whose support says the archive is read must have a parser here, and a
+    /// parser here must belong to a kind that says so.
+    #[test]
+    fn readme_support_matches_the_extractors() {
+        use batlehub_core::entities::RegistryKind;
+
+        for kind in RegistryKind::ALL {
+            let reads_archive = kind.readme_support().reads_the_archive();
+            let has_parser = batlehub_core::ports::README_EXTRACTION_TYPES.contains(&kind.as_str());
+            assert_eq!(
+                reads_archive, has_parser,
+                "{kind}: readme_support() says reads_the_archive = {reads_archive}, \
+                 but README_EXTRACTION_TYPES says {has_parser}"
+            );
+        }
     }
 
     /// The dispatch above and `LICENSE_EXTRACTION_TYPES` must not drift.

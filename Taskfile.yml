@@ -11,6 +11,9 @@ vars:
   # "Browser sidecar" task group below.
   BROWSER_EXEC: kubectl exec ${DEVWORKSPACE_NAMESPACE:+-n ${DEVWORKSPACE_NAMESPACE}} ${HOSTNAME} -c browser --
   BROWSER_LOGS: kubectl logs ${DEVWORKSPACE_NAMESPACE:+-n ${DEVWORKSPACE_NAMESPACE}} ${HOSTNAME} -c browser
+  # Same hop into the dex sidecar — see the "Dex" task group below.
+  DEX_EXEC: kubectl exec ${DEVWORKSPACE_NAMESPACE:+-n ${DEVWORKSPACE_NAMESPACE}} ${HOSTNAME} -c dex --
+  DEX_LOGS: kubectl logs ${DEVWORKSPACE_NAMESPACE:+-n ${DEVWORKSPACE_NAMESPACE}} ${HOSTNAME} -c dex
 
 tasks:
   init:
@@ -30,6 +33,26 @@ tasks:
     desc: Type-check the entire workspace without building
     cmds:
       - cargo check --workspace
+
+  clean:stale:
+    desc: "Drop build artefacts not touched since yesterday (cargo-sweep --time 1)"
+    # Cargo never removes anything from `target/`: when a metadata hash changes —
+    # a dependency bump, a feature flip, a new toolchain — the new artefact is
+    # written *beside* the old one and the old one stays forever. Measured on
+    # this workspace: editing a source file and rebuilding the same way adds
+    # nothing, while one change of build shape added 152 files and 167 MB that
+    # nothing would ever reclaim.
+    #
+    # `--time 1` is the answer to that and not to the incremental cache: anything
+    # today's work has touched is kept, anything left over from yesterday's is
+    # not. Run it after a dependency bump, or on a schedule.
+    #
+    # It is safe by construction — everything here is reproducible from source,
+    # and the only cost of sweeping something still wanted is rebuilding it
+    # (~11 min for the full workspace, far less for a subset).
+    cmds:
+      - cargo sweep --time 1
+      - 'du -sh target || true'
 
   test:
     desc: Run all workspace tests
@@ -115,6 +138,23 @@ tasks:
       - podman run -d --name {{.PG_CONTAINER}} -p {{.PG_PORT}}:5432 -e POSTGRES_PASSWORD={{.PG_PASSWORD}} postgres:17-alpine
       - until podman exec {{.PG_CONTAINER}} pg_isready -U postgres; do sleep 1; done
       - cargo test -p batlehub-adapters --test pg_stats_history -- --nocapture
+
+  test:pg-readmes:
+    desc: Run PgReadmeRepository integration tests (starts a temporary Postgres container via Podman)
+    vars:
+      PG_CONTAINER: batlehub-test-pg-readmes
+      PG_PORT: "15437"
+      PG_PASSWORD: testpass
+      CONF_OVERRIDE: /tmp/batlehub-containers.conf
+    env:
+      CONTAINERS_CONF_OVERRIDE: "{{.CONF_OVERRIDE}}"
+      DATABASE_URL: "postgresql://postgres:{{.PG_PASSWORD}}@127.0.0.1:{{.PG_PORT}}/postgres"
+    cmds:
+      - printf '[network]\ndefault_rootless_network_cmd = "pasta"\n' > {{.CONF_OVERRIDE}}
+      - defer: podman rm -f {{.PG_CONTAINER}} 2>/dev/null || true
+      - podman run -d --name {{.PG_CONTAINER}} -p {{.PG_PORT}}:5432 -e POSTGRES_PASSWORD={{.PG_PASSWORD}} postgres:17-alpine
+      - until podman exec {{.PG_CONTAINER}} pg_isready -U postgres; do sleep 1; done
+      - cargo test -p batlehub-adapters --test pg_readmes -- --nocapture
 
   test:pg-me-scoping:
     desc: Run the /api/v1/me scoping integration tests (starts a temporary Postgres container via Podman)
@@ -401,13 +441,23 @@ tasks:
       - cargo llvm-cov report --fail-under-lines 80 --ignore-filename-regex "{{.COVERAGE_EXCLUDE}}"
 
   fuzz:
-    desc: "Run a fuzz target for up to MAX_TIME seconds (default: 30). Set TARGET to pick one: fuzz_rbac_evaluate | fuzz_package_id_cache_key | fuzz_deny_latest | fuzz_release_age"
+    desc: "Run a fuzz target for up to MAX_TIME seconds (default: 30). Set TARGET to pick one: fuzz_rbac_evaluate | fuzz_package_id_cache_key | fuzz_deny_latest | fuzz_release_age | fuzz_readme_render | fuzz_svg_sanitize"
     dir: fuzz
     vars:
       TARGET: '{{.TARGET | default "fuzz_deny_latest"}}'
       MAX_TIME: '{{.MAX_TIME | default "30"}}'
     cmds:
       - cargo +nightly fuzz run {{.TARGET}} -- -max_total_time={{.MAX_TIME}}
+
+  fuzz:check:
+    desc: "Every fuzz target still compiles — what CI gates on each PR"
+    cmds:
+      # `fuzz/` is its own workspace, so `cargo check --workspace` and clippy
+      # never see it. Four of the six targets had been failing to compile against
+      # types that moved underneath them, and nothing said so: a target that does
+      # not build reads like a guard in the module docs that name it, and is
+      # none. Needs no nightly — a type error is a type error.
+      - cargo check --manifest-path fuzz/Cargo.toml --bins --all-targets
 
   lint:
     desc: Run clippy lints across the workspace
@@ -521,11 +571,28 @@ tasks:
     cmds:
       - cargo run -p batlehub-server -- --config config.example.toml
 
+  # config.example-space.toml names no workspace — it reads the three URLs below
+  # out of the environment, so the tracked file stays workspace-agnostic and the
+  # `url` helper remains the single source of truth for what this workspace is
+  # called. `url` prints a trailing slash; every one of these is concatenated
+  # with a path or compared against an `iss`, so all three are stripped.
+  #
+  # LOCAL=1 mirrors `task dex:config LOCAL=1`: loopback everywhere, reachable
+  # from the server and the che-browser sidecar but not from your own browser.
+  # The two must agree — the issuer here is checked against the one dex mints.
   run:space:
-    desc: Start the server with the example config (requires postgres)
+    desc: "Start the server against the dex sidecar (requires postgres; LOCAL=1 for the loopback issuer)"
     env:
       OIDC_CLIENT_SECRET: "proxy-auth-secret"
+      OIDC2_CLIENT_SECRET: "proxy-auth-secret"
+      BATLEHUB_FRONT_URL:
+        sh: if [ -n "{{.LOCAL}}" ]; then echo http://localhost:5173; else url front | sed 's#/$##'; fi
+      BATLEHUB_BACK_URL:
+        sh: if [ -n "{{.LOCAL}}" ]; then echo http://localhost:8080; else url back | sed 's#/$##'; fi
+      BATLEHUB_DEX_ISSUER:
+        sh: if [ -n "{{.LOCAL}}" ]; then echo http://localhost:9000; else url dex | sed 's#/$##'; fi
     cmds:
+      - 'echo "front → $BATLEHUB_FRONT_URL    back → $BATLEHUB_BACK_URL    dex → $BATLEHUB_DEX_ISSUER"'
       - cargo run -p batlehub-server -- --config config.example-space.toml
 
   run:s3:
@@ -748,7 +815,13 @@ tasks:
       # behind requiresAuth/requiresAdmin and would redirect to /login, so
       # scanning them would measure the login page 14 times over — see the
       # note in RFC 0003 §13 about what this gate still cannot see.
-      ROUTES: '{{.ROUTES | default "/ /login /packages /setup /tools/access-check /tools/url-mapper"}}'
+      #
+      # Keep this list identical to the `for route in …` loop in
+      # `.github/workflows/front-design.yaml`: a local reproduction that scans
+      # fewer routes than CI is the kind of gate you run, see green, push, and
+      # then watch go red — `/packages/npm/react` was in CI's loop and not in
+      # this one for exactly one commit.
+      ROUTES: '{{.ROUTES | default "/ /login /packages /packages/npm/react /setup /tools/access-check /tools/url-mapper"}}'
       # cd into the repo so the detector loads DESIGN.md and .impeccable/ — a
       # design-system-aware scan is the whole point of R6.
       ENV: 'export PATH={{.NODE_BIN}}:/usr/local/bin:/usr/bin:/bin PUPPETEER_EXECUTABLE_PATH=/opt/chrome/chrome CI=1; cd {{.ROOT_DIR}};'
@@ -760,8 +833,11 @@ tasks:
       # until it passes.
       SCAN: 'for r in {{.ROUTES}}; do echo "→ $r"; npx --yes impeccable detect --viewport "$V" "{{.BASE}}$r" || fail=1; done; [ -z "$fail" ]'
     cmds:
-      # The same two viewports CI uses: contrast and hierarchy are width-blind,
-      # overflow and reflow are not.
+      # The same two viewports CI's `impeccable detect` loop uses, and two is
+      # right *here*: these are anti-pattern rules over what is on the page, and
+      # they do not change between 1024 and 768. What does change at those widths
+      # is overflow and reflow, so the two middle widths went into
+      # `ui:design:routes` below, which measures them — it scans four.
       - '{{.BROWSER_EXEC}} sh -c {{printf "%s V=1440x900; %s" .ENV .SCAN | squote}}'
       - '{{.BROWSER_EXEC}} sh -c {{printf "%s V=390x844; %s" .ENV .SCAN | squote}}'
       # axe and the ramp check now come from `ui:design:routes`, which measures
@@ -773,8 +849,11 @@ tasks:
       - task: ui:design:routes
         vars: { PUBLIC_ONLY: "--public-only", BASE: "{{.BASE}}" }
 
-  # One gate, every rendered route, both viewports — axe plus the type ramp and
-  # the display face (RFC 0004-bis §4.4).
+  # One gate, every rendered route, four viewports — axe plus the type ramp and
+  # the display face (RFC 0004-bis §4.4). 1440 and 390 were the original pair;
+  # 1024 and 768 were added because the band between them is where fixed table
+  # columns starve the flexible one, and both ends of the old pair are blind to
+  # it (390 releases every fixed width, 1440 has room for all of them).
   #
   # The 15 admin pages and the 4 account pages sit behind router guards, and
   # both `impeccable detect` and `@axe-core/cli` scan by URL with no way to
@@ -787,8 +866,11 @@ tasks:
   #
   #   BATLEHUB_ADMIN_TOKEN=… BATLEHUB_USER_TOKEN=… task ui:design:routes
   #
-  # `/packages` is pinned as an expected failure; see EXPECTED_FAIL in the
-  # script and RFC 0004-bis O3.
+  # Nothing is pinned in the script's EXPECTED_FAIL, and that is the result
+  # rather than the absence of one: `/packages` sat in it against its own design
+  # proof until RFC 0004-bis O3 was settled, and the pass that settled it fixed
+  # the page instead of the proof. A pinned route that comes back clean fails
+  # this gate by design, so an empty EXPECTED_FAIL is the honest entry.
   ui:design:routes:
     desc: axe + type ramp over every rendered route (needs BATLEHUB_{ADMIN,USER}_TOKEN)
     deps: [browser:check]
@@ -1010,6 +1092,313 @@ tasks:
       - mc alias set local http://localhost:9900 rustfsadmin rustfsadmin
       - mc mb --ignore-existing local/artifacts
 
+  # ── Dex, the workspace's OIDC provider ────────────────────────────────────────
+  # The sidecar is declared in devfile.yaml and listens on 9000, the port the
+  # compose Authentik uses — so `localhost:9000` is the local IdP either way and
+  # only `issuer_url` tells them apart. Everything here is about one value: the
+  # issuer. It has to be a single URL that the browser is redirected to, that the
+  # backend fetches `/.well-known/openid-configuration` from, and that comes back
+  # as the `iss` this server then checks — and in a workspace that URL contains
+  # the workspace name, so it cannot be committed. Hence a rendered config.
+
+  dex:config:
+    desc: "Render dev/dex/config.yaml and the matching [[auth]] block for this workspace (LOCAL=1 for an issuer only the pod can reach)"
+    cmds:
+      - |
+        set -eu
+        if [ -n "{{.LOCAL}}" ]; then
+          # Reachable from the backend and the che-browser sidecar (one pod, one
+          # network namespace), not from your own browser. `is_secure_issuer_url`
+          # lets plain HTTP through for loopback exactly so this works.
+          issuer="http://localhost:9000"
+          back="http://localhost:8080"
+          front="http://localhost:5173"
+        else
+          # `url` prints a trailing slash; the issuer must not have one, or the
+          # `iss` dex mints and the `issuer_url` in the config stop matching.
+          issuer="$(url dex | sed 's#/$##')"
+          back="$(url back | sed 's#/$##')"
+          front="$(url front | sed 's#/$##')"
+        fi
+        # The dev password's bcrypt hash, computed here rather than committed.
+        #
+        # A `$2b$10$…` literal in a tracked file is an ERROR-severity finding for
+        # semgrep's `p/secrets` ruleset and for gitleaks, both of which gate every
+        # pull request — and neither can tell this fixture from a live credential,
+        # which is the correct behaviour for a secret scanner. Rendering it keeps
+        # the template clean without an allowlist entry that has to stay accurate
+        # for the rest of the repository's life.
+        #
+        # `DEX_PASSWORD_HASH` first, so a developer with no hasher to hand can
+        # still render; `DEX_PASSWORD` otherwise, defaulting to the "password"
+        # the template documents.
+        dex_password="${DEX_PASSWORD:-password}"
+        if [ -n "${DEX_PASSWORD_HASH:-}" ]; then
+          dex_hash="$DEX_PASSWORD_HASH"
+        elif command -v htpasswd >/dev/null 2>&1; then
+          # The form the template's own comment has always named.
+          dex_hash="$(htpasswd -bnBC 10 "" "$dex_password" | tr -d ':\n')"
+        elif command -v uv >/dev/null 2>&1; then
+          # `uv` is provisioned by mise.toml, and `--with` keeps bcrypt out of
+          # the workspace's own environment. The password travels in the
+          # environment rather than in argv: it is a password, and argv is world
+          # readable on Linux.
+          dex_hash="$(DEX_PW="$dex_password" uv run --quiet --with bcrypt python -c \
+            'import bcrypt, os; print(bcrypt.hashpw(os.environ["DEX_PW"].encode(), bcrypt.gensalt(10, prefix=b"2b")).decode())')"
+        elif python3 -c 'import bcrypt' >/dev/null 2>&1; then
+          dex_hash="$(DEX_PW="$dex_password" python3 -c \
+            'import bcrypt, os; print(bcrypt.hashpw(os.environ["DEX_PW"].encode(), bcrypt.gensalt(10, prefix=b"2b")).decode())')"
+        else
+          echo "dex:config: no bcrypt hasher found." >&2
+          echo "  Install one of: htpasswd (apache2-utils), uv (mise install), python3 + bcrypt." >&2
+          echo "  Or pass a hash you already have: DEX_PASSWORD_HASH='\$2b\$10\$…' task dex:config" >&2
+          exit 1
+        fi
+        case "$dex_hash" in
+          # dex accepts the 2a/2b/2y bcrypt prefixes and nothing else, and a
+          # silently wrong hash here is a login that fails with "invalid
+          # password" and no other clue.
+          '$2a$'*|'$2b$'*|'$2y$'*) ;;
+          *) echo "dex:config: '$dex_hash' is not a bcrypt hash" >&2; exit 1 ;;
+        esac
+        # One callback for every provider: BatleHub has a single callback route
+        # and resolves the provider from the stored login state, so a
+        # per-provider path would be a 404 after a successful password.
+        #
+        # `#` as the sed delimiter throughout: a bcrypt hash contains `/` and
+        # `$`, and the URLs contain `/`.
+        #
+        # Rendered beside the target and moved into place, never written through:
+        # the sidecar's supervisor hashes this file every two seconds to decide
+        # whether to restart dex, and a redirection that truncates first leaves a
+        # window in which what it hashes — and would then hand to dex — is half a
+        # config. `mv` within the directory is a rename, so the file is either the
+        # old one or the new one.
+        sed -e "s#__ISSUER__#$issuer#g" \
+            -e "s#__CALLBACK__#$back/api/v1/auth/oidc/callback#g" \
+            -e "s#__PASSWORD_HASH__#$dex_hash#g" \
+            dev/dex/config.tmpl.yaml > dev/dex/config.yaml.tmp
+        mv dev/dex/config.yaml.tmp dev/dex/config.yaml
+        cat > dev/dex/auth.toml <<EOF
+        # Generated by \`task dex:config\`. Replace the two [[auth]] type = "oidc"
+        # blocks in your server config with these, then restart the server.
+        #
+        # Not needed for \`task run:space\`: config.example-space.toml already
+        # describes this provider and reads the same three URLs out of the
+        # environment. This file is for a config of your own.
+        #
+        # role_claim is "email", not "groups": dex's password DB carries no group
+        # membership, so a groups claim would never arrive and every login would
+        # map to Role::Anonymous.
+        [[auth]]
+        type = "oidc"
+        issuer_url = "$issuer"
+        client_id = "proxy-auth"
+        client_secret = "\${OIDC_CLIENT_SECRET}"   # export OIDC_CLIENT_SECRET=proxy-auth-secret
+        redirect_uri = "$back/api/v1/auth/oidc/callback"
+        scopes = ["openid", "profile", "email"]
+        frontend_url = "$front"
+        user_id_claim = "email"
+        role_claim = "email"
+
+        [auth.role_mappings]
+        "admin@example.com" = "admin"
+        "dev@example.com" = "user"
+
+        # Same redirect_uri as the block above, deliberately: one callback route
+        # serves every provider, and the provider is read from the login state
+        # rather than the path. Reach this one with
+        # /api/v1/auth/oidc/login?provider=oidc2.
+        [[auth]]
+        name = "oidc2"
+        type = "oidc"
+        issuer_url = "$issuer"
+        client_id = "proxy-auth"
+        client_secret = "\${OIDC2_CLIENT_SECRET}"  # export OIDC2_CLIENT_SECRET=proxy-auth-secret
+        redirect_uri = "$back/api/v1/auth/oidc/callback"
+        scopes = ["openid", "profile", "email"]
+        frontend_url = "$front"
+        user_id_claim = "email"
+        role_claim = "email"
+
+        [auth.role_mappings]
+        "admin@example.com" = "admin"
+        "dev@example.com" = "user"
+
+        # And so the SPA on $front may call the API at all — absent means
+        # same-origin only, which is every request failing with a 400.
+        # [server]
+        # cors_allowed_origins = ["$front"]
+        EOF
+        echo "dev/dex/config.yaml   issuer $issuer"
+        echo "dev/dex/auth.toml     the [[auth]] blocks to paste into your server config"
+        echo
+      # Writing the file used to be half the job: dex reads it once, at boot, so
+      # a config rendered while dex was already running did nothing until the
+      # whole workspace was restarted. It isn't half the job any more — and it
+      # is not conditional on remembering a second command either.
+      - task: dex:reload
+
+  dex:reload:
+    desc: "Have the dex sidecar re-read dev/dex/config.yaml — seconds, and without restarting anything else"
+    cmds:
+      - |
+        set -eu
+
+        # Dex has no reload. `dex serve` parses the file once at startup and
+        # offers neither a SIGHUP path nor a validate flag (`dex serve --help`
+        # lists only the four address overrides), and the config is a file on
+        # disk rather than a row in its storage — so the only way to change it is
+        # to run the process again.
+        #
+        # What this task must NOT do is end the container to get that. Killing
+        # PID 1 in a sidecar does not restart the sidecar here: the pod is
+        # replaced and every container in it goes down together — a workspace
+        # restart, arrived at the long way round. So dex is no longer PID 1. The
+        # supervisor in devfile.yaml holds that slot and watches two files on the
+        # shared volume; this task writes one of them and waits on the other.
+        # Nothing is killed from this side, and nothing here can take the pod
+        # down even if it is wrong.
+        cfg=dev/dex/config.yaml
+        reload=dev/dex/reload
+        state=dev/dex/state
+        if [ ! -f "$cfg" ]; then
+          echo "dex:reload: no $cfg — run 'task dex:config' first" >&2
+          exit 1
+        fi
+
+        # ── Pre-flight ────────────────────────────────────────────────────────
+        # A config that does not parse makes dex exit at once, and the supervisor
+        # will then hold rather than restart it — no crash loop, but no IdP
+        # either until the file is fixed. Cheaper to find out before the running
+        # instance is asked to give up its place.
+        #
+        # The candidate is booted by the same binary that will have to live with
+        # it, in the same container. `storage.type` is `memory`
+        # (dev/dex/config.tmpl.yaml), so the second instance shares nothing with
+        # the first, and all three addresses are overridden because the real dex
+        # still holds 9000 — a candidate that tried to bind it would fail for a
+        # reason that has nothing to do with its own correctness.
+        #
+        # The exit code cannot be the verdict: a *valid* config runs until
+        # `timeout` terminates it, which is also an exit 2. What separates them is
+        # how far it got — `server=http` is logged only after parsing, validation
+        # and the bind all succeeded.
+        #
+        # kubectl is the only thing here that needs it, and it is a check, not the
+        # mechanism: without it the reload still works, it just goes in unverified.
+        if command -v kubectl >/dev/null 2>&1 && [ -n "${HOSTNAME:-}" ]; then
+          echo "dex:reload: checking $cfg with dex itself…"
+          # Two redirections, and both are load-bearing. The inner one folds dex's
+          # own stderr into the stream `$(…)` captures, inside the container. The
+          # outer one does the same for kubectl's, which otherwise prints
+          # "command terminated with exit code 2" straight to the terminal — on
+          # the *success* path, since terminating a healthy candidate is exactly
+          # what `timeout` is there to do. Captured, it is silent when the check
+          # passes and still part of the `tail -5` below when it does not.
+          out=$({{.DEX_EXEC}} /bin/sh -c \
+            'timeout 5 /usr/local/bin/dex serve /projects/proxy-cache/dev/dex/config.yaml \
+               --web-http-addr 127.0.0.1:19000 \
+               --telemetry-addr 127.0.0.1:19001 \
+               --grpc-addr 127.0.0.1:19002 2>&1' 2>&1 || true)
+          if ! printf '%s' "$out" | grep -q 'server=http'; then
+            echo "dex:reload: $cfg is not one dex can serve — the running instance is untouched." >&2
+            echo "$out" | tail -5 >&2
+            exit 1
+          fi
+        else
+          echo "dex:reload: no kubectl — skipping the pre-flight check." >&2
+        fi
+
+        # ── Ask ───────────────────────────────────────────────────────────────
+        # Nanoseconds and the shell's PID, so that two reloads in the same second
+        # are still two distinct values. The supervisor stamps this file together
+        # with the config, so a reload lands whether or not the config changed —
+        # which is the case `task dex:config` cannot cover on its own (a new
+        # client secret in the template renders to the same bytes for an
+        # unchanged issuer).
+        before="$(cat "$state" 2>/dev/null || true)"
+        printf '%s %s\n' "$(date +%s%N)" "$$" > "$reload"
+
+        # ── Wait for the ack ──────────────────────────────────────────────────
+        # The supervisor rewrites `state` each time it starts dex, so a changed
+        # value is proof the restart happened. Polling the discovery endpoint
+        # alone could not tell that apart from the *old* dex still answering on
+        # 9000 with the config you just replaced — the failure mode that looks
+        # like success.
+        acked=""
+        for _ in $(seq 1 20); do
+          if [ "$(cat "$state" 2>/dev/null || true)" != "$before" ]; then acked=1; break; fi
+          sleep 1
+        done
+
+        if [ -z "$acked" ]; then
+          # No supervisor watching. Almost always one thing: this pod predates the
+          # devfile change, so its dex container is still the boot-once one. The
+          # config on disk is correct and complete — it is only not live.
+          echo "dex:reload: the sidecar is not watching for config changes." >&2
+          echo "  This pod's dex container was started before the supervisor was added" >&2
+          echo "  to devfile.yaml. Restart the workspace once to adopt it; after that," >&2
+          echo "  'task dex:config' and 'task dex:reload' take effect in seconds." >&2
+          echo "  dev/dex/config.yaml is written either way — dex is still serving the old one." >&2
+          exit 0
+        fi
+
+        # Ask over loopback, for the reason dex:check gives: this is asking
+        # whether the process is *up*, and going out through the gateway would
+        # confuse a down sidecar with a down ingress.
+        for _ in $(seq 1 60); do
+          if curl -sf -m 2 http://localhost:9000/.well-known/openid-configuration >/dev/null 2>&1; then
+            curl -sf http://localhost:9000/.well-known/openid-configuration \
+              | python3 -c 'import json,sys; print("dex:reload: serving issuer", json.load(sys.stdin)["issuer"])'
+            exit 0
+          fi
+          sleep 1
+        done
+
+        # It restarted and did not come back. The config is left exactly as
+        # written — rolling it back would throw away an edit that may well be
+        # right — and the supervisor is holding, so nothing is looping. Its own
+        # logs say why.
+        echo "dex:reload: dex restarted but did not answer within 60s. Its own logs:" >&2
+        {{.DEX_LOGS}} --tail=20 >&2 || true
+        exit 1
+
+  dex:check:
+    desc: Fetch dex's discovery document — proves the sidecar is up and says which issuer it is serving
+    cmds:
+      - |
+        set -eu
+        # Always over loopback: this asks whether dex is *running*, and going out
+        # to the gateway to answer that would confuse a down sidecar with a down
+        # ingress. The issuer inside the document is the public one either way.
+        curl -sf http://localhost:9000/.well-known/openid-configuration \
+          | python3 -c 'import json,sys; d=json.load(sys.stdin); print("issuer:  ", d["issuer"]); print("authz:   ", d["authorization_endpoint"]); print("jwks:    ", d["jwks_uri"])'
+
+  dex:logs:
+    desc: Tail the dex sidecar's logs
+    cmds:
+      - '{{.DEX_LOGS}} {{.CLI_ARGS}}'
+
+  dex:token:
+    desc: "Mint a JWT without a browser, for curl (task dex:token -- admin@example.com password)"
+    cmds:
+      - |
+        set -eu
+        # The password grant, which dex serves for a client that asks for it. The
+        # browser flow is what SSO uses; this is for probing the API by hand.
+        args="{{.CLI_ARGS}}"
+        case "$args" in
+          *\ *) ;;
+          *) echo "usage: task dex:token -- <email> <password>" >&2; exit 1 ;;
+        esac
+        user="${args%% *}"; pass="${args##* }"
+        curl -sf http://localhost:9000/token \
+          -d grant_type=password -d scope="openid email profile" \
+          -d client_id=proxy-auth -d client_secret=proxy-auth-secret \
+          -d "username=$user" -d "password=$pass" \
+          | python3 -c 'import json,sys; print(json.load(sys.stdin)["id_token"])'
+
   # ── The documentation site (VitePress) ──────────────────────────────────────────────────
 
   docs:dev:
@@ -1094,6 +1483,50 @@ tasks:
         ' "$page" > "$page.tmp"
         mv "$page.tmp" "$page"
 
+  # ── README coverage (RFC 0007 §4.3) ──────────────────────────────────────────
+  # Which registries carry a README, where it comes from, and whether the
+  # package page can show one for a version this instance holds no bytes for.
+  # Generated from `RegistryKind::readme_support()` and
+  # `RegistryKind::upstream_detail()` — two exhaustive matches a new registry
+  # kind cannot be added without answering — for the same reason the
+  # listing-filter table above is generated rather than written: a published
+  # table claiming coverage the code does not deliver is a statement about the
+  # product that is not true.
+
+  docs:readme-coverage:
+    desc: Regenerate the README support table in the registries index
+    cmds:
+      - |
+        set -euo pipefail
+        page=docs/registries/index.md
+        table=$(cargo run -q -p batlehub-server --bin readme_coverage)
+        awk -v table="$table" '
+          /^<!-- BEGIN readme-coverage/ { print; print table; skip = 1; next }
+          /^<!-- END readme-coverage/   { skip = 0 }
+          !skip                          { print }
+        ' "$page" > "$page.tmp"
+        mv "$page.tmp" "$page"
+
+  docs:readme-coverage:check:
+    desc: Fail if the registries index's README table has drifted from the code
+    cmds:
+      - |
+        set -euo pipefail
+        page=docs/registries/index.md
+        block() {
+          awk '/^<!-- BEGIN readme-coverage/ { skip = 1; next }
+               /^<!-- END readme-coverage/   { skip = 0 }
+               skip                          { print }' "$1"
+        }
+        committed=$(block "$page")
+        generated=$(cargo run -q -p batlehub-server --bin readme_coverage)
+        if [ "$committed" != "$generated" ]; then
+          echo "the README support table has drifted — run 'task docs:readme-coverage' and commit the result" >&2
+          diff <(echo "$committed") <(echo "$generated") >&2 || true
+          exit 1
+        fi
+        echo "the published README support table matches the code"
+
   docs:listing-coverage:check:
     desc: Fail if the admin guide's coverage table has drifted from the code
     # Diffs only the region between the markers, not the whole page. A
@@ -1140,7 +1573,7 @@ tasks:
   # ── The docs site's design gates (RFC 0005 phase 4) ──────────────────────────
   # Until these existed the public site's entire design coverage was one static
   # source scan, while the internal console had axe plus a type-ramp check over
-  # 30 rendered route/role pairs at two viewports. The surface every prospective
+  # 31 rendered route/role pairs at four viewports. The surface every prospective
   # user sees was the one nobody measured in a browser.
 
   docs:design:
@@ -1152,10 +1585,22 @@ tasks:
       - task: ui:tokens:check
       - task: docs:roadmap:check
       - task: docs:listing-coverage:check
+      - task: docs:readme-coverage:check
       - task: docs:endpoints:check
       - task: docs:links
       - task: docs:structure
       - task: docs:audience
+      - task: docs:mermaid
+
+  docs:mermaid:
+    desc: Every ```mermaid fence parses — the plugin renders on the client, so the build cannot
+    dir: docs
+    cmds:
+      # `vitepress-plugin-mermaid` renders in the browser: a broken diagram
+      # builds green and draws an error box for the reader. Before the plugin
+      # landed the fences were highlighted as source and nothing read them at
+      # all. See the header of the script.
+      - node build/check-mermaid.mjs
 
   docs:links:
     desc: Every documentation cross-reference resolves, and no published page is orphaned

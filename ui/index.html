@@ -9,6 +9,12 @@
       vite.config.ts and substituted here at build time — see that function for
       why the policy lives in the document rather than in a response header, and
       why `connect-src` is derived from VITE_API_BASE_URL rather than hard-coded.
+
+      What is built here is the *maximum*. When the server serves this document
+      it narrows the policy to the running configuration (`crates/web/src/spa.rs`);
+      it can remove a source but has no way to add one. Under `vite dev` nothing
+      narrows it, which is why the dev console admits what the widest deployment
+      would.
     -->
     <meta http-equiv="Content-Security-Policy" content="%VITE_CSP%" />
 
@@ -17,6 +23,26 @@
     <meta name="theme-color" content="#dc2626" />
 
     <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+
+    <!--
+      The rendition, before the first paint. `tokens.css` makes dark the default
+      and light opt-in through `[data-theme="light"]`, and the attribute was not
+      set until `useColorMode` mounted — so every reader on a light preference
+      got a full page of near-black first.
+
+      Blocking on purpose: no `defer`, no `async`, and not `type="module"`,
+      because a module script is deferred by definition and a deferred theme is
+      the flash this removes. An external file rather than an inline block
+      because the policy above is `script-src 'self'` with no nonce and no hash,
+      and the server can only narrow it.
+
+      Its source is `build/theme-init.js` and it is emitted here minified by
+      `build/theme-init.ts` — 268 bytes of the 3.1 kB the source spends on
+      explaining why it must agree with `useColorMode`. Every one of those bytes
+      is time before the first paint, which is why it is not in `public/`, whose
+      contents are copied verbatim.
+    -->
+    <script src="/theme-init.js"></script>
 
     <!-- Open Graph -->
     <meta property="og:type" content="website" />

@@ -32,9 +32,18 @@ use rules::{detect_is_regex, render_group_template, CompiledCondition};
 #[cfg(test)]
 mod tests;
 
+/// Audience every test provider requires and every test token carries.
+#[cfg(test)]
+pub(crate) const TEST_AUDIENCE: &str = "https://batlehub.test";
+
 pub struct ActionsOidcAuthProvider {
     name: String,
     issuer: String,
+    /// The `aud` this provider requires. Mandatory in config, and load-bearing
+    /// in a way it is not for a normal OIDC provider: `token.actions.
+    /// githubusercontent.com` issues for every repository on GitHub, so `iss`
+    /// alone narrows the caller down to "some GitHub Actions job somewhere".
+    audience: String,
     user_id_claim: String,
     rules: Vec<CompiledRule>,
     http: reqwest::Client,
@@ -44,6 +53,17 @@ pub struct ActionsOidcAuthProvider {
 
 impl ActionsOidcAuthProvider {
     pub async fn new(cfg: &ActionsOidcAuthConfig) -> anyhow::Result<Self> {
+        // Checked before any network call: a config error should not be
+        // reported as "the identity provider was unreachable".
+        if cfg.audience.trim().is_empty() {
+            anyhow::bail!(
+                "[[auth]] type = \"actions-oidc\" name = \"{}\": `audience` must not be empty. \
+                 The issuer is shared by every repository on the forge, so `audience` is what \
+                 identifies tokens minted for this deployment.",
+                cfg.name,
+            );
+        }
+
         let http = reqwest::Client::new();
 
         let discovery_url = format!(
@@ -72,6 +92,7 @@ impl ActionsOidcAuthProvider {
         Ok(Self {
             name: cfg.name.clone(),
             issuer: discovery.issuer,
+            audience: cfg.audience.clone(),
             user_id_claim: cfg.user_id_claim.clone(),
             rules,
             http,
@@ -129,11 +150,18 @@ impl AuthProvider for ActionsOidcAuthProvider {
 
         let decoding_key = self.get_decoding_key(header.kid.as_deref()).await?;
 
+        // `aud` is the whole identity check here beyond the signature: any
+        // workflow on the forge can obtain a correctly-signed token from this
+        // issuer, and `audience` is the value it has to have asked for.
         let mut validation = Validation::new(header.alg);
-        validation.validate_aud = false;
+        validation.set_audience(&[&self.audience]);
         if !self.issuer.is_empty() {
             validation.set_issuer(&[&self.issuer]);
         }
+        // Required, not merely checked-if-present — see `required_spec_claims`.
+        validation.set_required_spec_claims(&crate::auth::oidc::required_spec_claims(
+            !self.issuer.is_empty(),
+        ));
 
         let token_data = match decode::<serde_json::Map<String, serde_json::Value>>(
             token,
@@ -143,6 +171,24 @@ impl AuthProvider for ActionsOidcAuthProvider {
             Ok(data) => data,
             Err(e) if matches!(e.kind(), jsonwebtoken::errors::ErrorKind::ExpiredSignature) => {
                 tracing::debug!(provider = %self.name, "JWT expired");
+                return Ok(None);
+            }
+            // Not ours: wrong audience or issuer, or missing one of them
+            // entirely. Per the `AuthProvider` contract that is `Ok(None)` — the
+            // next provider still gets its turn, and the auth-failure counter
+            // stays for genuine provider faults. A missing `exp` is *not*
+            // included: that is a malformed token, not someone else's.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    jsonwebtoken::errors::ErrorKind::InvalidAudience
+                        | jsonwebtoken::errors::ErrorKind::InvalidIssuer
+                ) || matches!(
+                    e.kind(),
+                    jsonwebtoken::errors::ErrorKind::MissingRequiredClaim(c) if c == "aud" || c == "iss"
+                ) =>
+            {
+                tracing::debug!(provider = %self.name, error = %e, "JWT is not for this provider");
                 return Ok(None);
             }
             Err(e) => return Err(CoreError::Auth(format!("JWT validation failed: {e}"))),
@@ -176,6 +222,7 @@ impl ActionsOidcAuthProvider {
         Self {
             name: name.into(),
             issuer: String::new(),
+            audience: TEST_AUDIENCE.to_owned(),
             user_id_claim: user_id_claim.into(),
             rules,
             http: reqwest::Client::new(),
@@ -199,6 +246,7 @@ impl ActionsOidcAuthProvider {
         Self {
             name: name.into(),
             issuer: String::new(),
+            audience: TEST_AUDIENCE.to_owned(),
             user_id_claim: user_id_claim.into(),
             rules,
             http: reqwest::Client::new(),

@@ -45,7 +45,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Dialog } from "@/components/ui/dialog";
+import { Select } from "@/components/ui/select";
 import { DestructiveConfirm } from "@/components/ui/destructive-confirm";
 import { Announcer } from "@/components/ui/announcer";
 import {
@@ -161,12 +161,52 @@ function openBlock(kind: BlockKind) {
 }
 
 /**
- * Blocking your own address locks you out of the instance you are administering,
- * and nothing warned about it. A warning rather than a refusal: an operator may
- * legitimately be blocking a shared egress address.
+ * How long an address stays blocked, as durations rather than as seconds.
+ *
+ * This was `<input type="number">` defaulting to 3600, so the operator had to
+ * know that a day is 86400 and to type it correctly under time pressure — and
+ * a mistyped digit here is the difference between an hour and eleven days.
+ *
+ * There is no "permanent": `block_ip` computes `now + duration_secs` and
+ * rejects a zero, so the API has no way to express one. Offering the word and
+ * sending 100 years would be a label that does not mean what it says. Thirty
+ * days is the longest thing this endpoint can honestly be asked for.
+ *
+ * Written out rather than mapped over a list of seconds: a `t(`…${secs}`)`
+ * builds a key no static scan can see, and `i18n-keys` correctly reported all
+ * five as translated-and-unused. An allowlist entry would have silenced a gate
+ * that was right.
  */
-const selfBlockRisk = computed(
-  () => dialogKind.value === "ip" && form.value.subject.trim().length > 0,
+const durationOptions = computed(() => [
+  { value: "900", label: t("adminBlocks.duration900") },
+  { value: "3600", label: t("adminBlocks.duration3600") },
+  { value: "86400", label: t("adminBlocks.duration86400") },
+  { value: "604800", label: t("adminBlocks.duration604800") },
+  { value: "2592000", label: t("adminBlocks.duration2592000") },
+]);
+
+/**
+ * The count the confirmation is about: zero until an address is named.
+ *
+ * `DestructiveConfirm` disables its confirm button when `count` is 0, so this
+ * is also what stops an empty form being submitted — and the summary line is a
+ * live readback of the action rather than a static title.
+ */
+const blockCount = computed(() => (form.value.subject.trim() ? 1 : 0));
+
+/**
+ * What a block actually does, in the words the file's own header already used.
+ *
+ * The dialog stated no consequence at all. The mechanism is not folklore: an
+ * account block rejects on `Identity.user_id` with 401 and an IP block rejects
+ * on the client address with 403, and **both run before any rule is
+ * evaluated** — so a mistyped CIDR at 3am does not degrade a policy, it cuts
+ * off every agent behind that egress.
+ */
+const blockConsequence = computed(() =>
+  t(
+    dialogKind.value === "account" ? "adminBlocks.accountBlockEffect" : "adminBlocks.ipBlockEffect",
+  ),
 );
 
 async function submitBlock() {
@@ -343,49 +383,53 @@ async function confirmUnblock() {
       </Card>
     </AsyncState>
 
-    <!-- One form, two shapes: the kind decides which fields apply. -->
-    <Dialog v-model:open="dialogOpen">
-      <template #title>
-        {{
-          dialogKind === "account" ? t("adminBlocks.blockAccount") : t("adminBlocks.blockAddress")
-        }}
-      </template>
-      <div class="space-y-4">
-        <div class="space-y-1">
-          <Label for="block-subject">{{
-            dialogKind === "account" ? t("adminBlocks.userId") : t("adminBlocks.ipAddress")
-          }}</Label>
-          <Input id="block-subject" v-model="form.subject" class="font-mono" />
-          <p v-if="selfBlockRisk" class="text-xs text-copper">
-            {{ t("adminBlocks.selfLockoutWarning") }}
-          </p>
-        </div>
-        <div class="space-y-1">
-          <Label for="block-reason">{{ t("common.reason") }}</Label>
-          <Input id="block-reason" v-model="form.reason" />
-        </div>
-        <div v-if="dialogKind === 'ip'" class="space-y-1">
-          <Label for="block-duration">{{ t("adminBlocks.durationSecs") }}</Label>
-          <Input id="block-duration" v-model.number="form.durationSecs" type="number" min="60" />
-        </div>
-        <p v-if="formError" class="text-sm text-destructive">{{ formError }}</p>
-        <!-- `Dialog` has no `footer` slot — its actions live at the end of the
-             default slot, as every other dialog in the console does. -->
-        <div class="flex justify-end gap-2 pt-2">
-          <Button variant="outline" size="sm" @click="dialogOpen = false">{{
-            t("common.cancel")
-          }}</Button>
-          <Button
-            size="sm"
-            data-testid="block-submit"
-            :disabled="!form.subject.trim() || formLoading"
-            @click="submitBlock"
-          >
-            {{ formLoading ? t("adminBlocks.blocking") : t("adminBlocks.block") }}
-          </Button>
-        </div>
+    <!--
+      One form, two shapes: the kind decides which fields apply.
+
+      Through `DestructiveConfirm`, like the *lift* seven lines below it. It was
+      a bare `Dialog`: no scope, no count, no consequence — so the restorative
+      half of this page was confirmed and the destructive half was not, and
+      blocking is one of the four actions PRODUCT.md principle 2 names.
+
+      `reversible`, and truthfully so: this page is the proof, since lifting a
+      block is the other thing it does. That is why there is no typed-name step
+      — friction is proportional to consequence, and a uniform one teaches
+      people to type through the prompt.
+    -->
+    <DestructiveConfirm
+      :open="dialogOpen"
+      :action="t('adminBlocks.block')"
+      :count="blockCount"
+      :item-noun="dialogKind === 'account' ? t('adminBlocks.account') : t('adminBlocks.ip')"
+      :scope="form.subject.trim()"
+      reversible
+      :loading="formLoading"
+      :error="formError"
+      @confirm="submitBlock"
+      @update:open="(v: boolean) => !v && (dialogOpen = false)"
+    >
+      <p class="text-sm text-muted-foreground">{{ blockConsequence }}</p>
+
+      <div class="space-y-1">
+        <Label for="block-subject">{{
+          dialogKind === "account" ? t("adminBlocks.userId") : t("adminBlocks.ipAddress")
+        }}</Label>
+        <Input id="block-subject" v-model="form.subject" class="font-mono" />
       </div>
-    </Dialog>
+      <div class="space-y-1">
+        <Label for="block-reason">{{ t("common.reason") }}</Label>
+        <Input id="block-reason" v-model="form.reason" />
+      </div>
+      <div v-if="dialogKind === 'ip'" class="space-y-1">
+        <Label for="block-duration">{{ t("adminBlocks.duration") }}</Label>
+        <Select
+          id="block-duration"
+          :model-value="String(form.durationSecs)"
+          :options="durationOptions"
+          @update:model-value="(v: string) => (form.durationSecs = Number(v))"
+        />
+      </div>
+    </DestructiveConfirm>
 
     <!--
       `DestructiveConfirm` names IP blocks in its own doc comment as one of the

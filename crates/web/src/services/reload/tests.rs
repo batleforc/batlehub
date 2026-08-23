@@ -52,6 +52,7 @@ fn built_hot_state(hot: batlehub_core::services::HotConfig) -> BuiltHotState {
     BuiltHotState {
         hot,
         access: empty_access_config(),
+        search_readmes: false,
         registry_map: crate::RegistryMap::new(HashMap::new()),
         registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
         upstream_map: crate::UpstreamMap::new(HashMap::new()),
@@ -72,6 +73,7 @@ fn reload_params(
     ConfigReloadParams {
         hot: new_hot_lock(empty_hot_config()),
         access: crate::new_access_lock(empty_access_config()),
+        search: crate::new_search_lock(false),
         registry_map: crate::RegistryMap::new(HashMap::new()),
         registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
         upstream_map: crate::UpstreamMap::new(HashMap::new()),
@@ -101,6 +103,7 @@ fn empty_pending() -> PendingReload {
         content: None,
         new_hot: batlehub_core::services::HotConfig::default(),
         new_access: empty_access_config(),
+        new_search_readmes: false,
         new_registry_map: crate::RegistryMap::new(HashMap::new()),
         new_registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
         new_upstream_map: crate::UpstreamMap::new(HashMap::new()),
@@ -245,6 +248,7 @@ async fn apply_success_swaps_hot_config() {
         content: None,
         new_hot,
         new_access,
+        new_search_readmes: false,
         new_registry_map: crate::RegistryMap::new(HashMap::new()),
         new_registry_mode_map: crate::RegistryModeMap::new(HashMap::new()),
         new_upstream_map: crate::UpstreamMap::new(HashMap::new()),
@@ -352,6 +356,7 @@ fn make_pending(expires_offset_secs: i64, already_expired: bool) -> PendingReloa
         content: None,
         new_hot: hot,
         new_access: access,
+        new_search_readmes: false,
         ..empty_pending()
     }
 }
@@ -578,6 +583,7 @@ async fn load_pending_from_content_stores_raw_content_in_pending() {
         content: Some(raw.to_owned()),
         new_hot: hot,
         new_access: access,
+        new_search_readmes: false,
         ..empty_pending()
     };
     *svc.pending.lock().unwrap() = Some(pending);

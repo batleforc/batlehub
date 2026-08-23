@@ -75,9 +75,17 @@ pub(super) struct ServerParams {
     pub admin_svc: Arc<AdminService>,
     pub token_repo: Arc<dyn UserTokenRepository>,
     pub access_config: AccessConfigLock,
+    /// `[search] readmes`, shared with the reload path so turning prose search
+    /// off takes effect without a restart (RFC 0007-bis §4.1).
+    pub search_config: batlehub_web::SearchConfigLock,
     pub registry_map: RegistryMap,
     pub upstream_map: UpstreamMap,
     pub oidc_sso_flows: Vec<OidcSsoFlow>,
+    /// Every configured OIDC provider name, SSO-enabled or not — the allow-list
+    /// `POST /api/v1/auth/tokens` checks the caller against.
+    pub oidc_provider_names: batlehub_web::OidcProviderNames,
+    /// One-time store for in-flight OIDC authorization requests.
+    pub login_states: Arc<dyn batlehub_core::ports::LoginStateStore>,
     pub warming_map: WarmingServiceMap,
     pub eviction_map: EvictionServiceMap,
     pub proxy_metrics: Arc<ProxyMetrics>,
@@ -131,6 +139,8 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
         registry_map,
         upstream_map,
         oidc_sso_flows,
+        oidc_provider_names,
+        login_states,
         warming_map,
         eviction_map,
         proxy_metrics,
@@ -159,6 +169,7 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
         reload_svc,
         banner_svc,
         storage_admin_repo,
+        search_config,
     } = p;
 
     let notification_svc_for_shutdown = notification_svc.clone();
@@ -173,6 +184,8 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
             registry_map.clone(),
             upstream_map.clone(),
             oidc_sso_flows.clone(),
+            oidc_provider_names.clone(),
+            Arc::clone(&login_states),
             warming_map.clone(),
             eviction_map.clone(),
             Arc::clone(&proxy_metrics),
@@ -182,6 +195,7 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
             Arc::clone(&notification_store),
             notifications_config.clone(),
             Some(Arc::clone(&storage_admin_repo)),
+            search_config.clone(),
         );
         let static_dir_inner = static_dir.clone();
         let cli_binary_path_inner = cli_binary_path.clone();
@@ -248,21 +262,27 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
             .service(batlehub_web::scalar(openapi))
             .configure(move |cfg| {
                 if let Some(ref dir) = static_dir_inner {
-                    // No CSP header here on purpose. It cannot be global — the
-                    // Scalar API-docs page loads its bundle from a CDN, so a
-                    // `script-src 'self'` policy would break `/scalar` — and
-                    // `actix_files::Files` is not a `ServiceFactory`, so it cannot
-                    // be wrapped individually either. The SPA therefore carries
-                    // its own policy in a `<meta http-equiv>` tag, generated at
-                    // build time by `ui/build/csp.ts` so that `connect-src` can
-                    // follow the configured API origin. `frame-ancestors` is
-                    // ignored in meta form, which is why `security_headers()`
-                    // sends `X-Frame-Options: DENY` for every response.
-                    cfg.service(
-                        actix_files::Files::new("/", dir)
-                            .index_file("index.html")
-                            .use_last_modified(true),
-                    );
+                    // Still no CSP *header* here, for the two reasons that have
+                    // not changed: it cannot be global — the Scalar API-docs page
+                    // loads its bundle from a CDN, so `script-src 'self'` would
+                    // break `/scalar` — and the `actix_files::Files` service
+                    // behind `configure_spa` is not a `ServiceFactory`, so it
+                    // cannot be wrapped individually either. The SPA carries its own policy in a
+                    // `<meta http-equiv>` tag, generated at build time by
+                    // `ui/build/csp.ts` so `connect-src` can follow the configured
+                    // API origin. `frame-ancestors` is ignored in meta form, which
+                    // is why `security_headers()` sends `X-Frame-Options: DENY`.
+                    //
+                    // What *is* new: the document is served by `configure_spa`
+                    // rather than straight off disk, so the built policy can be
+                    // narrowed to the running config on the way out — see
+                    // `crates/web/src/spa.rs` for why that narrowing can only
+                    // ever subtract, and for the deep-link fallback that sits
+                    // behind the file service so `/packages/npm/chalk` resolves
+                    // to the console rather than to a 404.
+                    // Document, static files and the deep-link fallback, in the
+                    // one place that knows their order matters.
+                    batlehub_web::configure_spa(cfg, std::path::PathBuf::from(dir));
                 }
             })
     })

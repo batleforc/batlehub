@@ -41,6 +41,8 @@ async fn healthz_returns_ok_without_db() {
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
 
     let app = init_service(
@@ -74,6 +76,8 @@ async fn healthz_is_unauthenticated() {
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
 
     let app = init_service(
@@ -166,6 +170,8 @@ async fn cli_download_serves_binary_when_configured() {
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     let admin_svc = Arc::new(AdminService::new(repo));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);

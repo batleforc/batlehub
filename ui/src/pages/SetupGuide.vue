@@ -236,7 +236,7 @@ async function copy(key: string, text: string) {
                 <CardDescription>
                   <RichText
                     :markup="def.description"
-                    code-class="text-xs font-mono bg-muted px-1 rounded"
+                    code-class="text-xs font-mono bg-muted px-1 rounded-sm"
                   />
                 </CardDescription>
                 <!-- Registry selector (shown when multiple registries of same type) -->
@@ -302,10 +302,12 @@ async function copy(key: string, text: string) {
               <CardDescription>
                 <i18n-t keypath="setupGuide.netrcHelp" tag="span">
                   <template #file
-                    ><code class="text-xs font-mono bg-muted px-1 rounded">~/.netrc</code></template
+                    ><code class="text-xs font-mono bg-muted px-1 rounded-sm"
+                      >~/.netrc</code
+                    ></template
                   >
                   <template #chmod
-                    ><code class="text-xs font-mono bg-muted px-1 rounded"
+                    ><code class="text-xs font-mono bg-muted px-1 rounded-sm"
                       >chmod 600 ~/.netrc</code
                     ></template
                   >

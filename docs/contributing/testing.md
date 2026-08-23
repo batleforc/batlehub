@@ -22,7 +22,7 @@ BatleHub's tests fall into six layers, in increasing order of infrastructure cos
 | **CLI subprocess integration** | `cli/tests/integration.rs` | none — CLI binary vs. in-memory actix server | `task test:cli:integration` |
 | **External integration** | `crates/adapters/tests/*.rs` | real Postgres / MinIO(S3) / Redis via Podman | `task test:pg-*`, `task test:s3` |
 | **Heavy client** | `tests/heavy/*.sh` | real Postgres **and a real client** — VS Code, IntelliJ, Bundler, npm, pip, ovsx, micromamba, dotnet, composer, terraform | `task test:heavy`, or one `task test:<ecosystem>-heavy` |
-| **Fuzz** | `fuzz/fuzz_targets/*.rs` | nightly toolchain | `task fuzz` |
+| **Fuzz** | `fuzz/fuzz_targets/*.rs` | nightly toolchain to *run*, none to check | `task fuzz:check`, `task fuzz` |
 
 The in-process layer is the workhorse: every test there spins up a real
 actix-web application wired to `InMemoryPackageRepository`,
@@ -80,8 +80,9 @@ task test:terraform-heavy     # `terraform init` over TLS, host-routed discovery
 task coverage
 task coverage-check           # fails if line coverage < 80%
 
-# Fuzz (nightly)
-task fuzz TARGET=fuzz_deny_latest MAX_TIME=30
+# Fuzz
+task fuzz:check               # every target still compiles — the per-PR gate
+task fuzz TARGET=fuzz_deny_latest MAX_TIME=30   # actually fuzz one (nightly)
 ```
 
 The Redis adapter tests (`redis_cache`, `redis_rate_limit`,
@@ -312,8 +313,8 @@ detection with depth / monorepo / hidden-dir handling), `setup ide`, and
 
 ## 10. Fuzz targets
 
-`fuzz/fuzz_targets/` (libfuzzer, nightly, `task fuzz`) — all fuzz
-`batlehub-core` domain logic:
+`fuzz/fuzz_targets/` (libfuzzer, `task fuzz`) — all fuzz `batlehub-core` domain
+logic:
 
 - `fuzz_rbac_evaluate.rs` — RBAC rule evaluation.
 - `fuzz_deny_latest.rs` — `DenyLatestRule`; asserts only the exact string
@@ -322,6 +323,25 @@ detection with depth / monorepo / hidden-dir handling), `setup ide`, and
 - `fuzz_release_age.rs` — `ReleaseAgeGateRule` (durations capped at one year).
 - `fuzz_package_id_cache_key.rs` — `PackageId` cache-key generation is
   deterministic and always contains the registry component.
+- `fuzz_readme_render.rs` — the README pipeline: for arbitrary input, in any
+  format and under either image policy, the output carries no `<script`, no
+  `on*=` handler and no scheme outside the allow-list, and rendering is stable.
+- `fuzz_svg_sanitize.rs` — the SVG allow-list: output is well-formed XML and
+  reaches outside its own document nowhere.
+
+**The targets are a separate workspace, and that is a trap.** `cargo check
+--workspace`, `cargo clippy --workspace` and `cargo test --workspace` do not see
+`fuzz/`, so a target can stop compiling against a type it uses and nothing says
+so — the module docs go on naming a guard that is no longer running. Four of the
+six had drifted that way before `task fuzz:check` existed. That check is a plain
+`cargo check` over `fuzz/Cargo.toml`, needs no nightly, and runs on every PR in
+the `Fuzz targets` job of `test.yaml`; the same job fuzzes each target for 60
+seconds on the nightly schedule and uploads any crash artefact.
+
+Running one locally needs the nightly toolchain and `cargo-fuzz`. If a run
+produces a **0-byte** `crash-da39a3ee…` artefact, that is LeakSanitizer failing
+to start under a restricted `ptrace_scope`, not a finding — re-run with
+`ASAN_OPTIONS=detect_leaks=0`.
 
 ---
 

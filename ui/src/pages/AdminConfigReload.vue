@@ -392,7 +392,7 @@ onUnmounted(() => {
                enough to push the page sideways on a phone. -->
           <div class="min-w-0 flex-1 space-y-1">
             <div class="flex flex-wrap items-center gap-2">
-              <code class="font-mono text-xs bg-muted px-1 rounded break-all">{{ w.path }}</code>
+              <code class="font-mono text-xs bg-muted px-1 rounded-sm break-all">{{ w.path }}</code>
               <Badge variant="outline">{{ w.code }}</Badge>
             </div>
             <p>{{ w.message }}</p>
@@ -466,7 +466,7 @@ onUnmounted(() => {
               :key="`pending-${w.code}@${w.path}`"
               class="rounded-sm border border-copper/50 px-3 py-1.5 text-xs text-copper"
             >
-              <code class="font-mono bg-muted px-1 rounded break-all">{{ w.path }}</code>
+              <code class="font-mono bg-muted px-1 rounded-sm break-all">{{ w.path }}</code>
               — {{ w.message }}
             </div>
           </div>
@@ -697,6 +697,7 @@ onUnmounted(() => {
       :action="t('adminConfigReload.apply')"
       :count="pendingChangeCount"
       :item-noun="t('adminConfigReload.changeNoun')"
+      :item-noun-plural="t('adminConfigReload.changeNounPlural')"
       :scope="t('adminConfigReload.thisInstance')"
       :loading="loadingApply"
       reversible
@@ -721,7 +722,9 @@ onUnmounted(() => {
       :count="1"
       :item-noun="t('adminConfigReload.configNoun')"
       :scope="t('adminConfigReload.thisInstance')"
+      :consequence="t('adminConfigReload.forceConsequence')"
       :confirm-name="t('adminConfigReload.reloadConfirmWord')"
+      confirm-case-insensitive
       :loading="loadingForce"
       @confirm="
         () => {
@@ -770,7 +773,7 @@ onUnmounted(() => {
               </tr>
               <tr v-if="expandedRow === row.id">
                 <td colspan="4" class="pb-3">
-                  <pre class="bg-muted text-xs p-2 rounded overflow-x-auto">{{
+                  <pre class="bg-muted text-xs p-2 rounded-sm overflow-x-auto">{{
                     JSON.stringify(row.diff, null, 2)
                   }}</pre>
                 </td>

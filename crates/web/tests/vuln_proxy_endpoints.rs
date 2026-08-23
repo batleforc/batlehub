@@ -298,6 +298,8 @@ async fn composer_security_advisories_forwards_to_upstream_and_returns_response(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     let mode_map = RegistryModeMap::default();
     mode_map.insert("packagist".to_owned(), RegistryMode::Proxy);

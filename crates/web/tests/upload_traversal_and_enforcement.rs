@@ -140,6 +140,7 @@ async fn make_ns_upload_app(
         sbom: None,
         explore_cache: None,
         package_repo: None,
+        readme: None,
     });
 
     let proxy_svc = Arc::new(ProxyService {
@@ -154,6 +155,8 @@ async fn make_ns_upload_app(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);

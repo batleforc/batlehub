@@ -60,6 +60,112 @@ components:
           targetPort: 9515
           exposure: internal
           protocol: http
+  # Dex — an OIDC provider for the [[auth]] stack, on the same port 9000 the
+  # compose Authentik uses. Authentik is four containers and a Postgres of its
+  # own: a compose stack, not something a workspace can carry. Dex is one
+  # container with in-memory storage, so it fits here and starts with the pod.
+  #
+  # It listens on 9000 for the backend and the che-browser sidecar (one pod, one
+  # network namespace), and is published through the gateway so browser SSO
+  # works from a real browser too. The endpoint is deliberately NOT `secure`:
+  # the backend fetches the discovery document unauthenticated, and Che's auth
+  # in front of it would answer that fetch with a login page. What is exposed is
+  # a throwaway IdP holding two accounts whose password is "password" — do not
+  # add anything to it you would mind a passer-by reaching, and use
+  # `task dex:config LOCAL=1` plus `exposure: internal` if you want it sealed
+  # inside the pod.
+  #
+  # The config is rendered, not committed — the issuer is this workspace's FQDN.
+  # `task dex:config` writes it; until then the container sits in the wait loop
+  # below rather than crash-looping, which would leave the pod short of Ready
+  # and the workspace unable to start.
+  #
+  # PID 1 here is a supervisor, not dex — and that is the whole reason a config
+  # change no longer costs a workspace. Dex has no reload: `dex serve` parses the
+  # file once at startup, offers no SIGHUP path, and keeps its config on disk
+  # rather than in its storage, so the only way to change it is to run the
+  # process again. When dex *was* PID 1, running it again meant ending the
+  # container — and in this workspace a container that terminates does not come
+  # back on its own: the pod is replaced, every sidecar with it. Measured three
+  # times, three lost workspaces.
+  #
+  # So the process that must not die and the process that must be restartable are
+  # separated. The shell below is PID 1 and never exits; dex is its child, killed
+  # and started again in place. The container stays Running throughout, its
+  # restart count stays 0, and the tools container keeps its shell history, the
+  # browser sidecar its session, Postgres its connections.
+  - name: dex
+    container:
+      image: ghcr.io/dexidp/dex:v2.45.0
+      memoryLimit: 256Mi
+      memoryRequest: 64Mi
+      cpuLimit: "500m"
+      cpuRequest: 50m
+      # For dev/dex/config.yaml, which `task dex:config` writes from the tools
+      # container into the shared /projects volume. The same volume carries the
+      # two files the supervisor and `task dex:reload` talk over, so a reload
+      # needs no kubectl, no exec, and no permission the workspace lacks.
+      mountSources: true
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          root="${PROJECTS_ROOT:-/projects}/proxy-cache/dev/dex"
+          cfg="$root/config.yaml"      # rendered by `task dex:config`
+          reload="$root/reload"        # bumped by `task dex:reload`
+          state="$root/state"          # written here; the ack the task waits on
+
+          # One value covering both ways of asking for a restart: an edited
+          # config, or an explicit reload of a config that did not change (a new
+          # client secret in the template, a stuck signing key). The task bumps
+          # `reload` and watches `state` for the answer.
+          stamp() { { md5sum "$cfg"; cat "$reload"; } 2>/dev/null | md5sum | cut -d' ' -f1; }
+
+          # Without this, PID 1 sits in `wait` and shutdown waits out the grace
+          # period before the kubelet resorts to SIGKILL. The trap runs between
+          # commands, so it lands within one poll interval.
+          trap 'kill "${pid:-0}" 2>/dev/null; exit 0' TERM INT
+
+          while [ ! -f "$cfg" ]; do
+            echo "dex: waiting for $cfg — run 'task dex:config' in the tools container"
+            sleep 5
+          done
+
+          while true; do
+            seen="$(stamp)"
+            echo "dex: starting with $cfg"
+            /usr/local/bin/dex serve "$cfg" &
+            pid=$!
+            # The ack. `task dex:reload` reads this before and after, and a
+            # changed value is proof the restart actually happened — rather than
+            # a discovery endpoint that answers because the *old* dex is still up.
+            echo "started=$(date +%s) pid=$pid stamp=$seen" > "$state" 2>/dev/null || true
+
+            while kill -0 "$pid" 2>/dev/null; do
+              if [ "$(stamp)" != "$seen" ]; then
+                echo "dex: config changed — restarting"
+                kill "$pid" 2>/dev/null
+                break
+              fi
+              sleep 2
+            done
+            wait "$pid"; rc=$?
+
+            # Dex died on its own, on a config nobody has touched since. Starting
+            # it again would fail the same way — a spin that buries the one log
+            # line explaining why. Hold instead, and say what would end the hold.
+            if [ "$(stamp)" = "$seen" ]; then
+              echo "dex: exited (rc=$rc) and $cfg has not changed since — holding."
+              echo "dex: fix it with 'task dex:config' and it starts again by itself."
+              while [ "$(stamp)" = "$seen" ]; do sleep 2; done
+            fi
+            sleep 1
+          done
+      endpoints:
+        - name: dex
+          targetPort: 9000
+          exposure: public
+          protocol: https
+          secure: false
   - name: postgres
     container:
       image: postgres:17-alpine

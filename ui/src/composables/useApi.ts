@@ -43,11 +43,32 @@ export function useApi<T>(
   const loading = ref(false);
   const tick = ref(0);
 
+  /**
+   * Which call owns the state.
+   *
+   * Nothing here cancelled anything: a dependency that changes while a request
+   * is open starts a second one, and whichever *lands* last wins. So a slow
+   * answer to a filter the reader has already moved past overwrites the fast
+   * answer to the one they are looking at — the rows and the controls end up
+   * describing different queries, and the page looks settled while being
+   * wrong. Every surface built on this composable had it; the catalogue fixed
+   * the same defect once, locally, in its own fetch.
+   *
+   * A sequence number rather than an `AbortController` because the generated
+   * client takes no signal. The request still completes; its result is
+   * discarded, which is what matters to the reader.
+   */
+  let seq = 0;
+
   async function run() {
+    const mine = ++seq;
+    const current = () => mine === seq;
+
     loading.value = true;
     error.value = null;
     try {
       const result = await fn();
+      if (!current()) return;
       if (result.error) {
         error.value = extractMessage(result.error);
         data.value = null;
@@ -70,10 +91,14 @@ export function useApi<T>(
         data.value = result.data as T;
       }
     } catch (e) {
+      if (!current()) return;
       error.value = extractMessage(e);
       data.value = null;
     } finally {
-      loading.value = false;
+      // `loading` is the superseded call's too: clearing it from a stale
+      // `finally` is what makes a spinner stop while the answer on screen is
+      // still the wrong one.
+      if (current()) loading.value = false;
     }
   }
 

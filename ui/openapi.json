@@ -3168,8 +3168,8 @@
         "tags": [
           "front-office"
         ],
-        "summary": "Handle the OIDC provider's redirect back; exchange the code for tokens and\nredirect the browser to the SPA with tokens in query parameters.",
-        "description": "The SPA is responsible for validating `oidc_state` against its stored value\nand immediately removing the parameters from the address bar.",
+        "summary": "Handle the OIDC provider's redirect back: validate the state, exchange the\ncode for tokens, and redirect the browser to the SPA with the tokens in the\nURL fragment.",
+        "description": "The returned `state` must match an entry this server created and has not yet\nconsumed, or nothing is exchanged. The caller then compares the echoed\n`oidc_state` against the value it kept locally — see `oidc_login` for why\nboth checks exist.",
         "operationId": "oidc_callback",
         "responses": {
           "302": {
@@ -3187,7 +3187,7 @@
           "front-office"
         ],
         "summary": "Redirect the browser to the OIDC provider's authorization endpoint.",
-        "description": "The caller must supply a `state` query parameter containing a random value\nit has stored in `sessionStorage`; the same value is threaded through the\nprovider and returned to the SPA so it can verify the flow wasn't hijacked.\n\nOmitting `state` (e.g. a HEAD probe) returns 200 when OIDC is configured,\n503 when it is not — useful for the frontend to decide whether to show the\n\"Sign in with OIDC\" button.",
+        "description": "The caller supplies a `state` query parameter holding a random value it has\nkept locally (`sessionStorage` in the SPA, memory in the CLI). That value is\n**not** what goes to the identity provider: the server generates its own\nunguessable handle, records the caller's value against it along with the PKCE\nverifier and nonce, and sends only the handle. The caller's value comes back\nat the end of the flow so it can confirm this callback belongs to the login\nit started.\n\nThe two halves protect different things and neither replaces the other. The\nserver-side entry gives PKCE verifier custody, one-time redemption, expiry\nand provider binding; the caller's value is what ties the flow to a\nparticular browser or CLI process, which the server cannot observe.\n\nOmitting `state` (e.g. a HEAD probe) returns 200 when OIDC is configured,\n503 when it is not — useful for the frontend to decide whether to show the\n\"Sign in with OIDC\" button.",
         "operationId": "oidc_login",
         "parameters": [
           {
@@ -3291,6 +3291,9 @@
           },
           "404": {
             "description": "Named provider not found"
+          },
+          "429": {
+            "description": "Too many refresh attempts from this client"
           },
           "503": {
             "description": "OIDC not configured"
@@ -3490,6 +3493,33 @@
             }
           },
           {
+            "name": "q",
+            "in": "query",
+            "description": "What to search for. `name` is the older parameter and still works; `q` is\nwhat the console sends, and the only one `in` applies to.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "in",
+            "in": "query",
+            "description": "`name` (default) | `readme` | `both`.\n\nInlined into the parameter rather than referenced, for the reason\n`ReadmeQuery::format` gives: nothing returns this enum in a body, so\nutoipa emits no component and a `$ref` would reach the console as\n`unknown`.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Where a search looks.\n\n`name` is today's behaviour byte for byte, and it is the default: a\nparameter's absence must not change what the endpoint already did.",
+              "enum": [
+                "name",
+                "readme",
+                "both"
+              ]
+            }
+          },
+          {
             "name": "sort",
             "in": "query",
             "description": "Sort order: `downloads` (default), `name`, `recent`, or `fetched`.\n\n`recent` is when a client last downloaded a package *from* this\ninstance; `fetched` is when this instance last pulled one *from\nupstream*. The catalog is ordered on the latter.",
@@ -3514,9 +3544,13 @@
           {
             "name": "per_page",
             "in": "query",
+            "description": "Rows in the answer. Absent means `[limits].packages_per_page`, which is\nalso the most this may be — a larger ask is clamped down to it, and the\napplied value is reported back in `per_page`.\n\nThe console deliberately sends nothing here: the catalog *is* this list,\nso the number the operator configured is the right one, and a console\nthat asked for its own would make the setting inert on the one page it\nexists for.",
             "required": false,
             "schema": {
-              "type": "integer",
+              "type": [
+                "integer",
+                "null"
+              ],
               "format": "int64",
               "minimum": 0
             }
@@ -3564,6 +3598,84 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "upstream",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Whether the discovery read may run for this request.",
+              "enum": [
+                "auto",
+                "skip"
+              ]
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "0-based, like every other paginated endpoint here.\n\nAbsent is *not* the same as `0`: absent lets `version=` choose the page,\nwhich is how a link to one version opens on the page that holds it.\nPast the end is clamped to the last page rather than answered empty.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "per_page",
+            "in": "query",
+            "description": "Rows in the answer. Absent means `[limits].versions_per_page`, which is\nalso the most this may be — a larger ask is clamped down to it, and the\napplied value is reported back in `versions_page.per_page`.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Case-insensitive substring on the version string — \"is 4.0.2 in here\",\nwhich is the question a reader has in front of a 169-version list.\n\nIt filters the *whole* list, which is the reason it is here rather than\nin the console: a filter that only searched the page it was handed would\nanswer \"no\" about versions this server knows perfectly well it has.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "prereleases",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Whether pre-release versions are in the answer.",
+              "enum": [
+                "show",
+                "hide"
+              ]
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "description": "A version the caller is pointing at.\n\nTwo effects, both serving \"a link named this version\": it survives\n`prereleases=hide`, so the console never marks a row it was not given;\nand when no `page` is asked for, the page returned is the one holding it.\nIt does **not** survive `q` — a filter is a question the reader typed,\nand answering it with a row that does not match would be a different lie.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -3576,6 +3688,232 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "The registry is not browsable by this caller, or the package is not visible to them"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/explore/packages/{registry}/{name}/readme": {
+      "get": {
+        "tags": [
+          "explore"
+        ],
+        "summary": "A version's README, rendered and sanitised.",
+        "operationId": "explore_package_readme",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "description": "The version to show. Absent means the newest version that has one.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "description": "Inlined into the parameter rather than referenced: nothing returns this\nenum in a body, so utoipa emits no component for it and the generated\nTypeScript client would carry a dangling `$ref` — which reaches the\nconsole as `unknown`, the exact outcome `openapi_contract.rs` exists to\nprevent for response bodies.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "What to return: the rendered HTML, the source, or both.\n\n`source` exists for the CLI, which prints markdown to a terminal — and for\nan operator checking what the package actually said against what the panel\nrendered, which is the whole reason the store keeps the source (§5.3).",
+              "enum": [
+                "html",
+                "source",
+                "both"
+              ]
+            }
+          },
+          {
+            "name": "upstream",
+            "in": "query",
+            "description": "Whether the derived-from-upstream fallback may run.\n\nThe same key, the same values and the same meaning as the detail\nendpoint's — a caller who asks one for a local-only answer means it of\nboth, and the CLI's `--no-upstream` sends it to whichever endpoint the\nsubcommand happens to call. `serde_urlencoded` drops unknown keys\nsilently, so leaving this undeclared did not reject `upstream=skip`; it\naccepted it, ignored it, and went to the network anyway.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Whether the discovery read may run for this request.",
+              "enum": [
+                "auto",
+                "skip"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The README for this version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadmeResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The version is blocked; the body carries the reason"
+          },
+          "404": {
+            "description": "No README, or the registry is not browsable by this caller, or the package is not visible to them"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/explore/packages/{registry}/{name}/{version}/fetch": {
+      "post": {
+        "tags": [
+          "explore"
+        ],
+        "summary": "Fetch one version from upstream, as the caller.",
+        "operationId": "explore_fetch_version",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The version was fetched and is now held",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FetchResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session; pulling a version requires one"
+          },
+          "403": {
+            "description": "A rule refused it; the body carries the rule's own reason"
+          },
+          "404": {
+            "description": "No such registry, package or version upstream"
+          },
+          "409": {
+            "description": "This instance already holds the version"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/explore/packages/{registry}/{name}/{version}/readme-image/{index}": {
+      "get": {
+        "tags": [
+          "explore"
+        ],
+        "summary": "One image from a version's README, fetched by this server.",
+        "operationId": "explore_readme_image",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "index",
+            "in": "path",
+            "description": "The image's position in this version's README, counted the way the\nrenderer counts.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The image bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactBytes"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The version is blocked; the body carries the reason"
+          },
+          "404": {
+            "description": "No such image, or the registry is not browsable by this caller, or the package is not visible to them"
           }
         },
         "security": [
@@ -4711,6 +5049,16 @@
             "name": "size",
             "in": "query",
             "description": "Maximum results",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Offset into the result set",
             "required": false,
             "schema": {
               "type": "integer",
@@ -7949,6 +8297,16 @@
               "type": "integer",
               "minimum": 0
             }
+          },
+          {
+            "name": "skip",
+            "in": "query",
+            "description": "Offset into the result set",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
           }
         ],
         "responses": {
@@ -8162,6 +8520,17 @@
             "name": "take",
             "in": "query",
             "description": "Max results",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "skip",
+            "in": "query",
+            "description": "Offset into the result set",
             "required": true,
             "schema": {
               "type": "integer",
@@ -14496,7 +14865,8 @@
           "has_blocked",
           "has_yanked",
           "state",
-          "cached_versions"
+          "cached_versions",
+          "matched_in"
         ],
         "properties": {
           "cached_bytes": {
@@ -14536,6 +14906,10 @@
             ],
             "description": "When this instance last fetched any version from upstream (RFC 3339)."
           },
+          "matched_in": {
+            "type": "string",
+            "description": "`name` | `readme` | `both` — why this row is here.\n\nA row whose name has nothing to do with the query and whose README\nmentions it in passing is a *correct* result and an inexplicable one\nwithout the label (RFC 0007-bis §4.3)."
+          },
           "name": {
             "type": "string"
           },
@@ -14548,6 +14922,13 @@
           },
           "registry": {
             "type": "string"
+          },
+          "snippet": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The matched fragment of the README, as **plain text**, or `null`.\n\nPlain, and rendered as text. It never reaches `v-html`: the README\npanel's is a deliberate, tested, single-component boundary\n(RFC 0007 §6.5), and a search snippet is a second surface for\npackage-authored content reached by a much cheaper path — no navigation,\njust a query (RFC 0007-bis §7.4)."
           },
           "source": {
             "type": "string",
@@ -14588,17 +14969,64 @@
           "name",
           "gate",
           "versions",
-          "upstream_unavailable"
+          "versions_page",
+          "upstream_unavailable",
+          "upstream",
+          "fetch"
         ],
         "properties": {
+          "default_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The version a reader who has asked for none should be shown: the newest\nstable version this instance **holds**, falling back to the newest stable\nand then to whatever is held (RFC 0007 §4.2).\n\nAnswered here because it is a fact about the whole list, and the console\nis now given one page of it: a client deriving this rule from the rows it\nreceived would pick the newest stable version *on page one*, which on a\npackage held only at 2.1.0 is an upstream row we serve nothing of.\n`None` only for a package with no versions at all."
+          },
+          "fetch": {
+            "$ref": "#/components/schemas/FetchOfferDto",
+            "description": "Whether the console may offer **Fetch this version** on an\nupstream-only row (RFC 0007-bis §4.4)."
+          },
           "gate": {
             "$ref": "#/components/schemas/GateDto"
+          },
+          "links": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PackageLinksDto",
+                "description": "Where this package's code and site live, as its own metadata names them.\n\n`None` whenever we cannot say: a registry kind whose client does not read\nthese fields, a package the metadata cache has never held, or a locally\npublished one (asking a public index about a private name on a page view\nwould leak that the software exists — the same suppression the derived\nREADME applies)."
+              }
+            ]
           },
           "name": {
             "type": "string"
           },
           "registry": {
             "type": "string"
+          },
+          "selected": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ExploreVersionDto",
+                "description": "The selected version's row, whatever page it is on.\n\n`selected_version` names it; this *is* it. The console renders its subject\nregion from this rather than from whatever happens to be in `versions`,\nbecause the two are routinely different: the page writes `?version=X&page=N`\ninto the URL itself, and X is on page 1 while N is 3."
+              }
+            ]
+          },
+          "selected_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The version asked for by `version=`, echoed back **only if this package\nhas it**. `None` for a typo or a version yanked since the link was sent,\nwhich is the caller's signal to fall back to `default_version` rather\nthan mark nothing."
+          },
+          "upstream": {
+            "$ref": "#/components/schemas/UpstreamReadDto",
+            "description": "What the discovery read did (RFC 0007 §4.2)."
           },
           "upstream_unavailable": {
             "type": "boolean",
@@ -14608,7 +15036,11 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ExploreVersionDto"
-            }
+            },
+            "description": "One page of them — see `versions_page`."
+          },
+          "versions_page": {
+            "$ref": "#/components/schemas/VersionPageDto"
           }
         }
       },
@@ -14619,7 +15051,10 @@
           "total",
           "page",
           "per_page",
-          "upstream_unavailable"
+          "upstream_unavailable",
+          "readme_search_enabled",
+          "searched_in",
+          "truncated"
         ],
         "properties": {
           "items": {
@@ -14638,9 +15073,21 @@
             "format": "int64",
             "minimum": 0
           },
+          "readme_search_enabled": {
+            "type": "boolean",
+            "description": "Whether `[search] readmes` is on for this instance.\n\nSo a client can tell \"no package here says that\" from \"this instance does\nnot search prose\". `in=readme` with the feature off is accepted and\nanswers as `in=name` does — a parameter that silently means something\nelse is the failure this RFC family keeps finding — and this field is how\nthe console says which happened (RFC 0007-bis §4.3)."
+          },
+          "searched_in": {
+            "type": "string",
+            "description": "The scope actually applied, which is `name` when prose search is off\nhowever the request asked."
+          },
           "total": {
             "type": "integer",
             "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "The prose search hit [`PROSE_SEARCH_CAP`] and there may be more.\n\nReported rather than swallowed: a silently shortened list reads as \"that\nis all there is\", which is a lie about the catalogue."
           },
           "upstream_unavailable": {
             "type": "boolean",
@@ -14673,11 +15120,14 @@
           "version",
           "source",
           "firewall",
-          "download_count",
           "is_prerelease",
           "vulnerabilities",
           "deprecated",
-          "unlisted"
+          "unlisted",
+          "readme",
+          "sbom",
+          "vulnerabilities_scanned",
+          "state"
         ],
         "properties": {
           "deprecated": {
@@ -14692,8 +15142,12 @@
             "description": "Optional deprecation message."
           },
           "download_count": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64",
+            "description": "`null` on an upstream-only row — **not** `0`.\n\n`0` would be a definite answer with nothing behind it: nobody has\ndownloaded it *through here*, which is not the same as nobody having\ndownloaded it, and the row exists precisely because this instance has\nnever held the version (RFC 0007 §4.2).",
             "minimum": 0
           },
           "firewall": {
@@ -14721,6 +15175,14 @@
               "null"
             ]
           },
+          "readme": {
+            "$ref": "#/components/schemas/ReadmeState",
+            "description": "`available` | `none` | `unknown` — whether this version has a README.\n\nA tri-state rather than a boolean, because the answer genuinely has three\nvalues and the third is the common one for an archive-borne registry\nkind: a version this instance holds no bytes for has a README that cannot\nbe read yet. `false` rendered for *\"we have not looked\"* would be a\ndefinite-looking answer with nothing behind it (RFC 0007 §4.2)."
+          },
+          "sbom": {
+            "$ref": "#/components/schemas/SbomDto",
+            "description": "Which SBOM formats this version has here — the answer the console needs\n*before* it draws a download control. See [`SbomDto`]."
+          },
           "socket_badge_url": {
             "type": [
               "string",
@@ -14730,7 +15192,11 @@
           },
           "source": {
             "type": "string",
-            "description": "`\"proxied\"` | `\"local\"`"
+            "description": "`\"proxied\"` | `\"local\"` | `\"upstream\"`\n\n`upstream` means this instance holds no bytes for the version and knows\nabout it only because it asked. Every cell that would be a fact about\nwhat we hold is `null` on such a row rather than `0`."
+          },
+          "state": {
+            "type": "string",
+            "description": "`cached` | `pending` | `yanked` | `blocked` — the row's state in\nDESIGN.md's resolution vocabulary, graded here rather than in the\nconsole.\n\nThe console used to derive this from `firewall` alone, over three values,\nand the mapping said *held and verified* — a full 3×3 matrix in ink — for\na version this instance holds **no bytes of**: an upstream-only candidate\ncarries `FirewallDto::Clear`, because the firewall has nothing to refuse\nabout a version nobody can download from here yet. The signature device of\nthe whole design system was therefore lying on precisely the rows the\nfetch button exists for. Grading it on the side that knows what is held\nis the same correction `ExploreEntry::state` already applies to the\ncatalogue's rows.\n\nTwo of the six states are deliberately absent. `stale` needs the\nartifact's own fetch time against the registry's TTL, and `held` needs the\nrelease-age gate evaluated for this viewer — neither is per-version data\nthis endpoint holds, and inventing either would be the same class of\nclaim this field exists to stop."
           },
           "unlisted": {
             "type": "boolean",
@@ -14745,6 +15211,10 @@
               "$ref": "#/components/schemas/VulnerabilityDto"
             },
             "description": "Known vulnerabilities for this version (from the periodic SBOM re-scan)."
+          },
+          "vulnerabilities_scanned": {
+            "type": "boolean",
+            "description": "Whether this version has ever been scanned for vulnerabilities.\n\n`vulnerabilities: []` means *scanned and clear* only when this is `true`.\nOn a version nothing has ever opened it means *never scanned*, and the\ntwo must not render identically — a green row on a package this instance\nhas never held is a claim we cannot support."
           }
         }
       },
@@ -14771,6 +15241,62 @@
             "format": "int32",
             "default": 0,
             "minimum": 0
+          }
+        }
+      },
+      "FetchOfferDto": {
+        "type": "object",
+        "description": "Whether the fetch button is offered here, and why not when it is not.\n\nAnswered by the server because both halves are the server's to know: whether\nthe operator turned `console_fetch` off, and whether \"fetch this version\" has\na single meaning for this registry kind. A console that guessed would offer a\nbutton that always fails on Maven, which is the \"disabled control with no\nexplanation\" §4.4 refuses.",
+        "required": [
+          "offered"
+        ],
+        "properties": {
+          "offered": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The kind's own reason, verbatim, when `offered` is `false` and the reason\nis about the registry type rather than about the switch. `null` when the\noperator simply turned it off — that is not a fact about the package and\nthe page says nothing rather than explaining the operator to themselves."
+          }
+        }
+      },
+      "FetchResponse": {
+        "type": "object",
+        "required": [
+          "fetched",
+          "size_bytes",
+          "duration_ms",
+          "registry",
+          "name",
+          "version"
+        ],
+        "properties": {
+          "duration_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "fetched": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "registry": {
+            "type": "string",
+            "description": "The coordinate that was fetched, echoed so a client that fired several\ncan match responses to rows."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What arrived, so the row can say what the wait bought.\n\nMeasured against real upstreams, the median version is 0.57 MB and the\nlargest in the sample was 41.7 MB (RFC 0007-bis §13.4) — a range wide\nenough that \"done\" on its own tells a reader nothing.",
+            "minimum": 0
+          },
+          "version": {
+            "type": "string"
           }
         }
       },
@@ -14835,17 +15361,12 @@
       "GateDto": {
         "type": "object",
         "required": [
-          "registry_accessible",
           "beta_member"
         ],
         "properties": {
           "beta_member": {
             "type": "boolean",
             "description": "Whether the caller is a beta-channel member for this registry."
-          },
-          "registry_accessible": {
-            "type": "boolean",
-            "description": "Whether the caller's role can access this registry through the proxy."
           }
         }
       },
@@ -15514,6 +16035,26 @@
           }
         }
       },
+      "PackageLinksDto": {
+        "type": "object",
+        "description": "A package's own links, normalised to something a browser can open.\n\nEvery URL here was written by whoever published the package and lands in an\n`href` on an authenticated console page, so it has been through\n`batlehub_core::entities::normalize_url` — an allow-list of `http`/`https`\napplied *after* the ecosystem-specific rewrites (`git+…`, `.git`,\n`github:o/r`, scp-like addresses). Anything that did not survive is absent\nrather than rendered, because a link that cannot be opened is worse than no\nlink.",
+        "properties": {
+          "homepage": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The package's own site, when it declared one."
+          },
+          "repository": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the source code lives."
+          }
+        }
+      },
       "PackageListResponse": {
         "type": "object",
         "required": [
@@ -16025,6 +16566,98 @@
           }
         }
       },
+      "ReadmeResponse": {
+        "type": "object",
+        "required": [
+          "registry",
+          "name",
+          "version",
+          "is_fallback",
+          "format",
+          "source",
+          "package_level",
+          "stored",
+          "truncated",
+          "extracted_at"
+        ],
+        "properties": {
+          "extracted_at": {
+            "type": "string",
+            "description": "When *this instance* read the text, not when upstream published it."
+          },
+          "format": {
+            "type": "string",
+            "description": "`markdown` | `html` | `rst` | `plain` — what the source *is*."
+          },
+          "freshness": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`cached` | `fresh` | `stale`. Only meaningful when `stored` is `false`."
+          },
+          "is_fallback": {
+            "type": "boolean",
+            "description": "`version != requested_version` — the panel labels it."
+          },
+          "name": {
+            "type": "string"
+          },
+          "package_level": {
+            "type": "boolean",
+            "description": "The text is the package's, not this version's: npm's document-root\n`readme`, attributed to the version `dist-tags.latest` names. The panel\nsays so rather than presenting a package-level document as this\nversion's."
+          },
+          "registry": {
+            "type": "string"
+          },
+          "rendered_html": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Sanitised HTML, present unless `format=source`."
+          },
+          "requested_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the caller asked for, when they named a version."
+          },
+          "source": {
+            "type": "string",
+            "description": "`upstream-metadata` | `archive` | `local-publish` — where it came from."
+          },
+          "source_text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The stored source, present unless `format=html`."
+          },
+          "stored": {
+            "type": "boolean",
+            "description": "`true` for a durable record. `false` when it was derived from a cached\nupstream document for a version this instance holds no bytes for."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "The source hit the registry's `max_bytes` and what is shown is a prefix."
+          },
+          "version": {
+            "type": "string",
+            "description": "The coordinate the returned text belongs to."
+          }
+        }
+      },
+      "ReadmeState": {
+        "type": "string",
+        "description": "Whether a version has a README, in the three states the answer really has.\n\nA boolean cannot carry the third one, and the third one is the common case\nthe moment the page starts answering for packages this instance holds nothing\nof: `false` rendered for *\"we have not looked\"* is a definite-looking answer\nwith nothing behind it (RFC 0007 §4.2).",
+        "enum": [
+          "available",
+          "none",
+          "unknown"
+        ]
+      },
       "RecentErrorDto": {
         "type": "object",
         "required": [
@@ -16425,6 +17058,27 @@
         "type": "object",
         "description": "An SPDX 2.3 or CycloneDX 1.5 document.\n\nThe shape is the SBOM standard's, not this API's — which format you get is\ndecided by the `format` query parameter, and each is specified elsewhere."
       },
+      "SbomDto": {
+        "type": "object",
+        "description": "Which SBOM formats a version actually has here, so the console can say *no\nSBOM* instead of offering a download that can only 404.\n\nThe formats are per registry (`[registries.sbom].formats`), so a console that\nassumed both drew a CycloneDX button on an SPDX-only registry and a pair of\nthem on every upstream-only row — three clicks, three spinners, three\nfailures, and the reader left to guess whether the SBOM was missing or the\nserver was.\n\nA tri-state for the same reason [`ReadmeState`] is one: *we hold none* and\n*we have not looked* are different answers, and rendering the second as the\nfirst is a definite claim with nothing behind it (RFC 0007 §4.2).",
+        "required": [
+          "state",
+          "formats"
+        ],
+        "properties": {
+          "formats": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The formats actually held, `\"spdx\"` before `\"cyclonedx\"`. Empty unless\n`state` is `available`."
+          },
+          "state": {
+            "type": "string",
+            "description": "`available` — [`Self::formats`] lists what can be downloaded;\n`none` — this instance holds no SBOM for the version;\n`unknown` — nothing has opened these bytes yet (an upstream-only row),\nor the lookup itself failed."
+          }
+        }
+      },
       "SetBannerRequest": {
         "type": "object",
         "required": [
@@ -16714,6 +17368,14 @@
             "type": "string",
             "format": "uuid"
           },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When this token was last presented, or `null` if not since the server\nstarted recording. What tells a user which of their tokens is dormant and\nsafe to revoke, and an operator which one moved after a leak."
+          },
           "name": {
             "type": "string"
           },
@@ -16814,6 +17476,44 @@
           }
         }
       },
+      "UpstreamReadDto": {
+        "type": "object",
+        "description": "What the discovery read did, so the page can say which rung answered rather\nthan presenting a degraded answer as a complete one.",
+        "required": [
+          "attempted",
+          "version_count",
+          "truncated"
+        ],
+        "properties": {
+          "attempted": {
+            "type": "boolean",
+            "description": "`false` for a `local`-mode registry, a kind with no upstream to ask, a\n`?upstream=skip` caller, a registry with the read disabled, or a package\npublished here — a private name is never sent to a public index."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set when the read was attempted and every rung failed. The page says the\nupstream could not be reached rather than showing an empty table as an\nanswer."
+          },
+          "freshness": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`cached` | `fresh` | `stale`, when the read answered."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "`max_versions` shortened the list. A silently shortened list is a lie\nabout the registry."
+          },
+          "version_count": {
+            "type": "integer",
+            "description": "How many upstream-only versions came back.",
+            "minimum": 0
+          }
+        }
+      },
       "UpstreamSearchResponse": {
         "type": "object",
         "required": [
@@ -16851,6 +17551,56 @@
           },
           "user_id": {
             "type": "string"
+          }
+        }
+      },
+      "VersionPageDto": {
+        "type": "object",
+        "description": "Where the returned rows sit in the whole version list.\n\nEvery count here is over the *whole* list rather than the page, because each\none answers a question the console asks out loud — `42 of 44 shown`, `Show 3\npre-releases`, how many pages there are — and a count taken from the page\nwould make each of those sentences false as soon as there was more than one.",
+        "required": [
+          "page",
+          "per_page",
+          "total",
+          "unfiltered_total",
+          "prerelease_total",
+          "hidden_prereleases"
+        ],
+        "properties": {
+          "hidden_prereleases": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many the pre-release mode is currently removing. Not the same number\nas `prerelease_total`: `version=` keeps its own, so a page opened on a\nrelease candidate hides one fewer than it has.",
+            "minimum": 0
+          },
+          "page": {
+            "type": "integer",
+            "format": "int64",
+            "description": "0-based, and the page **actually returned**: the one holding `version=`\nwhen the caller named one and asked for no page, or the last page when\nthe ask was past the end.",
+            "minimum": 0
+          },
+          "per_page": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The page size actually applied, after the `[limits].versions_per_page`\nceiling. A caller that asked for more gets this, not what it asked for.",
+            "minimum": 0
+          },
+          "prerelease_total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Pre-releases this package has, whatever the mode — the number behind\n*Show 3 pre-releases*.",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Versions matching `q` and the pre-release mode, across every page.",
+            "minimum": 0
+          },
+          "unfiltered_total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Versions this endpoint knows of, before either filter.",
+            "minimum": 0
           }
         }
       },

@@ -1,3 +1,12 @@
+---
+# The contributor's reference: it sat just under the line until the workspace
+# grew a second sidecar (§11), and the material it covers — crate layout, test
+# suites, design gates, the dev-time identity provider — is a subject that is
+# long rather than a page that has sprawled. `docs:structure` asks for this
+# declaration above 4 000 words (RFC 0005-bis §4.5).
+reference: true
+---
+
 # Contributing to BatleHub
 
 This guide is the starting point for developers working on the BatleHub codebase. It covers the project layout, key architectural patterns, how to run the tests, and known design limitations you need to be aware of before touching specific areas.
@@ -16,6 +25,56 @@ git clone https://git.batleforc.fr/batleforc/batlehub
 cd batlehub
 cargo build
 ```
+
+### Disk, and what the dev profile gives up for it
+
+A full `cargo build --workspace --all-targets` used to leave a **46 GB**
+`target/`. The cause is structural rather than accidental: 102 test executables,
+each statically linking the whole dependency graph, each carrying its own copy of
+the DWARF for it — 81 % of every binary was `.debug_*`.
+
+The root `Cargo.toml` sizes that down to about **15 GB** with two settings, and
+they are a trade you should know about before reaching for a debugger:
+
+| Setting | Effect |
+| --- | --- |
+| `[profile.dev] debug = "line-tables-only"` | our crates keep the file:line a panic backtrace prints, and lose the variable/type information a debugger would show |
+| `[profile.dev.package."*"] debug = false` | dependencies keep none at all; symbol names still come from the symbol table, so a backtrace frame in `tokio` still names the function |
+
+`RUST_BACKTRACE=1` is unaffected in the way that matters — every frame still
+reports `file.rs:line:col`. If you need to step through code in lldb, delete both
+blocks for the session; a rebuild is the whole cost and nothing else in the repo
+depends on them.
+
+`target/debug/incremental` (another few GB) is pure cache and can be deleted at
+any time.
+
+### Keeping it from growing back
+
+The profile settings fix the size of each artefact; they do nothing about how
+many there are. **Cargo never removes anything from `target/`**: when a metadata
+hash changes — a dependency bump, a feature flip, a new toolchain — the new
+artefact is written *beside* the old one, and the old one stays forever.
+
+Measured on this workspace, which is the useful part: editing a source file and
+rebuilding the same way adds **nothing** to `target/debug/deps` (the artefact is
+overwritten in place; only the incremental cache grows, ~60 MB a cycle). One
+change of *build shape* added 152 files and 167 MB that nothing would ever
+reclaim. A dependency bump invalidates the 102 test binaries at once, so it
+leaves a whole generation — on the order of 10 GB — behind.
+
+```bash
+task clean:stale     # cargo sweep --time 1
+```
+
+Everything today's work has touched is kept; everything left over from
+yesterday's is not. It is safe by construction — every artefact is reproducible
+from source — and the only cost of sweeping something still wanted is rebuilding
+it. Expect a partial rebuild on the next `cargo build` even when the sweep
+reports a small number: removing one `.rmeta` invalidates its dependents.
+
+Run it after a dependency bump, which is the moment the biggest stale generation
+appears, or on a schedule.
 
 Le repo Git est disponible dans deux provider Git:
 
@@ -540,8 +599,9 @@ The fourth needs a real browser, because contrast on painted pixels, focus-ring
 visibility and reflow at 390 px cannot be measured by reading source.
 
 `ui:design:routes` is that fourth gate, and it covers **every rendered route** —
-the 15 admin pages and 4 account pages behind router guards *and* the six public
-ones, at both viewports, with axe plus the type ramp and the display face. It
+the 15 admin pages and 4 account pages behind router guards *and* the seven
+public ones, at four viewports, with axe plus the type ramp and the display
+face. It
 used to be two gates: `impeccable detect` + `@axe-core/cli` over the public
 routes, and a separate authenticated harness. Neither URL-based scanner knows
 what a type ramp is, so the ramp assertions ran on `/admin/*`, `/me/*` and `/`
@@ -550,11 +610,13 @@ of its own appearance (`ui/design-proof/index.html`), was the significant page
 no ramp check ran against. That is how its 104px display element became 24px
 with every gate green (RFC 0004-bis §4.4).
 
-`/packages` is pinned in the script's `EXPECTED_FAIL`: it disagrees with its own
-design proof, the disagreement is RFC 0004-bis O3's to settle, and it is
-reported as a line in the output rather than as a silence. A pinned route that
-starts *passing* fails the gate — that means one side of O3 moved and the pin
-has become the stale claim.
+The script's `EXPECTED_FAIL` is **empty**, and that is a result: `/packages` sat
+in it until RFC 0004-bis O3 settled by moving the page. A pinned route that
+starts *passing* fails the gate, so expect to unpin what you pin.
+
+The viewports are 1440, 1024, 768 and 390. The middle two catch what the outer
+pair cannot: a table whose fixed columns starve its flexible one is green at 390
+(every fixed width released) and at 1440 (room for all).
 
 The workspace `devfile.yaml` declares a **`browser` sidecar**
 ([che-browser](https://github.com/batleforc/WeeboDevImage/tree/main/che-browser)):
@@ -598,4 +660,108 @@ restart, and `task browser:check` fails with a connection error until then.
 Chromium cannot run in the tools container itself: the image has no
 `libglib-2.0`, and there is no root to install it. That is the gap the sidecar
 fills, rather than a preference for sidecars.
+
+## 11. An OIDC provider in the workspace (the dex sidecar)
+
+`docker-compose.yml` runs **Authentik** for `[[auth]] type = "oidc"` work, and a
+workspace has no compose to run it in — it is four containers and a Postgres of
+its own. `devfile.yaml` declares a **`dex` sidecar** instead: one container,
+in-memory storage, listening on **9000**, the same port Authentik uses. So
+`localhost:9000` is the local identity provider either way, and only `issuer_url`
+tells the two apart.
+
+```bash
+task dex:config                     # render the config + the [[auth]] blocks — live in ~2s
+task dex:reload                     # re-read the config without changing it
+task dex:check                      # discovery document — is it up, and as whom?
+task run:space                      # the server, already pointed at dex
+task dex:token -- admin@example.com password   # a JWT for curl, no browser
+task dex:logs -f                    # follow the sidecar
+```
+
+Two accounts, both with the password `password`: `admin@example.com` → `admin`
+and `dev@example.com` → `user`.
+
+**A config change costs two seconds, not a workspace.** Dex has no reload: it
+parses its config once, at startup, and there is no signal that makes it read the
+file again. The obvious way to run it again — end the container and let the
+kubelet bring it back — is the expensive one here, because a container that
+terminates in this pod does not come back alone: the pod is replaced and every
+sidecar goes down with it. That is a workspace restart with extra steps, and it
+cost three of them before it was understood.
+
+So dex is not PID 1 in its container. A small supervisor is, and it never exits;
+dex is its child. The supervisor hashes `dev/dex/config.yaml` and `dev/dex/reload`
+every two seconds, and on any change kills dex and starts it again in place. The
+container stays `Running` throughout and its restart count stays `0` — nothing
+outside that one process notices. `task dex:config` ends by calling
+`task dex:reload`, so rendering a new config *is* applying it; `task dex:reload`
+on its own bumps the `reload` file, for a config whose bytes did not change.
+
+Three details worth knowing, because each is load-bearing:
+
+- **It is checked before it is applied.** `dex:reload` first boots the candidate
+  config with the same dex binary, in the same container, on ports 19000-19002,
+  and looks for `server=http` in the output — logged only after parsing,
+  validation and the bind have all succeeded. A config that fails leaves the
+  running instance untouched.
+- **The answer comes from the sidecar, not the port.** The supervisor writes
+  `dev/dex/state` each time it starts dex, and the task waits for that value to
+  change. Polling `:9000` alone cannot distinguish "restarted" from "the old dex
+  is still answering with the config you just replaced".
+- **A bad config makes it hold, not loop.** If dex exits on a config nobody has
+  touched since, starting it again would fail identically and bury the one log
+  line that explains why. The supervisor stops and says what would end the hold;
+  the next `task dex:config` starts it again by itself.
+
+**`task run:space` needs no pasting.** `config.example-space.toml` is the
+workspace's config, and its two `[[auth]] type = "oidc"` blocks already describe
+dex — email-mapped roles and all. What it does not contain is a workspace name:
+the issuer, the callback host and the SPA origin are `${BATLEHUB_DEX_ISSUER}`,
+`${BATLEHUB_BACK_URL}` and `${BATLEHUB_FRONT_URL}`, which the task fills from the
+same `url` helper `task dex:config` uses, so the tracked file works in anyone's
+workspace and the two cannot disagree about the FQDN. Pass `LOCAL=1` to both or
+to neither — the issuer is one value, and a mismatch is every login failing on
+the `iss` check. The generated `dev/dex/auth.toml` remains what you paste into a
+config of your own.
+
+**Why the config is rendered and not committed.** The issuer is one value that
+every party has to agree on: the browser is redirected to it, the server fetches
+`{issuer}/.well-known/openid-configuration` from it, and the `iss` that comes back
+is checked against `issuer_url`. In a workspace that is the gateway FQDN, which
+contains the workspace name — so `dev/dex/config.yaml` is generated from
+`dev/dex/config.tmpl.yaml` (tracked) by `task dex:config` and gitignored, along
+with the `dev/dex/auth.toml` it writes beside it: the two `[[auth]]` blocks with
+issuer, redirect and frontend URLs already filled in, to paste over the Authentik
+ones in your config. The pod can reach its own ingress, so the server is content
+with the same URL the browser uses.
+
+`task dex:config LOCAL=1` renders `http://localhost:9000` instead —
+`is_secure_issuer_url` permits plain HTTP on loopback exactly so this works. The
+server and the `browser` sidecar can both reach that (one pod, one network
+namespace, so the rendered gates can drive a full SSO flow); your own browser
+cannot.
+
+**Roles map off `email`, not `groups`.** Dex's password DB carries no group
+membership — groups only ever come from a real connector (LDAP, GitHub) — so
+`role_claim = "groups"` would find no claim at all and `map_role` would fall
+through to `Role::Anonymous` for every login. `email` is always present with the
+`email` scope and is matched the same way, a string against the keys of
+`[auth.role_mappings]`.
+
+**The endpoint is public and not `secure`.** It has to be: the server fetches the
+discovery document unauthenticated, and Che's auth in front of it would answer
+that fetch with a login page. What is exposed is a throwaway provider holding two
+accounts whose password is `password`. Put nothing in it you would mind a
+passer-by reaching; for a sealed setup, use `LOCAL=1` and switch the endpoint to
+`exposure: internal`.
+
+As with the browser sidecar, **a devfile change needs a workspace restart** —
+`task dex:check` fails with a connection error until then. That includes the
+supervisor above: a pod started before it was added still runs the boot-once
+container, and `task dex:reload` says so and changes nothing rather than pretending
+otherwise. One restart adopts it, and it is the last one a config change asks for.
+The container waits for `dev/dex/config.yaml` rather than exiting when it is
+missing, so a workspace that has never run `task dex:config` still starts; it would
+otherwise crash-loop and leave the pod short of Ready.
 

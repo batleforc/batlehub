@@ -5,6 +5,8 @@ use super::{
     NotificationEventType, NotificationService, PublishRequest, RegistryMap, RegistryModeMap,
     Responder, Sha256,
 };
+use batlehub_core::services::readme::detect;
+
 use crate::handlers::schemas::OkResponse;
 
 /// `cargo publish`'s acknowledgement, in the shape crates.io defines: a
@@ -106,6 +108,32 @@ pub async fn cargo_publish(
         })
         .await
         .map_err(AppError::from)?;
+
+    // `metadata_to_index_entry` narrows the publish metadata to the nine fields
+    // the sparse index carries, and `readme`/`readme_file` are not among them —
+    // widening the index entry would change what cargo receives. So the text is
+    // stored separately, keyed by the version it was published with
+    // (RFC 0007 §6.4). This is the only source cargo has: the sparse index has
+    // no README field, so a proxied crate's README comes from the `.crate`.
+    if let Some(text) = publish_readme(&meta_json) {
+        local_svc
+            .record_publish_readme(
+                &registry,
+                &name,
+                &version,
+                text,
+                // `readme_file` names the file the text came from, so its
+                // extension is what declares the markup — the same rule the
+                // archive extractor applies to the same file.
+                detect::format_from_filename(
+                    meta_json
+                        .get("readme_file")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("README.md"),
+                ),
+            )
+            .await;
+    }
 
     super::super::common::dispatch_notification(
         &notification_svc,
@@ -211,4 +239,67 @@ pub async fn cargo_unyank(
         &actor,
     );
     Ok(HttpResponse::Ok().json(OkResponse::new()))
+}
+
+/// The README text a cargo publish request carried in its metadata.
+///
+/// `cargo publish` sends the full text in `readme` and the file it came from in
+/// `readme_file`. Both are dropped by `metadata_to_index_entry`, which is
+/// correct — they are not index data — so this reads them before that happens.
+fn publish_readme(meta_json: &serde_json::Value) -> Option<String> {
+    meta_json
+        .get("readme")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_publish_metadatas_readme_is_read_before_the_index_entry_drops_it() {
+        let meta = serde_json::json!({
+            "name": "mylib", "vers": "1.0.0",
+            "readme": "# mylib\n\nDoes a thing.",
+            "readme_file": "README.md",
+        });
+        assert_eq!(
+            publish_readme(&meta).as_deref(),
+            Some("# mylib\n\nDoes a thing.")
+        );
+    }
+
+    /// The workspace's own publish fixture sends `"readme": null`, which is a
+    /// crate with no README rather than one with an empty document.
+    #[test]
+    fn a_null_or_empty_readme_is_no_readme() {
+        for value in [
+            serde_json::json!({ "readme": null }),
+            serde_json::json!({ "readme": "" }),
+            serde_json::json!({ "readme": "  \n " }),
+            serde_json::json!({}),
+        ] {
+            assert_eq!(publish_readme(&value), None);
+        }
+    }
+
+    /// `readme_file` names the file the text came from, so its extension is
+    /// what declares the markup — an `.rst` README is shown as escaped source
+    /// rather than parsed as markdown.
+    #[test]
+    fn readme_file_decides_the_markup() {
+        assert_eq!(
+            detect::format_from_filename("README.rst"),
+            batlehub_core::entities::ReadmeFormat::Rst
+        );
+        // Absent, the conventional default is markdown — which is what cargo's
+        // own `readme = true` shorthand means.
+        assert_eq!(
+            detect::format_from_filename("README.md"),
+            batlehub_core::entities::ReadmeFormat::Markdown
+        );
+    }
 }

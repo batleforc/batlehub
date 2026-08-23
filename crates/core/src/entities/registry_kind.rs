@@ -79,6 +79,93 @@ impl ListingDocument {
     }
 }
 
+/// Where a registry kind's README comes from, if it has one at all.
+///
+/// A property of the *protocol*, not a preference: whether the text arrives in a
+/// document the proxy already fetches to resolve a version, or only inside the
+/// artifact, is decided by the ecosystem and decides in turn whether a version
+/// this instance holds no bytes for can have one (RFC 0007 §4.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadmeSupport {
+    /// The text is a field of a metadata document the proxy already parses.
+    /// Available for every version upstream knows about.
+    Metadata,
+    /// The metadata carries a *URL*, not the text. Reading it is an outbound
+    /// request in its own right, same-origin checked against the registry's own
+    /// base URL (RFC 0007 §7.4).
+    MetadataLinked,
+    /// The text is a file inside the artifact. Available only for versions this
+    /// instance has cached or hosts — the same honest limit `license` has.
+    Archive,
+    /// Metadata when the document carries it, the artifact when it does not.
+    /// npm is the only one: the packument's `readme` is often empty for versions
+    /// published by tooling that only writes the tarball.
+    MetadataThenArchive,
+    /// This kind has no README to give, and why.
+    ///
+    /// The reason travels with the code that decides it so the published support
+    /// table cannot drift from the behaviour, exactly as [`ListingSupport`] does.
+    /// The string completes "no — …".
+    None(&'static str),
+}
+
+impl ReadmeSupport {
+    /// Whether any README can ever be stored for this kind.
+    pub fn is_supported(&self) -> bool {
+        !matches!(self, Self::None(_))
+    }
+
+    /// Whether the artifact has to be opened for this kind's README, i.e.
+    /// whether `from_archive` means anything on a registry of this kind.
+    pub fn reads_the_archive(&self) -> bool {
+        matches!(self, Self::Archive | Self::MetadataThenArchive)
+    }
+
+    /// Whether a version this instance holds no bytes for can have a README —
+    /// the *unheld* column of the support table.
+    pub fn answers_for_unheld_versions(&self) -> bool {
+        matches!(
+            self,
+            Self::Metadata | Self::MetadataLinked | Self::MetadataThenArchive
+        )
+    }
+}
+
+/// How this kind answers "what versions exist upstream" for the console's
+/// discovery read (RFC 0007 §4.3, §5.5).
+///
+/// The *unheld* column of the support table. Which arm a kind takes decides how
+/// much the package page can say about a package this instance holds nothing of:
+/// a listing document carries publish times and, for npm, the README; a bare
+/// version list carries neither, which is honest and still the difference
+/// between a versions table and an empty state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpstreamDetailSupport {
+    /// Read this kind's listing document, and name *which* one: the kinds with
+    /// more than one would otherwise have the choice made twice, once here and
+    /// once at the fetch.
+    ///
+    /// The string is the same discriminant `DocumentKind::as_str` returns, for
+    /// the reason [`ListingDocument::documents`] carries strings: `entities`
+    /// does not depend on `ports`, and this is the one fact it needs from there.
+    /// Checked against the real enum by the drift test in
+    /// `services::upstream_detail`, so a typo is a test failure rather than a
+    /// silently skipped kind.
+    Document(&'static str),
+    /// This kind has no listing document the proxy can read, but it can
+    /// enumerate versions. Produces rows with no publish times — honest, and
+    /// enough for a table.
+    ListVersions,
+    /// There is nothing to ask, and why. The string completes "no — …".
+    None(&'static str),
+}
+
+impl UpstreamDetailSupport {
+    pub fn is_supported(&self) -> bool {
+        !matches!(self, Self::None(_))
+    }
+}
+
 /// The protocol a registry adapter speaks — e.g. `"cargo"`, `"npm"`, `"maven"`.
 ///
 /// Distinct from a registry's user-configured *instance* name (e.g. `"my-maven"`
@@ -119,7 +206,7 @@ pub enum RegistryKind {
 impl RegistryKind {
     /// All known registry kinds, in the same order the config validator and
     /// `server/src/builders.rs` have historically listed them.
-    pub const ALL: &'static [RegistryKind] = &[
+    pub const ALL: &[RegistryKind] = &[
         Self::Github,
         Self::Forgejo,
         Self::Gitlab,
@@ -338,30 +425,322 @@ impl RegistryKind {
         }
     }
 
+    /// Where this kind's README comes from, or why it has none.
+    ///
+    /// The single source of truth for the per-type support table in
+    /// `docs/registries/`, which is *generated* from this rather than maintained
+    /// beside it — the same arrangement [`Self::listing_filter`] has, and for the
+    /// same reason: a published table claiming coverage the code does not deliver
+    /// is a statement about the product that is not true.
+    ///
+    /// Exhaustive with no wildcard arm, so a new registry kind does not compile
+    /// until it answers the question.
+    pub fn readme_support(&self) -> ReadmeSupport {
+        match self {
+            // The packument carries `readme` per version and at the document
+            // root; when a publisher's tooling wrote neither, the tarball still
+            // has one.
+            Self::Npm => ReadmeSupport::MetadataThenArchive,
+            // `info.description` with `info.description_content_type` naming
+            // its markup. Per version by construction, and the archive says the
+            // same thing from the other side: the JSON API's `description` *is*
+            // the wheel's `METADATA` body, so a version resolved through the
+            // simple index rather than the JSON API still gets one.
+            Self::Pypi => ReadmeSupport::MetadataThenArchive,
+            // The plugin `<description>`, already HTML.
+            Self::JetbrainsMarketplace => ReadmeSupport::Metadata,
+            // `files.readme` and the `Content.Details` asset are URLs.
+            Self::Openvsx | Self::VscodeMarketplace => ReadmeSupport::MetadataLinked,
+            // The sparse index has no README field; the `.crate` does, named by
+            // `Cargo.toml [package] readme`. On publish the metadata carries the
+            // full text, which is why cargo has a `LocalPublish` source too.
+            Self::Cargo => ReadmeSupport::Archive,
+            // The `.nuspec` `<readme>` element names a file inside the `.nupkg`.
+            Self::Nuget => ReadmeSupport::Archive,
+            // `README*` at the module root of the `.zip`.
+            Self::Goproxy => ReadmeSupport::Archive,
+            // `README*` at the root of a module tarball. Providers have none,
+            // which the extractor answers for by finding no file.
+            Self::Terraform => ReadmeSupport::Archive,
+            // `README*` at the root of the dist zip.
+            Self::Composer => ReadmeSupport::Archive,
+            // `info/about.json` → `description`, as plain text.
+            Self::Conda => ReadmeSupport::Archive,
+            // `README*` in `data.tar.gz`. There is no declared field in a
+            // gemspec, so this is a filename convention rather than a protocol
+            // guarantee (RFC 0007 open question 3).
+            Self::Rubygems => ReadmeSupport::Archive,
+            Self::Maven => ReadmeSupport::None(
+                "the POM carries `<description>`, which is a sentence rather than a document; \
+                 putting one where a reader expects the other makes every package look thinly \
+                 documented",
+            ),
+            Self::Deb | Self::Rpm | Self::Pacman | Self::Jetbrains | Self::Generic => {
+                ReadmeSupport::None(
+                    "path-addressed: there is no package identity to hang a README on",
+                )
+            }
+            Self::Github | Self::Gitlab | Self::Forgejo => ReadmeSupport::None(
+                "the README is one of the repository files this proxy already serves by path, \
+                 under `raw/{ref}/`, so a second URL for it would be a second answer to a \
+                 solved question",
+            ),
+        }
+    }
+
+    /// How this kind answers the console's discovery read.
+    ///
+    /// The other half of the per-type support table, and generated into it for
+    /// the same reason [`Self::readme_support`] is. Exhaustive with no wildcard
+    /// arm, so a new registry kind does not compile until it answers.
+    pub fn upstream_detail(&self) -> UpstreamDetailSupport {
+        match self {
+            // The packument: versions, `time`, `dist-tags`, and the README.
+            // One cached fetch answers both halves of what the page is missing.
+            Self::Npm => UpstreamDetailSupport::Document("versions"),
+            // The PEP 691 JSON simple page, not the HTML one: same document,
+            // and a parser rather than an HTML scrape.
+            Self::Pypi => UpstreamDetailSupport::Document("simple-json"),
+            // The sparse index, one JSON object per line, carrying `yanked`.
+            Self::Cargo => UpstreamDetailSupport::Document("versions"),
+            // The flat index — the document that resolves a version.
+            Self::Nuget => UpstreamDetailSupport::Document("versions"),
+            // `@v/list`, one version per line.
+            Self::Goproxy => UpstreamDetailSupport::Document("versions"),
+            // `maven-metadata.xml`.
+            Self::Maven => UpstreamDetailSupport::Document("versions"),
+            // p2 metadata.
+            Self::Composer => UpstreamDetailSupport::Document("versions"),
+            // The versions API.
+            Self::Rubygems => UpstreamDetailSupport::Document("versions"),
+            // Module and provider versions. The explore name carries the
+            // `modules/`/`providers/` prefix the protocol addresses by.
+            Self::Terraform => UpstreamDetailSupport::Document("versions"),
+            // `repodata.json` describes a whole channel, not a package: reading
+            // one package's versions out of it would fetch and parse every
+            // package's on every page view. `list_versions` asks the same
+            // question at the size of the answer.
+            Self::Conda => UpstreamDetailSupport::ListVersions,
+            // The extension galleries answer by query rather than by document —
+            // `allVersions` and `extensionquery` — which is what
+            // `list_versions` already wraps.
+            Self::Openvsx | Self::VscodeMarketplace | Self::JetbrainsMarketplace => {
+                UpstreamDetailSupport::ListVersions
+            }
+            Self::Github | Self::Gitlab | Self::Forgejo => UpstreamDetailSupport::None(
+                "a release listing is this instance's own view of a repository it proxies by                  path, and the console's package page is not where a repository is browsed",
+            ),
+            Self::Deb | Self::Rpm | Self::Pacman | Self::Jetbrains | Self::Generic => {
+                UpstreamDetailSupport::None(
+                    "path-addressed: there is no package identity to ask about",
+                )
+            }
+        }
+    }
+
+    /// Whether "fetch this version" has a single meaning for this kind
+    /// (RFC 0007-bis §4.4).
+    ///
+    /// The button on an upstream-only row runs the ordinary download path for
+    /// one coordinate. That needs the coordinate to *name* one thing: Maven's
+    /// artifact is a set of files, and a Terraform provider needs an OS and an
+    /// architecture, so for those the console renders the reason rather than a
+    /// disabled button with no explanation.
+    ///
+    /// Exhaustive with no wildcard arm, for the same reason
+    /// [`Self::readme_support`] and [`Self::upstream_detail`] are: a new kind
+    /// does not compile until somebody decides.
+    pub fn fetchable_by_version(&self) -> FetchSupport {
+        match self {
+            // Every one of these addresses its artifact with a sub-coordinate on
+            // the *download* path, and the coordinate alone is not the key.
+            // This table used to say `ByVersion` with no sub-coordinate for all
+            // of them, which made the button write `artifact:{reg}/lodash/4.17.21`
+            // while `npm install` reads `artifact:{reg}/lodash/4.17.21/tarball`:
+            // the fetch reported success, filled a slot nothing reads, and the
+            // next real install still went upstream. The same mismatch made the
+            // `409 already-held` check unable to match a genuinely cached
+            // version. Exactly the bug [`Self::warm_artifact`] documents for
+            // vsix, one table over.
+            //
+            // Worse than a dead key for two of them: with no sub-coordinate the
+            // goproxy client serves `@v/{version}.info` (a JSON stamp, not the
+            // module) and the RubyGems client serves `api/v1/gems/{name}.json`
+            // (the metadata document, not the gem), so the button downloaded the
+            // wrong thing and cached it under the name of the right one.
+            Self::Npm => FetchSupport::ByVersion(FetchArtifact::Fixed("tarball")),
+            Self::Cargo => FetchSupport::ByVersion(FetchArtifact::Fixed("dl")),
+            Self::Composer => FetchSupport::ByVersion(FetchArtifact::Fixed("dist")),
+            Self::Rubygems => FetchSupport::ByVersion(FetchArtifact::Fixed("gem")),
+            // `.zip` — the module source. `.mod` is the other half of what `go
+            // mod download` reads, but it is a few hundred bytes next to the
+            // archive, and "fetch this version" means the bytes.
+            Self::Goproxy => FetchSupport::ByVersion(FetchArtifact::Fixed("zip")),
+            // Addressed by filename, but the filename is derivable — see
+            // [`FetchArtifact::NugetFlat`].
+            Self::Nuget => FetchSupport::ByVersion(FetchArtifact::NugetFlat),
+            // The extension and plugin galleries address their artifact with a
+            // sub-coordinate too; these two are the ones that always said so.
+            Self::Openvsx | Self::VscodeMarketplace => {
+                FetchSupport::ByVersion(FetchArtifact::Fixed("vsix"))
+            }
+            Self::JetbrainsMarketplace => FetchSupport::ByVersion(FetchArtifact::Fixed("plugin")),
+            // A PyPI version is a set of distribution files — an sdist and one
+            // wheel per interpreter/platform tag — and the proxy addresses each
+            // by its full filename, which is not derivable from the coordinate
+            // (the tags are not in it). The same reasoning as Maven below, and
+            // the same answer. Said plainly rather than left as a button that
+            // could not work: with no filename the PyPI client looks for a file
+            // named `""` in the version's `urls` and returns `NotFound`, so this
+            // row's button was a `404` generator.
+            Self::Pypi => FetchSupport::None(
+                "a PyPI version is a set of distribution files — an sdist and one wheel per \
+                 interpreter and platform — each addressed by its own filename, so \"fetch this \
+                 version\" has no single meaning",
+            ),
+            // Conda is refused for a second, sharper reason: this proxy carries
+            // the *platform* in `PackageId::version` (see the conda client's
+            // `resolve_metadata`), and the artifact filename additionally
+            // carries the build string. A fetch of `numpy 1.24.0` would issue
+            // `GET {base}/1.24.0/repodata.json` — a path that cannot exist.
+            Self::Conda => FetchSupport::None(
+                "a conda artifact is addressed by channel platform and build string as well as \
+                 version, so \"fetch this version\" has no single meaning",
+            ),
+            Self::Maven => FetchSupport::None(
+                "a Maven version is a set of files — a jar, a pom, sources, javadoc — so \
+                 \"fetch this version\" has no single meaning",
+            ),
+            Self::Terraform => FetchSupport::None(
+                "a Terraform provider binary is addressed by OS and architecture as well as \
+                 version, and a module is fetched by the client from a URL this instance \
+                 rewrites rather than as one artifact",
+            ),
+            Self::Deb | Self::Rpm | Self::Pacman | Self::Jetbrains | Self::Generic => {
+                FetchSupport::None("path-addressed: there is no version to fetch by")
+            }
+            Self::Github | Self::Gitlab | Self::Forgejo => FetchSupport::None(
+                "a release asset is addressed by its filename, which the page does not know",
+            ),
+        }
+    }
+
     /// The `PackageId::artifact` sub-coordinate this kind's primary downloadable
     /// artifact is cached under, when it uses one.
     ///
     /// Proxy cache keys are `artifact:` + [`crate::entities::PackageId::cache_key`], i.e.
-    /// `artifact:{registry}/{name}/{version}[/{artifact}]`. Most kinds address
-    /// their main artifact by name/version alone and return `None` (new kinds
-    /// default to that). JetBrains Marketplace serves the plugin archive under
-    /// `plugin` — see `jbm_plugin_download` in
-    /// `crates/web/src/handlers/proxy/jetbrains_marketplace/files.rs`, which
-    /// must keep using the same sub-coordinate.
+    /// `artifact:{registry}/{name}/{version}[/{artifact}]`. Warming reads this
+    /// so a pre-fetched artifact lands in the exact slot the proxy read path
+    /// looks in, instead of a slot nothing ever reads.
     ///
-    /// Warming reads this so a pre-fetched artifact lands in the exact slot the
-    /// proxy read path looks in, instead of a slot nothing ever reads.
-    pub fn warm_artifact(&self) -> Option<&'static str> {
+    /// **Derived from [`Self::fetchable_by_version`], not restated.** Warming
+    /// and the console's fetch button ask the same question — *where does this
+    /// kind's one downloadable artifact live?* — and answering it twice is how
+    /// this went wrong before: the fetch table said "by version, no
+    /// sub-coordinate" for eight kinds whose download path uses one. A kind
+    /// that cannot name a single artifact for a version (PyPI, conda, Maven,
+    /// Terraform, the path-addressed kinds) answers `None` here, because
+    /// warming cannot name the file either.
+    pub fn warm_artifact(&self) -> Option<FetchArtifact> {
+        match self.fetchable_by_version() {
+            FetchSupport::ByVersion(artifact) => Some(artifact),
+            FetchSupport::None(_) => None,
+        }
+    }
+
+    /// The exact `PackageId` a "fetch this version" runs — the same one the
+    /// package manager's own download builds, sub-coordinate and normalisation
+    /// included.
+    ///
+    /// `None` when this kind cannot name one artifact for a version; the caller
+    /// shows [`FetchSupport::reason`] instead.
+    pub fn fetch_coordinate(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+    ) -> Option<crate::entities::PackageId> {
+        self.warm_artifact()
+            .map(|artifact| artifact.coordinate(registry, name, version))
+    }
+}
+
+/// Whether a version can be fetched by coordinate alone
+/// ([`RegistryKind::fetchable_by_version`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchSupport {
+    /// The coordinate names one artifact, and this is where the download path
+    /// caches it.
+    ///
+    /// There is no payload-less variant on purpose. Every kind that answers
+    /// this way addresses its artifact with a sub-coordinate — the bare
+    /// `{registry}/{name}/{version}` key is not a slot any read path looks in —
+    /// and a variant that let a kind stay silent about which one is what made
+    /// the button write dead keys for eight kinds.
+    ByVersion(FetchArtifact),
+    /// It does not, and this is why. Quoted verbatim by the endpoint and by the
+    /// console, so the published support table, the refusal and the button's
+    /// tooltip cannot disagree.
+    None(&'static str),
+}
+
+impl FetchSupport {
+    pub fn is_supported(&self) -> bool {
+        !matches!(self, Self::None(_))
+    }
+
+    pub fn reason(&self) -> Option<&'static str> {
         match self {
-            Self::JetbrainsMarketplace => Some("plugin"),
-            // Both extension kinds read with `.with_artifact("vsix")` in
-            // `handlers/proxy/openvsx.rs`. Returning `None` here — as this did —
-            // made the warmer write `artifact:{registry}/{name}/{version}` while
-            // every read looked in `…/{version}/vsix`, so warming an extension
-            // filled a slot nothing ever read and the first real request still
-            // went upstream.
-            Self::Openvsx | Self::VscodeMarketplace => Some("vsix"),
-            _ => None,
+            Self::None(reason) => Some(reason),
+            Self::ByVersion(_) => None,
+        }
+    }
+}
+
+/// How a kind addresses the one artifact a version resolves to.
+///
+/// Turned into a `PackageId` by [`Self::coordinate`], which is the only place
+/// that answer is built: the console's fetch and the warmer both go through it,
+/// so neither can write a key the proxy read path does not read back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchArtifact {
+    /// A fixed sub-coordinate, the same for every package of this kind —
+    /// npm's `tarball`, cargo's `dl`, RubyGems' `gem`, Composer's `dist`,
+    /// goproxy's `zip`, `vsix`, `plugin`.
+    Fixed(&'static str),
+    /// NuGet's flat container addresses the package by filename:
+    /// `{LOWER_ID}/{LOWER_VERSION}/{LOWER_ID}.{LOWER_VERSION}.nupkg` (NuGet V3
+    /// "package content" resource). Derivable from the coordinate, unlike
+    /// PyPI's wheel tags and conda's build strings — which is why NuGet keeps
+    /// its button and those two do not.
+    ///
+    /// The lower-casing is not cosmetic: `nuget restore` requests the
+    /// lower-cased URL, so the flat-index handler keys the artifact under the
+    /// lower-cased id and version. A fetch that kept `Newtonsoft.Json` as typed
+    /// in the console would write a neighbouring key no restore ever reads.
+    NugetFlat,
+}
+
+impl FetchArtifact {
+    /// The `PackageId` — including any normalisation the read path applies —
+    /// this artifact is fetched and cached as.
+    pub fn coordinate(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+    ) -> crate::entities::PackageId {
+        use crate::entities::PackageId;
+        match self {
+            Self::Fixed(artifact) => {
+                PackageId::new(registry, name, version).with_artifact(*artifact)
+            }
+            Self::NugetFlat => {
+                let id = name.to_lowercase();
+                let version = version.to_lowercase();
+                let filename = format!("{id}.{version}.nupkg");
+                PackageId::new(registry, id, version).with_artifact(filename)
+            }
         }
     }
 }
@@ -486,6 +865,105 @@ mod tests {
         );
     }
 
+    /// Every kind answers, and a "no" answers with a reason an operator can
+    /// read — the published support table prints it verbatim.
+    #[test]
+    fn every_kind_answers_the_readme_question_with_a_reason() {
+        for kind in RegistryKind::ALL {
+            if let ReadmeSupport::None(reason) = kind.readme_support() {
+                assert!(
+                    !reason.is_empty(),
+                    "{kind} says it has no README; say why, the docs table quotes it"
+                );
+            }
+        }
+    }
+
+    /// The three "no" groups of RFC 0007 §4.3, and only those. Each is a
+    /// decision in §3's non-goals, not a gap to be closed later.
+    #[test]
+    fn the_kinds_without_a_readme_are_the_ones_we_decided_against() {
+        let unsupported: Vec<&str> = RegistryKind::ALL
+            .iter()
+            .filter(|k| !k.readme_support().is_supported())
+            .map(|k| k.as_str())
+            .collect();
+        assert_eq!(
+            unsupported,
+            [
+                // The README is a file already served by path.
+                "github",
+                "forgejo",
+                "gitlab",
+                // A sentence, not a document.
+                "maven",
+                // Path-addressed: no package identity.
+                "deb",
+                "rpm",
+                "pacman",
+                "jetbrains",
+                "generic",
+            ]
+        );
+    }
+
+    /// A kind that answers for unheld versions must not be one whose README
+    /// only exists inside bytes we do not have — that combination would put
+    /// "available" on a row we can never serve.
+    #[test]
+    fn only_metadata_borne_kinds_answer_for_unheld_versions() {
+        assert!(RegistryKind::Npm
+            .readme_support()
+            .answers_for_unheld_versions());
+        assert!(RegistryKind::Pypi
+            .readme_support()
+            .answers_for_unheld_versions());
+        assert!(RegistryKind::Openvsx
+            .readme_support()
+            .answers_for_unheld_versions());
+        assert!(!RegistryKind::Cargo
+            .readme_support()
+            .answers_for_unheld_versions());
+        assert!(!RegistryKind::Maven
+            .readme_support()
+            .answers_for_unheld_versions());
+        // npm is both: the packument answers when it carries the text, the
+        // tarball when it does not.
+        assert!(RegistryKind::Npm.readme_support().reads_the_archive());
+        // A kind whose README arrives in a *link* has nothing in the archive to
+        // fall back to, and must not claim otherwise.
+        assert!(!RegistryKind::Openvsx.readme_support().reads_the_archive());
+    }
+
+    /// Every kind answers, and a "no" answers with a reason the published
+    /// table prints verbatim.
+    #[test]
+    fn every_kind_answers_the_upstream_detail_question_with_a_reason() {
+        for kind in RegistryKind::ALL {
+            if let UpstreamDetailSupport::None(reason) = kind.upstream_detail() {
+                assert!(
+                    !reason.is_empty(),
+                    "{kind} says it cannot be asked about upstream; say why"
+                );
+            }
+        }
+    }
+
+    /// A kind whose README arrives in a metadata document must be one the
+    /// discovery read can actually reach, or the support table promises a
+    /// README for an unheld version that nothing can fetch.
+    #[test]
+    fn every_kind_that_answers_for_unheld_versions_can_be_asked_upstream() {
+        for kind in RegistryKind::ALL {
+            if kind.readme_support().answers_for_unheld_versions() {
+                assert!(
+                    kind.upstream_detail().is_supported(),
+                    "{kind} promises a README for unheld versions but cannot be asked upstream"
+                );
+            }
+        }
+    }
+
     #[test]
     fn path_addressed_kinds_are_the_path_proxy_ones() {
         for kind in [
@@ -508,6 +986,90 @@ mod tests {
                 !kind.is_path_addressed(),
                 "{kind} should not be path-addressed"
             );
+        }
+    }
+
+    /// The cache key a console fetch writes, spelled out per kind.
+    ///
+    /// This is the regression: the table used to answer "by version, no
+    /// sub-coordinate" for eight kinds, so the fetch wrote
+    /// `npm1/lodash/4.17.21` while `npm install` reads
+    /// `npm1/lodash/4.17.21/tarball` — a success that filled a slot nothing
+    /// reads. Each expectation below is the key the *download handler* for that
+    /// kind builds (`handlers/proxy/<kind>`, via `artifact_suffix`), so a change
+    /// to either side has to change this list too.
+    #[test]
+    fn a_fetch_writes_the_key_the_download_path_reads() {
+        let cases = [
+            (RegistryKind::Npm, "r/lodash/4.17.21/tarball"),
+            (RegistryKind::Cargo, "r/lodash/4.17.21/dl"),
+            (RegistryKind::Composer, "r/lodash/4.17.21/dist"),
+            (RegistryKind::Rubygems, "r/lodash/4.17.21/gem"),
+            (RegistryKind::Goproxy, "r/lodash/4.17.21/zip"),
+            (RegistryKind::Openvsx, "r/lodash/4.17.21/vsix"),
+            (RegistryKind::VscodeMarketplace, "r/lodash/4.17.21/vsix"),
+            (
+                RegistryKind::JetbrainsMarketplace,
+                "r/lodash/4.17.21/plugin",
+            ),
+        ];
+        for (kind, expected) in cases {
+            let pkg = kind
+                .fetch_coordinate("r", "lodash", "4.17.21")
+                .unwrap_or_else(|| panic!("{kind} should be fetchable by version"));
+            assert_eq!(pkg.cache_key(), expected, "{kind}");
+        }
+    }
+
+    /// NuGet's flat container is addressed by a lower-cased filename, and
+    /// `nuget restore` requests the lower-cased URL — so a fetch of the
+    /// mixed-case id the console displays has to normalise, or it writes a
+    /// neighbouring key no restore reads.
+    #[test]
+    fn a_nuget_fetch_normalises_the_way_the_flat_index_does() {
+        let pkg = RegistryKind::Nuget
+            .fetch_coordinate("r", "Newtonsoft.Json", "13.0.3-Beta")
+            .unwrap();
+        assert_eq!(
+            pkg.cache_key(),
+            "r/newtonsoft.json/13.0.3-beta/newtonsoft.json.13.0.3-beta.nupkg"
+        );
+    }
+
+    /// PyPI and conda name a *set* of files per version, so the button is
+    /// refused with a reason rather than offered and quietly wrong. Left
+    /// offered, PyPI looked for a file named `""` and 404'd, and conda —
+    /// which carries the channel platform in the version slot — asked for
+    /// `{base}/{version}/repodata.json`, a path that cannot exist.
+    #[test]
+    fn kinds_that_cannot_name_one_artifact_refuse_with_a_reason() {
+        for kind in [
+            RegistryKind::Pypi,
+            RegistryKind::Conda,
+            RegistryKind::Maven,
+            RegistryKind::Terraform,
+        ] {
+            assert!(
+                kind.fetchable_by_version().reason().is_some(),
+                "{kind} should refuse with a reason"
+            );
+            assert!(
+                kind.fetch_coordinate("r", "numpy", "1.24.0").is_none(),
+                "{kind} should not produce a fetch coordinate"
+            );
+        }
+    }
+
+    /// Warming and the console fetch must not be two lists of the same fact.
+    #[test]
+    fn warming_and_fetching_agree_on_every_kind() {
+        for kind in RegistryKind::ALL {
+            match kind.fetchable_by_version() {
+                FetchSupport::ByVersion(artifact) => {
+                    assert_eq!(kind.warm_artifact(), Some(artifact), "{kind}")
+                }
+                FetchSupport::None(_) => assert_eq!(kind.warm_artifact(), None, "{kind}"),
+            }
         }
     }
 }

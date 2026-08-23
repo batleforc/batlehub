@@ -45,6 +45,13 @@ fuzz_target!(|data: &[u8]| {
         checksum: None,
         is_signed: None,
         extra: serde_json::Value::Null,
+        // Not read by the rule under test — it carries an upstream
+        // `Cache-Control`, and this fuzzer is about the decision, not the cache.
+        // Written out rather than `..Default::default()` on purpose: an exhaustive
+        // literal is what makes a new field on `PackageMetadata` stop this target
+        // compiling, and the CI job that builds these bins is what turns that into
+        // a prompt rather than silent non-coverage.
+        cache_control: None,
     };
     let ctx = RuleContext {
         identity: &identity,

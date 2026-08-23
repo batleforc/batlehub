@@ -38,7 +38,7 @@ function fmtAction(a: string) {
       <CardTitle class="text-base">{{ t("packageEventsTable.recentAccessEvents") }}</CardTitle>
     </CardHeader>
     <CardContent class="p-0">
-      <Table>
+      <Table :label="t('a11y.eventsTableLabel')">
         <TableHeader>
           <TableRow>
             <TableHead>{{ t("common.when") }}</TableHead>

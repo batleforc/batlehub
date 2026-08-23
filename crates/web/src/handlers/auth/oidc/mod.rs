@@ -1,8 +1,8 @@
 pub mod sso;
 
 pub use sso::{
-    list_oidc_providers, oidc_callback, oidc_login, oidc_refresh, OidcProviderInfo, RefreshRequest,
-    RefreshResponse,
+    list_oidc_providers, oidc_callback, oidc_login, oidc_refresh, OidcProviderInfo,
+    RefreshRateLimiter, RefreshRequest, RefreshResponse,
 };
 
 use serde::Deserialize;
@@ -37,14 +37,12 @@ pub(super) fn spa_error_redirect(base: &str, msg: &str) -> actix_web::HttpRespon
         .finish()
 }
 
-/// Split `"<provider>:<user_state>"` into `("<provider>", "<user_state>")`.
-/// Falls back to `("", raw)` for states that have no provider prefix (e.g. legacy).
-pub(super) fn split_combined_state(raw: &str) -> (&str, &str) {
-    match raw.find(':') {
-        Some(pos) => (&raw[..pos], &raw[pos + 1..]),
-        None => ("", raw),
-    }
-}
+// `split_combined_state` lived here: the callback used to read the provider name
+// out of the `state` it was handed, then fall back to the first configured flow
+// when the prefix matched nothing — so a code could be presented for redemption
+// at a token endpoint of the caller's choosing. The provider now comes from the
+// server-side `LoginState`, and the state is an opaque handle with no structure
+// to parse.
 
 pub(super) fn url_encode(s: &str) -> String {
     s.chars()

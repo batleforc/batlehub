@@ -14,6 +14,7 @@ const base = {
   action: "Delete",
   count: 47,
   itemNoun: "version",
+  itemNounPlural: "versions",
   scope: "internal/auth across 2 registries",
 } as const;
 
@@ -50,6 +51,24 @@ describe("DestructiveConfirm", () => {
     );
   });
 
+  /**
+   * The dialog used to append an `s`. Every caller passes a translated noun, so
+   * that rule was English morphology applied to `paquet`, `modification` and
+   * `artefact en cache` — right by luck for those three and wrong for the next
+   * noun added. The plural now comes from the catalogue with the singular, and
+   * a caller that omits it gets the singular back rather than an invented word.
+   */
+  it("does not invent a plural for a noun it was not given one for", async () => {
+    await mountOpen({ itemNoun: "cheval", itemNounPlural: undefined });
+    expect(document.body.textContent).toContain("Delete 47 cheval");
+    expect(document.body.textContent).not.toContain("chevals");
+  });
+
+  it("uses the plural the caller supplied", async () => {
+    await mountOpen({ itemNoun: "cheval", itemNounPlural: "chevaux" });
+    expect(document.body.textContent).toContain("Delete 47 chevaux");
+  });
+
   it("says plainly that an irreversible action cannot be undone", async () => {
     await mountOpen();
     expect(document.body.textContent).toContain("cannot be undone");
@@ -84,6 +103,41 @@ describe("DestructiveConfirm", () => {
     expect(wrapper.emitted("confirm")).toBeUndefined();
   });
 
+  /**
+   * A keyword confirmation ("reload", "purge") has no case to disambiguate, so
+   * RELOAD — what a phone keyboard and the habit of typing commands produce —
+   * confirms. An identifier still does not: `Internal/Auth` is a different
+   * package from `internal/auth`.
+   */
+  it("accepts any case for a keyword confirmation", async () => {
+    const wrapper = await mountOpen({
+      action: "Reload",
+      confirmName: "reload",
+      confirmCaseInsensitive: true,
+    });
+    const button = buttonLabelled("Reload");
+    expect(button.hasAttribute("disabled")).toBe(true);
+
+    const input = document.querySelector("#destructive-confirm-name") as HTMLInputElement;
+    input.value = "RELOAD";
+    input.dispatchEvent(new Event("input"));
+    await wrapper.vm.$nextTick();
+
+    expect(button.hasAttribute("disabled")).toBe(false);
+  });
+
+  it("keeps an identifier confirmation case-sensitive", async () => {
+    const wrapper = await mountOpen({ confirmName: "internal/auth" });
+    const button = buttonLabelled("Delete");
+
+    const input = document.querySelector("#destructive-confirm-name") as HTMLInputElement;
+    input.value = "Internal/Auth";
+    input.dispatchEvent(new Event("input"));
+    await wrapper.vm.$nextTick();
+
+    expect(button.hasAttribute("disabled")).toBe(true);
+  });
+
   it("does not demand a typed name for a reversible action", async () => {
     await mountOpen({ action: "Yank", reversible: true, confirmName: "internal/auth" });
     expect(document.querySelector("#destructive-confirm-name")).toBeNull();
@@ -105,5 +159,33 @@ describe("DestructiveConfirm", () => {
     await mountOpen({ error: "Two versions are protected by a retention policy." });
     const alert = document.querySelector('[role="alert"]');
     expect(alert?.textContent).toContain("retention policy");
+  });
+});
+
+/**
+ * Every irreversible action states *its own* consequence.
+ *
+ * `destructive.cannotUndo` used to read "The artifacts and their metadata are
+ * removed permanently", and three of the four irreversible verbs in the console
+ * inherited it while removing no artifact at all: a revoked token, a forced
+ * config reload and an audit-log purge. The stock sentence is the generic truth
+ * now, and the specific one is the caller's to supply. Vue's `defineProps`
+ * cannot express "required when another prop is false", so what actually
+ * requires it is a scan over the call sites — in `system-rules.test.ts`, with
+ * the other rules about source.
+ */
+describe("the consequence of an irreversible action", () => {
+  it("falls back to a sentence that is true of any irreversible action", async () => {
+    await mountOpen({ reversible: false, consequence: undefined });
+    // Not "the artifacts are removed permanently" — that is a delete, and it
+    // was being said over three actions that remove nothing.
+    expect(document.body.textContent).toContain("cannot be undone");
+    expect(document.body.textContent).not.toMatch(/artifacts/i);
+  });
+
+  it("prefers the caller's sentence when there is one", async () => {
+    await mountOpen({ reversible: false, consequence: "Every CI token stops working." });
+    expect(document.body.textContent).toContain("Every CI token stops working.");
+    expect(document.body.textContent).not.toContain("cannot be undone");
   });
 });

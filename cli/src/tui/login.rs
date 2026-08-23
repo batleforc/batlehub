@@ -71,10 +71,18 @@ impl LoginWidget {
                     self.status = Some("Paste the token or the full redirect URL.".into());
                     return false;
                 }
-                let (access_token, refresh_token, expires_at) = parse_oidc_paste(&raw);
-                cfg.default.token = Some(access_token);
-                cfg.default.oidc_refresh_token = refresh_token;
-                cfg.default.oidc_expires_at = expires_at;
+                // No state check here, unlike `auth login`: this screen only
+                // accepts a paste, it never starts the flow, so there is no
+                // locally-generated CSRF value to compare the echoed
+                // `oidc_state` against. The server still refuses a state it did
+                // not issue or has already redeemed.
+                let paste = parse_oidc_paste(&raw);
+                cfg.default.token = Some(paste.access_token);
+                cfg.default.oidc_refresh_token = paste.refresh_token;
+                cfg.default.oidc_expires_at = paste.expires_at;
+                // The provider the redirect names, so refreshes go back to the
+                // endpoint that issued this token rather than to `flows.first()`.
+                cfg.default.oidc_provider = paste.provider;
                 cfg.default.kubernetes_token_path = None;
             }
             LoginMethod::Kubernetes => {

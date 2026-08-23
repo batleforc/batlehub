@@ -24,6 +24,8 @@ import {
 import { Dialog } from "@/components/ui/dialog";
 import { Alert } from "@/components/ui/alert";
 import { Select } from "@/components/ui/select";
+import { DestructiveConfirm } from "@/components/ui/destructive-confirm";
+import { Announcer } from "@/components/ui/announcer";
 import { useAuth } from "@/composables/useAuth";
 
 const { t } = useI18n();
@@ -87,7 +89,7 @@ async function submitCreate() {
       },
     });
     if (apiError) {
-      createError.value = apiErrorMessage(apiError, "Failed to create token.");
+      createError.value = apiErrorMessage(apiError, t("tokensPage.createFailed"));
     } else {
       showCreate.value = false;
       newToken.value = (data as CreateTokenResponse | undefined)?.token ?? null;
@@ -127,16 +129,36 @@ function dismissToken() {
 const revoking = ref<string | null>(null);
 const revokeError = ref<string | null>(null);
 
-async function revokeToken(id: string) {
-  revoking.value = id;
+/**
+ * Revocation, confirmed.
+ *
+ * A click on the bin called `revokeTokenApi` directly: no dialogue, no scope,
+ * no undo and no announcement. The first signal an operator got that they had
+ * cut off the wrong pipeline was that pipeline failing, with nothing on screen
+ * connecting the two.
+ *
+ * The button itself was fine — `aria-label` translated and naming the token.
+ * It was the confirmation that was missing, not the name.
+ */
+const revokeTarget = ref<TokenListItem | null>(null);
+
+/** What the console just did, for the live region. */
+const announcement = ref("");
+
+async function confirmRevoke() {
+  const target = revokeTarget.value;
+  if (!target) return;
+  revoking.value = target.id;
   revokeError.value = null;
   try {
-    const { error: apiError } = await revokeTokenApi({ path: { id } });
+    const { error: apiError } = await revokeTokenApi({ path: { id: target.id } });
     if (apiError) {
-      revokeError.value = apiErrorMessage(apiError, "Failed to revoke token.");
-    } else {
-      reload();
+      revokeError.value = apiErrorMessage(apiError, t("tokensPage.revokeFailed"));
+      return;
     }
+    announcement.value = t("tokensPage.tokenRevoked", { name: target.name });
+    revokeTarget.value = null;
+    reload();
   } finally {
     revoking.value = null;
   }
@@ -183,7 +205,7 @@ const lifetimePresets = [7, 30, 90];
         <p class="font-medium text-sm">{{ t("tokensPage.tokenCreatedCopyIt") }}</p>
         <div class="flex items-center gap-2">
           <code
-            class="flex-1 block rounded bg-muted px-3 py-2 text-xs font-mono break-all select-all"
+            class="flex-1 block rounded-sm bg-muted px-3 py-2 text-xs font-mono break-all select-all"
           >
             {{ newToken }}
           </code>
@@ -271,7 +293,7 @@ const lifetimePresets = [7, 30, 90];
                     :disabled="revoking === tok.id"
                     :title="t('tokensPage.revokeTokenNamed', { name: tok.name })"
                     :aria-label="t('tokensPage.revokeTokenNamed', { name: tok.name })"
-                    @click="revokeToken(tok.id)"
+                    @click="revokeTarget = tok"
                   >
                     <Trash2 class="h-3.5 w-3.5" />
                   </Button>
@@ -360,5 +382,43 @@ const lifetimePresets = [7, 30, 90];
         </div>
       </div>
     </Dialog>
+
+    <!--
+      Irreversible, so it takes the typed name — `confirmName` on a
+      `reversible: false` is exactly the case the component's docstring
+      describes: friction proportional to consequence.
+
+      `consequence` rather than the stock `destructive.cannotUndo`, which
+      reads "The artifacts and their metadata are removed permanently" and is
+      about a delete. Revoking a token removes no artifact; what it removes is
+      every caller's ability to authenticate, which is a different sentence.
+    -->
+    <DestructiveConfirm
+      :open="revokeTarget !== null"
+      :action="t('tokensPage.revoke')"
+      :count="1"
+      :item-noun="t('tokensPage.tokenNoun')"
+      :scope="revokeTarget?.name ?? ''"
+      :consequence="t('tokensPage.revokeConsequence')"
+      :confirm-name="revokeTarget?.name ?? ''"
+      :loading="revoking !== null"
+      :error="revokeError"
+      @confirm="confirmRevoke"
+      @update:open="
+        (v: boolean) => {
+          if (!v) {
+            revokeTarget = null;
+            revokeError = null;
+          }
+        }
+      "
+    />
+
+    <!--
+      The outcome, announced. `Announcer` is mounted on six admin pages and on
+      zero consumer surfaces; this is the first. A revocation that only renders
+      is a change a screen-reader user makes and is never told happened.
+    -->
+    <Announcer :message="announcement" />
   </div>
 </template>

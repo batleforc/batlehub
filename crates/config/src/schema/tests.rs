@@ -950,3 +950,743 @@ fn sbom_disabled_on_an_unsupported_type_reports_only_the_sbom_problem() {
     assert!(codes.contains(&warnings::LICENSE_GATE_SBOM_DISABLED.to_owned()));
     assert!(!codes.contains(&warnings::LICENSE_GATE_NO_EXTRACTOR.to_owned()));
 }
+
+// ── README capture (RFC 0007 §4.5) ────────────────────────────────────────────
+
+fn config_with_readme(registry_type: &str, extra: &str, block: &str) -> AppConfig {
+    parse_config(&format!(
+        r#"
+        [[registries]]
+        type = "{registry_type}"
+        name = "reg"
+        upstreams = ["https://example.invalid"]
+{extra}
+        [registries.readme]
+{block}"#
+    ))
+}
+
+/// An unrecognised `remote_images` must not silently become the default: the
+/// two behaviours differ in what leaves the network, so an operator who wrote
+/// `"allow"` expecting images believes the opposite of what they would get.
+#[test]
+fn an_unknown_remote_images_value_refuses_to_start() {
+    let cfg = config_with_readme("npm", "", r#"        remote_images = "allow""#);
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("remote_images"), "{err}");
+    assert!(err.contains("there is no \"allow\""), "{err}");
+}
+
+#[test]
+fn the_two_documented_remote_images_values_are_accepted() {
+    for value in ["strip", "proxy"] {
+        let cfg = config_with_readme("npm", "", &format!("        remote_images = \"{value}\""));
+        cfg.validate().expect("documented value accepted");
+    }
+}
+
+/// Stores nothing while claiming to be on. A configuration that cannot do its
+/// job should not start.
+#[test]
+fn max_bytes_zero_while_enabled_refuses_to_start() {
+    let cfg = config_with_readme("npm", "", "        max_bytes = 0");
+    assert!(cfg
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("max_bytes"));
+}
+
+/// With the feature off, a zero cap says nothing and is not worth refusing over.
+#[test]
+fn max_bytes_zero_with_the_feature_off_is_not_an_error() {
+    let cfg = config_with_readme("npm", "", "        enabled = false\n        max_bytes = 0");
+    cfg.validate()
+        .expect("disabled registry stores nothing anyway");
+}
+
+#[test]
+fn max_bytes_above_the_ceiling_refuses_to_start() {
+    let cfg = config_with_readme("npm", "", "        max_bytes = 8388608");
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("ceiling"), "{err}");
+}
+
+/// The block written down on a type that has no README is accepted and inert,
+/// and says so by name — with the reason `readme_support()` carries, so the
+/// warning cannot drift from the behaviour.
+#[test]
+fn a_readme_block_on_a_type_with_none_warns_that_it_is_inert() {
+    let cfg = config_with_readme("maven", "", "        enabled = true");
+    let w = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::README_UNSUPPORTED_TYPE)
+        .expect("warning emitted");
+    assert!(w.message.contains("maven"), "{}", w.message);
+    assert!(w.message.contains("sentence"), "{}", w.message);
+    assert_eq!(w.path, "registries[0].readme");
+}
+
+/// The feature is on by default, so warning about every absent block would put
+/// a notice on the admin panel for every `maven` registry in every deployment.
+/// The operator expressed no belief there; there is nothing to correct.
+#[test]
+fn an_absent_readme_block_never_warns_even_on_an_unsupported_type() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "maven"
+        name = "reg""#,
+    );
+    assert!(!warning_codes(&cfg).iter().any(|c| c.starts_with("readme")));
+}
+
+/// `enabled = false` is a decision, not a mistake — nothing to warn about.
+#[test]
+fn a_disabled_readme_block_warns_about_nothing() {
+    let cfg = config_with_readme("maven", "", "        enabled = false");
+    assert!(!warning_codes(&cfg).iter().any(|c| c.starts_with("readme")));
+}
+
+/// `from_archive` on a metadata-borne-only kind is accepted and does nothing.
+/// Distinct from the unsupported-type warning: READMEs *are* stored here.
+#[test]
+fn from_archive_on_a_metadata_borne_type_warns_that_it_is_inert() {
+    let cfg = config_with_readme("jetbrains-marketplace", "", "        from_archive = true");
+    let w = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::README_FROM_ARCHIVE_INERT)
+        .expect("warning emitted");
+    assert!(w.message.contains("stored either way"), "{}", w.message);
+}
+
+/// npm reads both, so nothing about `from_archive` is inert there.
+#[test]
+fn from_archive_on_a_type_that_reads_the_archive_is_quiet() {
+    let cfg = config_with_readme("npm", "", "        from_archive = true");
+    assert!(!warning_codes(&cfg).iter().any(|c| c.starts_with("readme")));
+}
+
+/// `firewall_only` streams without buffering, so nothing is ever cached to
+/// extract from. On an archive-only kind that means no README at all, and the
+/// warning says which of the two it is.
+#[test]
+fn from_archive_on_a_firewall_only_registry_warns_that_nothing_is_cached() {
+    let cfg = config_with_readme(
+        "cargo",
+        "        firewall_only = true\n",
+        "        from_archive = true",
+    );
+    let w = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::README_FROM_ARCHIVE_FIREWALL_ONLY)
+        .expect("warning emitted");
+    assert!(
+        w.message.contains("no README will ever be stored"),
+        "{}",
+        w.message
+    );
+
+    // npm still has its metadata-borne half, and the message says so rather
+    // than telling the operator the feature is dead.
+    let npm = config_with_readme(
+        "npm",
+        "        firewall_only = true\n",
+        "        from_archive = true",
+    );
+    let w = npm
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::README_FROM_ARCHIVE_FIREWALL_ONLY)
+        .expect("warning emitted");
+    assert!(w.message.contains("still work"), "{}", w.message);
+}
+
+// ── The console's discovery read (RFC 0007 §4.5) ──────────────────────────────
+
+fn config_with_upstream_detail(registry_type: &str, extra: &str, block: &str) -> AppConfig {
+    parse_config(&format!(
+        r#"
+        [[registries]]
+        type = "{registry_type}"
+        name = "reg"
+        upstreams = ["https://example.invalid"]
+{extra}
+        [registries.upstream_detail]
+{block}"#
+    ))
+}
+
+/// Attempts the fetch and discards every result: the egress happens and nothing
+/// is shown.
+#[test]
+fn max_versions_zero_while_enabled_refuses_to_start() {
+    let cfg = config_with_upstream_detail("npm", "", "        max_versions = 0");
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("max_versions"), "{err}");
+    assert!(err.contains("nothing is shown"), "{err}");
+}
+
+#[test]
+fn max_versions_zero_with_the_read_disabled_is_not_an_error() {
+    let cfg = config_with_upstream_detail(
+        "npm",
+        "",
+        "        enabled = false\n        max_versions = 0",
+    );
+    cfg.validate()
+        .expect("a disabled read fetches nothing anyway");
+}
+
+#[test]
+fn max_versions_above_the_ceiling_refuses_to_start() {
+    let cfg = config_with_upstream_detail("npm", "", "        max_versions = 10000");
+    assert!(cfg.validate().unwrap_err().to_string().contains("ceiling"));
+}
+
+/// There is no upstream to ask, and the page is already complete from local
+/// rows.
+#[test]
+fn the_discovery_read_on_a_local_registry_warns_that_it_is_inert() {
+    let cfg = config_with_upstream_detail(
+        "npm",
+        "        mode = \"local\"\n",
+        "        enabled = true",
+    );
+    let w = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::UPSTREAM_DETAIL_LOCAL_MODE)
+        .expect("warning emitted");
+    assert!(w.message.contains("no upstream to ask"), "{}", w.message);
+    assert_eq!(w.path, "registries[0].upstream_detail");
+}
+
+/// A path-addressed kind has no package identity to ask about, and the warning
+/// quotes the reason `upstream_detail()` carries — so the code and the notice
+/// cannot disagree.
+#[test]
+fn the_discovery_read_on_an_unaskable_kind_warns_with_its_reason() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "generic"
+        name = "reg"
+        upstreams = ["https://example.invalid"]
+        path_allow = ["**"]
+
+        [registries.upstream_detail]
+        enabled = true"#,
+    );
+    let w = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::UPSTREAM_DETAIL_UNSUPPORTED_KIND)
+        .expect("warning emitted");
+    assert!(w.message.contains("path-addressed"), "{}", w.message);
+}
+
+/// The read is on by default, so warning about the implicit default would put a
+/// notice on the admin panel for every `local`-mode registry in every
+/// deployment. The operator expressed no belief there.
+#[test]
+fn an_absent_upstream_detail_block_never_warns() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "reg"
+        mode = "local""#,
+    );
+    assert!(!warning_codes(&cfg)
+        .iter()
+        .any(|c| c.starts_with("upstream-detail")));
+}
+
+#[test]
+fn a_disabled_discovery_read_warns_about_nothing() {
+    let cfg = config_with_upstream_detail(
+        "npm",
+        "        mode = \"local\"\n",
+        "        enabled = false",
+    );
+    assert!(!warning_codes(&cfg)
+        .iter()
+        .any(|c| c.starts_with("upstream-detail")));
+}
+
+/// A proxy-mode registry of an askable kind is the case the feature was written
+/// for, and it must stay quiet: a warning that fires on correct config teaches
+/// operators to ignore the channel.
+#[test]
+fn a_correctly_configured_discovery_read_is_quiet() {
+    let cfg = config_with_upstream_detail("npm", "", "        enabled = true");
+    assert!(!warning_codes(&cfg)
+        .iter()
+        .any(|c| c.starts_with("upstream-detail")));
+}
+
+/// `remote_images = "proxy"` renders images now, so it is accepted in silence.
+///
+/// It used to raise `readme.image-proxy-unimplemented`, because the endpoint it
+/// rewrote to did not exist. The endpoint exists (RFC 0007-bis §4.2), and a
+/// warning that outlives its subject is worse than no warning — it teaches
+/// operators the channel is noise.
+#[test]
+fn remote_images_proxy_is_accepted_without_a_warning() {
+    for value in ["proxy", "strip"] {
+        let cfg = config_with_readme("npm", "", &format!("        remote_images = \"{value}\""));
+        cfg.validate().expect("accepted");
+        assert!(
+            !warning_codes(&cfg)
+                .iter()
+                .any(|c| c.contains("image-proxy")),
+            "{value} warned about an unimplemented endpoint"
+        );
+    }
+}
+
+/// The image cap gets the same two guards `max_bytes` has, for the same
+/// reasons: a zero serves nothing while claiming to render, and a ceiling makes
+/// "held in memory while its type is checked" a bound rather than a hope
+/// (RFC 0007-bis §4.5).
+#[test]
+fn the_image_cap_refuses_zero_under_proxy_and_refuses_an_unbounded_ceiling() {
+    let zero = config_with_readme(
+        "npm",
+        "",
+        "        remote_images = \"proxy\"\n        image_max_bytes = 0",
+    );
+    let err = zero.validate().expect_err("must be refused").to_string();
+    assert!(err.contains("image_max_bytes"), "{err}");
+    assert!(err.contains("serves no image"), "{err}");
+
+    // Zero is fine under `strip`, where nothing is ever fetched.
+    let stripped = config_with_readme(
+        "npm",
+        "",
+        "        remote_images = \"strip\"\n        image_max_bytes = 0",
+    );
+    stripped.validate().expect("inert under strip");
+
+    let huge = config_with_readme("npm", "", "        image_max_bytes = 33554432");
+    let err = huge.validate().expect_err("must be refused").to_string();
+    assert!(err.contains("ceiling"), "{err}");
+}
+
+// ── Prose search ──────────────────────────────────────────────────────────────
+
+/// Off by default, and it stays off unless an operator writes it down. Unlike
+/// README *capture*, which defaults on because it costs one already-parsed
+/// field, this builds an index over prose (RFC 0007-bis §4.1).
+#[test]
+fn prose_search_is_off_unless_asked_for() {
+    let cfg = parse_config("");
+    assert!(!cfg.search.readmes);
+    assert_eq!(cfg.search.text_config, "english");
+    cfg.validate().expect("the default config is valid");
+}
+
+/// `english`, against the recommendation this RFC was drafted with. The draft
+/// said stemming mangles identifiers; it does, symmetrically, and `simple` fails
+/// `retry` against a README that says `retrying` (RFC 0007-bis §13.3).
+#[test]
+fn the_text_configuration_defaults_to_english_and_is_settable() {
+    let cfg = parse_config(
+        r#"
+        [search]
+        readmes = true
+        text_config = "french""#,
+    );
+    cfg.validate().expect("accepted");
+    assert!(cfg.search.readmes);
+    assert_eq!(cfg.search.text_config, "french");
+}
+
+#[test]
+fn an_empty_text_configuration_is_refused() {
+    let cfg = parse_config(
+        r#"
+        [search]
+        text_config = """#,
+    );
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("text_config"), "{err}");
+}
+
+/// The index is a Postgres generated column with a GIN index. There is nowhere
+/// else to put it, and failing at startup beats a search that quietly matches
+/// nothing (RFC 0007-bis §4.5).
+#[test]
+fn prose_search_without_postgres_refuses_to_start() {
+    let raw = r#"
+        [database]
+        type = "sqlite"
+        url = "sqlite://test.db"
+
+        [storage]
+        type = "filesystem"
+        path = "/tmp/batlehub-test"
+
+        [server]
+        host = "127.0.0.1"
+        port = 8080
+
+        [search]
+        readmes = true
+        "#;
+    let cfg: AppConfig = toml::from_str(raw).expect("parses");
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("Postgres"), "{err}");
+
+    // Both spellings of the one backend that does work are accepted.
+    for spelling in ["postgres", "postgresql", "PostgreSQL"] {
+        let raw = raw.replace(r#"type = "sqlite""#, &format!(r#"type = "{spelling}""#));
+        let cfg: AppConfig = toml::from_str(&raw).expect("parses");
+        cfg.validate().unwrap_or_else(|e| panic!("{spelling}: {e}"));
+    }
+}
+
+/// Accepted, and said out loud: the index will exist and stay empty, because
+/// nothing is ever stored to put in it.
+#[test]
+fn prose_search_over_registries_that_store_nothing_is_warned_about() {
+    let cfg = parse_config(
+        r#"
+        [search]
+        readmes = true
+
+        [[registries]]
+        type = "npm"
+        name = "reg"
+        upstreams = ["https://example.invalid"]
+        [registries.readme]
+        enabled = false"#,
+    );
+    cfg.validate().expect("accepted");
+    let w = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::SEARCH_READMES_NOTHING_STORED)
+        .expect("warning emitted");
+    assert!(w.message.contains("stay empty"), "{}", w.message);
+
+    // One registry that does capture is enough to make the setting useful, so
+    // nothing is said.
+    let quiet = parse_config(
+        r#"
+        [search]
+        readmes = true
+
+        [[registries]]
+        type = "npm"
+        name = "reg"
+        upstreams = ["https://example.invalid"]
+        [registries.readme]
+        enabled = false
+
+        [[registries]]
+        type = "cargo"
+        name = "reg2"
+        upstreams = ["https://example.invalid"]"#,
+    );
+    assert!(!warning_codes(&quiet)
+        .iter()
+        .any(|c| c == warnings::SEARCH_READMES_NOTHING_STORED));
+}
+
+// ── `[limits].versions_per_page` ──────────────────────────────────────────────
+
+/// The key answers one question — how much of a version list this server is
+/// willing to build for one request — so it is both the default for a caller
+/// that asks for nothing and the ceiling on what one may ask for. Absent means
+/// the same number either way, which is what this pins: a `[limits]` block that
+/// mentions something else must not read as zero.
+#[test]
+fn versions_per_page_defaults_to_a_hundred_with_or_without_a_limits_block() {
+    let none = parse_config("");
+    assert_eq!(none.limits.versions_per_page, DEFAULT_VERSIONS_PER_PAGE);
+
+    let other_key = parse_config(
+        r#"
+        [limits]
+        max_artifact_size_bytes = 1024"#,
+    );
+    assert_eq!(
+        other_key.limits.versions_per_page,
+        DEFAULT_VERSIONS_PER_PAGE
+    );
+}
+
+/// Every caller would get an empty version list, and the failure would land on a
+/// package page rather than at startup.
+#[test]
+fn versions_per_page_zero_refuses_to_start() {
+    let cfg = parse_config(
+        r#"
+        [limits]
+        versions_per_page = 0"#,
+    );
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("versions_per_page"), "{err}");
+    assert!(err.contains("empty version list"), "{err}");
+}
+
+/// Every row costs a vulnerability read and a licence read before it is
+/// serialised — the same argument `upstream_detail.max_versions` makes one level
+/// up.
+#[test]
+fn versions_per_page_above_the_ceiling_refuses_to_start() {
+    let cfg = parse_config(
+        r#"
+        [limits]
+        versions_per_page = 5000"#,
+    );
+    assert!(cfg.validate().unwrap_err().to_string().contains("ceiling"));
+}
+
+#[test]
+fn versions_per_page_within_the_ceiling_loads() {
+    let cfg = parse_config(
+        r#"
+        [limits]
+        versions_per_page = 250"#,
+    );
+    cfg.validate().expect("250 is under the ceiling");
+    assert_eq!(cfg.limits.versions_per_page, 250);
+}
+
+// ── `[limits].packages_per_page` ──────────────────────────────────────────────
+
+/// The catalog's half of the same idea, with its own number because a screenful
+/// of names and a query's worth of enriched version rows are not the same
+/// question.
+#[test]
+fn packages_per_page_defaults_to_twenty() {
+    assert_eq!(
+        parse_config("").limits.packages_per_page,
+        DEFAULT_PACKAGES_PER_PAGE
+    );
+    let other_key = parse_config(
+        r#"
+        [limits]
+        versions_per_page = 50"#,
+    );
+    assert_eq!(
+        other_key.limits.packages_per_page,
+        DEFAULT_PACKAGES_PER_PAGE
+    );
+}
+
+#[test]
+fn packages_per_page_zero_refuses_to_start() {
+    let cfg = parse_config(
+        r#"
+        [limits]
+        packages_per_page = 0"#,
+    );
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("packages_per_page"), "{err}");
+    assert!(err.contains("empty package catalog"), "{err}");
+}
+
+#[test]
+fn packages_per_page_above_the_ceiling_refuses_to_start() {
+    let cfg = parse_config(
+        r#"
+        [limits]
+        packages_per_page = 5000"#,
+    );
+    assert!(cfg.validate().unwrap_err().to_string().contains("ceiling"));
+}
+
+/// The two keys are independent: setting one must not move the other.
+#[test]
+fn the_two_page_sizes_do_not_move_each_other() {
+    let cfg = parse_config(
+        r#"
+        [limits]
+        packages_per_page = 40"#,
+    );
+    cfg.validate().expect("40 is a fine catalog page");
+    assert_eq!(cfg.limits.packages_per_page, 40);
+    assert_eq!(cfg.limits.versions_per_page, DEFAULT_VERSIONS_PER_PAGE);
+}
+
+// ── Auth: transport and identity ──────────────────────────────────────────────
+
+/// The Kubernetes API server is held to the same rule as an OIDC issuer, and for
+/// a stronger reason: the TokenReview carries this server's own service account
+/// token, and whoever answers it decides the caller's role.
+#[test]
+fn a_plain_http_kubernetes_api_server_refuses_to_start() {
+    let cfg = parse_config(
+        r#"
+        [[auth]]
+        type = "kubernetes"
+        name = "k8s"
+        api_server = "http://kube.internal:6443""#,
+    );
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("api_server"), "{err}");
+    assert!(err.contains("must use https"), "{err}");
+    assert!(
+        err.contains("service account token"),
+        "the message should say what is at stake; {err}"
+    );
+}
+
+/// The same userinfo trick `is_secure_issuer_url` refuses for an issuer: the
+/// authority ends at the last `@`, so this dials `evil.example` in cleartext.
+#[test]
+fn a_kubernetes_api_server_hiding_behind_userinfo_refuses_to_start() {
+    let cfg = parse_config(
+        r#"
+        [[auth]]
+        type = "kubernetes"
+        name = "k8s"
+        api_server = "http://localhost:6443@evil.example""#,
+    );
+    assert!(cfg
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("must use https"));
+}
+
+/// Loopback over plain HTTP stays allowed — that is how the test suites and a
+/// developer's local cluster run — and an absent `api_server` has nothing to
+/// check: it means the in-cluster default, which is https by construction.
+#[test]
+fn a_loopback_or_absent_kubernetes_api_server_starts() {
+    parse_config(
+        r#"
+        [[auth]]
+        type = "kubernetes"
+        name = "k8s"
+        api_server = "http://127.0.0.1:6443""#,
+    )
+    .validate()
+    .expect("loopback is exempt");
+
+    parse_config(
+        r#"
+        [[auth]]
+        type = "kubernetes"
+        name = "k8s""#,
+    )
+    .validate()
+    .expect("an absent api_server means the in-cluster https default");
+}
+
+/// A blank `audience` is a configuration error, not an unreachable provider.
+///
+/// `ActionsOidcAuthProvider::new` refuses it, but that error is routed through
+/// `provider_unavailable(…, cfg.required, …)` and `required` defaults to `false`
+/// for this kind — so the server used to log one warning and come up *without*
+/// the provider, silently downgrading every CI caller to anonymous.
+#[test]
+fn a_blank_actions_oidc_audience_is_refused_at_load() {
+    for audience in ["\"\"", "\"   \""] {
+        let cfg = parse_config(&format!(
+            r#"
+        [[auth]]
+        type = "actions-oidc"
+        name = "gha"
+        issuer_url = "https://token.actions.githubusercontent.com"
+        audience = {audience}"#
+        ));
+        let err = cfg
+            .validate()
+            .expect_err("a blank audience must not start")
+            .to_string();
+        assert!(err.contains("audience"), "{err}");
+        assert!(err.contains("gha"), "{err}");
+    }
+}
+
+/// And a real one still starts — the check is about blankness, not about the
+/// provider kind being unwelcome.
+#[test]
+fn an_actions_oidc_provider_with_an_audience_starts() {
+    parse_config(
+        r#"
+        [[auth]]
+        type = "actions-oidc"
+        name = "gha"
+        issuer_url = "https://token.actions.githubusercontent.com"
+        audience = "https://batlehub.example.com""#,
+    )
+    .validate()
+    .expect("a named audience is the supported configuration");
+}
+
+/// Two providers of different kinds sharing one name are one provider as far as
+/// `oidc_session_owner` and the group prefix are concerned — which is how a
+/// service account comes to mint personal access tokens as an OIDC user.
+#[test]
+fn two_auth_providers_may_not_share_a_name() {
+    let cfg = parse_config(
+        r#"
+        [[auth]]
+        type = "oidc"
+        name = "corp"
+        issuer_url = "https://idp.example.com"
+        client_id = "batlehub"
+
+        [[auth]]
+        type = "kubernetes"
+        name = "corp""#,
+    );
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("\"corp\""), "{err}");
+    assert!(err.contains("oidc"), "{err}");
+    assert!(err.contains("kubernetes"), "{err}");
+}
+
+/// Including two of the same kind: the collision is about the name, not about
+/// the kinds differing.
+#[test]
+fn two_oidc_providers_may_not_share_a_name_either() {
+    let cfg = parse_config(
+        r#"
+        [[auth]]
+        type = "oidc"
+        name = "corp"
+        issuer_url = "https://idp.example.com"
+        client_id = "batlehub"
+
+        [[auth]]
+        type = "oidc"
+        name = "corp"
+        issuer_url = "https://other.example.com"
+        client_id = "batlehub""#,
+    );
+    assert!(cfg.validate().is_err());
+}
+
+/// Distinct names are the normal case and must still start, static tokens
+/// included — that provider has no name of its own to collide with.
+#[test]
+fn distinct_auth_names_start() {
+    parse_config(
+        r#"
+        [[auth]]
+        type = "token"
+
+        [[auth]]
+        type = "oidc"
+        name = "corp"
+        issuer_url = "https://idp.example.com"
+        client_id = "batlehub"
+
+        [[auth]]
+        type = "kubernetes"
+        name = "k8s-prod""#,
+    )
+    .validate()
+    .expect("distinct names are fine");
+}

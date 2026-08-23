@@ -173,6 +173,7 @@ fn svc(
         sbom: None,
         explore_cache: None,
         package_repo: None,
+        readme: None,
     }
 }
 
@@ -527,7 +528,7 @@ struct MemBetaChannel {
 impl MemBetaChannel {
     fn with_users(ids: &[&str]) -> Arc<Self> {
         Arc::new(Self {
-            members: ids.iter().map(|s| s.to_string()).collect(),
+            members: ids.iter().map(ToString::to_string).collect(),
         })
     }
     fn empty() -> Arc<Self> {
@@ -588,6 +589,7 @@ fn svc_with_beta(
         sbom: None,
         explore_cache: None,
         package_repo: None,
+        readme: None,
     }
 }
 
@@ -921,6 +923,7 @@ fn svc_with_ns(backend: Arc<InMemBackend>, ns: Arc<dyn TeamNamespacePort>) -> Lo
         sbom: None,
         explore_cache: None,
         package_repo: None,
+        readme: None,
     }
 }
 
@@ -1395,6 +1398,7 @@ fn download_svc_with_access_log(
         sbom: None,
         explore_cache: None,
         package_repo,
+        readme: None,
     }
 }
 
@@ -2061,6 +2065,7 @@ async fn get_artifact_records_denied_download_when_visibility_check_fails() {
         sbom: None,
         explore_cache: None,
         package_repo: Some(spy.clone()),
+        readme: None,
     };
 
     // Anonymous identity can't see an `Internal` package.

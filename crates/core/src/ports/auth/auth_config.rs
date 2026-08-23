@@ -53,7 +53,28 @@ pub struct ActionsGroupRule {
 pub struct ActionsOidcAuthConfig {
     #[serde(default = "default_actions_oidc_name")]
     pub name: String,
+    /// Whether an unreachable identity provider at startup is fatal.
+    ///
+    /// Defaults to `false` here and `true` for `[[auth]] type = "oidc"`: a CI
+    /// provider being down means jobs cannot publish, while a human SSO provider
+    /// being down means nobody can log in *and* every request that would have
+    /// been authenticated silently becomes anonymous.
+    #[serde(default)]
+    pub required: bool,
     pub issuer_url: String,
+    /// Value the token's `aud` claim must equal. **Required.**
+    ///
+    /// Not optional the way `OidcAuthConfig::audiences` is, because the issuer
+    /// here is shared: `https://token.actions.githubusercontent.com` signs
+    /// tokens for every repository on GitHub, and `aud` is the one claim the
+    /// calling workflow chooses. Without checking it, `iss` proves only that the
+    /// caller is *a* GitHub Actions job, and the whole barrier is whatever
+    /// `rules` happen to say.
+    ///
+    /// Set it to something specific to this deployment — its URL is the usual
+    /// choice — and have workflows request it:
+    /// `core.getIDToken('https://batlehub.example.com')`.
+    pub audience: String,
     #[serde(default = "default_sub")]
     pub user_id_claim: String,
     #[serde(default)]
@@ -72,6 +93,14 @@ pub struct OidcAuthConfig {
     /// Defaults to `"oidc"`.
     #[serde(default = "default_oidc_name")]
     pub name: String,
+    /// Whether an unreachable identity provider at startup is fatal.
+    ///
+    /// Defaults to **true**. Coming up without it looks healthy and is not:
+    /// every request that would have carried an identity resolves to anonymous
+    /// instead, which reads as a permissions problem rather than an outage. Set
+    /// `required = false` to keep the old warn-and-continue behaviour.
+    #[serde(default = "default_true")]
+    pub required: bool,
     pub issuer_url: String,
     pub client_id: String,
     pub client_secret: Option<String>,
@@ -88,6 +117,18 @@ pub struct OidcAuthConfig {
     /// OAuth2 scopes to request.  Defaults to `["openid", "profile", "email"]`.
     #[serde(default = "default_oidc_scopes")]
     pub scopes: Vec<String>,
+    /// Values the token's `aud` claim is accepted for. Defaults to
+    /// `[client_id]`, which is the audience of an ID token issued to this
+    /// client.
+    ///
+    /// Set it explicitly when the identity provider mints access tokens for a
+    /// separate API audience (Auth0's `audience` parameter, Okta's authorization
+    /// server `aud`) and that is what reaches this server.
+    ///
+    /// Leaving audience unchecked means any token the issuer signed for *any*
+    /// of its clients authenticates here, so there is no way to switch this off.
+    #[serde(default)]
+    pub audiences: Vec<String>,
     /// JWT claim used as `user_id` (default: `"sub"`).
     #[serde(default = "default_sub")]
     pub user_id_claim: String,
@@ -100,6 +141,10 @@ pub struct OidcAuthConfig {
     /// Claim values not present here default to the `anonymous` role.
     #[serde(default)]
     pub role_mappings: std::collections::HashMap<String, String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_oidc_name() -> String {

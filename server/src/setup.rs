@@ -90,11 +90,66 @@ pub(super) async fn build_single_backend(
 
 // ── Auth providers ─────────────────────────────────────────────────────────────
 
+pub(super) struct AuthSetup {
+    pub providers: Vec<Arc<dyn AuthProvider>>,
+    pub sso_flows: Vec<OidcSsoFlow>,
+    /// Every OIDC provider that was *configured*, whether or not it also has a
+    /// browser SSO flow. `POST /api/v1/auth/tokens` checks the caller against
+    /// this set, so an OIDC provider without `redirect_uri` still counts as an
+    /// OIDC session.
+    ///
+    /// Deliberately populated from the config rather than from the providers
+    /// that came up: a provider whose IdP was unreachable at startup is skipped
+    /// (see the `warn` below), and its users would otherwise get an unexplained
+    /// 403 on token creation instead of the "authenticate first" they deserve.
+    pub oidc_provider_names: batlehub_web::OidcProviderNames,
+}
+
+/// What to do when a JWT provider cannot be built at startup.
+///
+/// The old behaviour was always to warn and carry on, which is a quiet way to
+/// come up in a state that looks healthy and is not: with the provider missing,
+/// every request that would have carried an identity resolves to anonymous, so
+/// the symptom reads as a permissions problem rather than an outage — and the
+/// one line saying otherwise scrolls past at boot.
+///
+/// `required` (true by default for `type = "oidc"`) turns that into a refusal to
+/// start. The degraded path stays available for deployments that genuinely
+/// prefer it, and marks itself in `batlehub_auth_provider_down` so it is
+/// alertable rather than only greppable.
+fn provider_unavailable(
+    kind: &str,
+    name: &str,
+    issuer_url: &str,
+    required: bool,
+    err: anyhow::Error,
+) -> Result<()> {
+    if required {
+        return Err(err).with_context(|| {
+            format!(
+                "{kind} auth provider '{name}' ({issuer_url}) could not be initialised. \
+                 Starting without it would silently downgrade every one of its users to \
+                 anonymous. Set `required = false` on this [[auth]] entry to start anyway."
+            )
+        });
+    }
+    metrics::gauge!("batlehub_auth_provider_down", "provider" => name.to_owned()).set(1.0);
+    tracing::warn!(
+        provider = %name,
+        issuer = %issuer_url,
+        error = %err,
+        "{kind} provider unreachable at startup — continuing without it, so its users \
+         will authenticate as anonymous until the next restart"
+    );
+    Ok(())
+}
+
 pub(super) async fn initialize_auth_providers(
     config: &batlehub_config::schema::AppConfig,
-) -> Result<(Vec<Arc<dyn AuthProvider>>, Vec<OidcSsoFlow>)> {
+) -> Result<AuthSetup> {
     let mut auth_providers: Vec<Arc<dyn AuthProvider>> = Vec::new();
     let mut oidc_sso_flows: Vec<OidcSsoFlow> = Vec::new();
+    let mut oidc_names: Vec<String> = Vec::new();
 
     for auth_cfg in &config.auth {
         match auth_cfg {
@@ -113,22 +168,25 @@ pub(super) async fn initialize_auth_providers(
                 auth_providers.push(Arc::new(StaticTokenAuthProvider::new(entries)));
                 info!("configured static token auth provider");
             }
-            AuthConfig::Oidc(oidc_cfg) => match OidcAuthProvider::new(oidc_cfg).await {
-                Ok(provider) => {
-                    if let Some(flow) = provider.sso_flow().cloned() {
-                        oidc_sso_flows.push(flow);
+            AuthConfig::Oidc(oidc_cfg) => {
+                oidc_names.push(oidc_cfg.name.clone());
+                match OidcAuthProvider::new(oidc_cfg).await {
+                    Ok(provider) => {
+                        if let Some(flow) = provider.sso_flow().cloned() {
+                            oidc_sso_flows.push(flow);
+                        }
+                        auth_providers.push(Arc::new(provider));
+                        tracing::info!(issuer = %oidc_cfg.issuer_url, "OIDC auth provider ready");
                     }
-                    auth_providers.push(Arc::new(provider));
-                    tracing::info!(issuer = %oidc_cfg.issuer_url, "OIDC auth provider ready");
+                    Err(e) => provider_unavailable(
+                        "OIDC",
+                        &oidc_cfg.name,
+                        &oidc_cfg.issuer_url,
+                        oidc_cfg.required,
+                        e,
+                    )?,
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        issuer = %oidc_cfg.issuer_url,
-                        error = %e,
-                        "OIDC provider unreachable at startup — continuing without it"
-                    );
-                }
-            },
+            }
             AuthConfig::Kubernetes(k8s_cfg) => {
                 let provider = KubernetesAuthProvider::new(k8s_cfg)
                     .await
@@ -149,17 +207,21 @@ pub(super) async fn initialize_auth_providers(
                         "Actions OIDC auth provider ready"
                     );
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        issuer = %cfg.issuer_url,
-                        error = %e,
-                        "Actions OIDC provider unreachable at startup — continuing without it"
-                    );
-                }
+                Err(e) => provider_unavailable(
+                    "Actions OIDC",
+                    &cfg.name,
+                    &cfg.issuer_url,
+                    cfg.required,
+                    e,
+                )?,
             },
         }
     }
-    Ok((auth_providers, oidc_sso_flows))
+    Ok(AuthSetup {
+        providers: auth_providers,
+        sso_flows: oidc_sso_flows,
+        oidc_provider_names: batlehub_web::OidcProviderNames::new(oidc_names),
+    })
 }
 
 // ── Cargo index map ───────────────────────────────────────────────────────────
@@ -252,6 +314,31 @@ pub(super) fn build_eviction_map(
         eviction_map.insert(reg.name.clone(), eviction_svc);
     }
     eviction_map
+}
+
+// ── OIDC login states ─────────────────────────────────────────────────────────
+
+/// How often expired in-flight logins are swept.
+///
+/// Only housekeeping: `LoginStateStore::take` enforces expiry on read, so a
+/// prune that never ran cannot let a stale login through — it would only leave
+/// dead rows behind.
+const LOGIN_STATE_PRUNE_INTERVAL_SECS: u64 = 900;
+
+pub(super) fn spawn_login_state_prune(store: Arc<dyn batlehub_core::ports::LoginStateStore>) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
+            LOGIN_STATE_PRUNE_INTERVAL_SECS,
+        ));
+        loop {
+            ticker.tick().await;
+            match store.prune_expired().await {
+                Ok(0) => {}
+                Ok(n) => tracing::debug!(pruned = n, "oidc login states: pruned expired entries"),
+                Err(e) => tracing::warn!(error = %e, "oidc login states: periodic prune failed"),
+            }
+        }
+    });
 }
 
 // ── User token provider ───────────────────────────────────────────────────────

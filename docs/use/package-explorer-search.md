@@ -1,4 +1,55 @@
-# Package Explorer — Upstream search
+# Package Explorer — searching
+
+Three searches live behind one box, and each answers a different question.
+
+| Search | Answers | Where |
+| --- | --- | --- |
+| Names, here | *do we have something called `retry`* | always on |
+| **README prose, here** | *which of our libraries does exponential backoff* | opt-in — below |
+| Names, upstream | *does this exist at all, and should we pull it* | [below](#upstream-search) |
+
+## Searching what a package says {#readme-search}
+
+A name search cannot answer *"which of our internal libraries does exponential
+backoff"*. That is the question a developer actually arrives with, and for an
+internal package it is the question an internal package page is the only place in
+the world that could answer — there is no npmjs.com to go and read instead.
+
+With `[search] readmes = true`
+([configuration](/guide/admin-config#search-readmes)), the listing endpoint takes
+a scope:
+
+```
+GET /api/v1/explore/packages?q=exponential+backoff&in=name|readme|both
+```
+
+`in` defaults to `name`, which is the behaviour that has always shipped. Each hit
+gains two fields:
+
+| Field | Meaning |
+| --- | --- |
+| `matched_in` | `name` \| `readme` \| `both` — why this row is here |
+| `snippet` | The matched fragment of the README, as plain text, or `null` |
+
+**A name match always outranks a prose match.** A package literally called
+`retry` comes before one that mentions retrying, however densely. That is what a
+reader means when they type a name; it is not a tuning parameter.
+
+`matched_in` is there because a result that matches nothing the reader can see
+reads as a bug. A row whose name has nothing to do with the query and whose
+README mentions it in passing is a *correct* result and an inexplicable one
+without the label.
+
+**Only stored READMEs are searchable** — that is, only versions this instance
+holds or hosts. A README derived on the fly for a version this instance holds no
+bytes of has no row to index, and writing one is what the discovery read
+deliberately refuses to do. The empty state says so rather than implying the
+query found nothing.
+
+With the feature off, `in=readme` and `in=both` are accepted and answer exactly
+as `in=name` does, and the response carries `readme_search_enabled: false` — so a
+client can tell *"no package here says that"* from *"this instance does not
+search prose"*.
 
 ## Upstream search {#upstream-search}
 

@@ -1,6 +1,6 @@
 use super::{
     AccessAction, AccessEvent, AccessResult, CoreError, Identity, LocalRegistryService, PackageId,
-    PublishRequest, Role, SbomFormat, SbomPublishOptions,
+    PublishRequest, ReadmeFormat, Role, SbomFormat, SbomPublishOptions,
 };
 
 impl LocalRegistryService {
@@ -223,6 +223,74 @@ impl LocalRegistryService {
     /// doesn't permanently charge the publisher for an artifact that never landed.
     pub async fn revoke_publish_quota(&self, identity: &Identity, registry: &str, bytes: u64) {
         self.revoke_quota(identity, registry, bytes).await;
+    }
+
+    /// Record a README a publish request carried in its own metadata.
+    ///
+    /// Called by the publish handlers that have one — npm's publish document
+    /// carries `readme`, cargo's metadata carries `readme` and `readme_file` —
+    /// because the field is protocol-specific and only the handler knows where
+    /// to look for it. This is the shared half: the config lookup, the
+    /// non-fatal contract, and the log line.
+    ///
+    /// Non-fatal by construction, unlike `sbom.required`: a publish that
+    /// succeeded must not be reported as failed because prose could not be
+    /// stored, and there is no `readme.required` for it to mean anything else.
+    pub async fn record_publish_readme(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        content: String,
+        format: ReadmeFormat,
+    ) {
+        let Some(ref readme_svc) = self.readme else {
+            return;
+        };
+        // Absent means enabled: the builder writes an entry for every
+        // configured registry, so a missing key is a hand-built test.
+        let cfg = {
+            let hot = self.hot.read().await;
+            hot.readme.get(registry).cloned().unwrap_or_default()
+        };
+        if let Err(e) = readme_svc
+            .record_from_publish(registry, name, version, content, format, &cfg)
+            .await
+        {
+            tracing::warn!(
+                registry, name, version, error = %e,
+                "readme: recording a published README failed (non-fatal)"
+            );
+        }
+    }
+
+    /// Remove the stored README for a version that has just been deleted.
+    ///
+    /// Explicit rather than a database cascade, because `package_readmes` has no
+    /// foreign key: a README outlives the bytes — the catalogue already
+    /// describes versions it holds none of, and a panel that emptied itself when
+    /// LRU eviction ran would be inexplicable — so a cascade from anything
+    /// evictable would delete exactly the rows §5.4 says to keep. This is the
+    /// other half of that decision: what nothing cascades from, something has to
+    /// call.
+    ///
+    /// Deliberately **not** called from the admin package-delete path, which
+    /// purges a *cached artifact* and its tracking row. That is eviction shaped,
+    /// and the README survives it.
+    pub async fn delete_readme_for_version(&self, registry: &str, name: &str, version: &str) {
+        let Some(ref readme_svc) = self.readme else {
+            return;
+        };
+        if let Err(e) = readme_svc
+            .repo
+            .delete_for_version(registry, name, version)
+            .await
+        {
+            tracing::warn!(
+                registry, name, version, error = %e,
+                "readme: deleting a removed version's README failed (non-fatal)"
+            );
+        }
     }
 
     pub(super) async fn run_publish_sbom(

@@ -61,6 +61,8 @@ async fn make_app_with_ns_store(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
@@ -164,6 +166,7 @@ async fn make_ns_cargo_app_with_backend(
         sbom: None,
         explore_cache: None,
         package_repo: None,
+        readme: None,
     });
 
     let proxy_svc = Arc::new(ProxyService {
@@ -178,6 +181,8 @@ async fn make_ns_cargo_app_with_backend(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: Arc::new(ProxyMetrics::new(&[])),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);

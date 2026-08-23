@@ -973,7 +973,9 @@
         "cached_bytes": 421888,
         "last_fetched_at": "2026-08-14T09:41:24.120Z",
         "newest_version": "2.4.1",
-        "name": "@batlehub/ui-kit"
+        "name": "@batlehub/ui-kit",
+        "matched_in": "name",
+        "snippet": null
       },
       {
         "registry": "cargo",
@@ -988,7 +990,9 @@
         "cached_bytes": 79872,
         "last_fetched_at": "2026-08-14T09:37:24.120Z",
         "newest_version": "1.0.219",
-        "name": "serde"
+        "name": "serde",
+        "matched_in": "name",
+        "snippet": null
       },
       {
         "registry": "npm",
@@ -1003,7 +1007,9 @@
         "cached_bytes": 98304,
         "last_fetched_at": "2026-08-14T09:34:24.120Z",
         "newest_version": "0.9.0",
-        "name": "@internal/auth-client"
+        "name": "@internal/auth-client",
+        "matched_in": "name",
+        "snippet": null
       },
       {
         "registry": "go",
@@ -1018,7 +1024,9 @@
         "cached_bytes": 319488,
         "last_fetched_at": "2026-08-14T04:43:24.120Z",
         "newest_version": "v1.8.1",
-        "name": "github.com/spf13/cobra"
+        "name": "github.com/spf13/cobra",
+        "matched_in": "name",
+        "snippet": null
       },
       {
         "registry": "npm",
@@ -1033,7 +1041,9 @@
         "cached_bytes": 2048,
         "last_fetched_at": "2026-08-14T06:43:24.120Z",
         "newest_version": "1.3.0",
-        "name": "left-pad"
+        "name": "left-pad",
+        "matched_in": "name",
+        "snippet": null
       },
       {
         "registry": "npm",
@@ -1048,7 +1058,9 @@
         "cached_bytes": 22528,
         "last_fetched_at": "2026-08-14T01:43:24.120Z",
         "newest_version": "3.1.0",
-        "name": "@acme/design-tokens"
+        "name": "@acme/design-tokens",
+        "matched_in": "name",
+        "snippet": null
       },
       {
         "registry": "cargo",
@@ -1063,12 +1075,177 @@
         "cached_bytes": null,
         "last_fetched_at": null,
         "newest_version": null,
-        "name": "cryptography"
+        "name": "cryptography",
+        "matched_in": "name",
+        "snippet": null
       }
     ],
     "total": 7,
     "page": 0,
     "per_page": 20,
-    "upstream_unavailable": false
+    "upstream_unavailable": false,
+    "readme_search_enabled": false,
+    "searched_in": "name",
+    "truncated": false
+  },
+  "/api/v1/explore/packages/npm/react": {
+    "registry": "npm",
+    "name": "react",
+    "gate": {
+      "beta_member": true
+    },
+    "versions": [
+      {
+        "version": "18.3.1",
+        "source": "proxied",
+        "firewall": {
+          "status": "blocked",
+          "reason": "release-age-gate: published less than 72h ago",
+          "blocked_by": "platform-team",
+          "blocked_at": "2026-08-18T11:04:00Z"
+        },
+        "download_count": 128402,
+        "last_accessed": "2026-08-19T09:12:00Z",
+        "published_at": "2026-06-14T00:00:00Z",
+        "is_prerelease": false,
+        "vulnerabilities": [
+          {
+            "osv_id": "GHSA-4xqq-73wg-5mjp",
+            "severity": "high",
+            "summary": "Prototype pollution in the development server middleware.",
+            "purl": "pkg:npm/react@18.2.0",
+            "fixed_version": "18.3.2"
+          }
+        ],
+        "license": "MIT",
+        "deprecated": false,
+        "unlisted": false,
+        "readme": "available",
+        "sbom": { "state": "available", "formats": ["spdx", "cyclonedx"] },
+        "vulnerabilities_scanned": true,
+        "state": "blocked"
+      },
+      {
+        "version": "18.2.0",
+        "source": "proxied",
+        "firewall": {
+          "status": "clear"
+        },
+        "download_count": 4210998,
+        "last_accessed": "2026-08-19T09:12:00Z",
+        "published_at": "2026-06-14T00:00:00Z",
+        "is_prerelease": false,
+        "vulnerabilities": [
+          {
+            "osv_id": "GHSA-2p57-rm9w-gvfp",
+            "severity": "medium",
+            "summary": "Inefficient regular expression complexity in the error overlay.",
+            "purl": "pkg:npm/react@18.2.0",
+            "fixed_version": "18.2.1"
+          }
+        ],
+        "license": "MIT",
+        "deprecated": false,
+        "unlisted": false,
+        "readme": "available",
+        "sbom": { "state": "available", "formats": ["spdx", "cyclonedx"] },
+        "vulnerabilities_scanned": true,
+        "state": "cached"
+      },
+      {
+        "version": "19.0.0-rc.1",
+        "source": "upstream",
+        "firewall": {
+          "status": "clear"
+        },
+        "download_count": null,
+        "last_accessed": null,
+        "published_at": "2026-06-14T00:00:00Z",
+        "is_prerelease": true,
+        "vulnerabilities": [
+          {
+            "osv_id": "GHSA-8hc4-vh64-cxmj",
+            "severity": "low",
+            "summary": "Denial of service through unbounded recursion in a dev-only path.",
+            "purl": "pkg:npm/react@18.2.0"
+          }
+        ],
+        "license": null,
+        "deprecated": false,
+        "unlisted": false,
+        "readme": "unknown",
+        "sbom": { "state": "unknown", "formats": [] },
+        "vulnerabilities_scanned": true,
+        "state": "pending"
+      }
+    ],
+    "versions_page": {
+      "page": 0,
+      "per_page": 25,
+      "total": 3,
+      "unfiltered_total": 41,
+      "prerelease_total": 12,
+      "hidden_prereleases": 11
+    },
+    "default_version": "18.2.0",
+    "selected_version": "18.2.0",
+    "upstream_unavailable": false,
+    "upstream": {
+      "attempted": true,
+      "freshness": "cached",
+      "truncated": false,
+      "error": null
+    },
+    "fetch": {
+      "offered": true,
+      "reason": null
+    },
+    "links": {
+      "repository": "https://github.com/facebook/react",
+      "homepage": "https://react.dev"
+    },
+    "selected": {
+      "version": "18.2.0",
+      "source": "proxied",
+      "firewall": {
+        "status": "clear"
+      },
+      "download_count": 4210998,
+      "last_accessed": "2026-08-19T09:12:00Z",
+      "published_at": "2026-06-14T00:00:00Z",
+      "is_prerelease": false,
+      "vulnerabilities": [
+        {
+          "osv_id": "GHSA-2p57-rm9w-gvfp",
+          "severity": "medium",
+          "summary": "Inefficient regular expression complexity in the error overlay.",
+          "purl": "pkg:npm/react@18.2.0",
+          "fixed_version": "18.2.1"
+        }
+      ],
+      "license": "MIT",
+      "deprecated": false,
+      "unlisted": false,
+      "readme": "available",
+      "sbom": { "state": "available", "formats": ["spdx", "cyclonedx"] },
+      "vulnerabilities_scanned": true,
+      "state": "cached"
+    }
+  },
+  "/api/v1/explore/packages/npm/react/readme": {
+    "registry": "npm",
+    "name": "react",
+    "version": "18.2.0",
+    "requested_version": "18.2.0",
+    "is_fallback": false,
+    "format": "markdown",
+    "source": "upstream-metadata",
+    "package_level": false,
+    "stored": true,
+    "freshness": null,
+    "truncated": false,
+    "rendered_html": "<h1>react</h1><p>A JavaScript library for building user interfaces.</p><pre><code class=\"language-bash\"># install it\nnpm install react@18.2.0</code></pre><h2>Documentation</h2><p>See <a href=\"https://react.dev\">react.dev</a>.</p><table><thead><tr><th>Export</th><th>Since</th></tr></thead><tbody><tr><td><code>useState</code></td><td>16.8</td></tr></tbody></table>",
+    "source_text": "# react\n\nA JavaScript library for building user interfaces.\n\n```bash\n# install it\nnpm install react@18.2.0\n```\n",
+    "extracted_at": "2026-08-19T09:12:00Z"
   }
 }

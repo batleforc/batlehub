@@ -117,6 +117,7 @@ impl LocalProxy {
             sbom: None,
             explore_cache: None,
             package_repo: None,
+            readme: None,
         });
 
         // No upstream registries — local mode only.
@@ -134,6 +135,8 @@ impl LocalProxy {
             artifact_meta: NoopArtifactMetaRepository::arc(),
             metrics: Arc::new(ProxyMetrics::new(&[])),
             sbom: None,
+            readme: None,
+            discovery: Default::default(),
         });
         let admin_svc = Arc::new(AdminService::new(repo));
         let token_repo = NullUserTokenRepository::arc();
@@ -172,6 +175,8 @@ impl LocalProxy {
             registry_map,
             UpstreamMap::default(),
             vec![],
+            batlehub_web::OidcProviderNames::default(),
+            batlehub_adapters::in_memory::InMemoryLoginStateStore::arc(),
             HashMap::new(), // warming_map
             HashMap::new(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
@@ -180,7 +185,9 @@ impl LocalProxy {
             None,                                       // notification_svc
             Arc::new(InMemoryNotificationStore::new()), // notification_store
             None,                                       // notifications_config
-            None,                                       // storage_admin_repo
+            None,                                       // storage_admin_repo,
+            // Prose search off, matching the shipped default.
+            batlehub_web::new_search_lock(false),
         );
 
         let rt = tokio::runtime::Runtime::new().unwrap();

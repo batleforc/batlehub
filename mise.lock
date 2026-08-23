@@ -17,6 +17,10 @@ backend = "cargo:cargo-audit"
 version = "0.5.9"
 backend = "cargo:cargo-cyclonedx"
 
+[[tools."cargo:cargo-sweep"]]
+version = "0.8.0"
+backend = "cargo:cargo-sweep"
+
 [[tools.claude]]
 version = "2.1.220"
 backend = "aqua:anthropics/claude-code"

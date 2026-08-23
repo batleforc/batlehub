@@ -414,6 +414,10 @@ const confirmProps = computed(() => {
         registry: id.registry,
       }),
       reversible: false,
+      // Stated here rather than inherited. This is the one action the stock
+      // sentence was ever true of, and leaving it implicit is what let three
+      // other irreversible verbs borrow a consequence that does not happen.
+      consequence: t("adminPackages.deleteConsequence"),
       confirmName: id.name,
     };
   }
@@ -447,7 +451,12 @@ const confirmProps = computed(() => {
       itemNoun: t("adminPackages.itemPackageRecord"),
       scope: t("adminPackages.scopeDeleteSelection"),
       reversible: false,
+      consequence: t("adminPackages.deleteConsequence"),
+      // A keyword, not an identifier: unlike `delete-one` above — where the
+      // typed name is the package's own and `Foo` is a different package from
+      // `foo` — there is nothing here for the case to disambiguate.
       confirmName: "delete",
+      confirmCaseInsensitive: true,
     };
   }
   return {
@@ -492,9 +501,18 @@ async function runPending(): Promise<void> {
     <p class="text-sm text-muted-foreground">
       <i18n-t keypath="adminPackages.blockNotHereYet" tag="span">
         <template #link>
-          <RouterLink to="/admin/packages/bulk" class="text-primary hover:underline">{{
-            t("adminNav.bulkBlock")
-          }}</RouterLink>
+          <!-- Underlined at rest, not on hover. Crimson on this sentence's dim
+               ink measures 1.28:1 against the surrounding text, so colour alone
+               cannot mark it as a link: axe's `link-in-text-block` wants 3:1 or
+               a non-colour cue. The same fix the catalog's denial notes already
+               carry — and the reason it went unnoticed here is that the gate
+               measures 1440 and 390, where this sentence does not wrap into a
+               text block; it fails at 820–1023, which nothing measured. -->
+          <RouterLink
+            to="/admin/packages/bulk"
+            class="text-primary underline underline-offset-[3px]"
+            >{{ t("adminNav.bulkBlock") }}</RouterLink
+          >
         </template>
       </i18n-t>
     </p>
@@ -502,7 +520,7 @@ async function runPending(): Promise<void> {
     <!-- Bulk action bar -->
     <div
       v-if="selected.size > 0"
-      class="sticky top-16 z-30 flex items-center gap-3 rounded-sm border bg-card px-4 py-2.5 shadow-sm"
+      class="sticky top-16 z-30 flex items-center gap-3 rounded-sm border bg-card px-4 py-2.5"
     >
       <span class="text-sm font-medium">{{ selected.size }} selected</span>
       <Button
@@ -627,11 +645,29 @@ async function runPending(): Promise<void> {
               </TableRow>
             </TableHeader>
             <TableBody>
-              <TableRow
-                v-for="(pkg, i) in filteredPackages"
-                :key="i"
-                :class="pkg.status.status === 'blocked' ? 'bg-destructive/5' : ''"
-              >
+              <!-- No row tint. `bg-destructive/5` measured 1.03:1 in dark and
+                   1.09:1 in light — DESIGN.md's Undependable Fill Rule in its
+                   plainest form, a fill standing in for a state channel while
+                   being, measurably, invisible. The state is carried by the
+                   status cell below: the word ("Blocked"), the hue (the
+                   `destructive` badge) and the reason under it. -->
+              <!--
+                Keyed by the package, not by its position.
+
+                `:key="i"` made the *row element* the identity, so filtering
+                re-labelled the existing rows in place instead of moving them.
+                Nothing bound broke — every visible bit of a row is a bound
+                value, and `:checked` is written on every patch — but keyboard
+                focus is not a bound value. It sits on a DOM node, and the node
+                stayed where it was: focus a checkbox, type in the filter, and
+                the focus ring is now on a *different package*, silently. On a
+                page whose row actions are block, unblock and delete.
+
+                `pkgKey` was already here for the selection `Set`. It is the
+                row's identity in every other respect; it is its identity here
+                too.
+              -->
+              <TableRow v-for="pkg in filteredPackages" :key="pkgKey(pkg)">
                 <TableCell class="w-8">
                   <input
                     type="checkbox"

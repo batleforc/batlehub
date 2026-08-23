@@ -98,6 +98,150 @@ pub struct SbomConfig {
     pub registry_type: String,
 }
 
+/// What the renderer does with an `<img>` pointing at a third-party host.
+///
+/// There is deliberately no `Allow`: the SPA's CSP is baked into the document at
+/// build time (`img-src 'self' data:`), so a setting that only worked in a custom
+/// UI build would be a trap — the operator would set it and see broken images
+/// with no error anywhere (RFC 0007 §4.1).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteImagePolicy {
+    /// Replace the image with an inline chip carrying its `alt` text and its
+    /// host, so the reader can see that an image was there and where it pointed.
+    #[default]
+    Strip,
+    /// Rewrite it to fetch through this server. Every page view would otherwise
+    /// beacon to a host the package author chose, from inside the network.
+    Proxy,
+}
+
+impl RemoteImagePolicy {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Strip => "strip",
+            Self::Proxy => "proxy",
+        }
+    }
+
+    /// `None` for anything else — an unrecognised value must not silently become
+    /// the default, because the two behaviours differ in what leaves the network.
+    /// [`crate::entities::RegistryKind`]-style parse: the config validator turns
+    /// the `None` into a refusal to start.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "strip" => Some(Self::Strip),
+            "proxy" => Some(Self::Proxy),
+            _ => None,
+        }
+    }
+}
+
+/// README capture configuration stored in the service (mirrors config-layer
+/// `ReadmeConfig`).
+///
+/// Unlike [`SbomConfig`], the absence of the config block means **enabled**: for
+/// the metadata-borne registry kinds the text is a field of a document the proxy
+/// already fetches and parses, so the default costs one deserialised field
+/// (RFC 0007 §4.1).
+#[derive(Debug, Clone)]
+pub struct ReadmeConfig {
+    pub enabled: bool,
+    /// Extract from the cached artifact when the metadata carries none. Rides
+    /// the artifact read SBOM already performs when SBOM is on, and adds one
+    /// storage read per newly-cached version when it is not.
+    pub from_archive: bool,
+    /// Cap on the **stored source**, applied after decompression at the point of
+    /// extraction. Truncation is recorded and surfaced, never silent.
+    pub max_bytes: usize,
+    pub remote_images: RemoteImagePolicy,
+    /// Hosts an image may be proxied from. Empty means every host — see
+    /// `ReadmeConfig::remote_image_hosts` in the config crate for why the
+    /// permissive reading is the compatible one.
+    pub remote_image_hosts: Vec<String>,
+    /// Cap on **one proxied image**, separate from `max_bytes` above, which caps
+    /// the stored text. Inert under [`RemoteImagePolicy::Strip`], where nothing
+    /// is fetched (RFC 0007-bis §4.1).
+    pub image_max_bytes: usize,
+    /// The registry adapter type (e.g. "cargo", "npm") — used to pick the
+    /// extraction family, exactly as [`SbomConfig::registry_type`] is.
+    pub registry_type: String,
+}
+
+impl Default for ReadmeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            from_archive: true,
+            max_bytes: DEFAULT_README_MAX_BYTES,
+            remote_images: RemoteImagePolicy::Strip,
+            remote_image_hosts: Vec::new(),
+            image_max_bytes: DEFAULT_README_IMAGE_MAX_BYTES,
+            registry_type: String::new(),
+        }
+    }
+}
+
+/// 256 KiB. Large enough for essentially every real README, small enough that
+/// the row stays cheap to read on a page load.
+pub const DEFAULT_README_MAX_BYTES: usize = 262_144;
+
+/// 2 MiB per proxied image.
+///
+/// Generous rather than restrictive, and deliberately so: the largest image in a
+/// survey of 150 real README image URLs was 1.6 MB, with a median of 4 kB
+/// (RFC 0007-bis §13.2). A cap that refused the real maximum would present as
+/// "this proxy breaks images" rather than as a limit somebody chose.
+pub const DEFAULT_README_IMAGE_MAX_BYTES: usize = 2_097_152;
+
+/// The console's discovery read, per registry (mirrors config-layer
+/// `UpstreamDetailConfig`).
+///
+/// A separate block from [`ReadmeConfig`] because it is not a README setting:
+/// it governs the *version list* too, and an operator may want one without the
+/// other (RFC 0007 §4.1).
+///
+/// **There is no TTL of its own.** The document lands in the existing metadata
+/// cache under the key `cached_version_document` already builds, so it obeys the
+/// registry's `metadata_ttl_secs` and its `serve_stale_metadata`. A second,
+/// independently clocked expiry for the same bytes is how two caches come to
+/// disagree about one document.
+#[derive(Debug, Clone)]
+pub struct UpstreamDetailConfig {
+    pub enabled: bool,
+    /// Cap on upstream-only versions returned for one package.
+    ///
+    /// Bounds the *response*, not the fetch: the document is one document
+    /// whatever its size. Applied newest-first, and the response says it was
+    /// applied — a silently shortened list is a lie about the registry.
+    pub max_versions: usize,
+    /// How long an upstream "no such package" is remembered, so a bad URL, a
+    /// typo or a crawler cannot turn every reload into an upstream request.
+    pub negative_ttl: Duration,
+}
+
+impl Default for UpstreamDetailConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_versions: DEFAULT_UPSTREAM_MAX_VERSIONS,
+            negative_ttl: Duration::from_secs(DEFAULT_UPSTREAM_NEGATIVE_TTL_SECS),
+        }
+    }
+}
+
+/// **On.** The button admits nothing a caller could not already do, and an
+/// instance that upgrades and changes nothing gets one new capability that
+/// changes no permission (RFC 0007-bis §9).
+pub const DEFAULT_CONSOLE_FETCH: bool = true;
+
+/// 300 versions. Long enough for essentially every real package's table, short
+/// enough that one page's JSON stays a page's worth.
+pub const DEFAULT_UPSTREAM_MAX_VERSIONS: usize = 300;
+
+/// Five minutes. Long enough to absorb a reload loop, short enough that a
+/// package published a moment ago appears without an operator waiting.
+pub const DEFAULT_UPSTREAM_NEGATIVE_TTL_SECS: u64 = 300;
+
 /// Per-registry feature flags (mirrors config-layer `FeatureFlagsConfig`).
 /// A "feature flag" category of optional, cross-cutting UI/integration toggles.
 #[derive(Debug, Clone)]
@@ -130,6 +274,26 @@ pub struct HotConfig {
     pub signing: HashMap<String, SigningConfig>,
     /// Per-registry SBOM generation configs (Clone, cheap).
     pub sbom: HashMap<String, SbomConfig>,
+    /// Per-registry README capture configs (Clone, cheap).
+    ///
+    /// A registry with no entry is *not* one with the feature off: the absence
+    /// of a `[registries.readme]` block means enabled, so the builder writes an
+    /// entry for every registry and a missing key only happens in a test that
+    /// did not care. Readers use `unwrap_or_default()`, which is the enabled
+    /// shape (RFC 0007 §4.1).
+    pub readme: HashMap<String, ReadmeConfig>,
+    /// Per-registry discovery-read configs (Clone, cheap).
+    ///
+    /// Populated for every registry for the same reason `readme` is: the absence
+    /// of a `[registries.upstream_detail]` block means **on**.
+    pub upstream_detail: HashMap<String, UpstreamDetailConfig>,
+    /// Whether the console's **Fetch this version** button is offered, per
+    /// registry (RFC 0007-bis §4.4).
+    ///
+    /// A bare `bool` rather than a config struct because there is one question
+    /// to answer. An absent entry means [`DEFAULT_CONSOLE_FETCH`], which is what
+    /// a registry that never wrote the setting down gets.
+    pub console_fetch: HashMap<String, bool>,
     /// Per-registry feature flags (Clone, cheap).
     pub feature_flags: HashMap<String, FeatureFlags>,
     /// Per-registry artifact integrity policies (Clone, cheap).
@@ -150,7 +314,34 @@ pub struct HotConfig {
     pub resolution: HashMap<String, ResolutionPolicy>,
     /// Maximum artifact size when buffering from upstream; None = 500 MiB default.
     pub max_artifact_size_bytes: Option<u64>,
+    /// How many versions one package-detail answer carries — the default for a
+    /// caller that asks for no `per_page`, and the ceiling on what one may ask
+    /// for. From `[limits].versions_per_page`; see the config crate for why the
+    /// two readings are one key.
+    pub versions_per_page: u64,
+    /// How many packages one catalog answer carries — the same two readings as
+    /// `versions_per_page`, for the other list. From `[limits].packages_per_page`.
+    ///
+    /// A separate key rather than one shared number because the two answer
+    /// different questions: a catalog row is a name and a handful of counts and
+    /// 20 of them is a screenful, while a version row costs a vulnerability read
+    /// and a licence read and 100 is about what one request should build. One
+    /// key would force an operator sizing a screen to also size a query.
+    pub packages_per_page: u64,
 }
+
+/// What a server with no `[limits].versions_per_page` serves, and what a
+/// `HotConfig` built by hand — a test, an embedder — gets.
+///
+/// It lives here rather than in the config crate because `HotConfig` must be
+/// able to answer without one: a `..Default::default()` that fell back to zero
+/// would build a version table that can never return a row, and the config
+/// crate's own default re-exports this constant so the two cannot drift.
+pub const DEFAULT_VERSIONS_PER_PAGE: u64 = 100;
+
+/// The same for `[limits].packages_per_page`, and 20 because that is what the
+/// catalog has always drawn.
+pub const DEFAULT_PACKAGES_PER_PAGE: u64 = 20;
 
 impl Default for HotConfig {
     /// All maps empty, no size limit. Useful as a base for `..Default::default()`
@@ -163,11 +354,16 @@ impl Default for HotConfig {
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
+            readme: HashMap::new(),
+            upstream_detail: HashMap::new(),
+            console_fetch: HashMap::new(),
             feature_flags: HashMap::new(),
             integrity: HashMap::new(),
             beta_channel: HashMap::new(),
             resolution: HashMap::new(),
             max_artifact_size_bytes: None,
+            versions_per_page: DEFAULT_VERSIONS_PER_PAGE,
+            packages_per_page: DEFAULT_PACKAGES_PER_PAGE,
         }
     }
 }

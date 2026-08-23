@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { mount, flushPromises } from "@vue/test-utils";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
 
 const { explorePackagesMock, exploreUpstreamSearchMock, listRegistriesMock, statsMock } =
   vi.hoisted(() => ({
@@ -15,9 +15,20 @@ vi.mock("@/client/sdk.gen", () => ({
   exploreRegistryStats: statsMock,
 }));
 
-const { pushMock } = vi.hoisted(() => ({ pushMock: vi.fn() }));
+/**
+ * `routeState` stands in for the address bar: the page reads its whole starting
+ * state out of `route.query` and writes every change back with `replace`, so a
+ * test that cannot see both halves cannot tell whether a search survives a
+ * return to the list.
+ */
+const { pushMock, replaceMock, routeState } = vi.hoisted(() => ({
+  pushMock: vi.fn(),
+  replaceMock: vi.fn(),
+  routeState: { path: "/packages", query: {} as Record<string, string> },
+}));
 vi.mock("vue-router", () => ({
-  useRouter: () => ({ push: pushMock }),
+  useRouter: () => ({ push: pushMock, replace: replaceMock }),
+  useRoute: () => routeState,
   RouterLink: { template: "<a :href='String(to)'><slot/></a>", props: ["to"] },
 }));
 
@@ -56,10 +67,23 @@ const graded = (state: string, over: Record<string, unknown> = {}) => ({
   },
 });
 
+/** The href behind a row's package name — the row's one destination. */
+function nameLink(wrapper: VueWrapper, name: string): string | undefined {
+  const row = wrapper.findAll("tbody tr").find((r) => r.text().includes(name));
+  return row
+    ?.findAll("a")
+    .find((a) => a.text().trim() === name)
+    ?.attributes("href");
+}
+
 async function mountPage() {
   const wrapper = mount(PackageCatalog, {
     global: {
-      stubs: { RouterLink: { template: "<a><slot /></a>" } },
+      // The `href` is rendered, not dropped: the destination of a row is now
+      // carried by a link rather than by a `router.push` in a click handler,
+      // so a stub that swallows `to` would make every navigation assertion
+      // below unfalsifiable.
+      stubs: { RouterLink: { template: "<a :href='String(to)'><slot /></a>", props: ["to"] } },
     },
   });
   await flushPromises();
@@ -492,7 +516,13 @@ describe("PackageCatalog browsing", () => {
       .trigger("click");
     await flushPromises();
     expect(explorePackagesMock).toHaveBeenLastCalledWith({
-      query: { page: 0, per_page: 20, sort: "fetched", registry: "pypi", name: undefined },
+      query: {
+        page: 0,
+        sort: "fetched",
+        registry: "pypi",
+        q: undefined,
+        in: "name",
+      },
     });
 
     // Going back to "all" reads the entry the initial load filled — the facet is
@@ -533,7 +563,7 @@ describe("PackageCatalog browsing", () => {
     await typeSearch(wrapper, "lo");
 
     expect(explorePackagesMock).toHaveBeenLastCalledWith({
-      query: { page: 0, per_page: 20, sort: "fetched", registry: undefined, name: "lo" },
+      query: { page: 0, sort: "fetched", registry: undefined, q: "lo", in: "name" },
     });
     expect(exploreUpstreamSearchMock).toHaveBeenCalledWith({
       query: { name: "lo", limit: 10, registry: undefined },
@@ -599,7 +629,13 @@ describe("PackageCatalog browsing", () => {
     await flushPromises();
 
     expect(explorePackagesMock).toHaveBeenLastCalledWith({
-      query: { page: 1, per_page: 20, sort: "fetched", registry: undefined, name: undefined },
+      query: {
+        page: 1,
+        sort: "fetched",
+        registry: undefined,
+        q: undefined,
+        in: "name",
+      },
     });
   });
 
@@ -629,16 +665,390 @@ describe("PackageCatalog browsing", () => {
     expect(wrapper.text()).toContain("No packages cached yet");
   });
 
-  it("opens a cached package's page on click, and leaves upstream rows alone", async () => {
+  /**
+   * A package this instance has not pulled opens too, and used to be the one
+   * row in the catalog that led nowhere.
+   *
+   * This test asserted the opposite — that an upstream row calls no navigation —
+   * and that assertion was the bug held in place: `explore/detail.rs` resolves
+   * `upstream_detail` for anything not held here, and `PackageDetailPage`
+   * renders those versions with the per-version *Fetch this version* button
+   * (RFC 0007-bis §6.4). The page existed, the search surfaced the package, and
+   * the click between them was refused, so the only way in was to type the URL.
+   *
+   * Both kinds are asserted in one test on purpose: the point is that they now
+   * resolve to the *same* address from the same two fields.
+   *
+   * Asserted on the **link**, not on a click. The row used to carry the
+   * destination in a `@click` handler with no `tabindex`, no `role` and no key
+   * handler, so the assertion this replaces could pass over a target no
+   * keyboard could reach — see the WCAG 2.1.1 case below.
+   */
+  it("links a package's page whether or not this instance holds it", async () => {
     exploreUpstreamSearchMock.mockResolvedValue({ data: { items: [upstreamHit("left-pad")] } });
     const wrapper = await mountPage();
     await typeSearch(wrapper, "l@test");
 
-    const rows = wrapper.findAll("tbody tr");
-    await rows.find((r) => r.text().includes("left-pad"))!.trigger("click");
-    expect(pushMock).not.toHaveBeenCalled();
+    expect(nameLink(wrapper, "left-pad")).toBe("/packages/npm/left-pad");
+    expect(nameLink(wrapper, "lodash")).toBe("/packages/npm/lodash");
+  });
 
-    await rows.find((r) => r.text().includes("lodash"))!.trigger("click");
-    expect(pushMock).toHaveBeenCalledWith({ path: "/packages/npm/lodash" });
+  /**
+   * WCAG 2.1.1 Keyboard (A), on the product's primary navigation path.
+   *
+   * `<TableRow @click>` gave a mouse the whole row and a keyboard nothing —
+   * no `tabindex`, no `role`, no key handler — and the package name was plain
+   * text. The one keyboard route to a detail page was the **details** link
+   * inside a refusal note, which renders only when the row *has* a note. So a
+   * normally cached package could not be opened from the keyboard at all.
+   *
+   * The row must also stay un-clickable as a whole: a second navigation on the
+   * row would double every activation and re-introduce a mouse-only target.
+   */
+  it("puts the destination on the name, not on the row", async () => {
+    const wrapper = await mountPage();
+
+    const row = wrapper.findAll("tbody tr").find((r) => r.text().includes("lodash"))!;
+    const link = row.findAll("a").find((a) => a.text().trim() === "lodash");
+    expect(link, "the package name renders as a link").toBeDefined();
+    expect(link!.attributes("href")).toBe("/packages/npm/lodash");
+
+    pushMock.mockClear();
+    await row.trigger("click");
+    expect(pushMock, "the row itself navigates nowhere").not.toHaveBeenCalled();
+    expect(row.classes()).not.toContain("cursor-pointer");
+  });
+
+  /**
+   * A name with slashes in it — Go and Composer coordinates — survives the trip.
+   *
+   * The path is built with `encodeURIComponent`, so `github.com/ttacon/chalk`
+   * arrives as one route param rather than three path segments. An upstream
+   * search against a `go` registry returns exactly this shape, so it is the
+   * first thing a click on those results would have hit.
+   */
+  it("encodes a slashed package name into a single route param", async () => {
+    exploreUpstreamSearchMock.mockResolvedValue({
+      data: { items: [upstreamHit("github.com/ttacon/chalk", { registry: "go" })] },
+    });
+    const wrapper = await mountPage();
+    await typeSearch(wrapper, "chalk");
+
+    expect(nameLink(wrapper, "github.com/ttacon/chalk")).toBe(
+      "/packages/go/github.com%2Fttacon%2Fchalk",
+    );
+  });
+});
+
+/**
+ * Searching what a package *says* (RFC 0007-bis §4.3).
+ *
+ * The ranking is Postgres's and is tested where it lives. What the page owes the
+ * reader is narrower and entirely its own: a control that only appears when the
+ * instance can honour it, a label on the row that needs explaining and not on
+ * the ones that do not, a snippet rendered as **text**, and an empty state that
+ * says what was actually searched.
+ */
+/**
+ * The catalog's page size is the operator's, not this component's.
+ *
+ * It was a hard-coded 20 in both places — the request and the pager arithmetic
+ * — so `[limits].packages_per_page` would have been a setting the one screen it
+ * exists for ignored. The console asks for no size here (unlike the version
+ * table on a package page, which asks for the rows it draws) and sizes its
+ * pager from what came back.
+ */
+describe("PackageCatalog page size", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    pushMock.mockReset();
+    explorePackagesMock.mockReset();
+    exploreUpstreamSearchMock.mockReset().mockResolvedValue({ data: { items: [] } });
+    listRegistriesMock.mockReset().mockResolvedValue({ data: [] });
+    statsMock.mockReset().mockResolvedValue({ data: { registries: [] } });
+    scopeExploreCacheTo(`test-${Math.random()}`);
+  });
+
+  it("asks for no page size at all", async () => {
+    explorePackagesMock.mockResolvedValue(listing(["lodash"]));
+
+    await mountPage();
+
+    const query = explorePackagesMock.mock.calls.at(-1)?.[0]?.query;
+    expect(query).toBeDefined();
+    expect(query).not.toHaveProperty("per_page");
+  });
+
+  /** 60 rows at 50 a page is two pages, not three — the pager has to do its
+      arithmetic with the number the server applied. */
+  it("sizes the pager from the answer rather than from a constant", async () => {
+    explorePackagesMock.mockResolvedValue({
+      data: {
+        items: Array.from({ length: 50 }, (_, i) => entry(`pkg-${i}`)),
+        total: 60,
+        page: 0,
+        per_page: 50,
+      },
+    });
+
+    const wrapper = await mountPage();
+
+    expect(wrapper.text()).toContain("1 of 2");
+  });
+
+  /** An older server, or one whose answer omits it: the pager still works off
+      the number the console started with rather than dividing by undefined. */
+  it("falls back to twenty when the answer does not say", async () => {
+    explorePackagesMock.mockResolvedValue({
+      data: { items: [entry("lodash")], total: 60, page: 0 },
+    });
+
+    const wrapper = await mountPage();
+
+    expect(wrapper.text()).toContain("1 of 3");
+  });
+});
+
+describe("PackageCatalog prose search", () => {
+  const proseListing = (over: Record<string, unknown> = {}) => ({
+    data: {
+      items: [
+        entry("retry", { matched_in: "name", snippet: null }),
+        entry("resilience-toolkit", {
+          matched_in: "readme",
+          snippet: "…exponential backoff for flaky upstreams…",
+        }),
+      ],
+      total: 2,
+      page: 0,
+      per_page: 20,
+      readme_search_enabled: true,
+      searched_in: "both",
+      truncated: false,
+      ...over,
+    },
+  });
+
+  beforeEach(() => {
+    vi.useRealTimers();
+    exploreUpstreamSearchMock.mockReset().mockResolvedValue({ data: { items: [] } });
+    listRegistriesMock.mockReset().mockResolvedValue({ data: [{ name: "npm", type: "npm" }] });
+    statsMock.mockReset().mockResolvedValue({ data: { registries: [] } });
+    scopeExploreCacheTo(`test-${Math.random()}`);
+  });
+
+  const scopeSelect = (w: ReturnType<typeof mount>) =>
+    w.findAll("select").find((sel) => sel.find('option[value="readme"]').exists());
+
+  /**
+   * A control whose other options do nothing is worse than no control. The
+   * server says whether prose search is on; the page does not guess.
+   */
+  it("offers the scope control only when the instance searches prose", async () => {
+    explorePackagesMock.mockReset().mockResolvedValue({
+      data: { ...listing(["lodash"]).data, readme_search_enabled: false },
+    });
+    let wrapper = await mountPage();
+    expect(scopeSelect(wrapper)).toBeUndefined();
+
+    explorePackagesMock.mockReset().mockResolvedValue(proseListing());
+    scopeExploreCacheTo(`test-${Math.random()}`);
+    wrapper = await mountPage();
+    expect(scopeSelect(wrapper)).toBeDefined();
+  });
+
+  it("sends the chosen scope, and re-runs at once rather than on a debounce", async () => {
+    explorePackagesMock.mockReset().mockResolvedValue(proseListing());
+    const wrapper = await mountPage();
+
+    await scopeSelect(wrapper)!.setValue("readme");
+    await flushPromises();
+
+    expect(explorePackagesMock).toHaveBeenLastCalledWith({
+      query: {
+        page: 0,
+        sort: "fetched",
+        registry: undefined,
+        q: undefined,
+        in: "readme",
+      },
+    });
+  });
+
+  /**
+   * Only the row that needs explaining is labelled. A row that matched on its
+   * name is self-explanatory, and labelling every row would make the one that
+   * matters invisible.
+   */
+  it("labels a prose match and leaves a name match unlabelled", async () => {
+    explorePackagesMock.mockReset().mockResolvedValue(proseListing());
+    const wrapper = await mountPage();
+
+    const rows = wrapper.findAll("tbody tr");
+    const named = rows.find((r) => r.text().includes("retry"))!;
+    const prose = rows.find((r) => r.text().includes("resilience-toolkit"))!;
+
+    expect(prose.text().toLowerCase()).toContain("readme");
+    expect(named.text().toLowerCase()).not.toContain("readme");
+  });
+
+  /**
+   * The snippet is package-authored content on a second surface. It is
+   * interpolated, never `v-html` (RFC 0007-bis §7.4) — so markup in it appears
+   * as characters, which is what this asserts.
+   */
+  it("renders a snippet as text and never as markup", async () => {
+    explorePackagesMock.mockReset().mockResolvedValue(
+      proseListing({
+        items: [
+          entry("hostile", {
+            matched_in: "readme",
+            snippet: "<img src=x onerror=alert(1)> and <b>bold</b>",
+          }),
+        ],
+        total: 1,
+      }),
+    );
+    const wrapper = await mountPage();
+
+    expect(wrapper.text()).toContain("<img src=x onerror=alert(1)>");
+    expect(wrapper.find("tbody img").exists()).toBe(false);
+    expect(wrapper.find("tbody b").exists()).toBe(false);
+  });
+
+  /**
+   * "Nothing matches that search" would imply the query was checked against
+   * every package here. It was checked against the READMEs of the versions this
+   * instance holds, which is a narrower claim and the honest one.
+   */
+  it("says what was searched when a prose search finds nothing", async () => {
+    explorePackagesMock
+      .mockReset()
+      .mockResolvedValue(proseListing({ items: [], total: 0, searched_in: "readme" }));
+    const wrapper = await mountPage();
+
+    await scopeSelect(wrapper)!.setValue("readme");
+    // Typed and debounced locally: `typeSearch` belongs to the browsing suite.
+    await wrapper.find("input").setValue("backoff");
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("READMEs of versions held on this instance");
+  });
+
+  /** A cap that applied, said out loud rather than read as "that is all". */
+  it("says when the prose search was truncated", async () => {
+    explorePackagesMock
+      .mockReset()
+      .mockResolvedValue(proseListing({ truncated: true, total: 200 }));
+    const wrapper = await mountPage();
+    expect(wrapper.text()).toContain("Narrow the query");
+  });
+});
+
+/**
+ * The search lives in the URL (so a return to the list is a return to the
+ * search).
+ *
+ * Every control on this page wrote to component state and nowhere else, so the
+ * whole arrangement — registry, query, scope, sort, page — existed only as long
+ * as the component did. Open a package from the fifth page of a search, come
+ * back, and the box was empty. The detail page's own back button pushed
+ * `/packages?registry=…`, which read like a fix and was not: nothing here ever
+ * looked at `route.query`.
+ */
+describe("PackageCatalog url state", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    routeState.query = {};
+    replaceMock.mockReset().mockImplementation((loc: { query?: Record<string, string> }) => {
+      // Stand in for the address bar actually changing, which is what the page's
+      // own "has anything changed?" check reads back.
+      routeState.query = loc.query ?? {};
+    });
+    explorePackagesMock.mockReset().mockResolvedValue(listing(["lodash"]));
+    exploreUpstreamSearchMock.mockReset().mockResolvedValue({ data: { items: [] } });
+    listRegistriesMock.mockReset().mockResolvedValue({ data: [{ name: "npm", type: "npm" }] });
+    statsMock.mockReset().mockResolvedValue({ data: { registries: [] } });
+    scopeExploreCacheTo(`test-${Math.random()}`);
+  });
+
+  afterEach(() => {
+    routeState.query = {};
+  });
+
+  it("opens on the search its URL describes", async () => {
+    routeState.query = { registry: "npm", q: "lodash", in: "both", sort: "name", page: "3" };
+
+    const wrapper = await mountPage();
+
+    // The first request is the reader's search, not the defaults — fetching
+    // those first would show a list nobody asked for and then replace it.
+    expect(explorePackagesMock).toHaveBeenCalledTimes(1);
+    expect(explorePackagesMock).toHaveBeenLastCalledWith({
+      query: { page: 2, sort: "name", registry: "npm", q: "lodash", in: "both" },
+    });
+    // And the controls agree with the list, rather than showing an empty box
+    // above rows that were filtered.
+    expect(wrapper.find("input").element.value).toBe("lodash");
+  });
+
+  it("writes a search back so returning to the list returns to it", async () => {
+    const wrapper = await mountPage();
+
+    await wrapper.find("input").setValue("left-pad");
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await flushPromises();
+
+    expect(replaceMock).toHaveBeenLastCalledWith({
+      path: "/packages",
+      query: { q: "left-pad" },
+    });
+  });
+
+  it("keeps a default off the URL", async () => {
+    const wrapper = await mountPage();
+
+    // `fetched` is the default sort, so selecting it says nothing.
+    await wrapper.find("select").setValue("name");
+    await flushPromises();
+    expect(replaceMock).toHaveBeenLastCalledWith({ path: "/packages", query: { sort: "name" } });
+
+    await wrapper.find("select").setValue("fetched");
+    await flushPromises();
+    expect(replaceMock).toHaveBeenLastCalledWith({ path: "/packages", query: {} });
+  });
+
+  /** A hand-edited URL cannot put the page somewhere its own controls could not. */
+  it("falls back to the defaults for values it does not recognise", async () => {
+    routeState.query = { sort: "whatever", in: "sideways", page: "-4" };
+
+    await mountPage();
+
+    expect(explorePackagesMock).toHaveBeenLastCalledWith({
+      query: {
+        page: 0,
+        sort: "fetched",
+        registry: undefined,
+        q: undefined,
+        in: "name",
+      },
+    });
+  });
+
+  /**
+   * The page must not write to a route it no longer owns: a fetch settling after
+   * the reader has opened a package would otherwise rewrite that page's address.
+   */
+  it("does not touch the URL once the reader has left the catalog", async () => {
+    const wrapper = await mountPage();
+    routeState.path = "/packages/npm/lodash";
+
+    await wrapper.find("input").setValue("left-pad");
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await flushPromises();
+
+    expect(replaceMock).not.toHaveBeenCalled();
+    routeState.path = "/packages";
   });
 });

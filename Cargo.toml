@@ -26,6 +26,34 @@ lto = true
 codegen-units = 1
 strip = true
 
+# ── Debuginfo, sized to what it is actually used for ──────────────────────────
+#
+# Measured on this workspace: `cargo build --workspace --all-targets` produced a
+# 46 GB `target/`, of which 35.6 GB was 102 test executables averaging 350 MB
+# each — **81 % of every one of them `.debug_*` sections**. Each test binary
+# statically links the whole graph, so the same DWARF is written out a hundred
+# times over. The two settings below took that to 46 → 30 → ~14 GB.
+#
+# What is kept is what this project actually reads: `line-tables-only` is exactly
+# the file:line a panic backtrace prints, and 3 425 tests are how a regression is
+# found here. What is given up is a debugger's view of variables and types. If
+# you are reaching for lldb, delete these two blocks for the session — a rebuild
+# is the whole cost, and nothing else in the repo depends on them.
+[profile.dev]
+debug = "line-tables-only"
+
+#
+# Dependencies get none at all. `"*"` is dependencies only — it does not touch
+# workspace crates, which take the line tables above. Dependency DWARF is the
+# larger half of the two: tokio, actix, sqlx and ~600 others, and nothing here
+# steps into their source. Symbol *names* come from the symbol table and survive
+# either way, so a backtrace through a dependency frame still names the function.
+#
+# Coverage is untouched: `cargo llvm-cov` instruments workspace crates, and its
+# line mapping comes from that instrumentation rather than from dependency DWARF.
+[profile.dev.package."*"]
+debug = false
+
 [workspace.metadata.llvm-cov]
 # Exclude server startup wiring from coverage — it's integration-tested separately.
 exclude = ["server/src/main.rs"]
@@ -37,7 +65,32 @@ async-trait = "0.1"
 futures = "0.3"
 
 # HTTP server
-actix-web = "4"
+#
+# `default-features = false` for one reason: to drop `http2`, which is the only
+# thing pulling `h2 0.3` into the tree (RUSTSEC-2026-0258 — unbounded empty DATA
+# frames). The advisory is fixed in h2 0.4.16, which is already here for
+# hyper/reqwest, but `actix-http 3.13.3` — the latest published — still requires
+# the 0.3 line, and there is no 0.3 backport (0.3.27 is the newest). So the
+# choice is the feature or the advisory, and the feature costs nothing: this
+# server never terminates TLS (`server_factory.rs` calls plain `.bind()`, and the
+# only TLS in the config is `[registries.tls]` for *outbound* upstream clients).
+# Without TLS, actix's HTTP/2 is reachable only as h2c, which no package manager
+# speaks to a registry — real deployments terminate HTTP/2 at the ingress and
+# talk HTTP/1.1 to this process, which is unaffected.
+#
+# The features below are actix-web 4.14's own `default` set with `http2` removed;
+# re-add it here if this process ever gains `bind_rustls`/`bind_openssl`, and take
+# the advisory up with actix at that point.
+actix-web = { version = "4", default-features = false, features = [
+    "macros",
+    "compress-brotli",
+    "compress-gzip",
+    "compress-zstd",
+    "cookies",
+    "unicode",
+    "compat",
+    "ws",
+] }
 actix-files = "0.6"
 actix-cors = "0.7"
 
@@ -108,6 +161,16 @@ form_urlencoded = "1"
 ipnet = "2"
 zip = "8"
 quick-xml = "0.41"
+# README rendering and sanitisation (RFC 0007 §7.1). `pulldown-cmark` is a
+# CommonMark pull parser with no HTML sanitisation of its own — it passes raw
+# HTML straight through, which is why nothing reaches a reader without going
+# through `ammonia` first. `ammonia` is an allow-list sanitiser over an
+# `html5ever` parse: deny by default, not a regex and not an escape pass.
+# `default-features = false` on pulldown-cmark drops its CLI/`getopts` path.
+# `html` is the renderer; `default-features = false` drops the crate's own
+# CLI/`getopts` path, which is not something a server needs in its tree.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+ammonia = "4"
 argon2 = { version = "0.5", features = ["std"] }
 
 # CLI

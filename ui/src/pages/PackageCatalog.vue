@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
-import { ref, computed, onMounted, onBeforeUnmount } from "vue";
-import { RouterLink, useRouter } from "vue-router";
+import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue";
+import { RouterLink, useRoute, useRouter } from "vue-router";
 import { useExploreCache, useUpstreamCache } from "@/composables/useExploreCache";
 import { extractMessage } from "@/composables/useApi";
 import { formatBytes, formatCount, formatRelative } from "@/lib/format";
@@ -46,9 +46,23 @@ type ExploreRow = CachedRow | UpstreamRow;
 // ── State ─────────────────────────────────────────────────────────────────────
 
 const router = useRouter();
+const route = useRoute();
 
 const selectedRegistry = ref<string | null>(null);
 const search = ref("");
+/**
+ * Where the search looks: names, README prose, or both (RFC 0007-bis §4.3).
+ *
+ * `name` is what this page has always done, and it stays the default — the
+ * control is an opt-in to a *wider* search, never a narrowing of the one people
+ * already know.
+ */
+type SearchScope = "name" | "readme" | "both";
+const searchIn = ref<SearchScope>("name");
+/** `[search] readmes` on this instance, as the last response reported it. */
+const readmeSearchEnabled = ref(false);
+/** The prose search hit its cap; there may be more than is shown. */
+const searchTruncated = ref(false);
 
 type SortKey = "fetched" | "downloads" | "name" | "recent";
 
@@ -61,7 +75,19 @@ type SortKey = "fetched" | "downloads" | "name" | "recent";
    popular". */
 const sort = ref<SortKey>("fetched");
 const page = ref(0);
-const perPage = 20;
+/**
+ * How many rows a page holds — **the server's number**, not this component's.
+ *
+ * It was a hard-coded 20, which is still what an unconfigured instance answers
+ * with; it is `[limits].packages_per_page` now. The catalog does not ask for a
+ * size (unlike the version table on a package page, which asks for the rows it
+ * draws above the README): this list *is* the page, so the operator's number is
+ * the right one and a console that asked for its own would make the setting
+ * inert on the one screen it exists for.
+ *
+ * Seeded at 20 so the pager arithmetic is sane before the first answer lands.
+ */
+const perPage = ref(20);
 
 // All configured accessible registries (sidebar — always complete list)
 const allRegistries = ref<RegistryInfo[]>([]);
@@ -211,7 +237,7 @@ const tableRows = computed<ExploreRow[]>(() => [
   ...freshUpstream.value.map((p) => ({ ...p, kind: "upstream" as const })),
 ]);
 
-const totalPages = computed(() => Math.max(1, Math.ceil(total.value / perPage)));
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / perPage.value)));
 
 // ── Resolution as state ───────────────────────────────────────────────────────
 //
@@ -276,6 +302,38 @@ function noteKey(row: ExploreRow): string | undefined {
   return NOTE_KEYS[rowState(row)];
 }
 
+/**
+ * Why this row is here, or `undefined` when it needs no saying.
+ *
+ * Only a prose match is labelled. A row that matched on its name is
+ * self-explanatory, and labelling every row would make the one that actually
+ * needs the label invisible (RFC 0007-bis §4.3).
+ */
+function matchLabel(row: ExploreRow): string | undefined {
+  if (row.kind !== "cached") return undefined;
+  const matched = (row as ExploreEntryDto).matched_in;
+  if (matched === "readme") return t("packageCatalog.matchedReadme");
+  if (matched === "both") return t("packageCatalog.matchedBoth");
+  return undefined;
+}
+
+/** The matched fragment of a README, as plain text. Never markup. */
+function rowSnippet(row: ExploreRow): string | undefined {
+  if (row.kind !== "cached") return undefined;
+  return (row as ExploreEntryDto).snippet ?? undefined;
+}
+
+/**
+ * A prose search actually ran and came back with nothing.
+ *
+ * Distinct from "the filter matched nothing": the empty state has to say what
+ * was searched, and `in=readme` with the feature *off* answers as a name search
+ * — so the scope alone is not enough to decide which words to show.
+ */
+const searchedProse = computed(
+  () => readmeSearchEnabled.value && searchIn.value !== "name" && search.value.trim().length > 0,
+);
+
 /** Stable across re-renders because it is derived from the row's identity, not
     from its index: `aria-describedby` pointing at a recycled id is worse than
     pointing at nothing. */
@@ -288,6 +346,19 @@ function rowId(row: ExploreRow): string {
 interface PageResult {
   items: ExploreEntryDto[];
   total: number;
+  /** The size the answer was actually paged at. Cached with the rows rather
+      than assumed, so a hot reload of `packages_per_page` cannot leave the
+      pager doing arithmetic with a number the cached page was not built at. */
+  perPage: number;
+  /** Whether this instance searches prose at all. Cached for the same reason as
+      `perPage`: it is the server's answer, not something a client can infer, and
+      a cache hit that left it at its initial `false` made the scope selector
+      disappear for the whole TTL — catalog → package → Back is a cache hit. */
+  readmeSearchEnabled: boolean;
+  /** Whether the answer was cut at the prose cap. Stale in the other direction:
+      a truncated prose search followed by a cached name search left the
+      "showing the first N matches" note under a list it was not about. */
+  truncated: boolean;
 }
 const exploreCache = useExploreCache<PageResult>();
 const upstreamCache = useUpstreamCache<UpstreamPackageDto[]>();
@@ -349,13 +420,17 @@ async function fetchPackages() {
   const q = search.value.trim();
   const s = sort.value;
   const p = page.value;
+  const scope = searchIn.value;
   const seq = ++packagesSeq;
 
-  const cached = exploreCache.get(reg, p, s, q);
+  const cached = exploreCache.get(reg, p, s, q, scope);
   if (cached) {
     error.value = null;
     packages.value = cached.items;
     total.value = cached.total;
+    perPage.value = cached.perPage;
+    readmeSearchEnabled.value = cached.readmeSearchEnabled;
+    searchTruncated.value = cached.truncated;
     // `loading` has to be cleared here too, not only in the `finally` below.
     // This call already bumped `packagesSeq`, so any request still in flight
     // will fail its own `seq === packagesSeq` check and skip the `finally` —
@@ -371,20 +446,49 @@ async function fetchPackages() {
     const { data: res, error: apiErr } = await explorePackages({
       query: {
         page: p,
-        per_page: perPage,
         sort: s,
         registry: reg || undefined,
-        name: q || undefined,
+        // `q` is the parameter `in` applies to; `name` is the older one and
+        // still filters names, which is why the scope is sent with `q` alone.
+        q: q || undefined,
+        in: scope,
       },
     });
     if (apiErr) throw new Error(t("packageCatalog.loadFailed"));
     const body = res as ExplorePackageListResponse;
     // Written under the coordinates captured at call time, not the current
     // refs, so a late response cannot land under the wrong key.
-    exploreCache.set(reg, p, s, q, { items: body.items, total: body.total });
+    // `per_page` comes back rather than being assumed: the operator sets it,
+    // it can change under a hot reload, and a pager sized from a stale number
+    // would offer pages the list does not have.
+    const applied = body.per_page ?? perPage.value;
+    // Reported by the server rather than inferred: a client cannot tell "no
+    // package here says that" from "this instance does not search prose", and
+    // guessing would put the wrong empty state on screen. Cached alongside the
+    // rows for exactly that reason — a cache hit that did not restore them
+    // would be the guess, one TTL later.
+    const prose = body.readme_search_enabled === true;
+    const cut = body.truncated === true;
+    exploreCache.set(
+      reg,
+      p,
+      s,
+      q,
+      {
+        items: body.items,
+        total: body.total,
+        perPage: applied,
+        readmeSearchEnabled: prose,
+        truncated: cut,
+      },
+      scope,
+    );
     if (seq !== packagesSeq) return; // superseded — cached, not displayed
     packages.value = body.items;
     total.value = body.total;
+    perPage.value = applied;
+    readmeSearchEnabled.value = prose;
+    searchTruncated.value = cut;
   } catch (e) {
     if (seq === packagesSeq) error.value = extractMessage(e);
   } finally {
@@ -435,6 +539,28 @@ onBeforeUnmount(() => {
   if (searchTimer) clearTimeout(searchTimer);
 });
 
+/**
+ * Empty the box and re-run the unfiltered listing, at once.
+ *
+ * `search = ''` alone only emptied the ref: nothing refetches on a bare change
+ * (the one watcher on `search` is `syncQuery`), so the address bar went back to
+ * `/packages` while `packages` still held the failed search's zero rows — and
+ * because `search.trim()` was now falsy the empty state changed its story from
+ * "nothing matches that search" to "nothing has been pulled through", which is a
+ * claim about the registry rather than about the query. Only a reload got out
+ * of it.
+ *
+ * Undebounced, and without `fetchUpstream`, for the same reason `onScopeChange`
+ * is: there is no query left to ask upstream about.
+ */
+function onClearSearch() {
+  search.value = "";
+  upstreamResults.value = [];
+  page.value = 0;
+  if (searchTimer) clearTimeout(searchTimer);
+  void fetchPackages();
+}
+
 function onSearchInput(val: string) {
   search.value = val;
   if (searchTimer) clearTimeout(searchTimer);
@@ -444,6 +570,20 @@ function onSearchInput(val: string) {
     if (val.trim().length >= 2) void fetchUpstream();
     else upstreamResults.value = [];
   }, 300);
+}
+
+/**
+ * Changing the scope re-runs the search at once, undebounced.
+ *
+ * The query has not changed — only what it is asked of — so there is nothing to
+ * wait for, and a delay after a select would read as the control not working.
+ */
+function onSearchInChange(val: string) {
+  searchIn.value = (["name", "readme", "both"] as const).includes(val as SearchScope)
+    ? (val as SearchScope)
+    : "name";
+  page.value = 0;
+  void fetchPackages();
 }
 
 function selectRegistry(reg: string | null) {
@@ -460,11 +600,42 @@ function onSortChange(val: string) {
   void fetchPackages();
 }
 
-function goToDetail(row: ExploreRow) {
-  if (row.kind !== "cached") return;
-  router.push({
-    path: `/packages/${encodeURIComponent(row.registry)}/${encodeURIComponent(row.name)}`,
-  });
+/**
+ * Both kinds of row lead to the same page, and the upstream one used to lead
+ * nowhere.
+ *
+ * `if (row.kind !== "cached") return` made a package this instance has not
+ * pulled the one thing in the catalog you could not open — while the page it
+ * would have opened was already built for exactly that case: `explore/detail.rs`
+ * calls `upstream_detail` for anything not held here, and `PackageDetailPage`
+ * renders the result under "N version(s) below exist upstream and are not held
+ * here", with the per-version **Fetch this version** button RFC 0007-bis §6.4
+ * put there. Measured against the running instance, `npm/chalk` — never pulled —
+ * answers with 44 versions, their publication dates and their firewall verdicts.
+ * So the capability was reachable only by typing the URL, which is not a
+ * capability the console had.
+ *
+ * `UpstreamPackageDto` carries `registry` and `name`, the same two fields the
+ * cached row uses, so there is nothing to resolve first: deciding *before* the
+ * click whether a package deserves a page is the check that was wrong, not the
+ * URL it built.
+ *
+ * A path rather than a handler, because the row used to be a `@click` on
+ * `<TableRow>` with no `tabindex`, no `role` and no key handler, and the
+ * package name was plain text rather than a link. The only keyboard route to a
+ * package's page was the **details** link *inside a refusal note*, which
+ * renders only when `noteKey(row)` is set — so for a normally cached package,
+ * a keyboard user could not open its detail page at all. That is the product's
+ * primary navigation path, and WCAG 2.1.1 Keyboard (A) is the floor it missed.
+ *
+ * The link navigates with a **push**, not a `replace`. The version list on the
+ * detail page replaces, for the reason stated there; this one must not.
+ * `goBack()` restores the catalog's search, scope, sort, page and scroll offset
+ * only when `history.state.back` is `/packages`, and replacing the catalog
+ * entry on the way in is exactly what would stop it being that.
+ */
+function detailPath(row: ExploreRow): string {
+  return `/packages/${encodeURIComponent(row.registry)}/${encodeURIComponent(row.name)}`;
 }
 
 function goToPage(p: number) {
@@ -472,11 +643,91 @@ function goToPage(p: number) {
   void fetchPackages();
 }
 
+// ── The search lives in the URL ───────────────────────────────────────────────
+//
+// Everything the reader set up — the registry, the query, its scope, the sort
+// and the page — was component state and nothing else, so it existed only for as
+// long as the component did. Open a package from the fifth page of a search and
+// the way back was a catalog reset to defaults, with the search box empty. The
+// detail page's own back button pushed `/packages?registry=…`, which read like a
+// fix and was not: this page never looked at `route.query`, so even that one
+// value was dropped on arrival.
+//
+// Putting it in the query fixes the trip both ways at once — back, reload,
+// bookmark, and a link pasted to a colleague all land on the same list — and it
+// is what makes `router.back()` on the detail page restore a *search* rather
+// than a path.
+//
+// `replace`, never `push`: a keystroke is not a destination. Pushing would make
+// the browser's Back button walk backwards through every letter of the query
+// before it left the page.
+
+/** The query this page's state serialises to — defaults omitted, so a plain
+    `/packages` stays plain. */
+function stateAsQuery(): Record<string, string> {
+  const q: Record<string, string> = {};
+  if (selectedRegistry.value) q.registry = selectedRegistry.value;
+  if (search.value.trim()) q.q = search.value;
+  if (searchIn.value !== "name") q.in = searchIn.value;
+  if (sort.value !== "fetched") q.sort = sort.value;
+  if (page.value > 0) q.page = String(page.value + 1); // 1-based for a human
+  return q;
+}
+
+/** Read it back. Anything absent or unrecognised falls to the same default the
+    refs are declared with, so a hand-edited URL cannot put the page in a state
+    its own controls could not produce. */
+function applyQuery(): void {
+  const q = route.query;
+  const one = (v: unknown) => (Array.isArray(v) ? v[0] : v);
+
+  const registry = one(q.registry);
+  selectedRegistry.value = typeof registry === "string" && registry ? registry : null;
+
+  const term = one(q.q);
+  search.value = typeof term === "string" ? term : "";
+
+  const scope = one(q.in);
+  searchIn.value = (["name", "readme", "both"] as const).includes(scope as SearchScope)
+    ? (scope as SearchScope)
+    : "name";
+
+  const order = one(q.sort);
+  sort.value = (["fetched", "downloads", "name", "recent"] as const).includes(order as SortKey)
+    ? (order as SortKey)
+    : "fetched";
+
+  const p = Number(one(q.page));
+  page.value = Number.isFinite(p) && p > 1 ? Math.floor(p) - 1 : 0;
+}
+
+function syncQuery(): void {
+  // Only ever writes to its own route. A late fetch settling while the reader is
+  // already on a package would otherwise rewrite the address bar underneath a
+  // page this component does not own.
+  if (route.path !== "/packages") return;
+
+  const next = stateAsQuery();
+  const current = route.query;
+  const same =
+    Object.keys(next).length === Object.keys(current).length &&
+    Object.entries(next).every(([k, v]) => current[k] === v);
+  // Vue Router rejects a redundant navigation, and writing one per keystroke
+  // would also churn the address bar for no change.
+  if (!same) void router.replace({ path: "/packages", query: next });
+}
+
+watch([selectedRegistry, search, searchIn, sort, page], syncQuery);
+
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 onMounted(() => {
+  // Before the first fetch: the query *is* the initial state, and fetching the
+  // defaults first would show a list nobody asked for and then replace it.
+  applyQuery();
   void fetchAllRegistries();
   void fetchPackages();
+  if (search.value.trim().length >= 2) void fetchUpstream();
 });
 </script>
 
@@ -520,7 +771,7 @@ onMounted(() => {
       </h1>
       <p
         v-if="specimenFacts.length"
-        class="relative z-10 mt-3 border-t border-border pt-3 text-sm text-muted-foreground max-w-[72ch]"
+        class="relative z-10 mt-3 border-t border-border pt-3 text-sm max-w-[72ch]"
       >
         <template v-for="(fact, i) in specimenFacts" :key="fact">
           <span v-if="i > 0" class="px-2 text-border" aria-hidden="true">·</span>
@@ -581,6 +832,22 @@ onMounted(() => {
               @input="onSearchInput(($event.target as HTMLInputElement).value)"
             />
           </div>
+          <!-- Where the search looks. Beside the box it modifies rather than in
+             a settings panel, because it changes what the *next keystroke*
+             means. Hidden entirely when the instance searches names only: a
+             control whose other options do nothing is worse than no control
+             (RFC 0007-bis §4.3). -->
+          <select
+            v-if="readmeSearchEnabled"
+            :aria-label="t('packageCatalog.searchIn')"
+            class="h-9 rounded-sm border border-input bg-background px-3 font-mono text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            :value="searchIn"
+            @change="onSearchInChange(($event.target as HTMLSelectElement).value)"
+          >
+            <option value="name">{{ t("packageCatalog.searchInName") }}</option>
+            <option value="readme">{{ t("packageCatalog.searchInReadme") }}</option>
+            <option value="both">{{ t("packageCatalog.searchInBoth") }}</option>
+          </select>
           <!-- The page's one action, in the toolbar beside search — where
              `design-proof/index.html` puts its own (RFC 0004-bis §14.9). It
              used to sit in `PageHeader`, which the specimen replaced. -->
@@ -626,7 +893,26 @@ onMounted(() => {
            world is organised around, and a reader scanning for what is wrong
            should not have to cross five columns to find out. It used to sit
            last, behind Registry, Versions, Downloads and Source. -->
-        <Table :label="t('packageCatalog.tableLabel')">
+        <!-- The floor under the five-column layout, and the reason the wrapper's
+             `overflow-auto` is not decoration.
+
+             `Table` sets `w-full`, whose min-width is 0, so the table could
+             never be wider than its track: instead of overflowing into the
+             scroll container the Own-Container Overflow Rule gives it, it
+             crushed the one column with no declared width down to 74px. A
+             scroll container with nothing that can exceed it is a region that
+             never scrolls — measured `scrollWidth === clientWidth` at every
+             width from 390 to 1440.
+
+             44rem is 32.5rem of fixed columns plus 11.5rem for the name, so the
+             narrowest legible five-column table. It applies only from `lg`,
+             where the columns exist; below that the three remaining columns are
+             content-sized and fit, and a min-width would make a phone scroll
+             sideways for no gain. At `lg` the track is 728px against this
+             704px, so the guard is dormant at every standard width and engages
+             when the track is squeezed (a narrower window at that breakpoint, a
+             zoom step, a longer version string). -->
+        <Table :label="t('packageCatalog.tableLabel')" class="lg:min-w-[44rem]">
           <!-- Body, not Meta. DESIGN.md gives uppercase-and-tracked to labels —
                column heads, state words, nav — and prose to captions, and this
                is a sentence: "7 packages · sorted by last fetch" is 33
@@ -650,21 +936,34 @@ onMounted(() => {
                columns, and a left-flush first column is what lines the table up
                with the caption and the specimen rule above it.
 
-               The fixed widths only apply from `md`. Below it they are released
-               exactly as the proof releases them (`.c-state,.c-ver{width:auto}`
-               under 900px) — 9.5rem of State inside a 358px box leaves the
-               package name nowhere to go, and the columns collide. -->
+               The fixed widths only apply from `lg`, and they are released
+               below it exactly as the proof releases them
+               (`.c-state,.c-ver{width:auto}` under 900px) — 9.5rem of State
+               inside a 358px box leaves the package name nowhere to go, and the
+               columns collide.
+
+               `lg`, not `md`, because that is the width at which the fixed
+               columns actually fit *this* layout, measured rather than
+               transcribed from the proof's 900px. The four fixed columns claim
+               9.5+9+6+8 = 32.5rem (520px), and the catalog track is the
+               viewport less the 14rem bay and 4rem of padding. At the `md`
+               breakpoint that track is 457px — the whole of it owed to columns
+               that want 520 — so the one flexible column was squeezed to 74px
+               and `overflow-wrap:anywhere` shredded `strip-ansi` into two
+               lines. The header read `PACKAGE VERSION` with no gap. `lg` puts
+               728px in the track, which is the first step where the five
+               columns are all legible. -->
             <TableRow class="border-b border-solid border-border hover:bg-transparent">
-              <TableHead class="pl-0 pr-3 md:w-[9.5rem]">{{ t("common.state") }}</TableHead>
+              <TableHead class="pl-0 pr-3 lg:w-[9.5rem]">{{ t("common.state") }}</TableHead>
               <TableHead class="pl-0 pr-3">{{ t("common.package") }}</TableHead>
-              <TableHead class="pl-0 pr-3 md:w-[9rem]">{{ t("common.version") }}</TableHead>
-              <!-- Dropped below `md`, exactly as the proof drops them: at 390px
+              <TableHead class="pl-0 pr-3 lg:w-[9rem]">{{ t("common.version") }}</TableHead>
+              <!-- Dropped below `lg`, exactly as the proof drops them: at 390px
                  the fixed columns alone claimed 260px of a 358px box, and the
                  two numeric ones are the least load-bearing. -->
-              <TableHead class="hidden pl-0 pr-3 text-right md:table-cell md:w-24">{{
+              <TableHead class="hidden pl-0 pr-3 text-right lg:table-cell lg:w-24">{{
                 t("common.size")
               }}</TableHead>
-              <TableHead class="hidden px-0 text-right md:table-cell md:w-32">{{
+              <TableHead class="hidden px-0 text-right lg:table-cell lg:w-32">{{
                 t("packageCatalog.lastFetch")
               }}</TableHead>
             </TableRow>
@@ -677,13 +976,15 @@ onMounted(() => {
             </TableRow>
 
             <template v-for="row in tableRows" :key="rowId(row)">
+              <!-- No `@click` and no `cursor-pointer`: the row is not the
+                   control, the name is. A whole-row handler is unreachable by
+                   keyboard and invisible to assistive tech, and dressing it as
+                   clickable promised a target that only a mouse could take. -->
               <TableRow
                 :class="[
                   'border-dashed border-rule-soft align-baseline hover:border-solid hover:border-border',
-                  row.kind === 'cached' ? 'cursor-pointer' : 'cursor-default',
                   noteKey(row) ? 'border-b-0' : '',
                 ]"
-                @click="goToDetail(row)"
               >
                 <TableCell class="pl-0 pr-3 py-3 align-baseline">
                   <Resolution :state="rowState(row)" :label="t(STATE_LABEL_KEYS[rowState(row)])" />
@@ -704,7 +1005,17 @@ onMounted(() => {
                   class="[overflow-wrap:anywhere] pl-0 pr-3 py-3 align-baseline text-base"
                   :aria-describedby="noteKey(row) ? `note-${rowId(row)}` : undefined"
                 >
-                  {{ row.name }}
+                  <!-- The package name *is* the link — the pattern the version
+                       list on the detail page already uses. `anywhere` rather
+                       than `break-words` for the same min-content reason as the
+                       cell above, and an underline on hover because the row no
+                       longer carries any other affordance. -->
+                  <RouterLink
+                    :to="detailPath(row)"
+                    class="[overflow-wrap:anywhere] hover:underline underline-offset-[3px]"
+                  >
+                    {{ row.name }}
+                  </RouterLink>
                   <!-- One list, provenance stated per row. The question a reader
                      actually has is "does this instance already have it?", and
                      splitting the table into two makes that harder to answer,
@@ -719,13 +1030,22 @@ onMounted(() => {
                     class="ml-2 text-xs uppercase tracking-[0.1em] text-muted-foreground"
                     >{{ row.registry }}</span
                   >
+                  <!-- Why this row is here. Shown only for a prose match: a row
+                     that matched on its name needs no explanation, and labelling
+                     every row would make the one that needs it invisible. -->
+                  <span
+                    v-if="matchLabel(row)"
+                    class="ml-2 text-xs uppercase tracking-[0.1em] text-muted-foreground"
+                    :title="t('packageCatalog.matchedInLabel', { where: matchLabel(row) })"
+                    >{{ matchLabel(row) }}</span
+                  >
                 </TableCell>
                 <TableCell class="pl-0 pr-3 py-3 align-baseline text-muted-foreground tabular-nums">
                   <template v-if="row.kind === 'cached'">{{ row.newest_version ?? "—" }}</template>
                   <template v-else>{{ row.latest_version ?? "—" }}</template>
                 </TableCell>
                 <TableCell
-                  class="hidden pl-0 pr-3 py-3 text-right align-baseline text-muted-foreground tabular-nums md:table-cell"
+                  class="hidden pl-0 pr-3 py-3 text-right align-baseline text-muted-foreground tabular-nums lg:table-cell"
                 >
                   <template v-if="row.kind === 'cached'">{{
                     formatBytes(row.cached_bytes)
@@ -733,7 +1053,7 @@ onMounted(() => {
                   <template v-else>—</template>
                 </TableCell>
                 <TableCell
-                  class="hidden whitespace-nowrap px-0 py-3 text-right align-baseline text-muted-foreground tabular-nums md:table-cell"
+                  class="hidden whitespace-nowrap px-0 py-3 text-right align-baseline text-muted-foreground tabular-nums lg:table-cell"
                 >
                   <template v-if="row.kind === 'cached'">{{
                     formatRelative(row.last_fetched_at, { fallback: "—" })
@@ -746,6 +1066,24 @@ onMounted(() => {
                  package by `aria-describedby` — not one note floating above the
                  table. The rule is indented under the package rather than under
                  the state, so the eye reads it as belonging to the name. -->
+              <!-- The matched fragment, as **text**. It is interpolated, never
+                 `v-html`: the README panel's markup boundary is a deliberate,
+                 tested, single-component one, and a search snippet is a second
+                 surface for package-authored content reached by a much cheaper
+                 path — no navigation, just a query (RFC 0007-bis §7.4). -->
+              <TableRow
+                v-if="rowSnippet(row)"
+                class="border-dashed border-rule-soft hover:bg-transparent"
+              >
+                <TableCell class="pl-0 pr-3 pb-3 pt-0" />
+                <TableCell colspan="4" class="pl-0 pr-3 pb-3 pt-0">
+                  <p class="flex items-stretch gap-3 text-sm text-muted-foreground">
+                    <span class="w-px flex-none bg-border" aria-hidden="true" />
+                    <span class="min-w-0 [overflow-wrap:anywhere]">{{ rowSnippet(row) }}</span>
+                  </p>
+                </TableCell>
+              </TableRow>
+
               <TableRow
                 v-if="noteKey(row)"
                 class="border-dashed border-rule-soft hover:bg-transparent"
@@ -769,15 +1107,14 @@ onMounted(() => {
                       <RouterLink
                         v-if="row.kind === 'cached'"
                         class="text-primary underline underline-offset-[3px]"
-                        :to="`/packages/${encodeURIComponent(row.registry)}/${encodeURIComponent(row.name)}`"
-                        @click.stop
+                        :to="detailPath(row)"
                         >{{ t("packageCatalog.noteDetails") }}</RouterLink
                       >
                     </span>
                   </p>
                 </TableCell>
-                <TableCell class="hidden px-0 pb-3 pt-0 md:table-cell" />
-                <TableCell class="hidden px-0 pb-3 pt-0 md:table-cell" />
+                <TableCell class="hidden px-0 pb-3 pt-0 lg:table-cell" />
+                <TableCell class="hidden px-0 pb-3 pt-0 lg:table-cell" />
               </TableRow>
             </template>
 
@@ -789,6 +1126,12 @@ onMounted(() => {
             </TableRow>
           </TableBody>
         </Table>
+        <!-- A cap that applied, said out loud. A silently shortened list reads
+             as "that is all there is", which is a lie about the catalogue. -->
+        <p v-if="searchTruncated" class="mt-2 text-xs text-muted-foreground">
+          {{ t("packageCatalog.readmeSearchTruncated", { count: total }) }}
+        </p>
+
         <!-- Empty is two states, and telling them apart is the point: a user
            shown "no packages" while a filter is applied concludes the registry
            is broken.
@@ -798,13 +1141,30 @@ onMounted(() => {
            behind a horizontal scroll — the one thing DESIGN.md's Own-Container
            Overflow Rule forbids the body to do. -->
         <div v-if="tableRows.length === 0 && !loadingUpstream && !loading" class="mt-4">
+          <!-- A prose search that found nothing gets its own words. "Nothing
+             matches that search" would imply the query was checked against every
+             package here, and it was checked against the READMEs of the versions
+             this instance holds — which is a narrower claim and the honest one
+             (RFC 0007-bis §4.3). -->
           <EmptyState
             :filtered="Boolean(search.trim())"
-            :title="search.trim() ? t('catalog.emptyFilteredTitle') : t('catalog.emptyTitle')"
-            :description="search.trim() ? t('catalog.emptyFilteredBody') : t('catalog.emptyBody')"
+            :title="
+              searchedProse
+                ? t('packageCatalog.readmeSearchEmptyTitle')
+                : search.trim()
+                  ? t('catalog.emptyFilteredTitle')
+                  : t('catalog.emptyTitle')
+            "
+            :description="
+              searchedProse
+                ? t('packageCatalog.readmeSearchEmptyBody')
+                : search.trim()
+                  ? t('catalog.emptyFilteredBody')
+                  : t('catalog.emptyBody')
+            "
           >
             <template v-if="search.trim()" #action>
-              <Button size="sm" variant="outline" @click="search = ''">{{
+              <Button size="sm" variant="outline" @click="onClearSearch">{{
                 t("packageCatalog.clearSearch")
               }}</Button>
             </template>

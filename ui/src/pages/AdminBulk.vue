@@ -150,7 +150,7 @@ async function submit() {
       result.value = res.data ?? null;
     }
   } catch (e) {
-    submitError.value = e instanceof Error ? e.message : "Request failed.";
+    submitError.value = extractMessage(e);
   } finally {
     submitting.value = false;
   }
@@ -171,6 +171,32 @@ async function submit() {
  * and the scope are what matter here.
  */
 const confirmOpen = ref(false);
+
+/** The verb, from the catalogue — the button and the dialog say the same one. */
+const actionVerb = computed(() =>
+  action.value === "block" ? t("adminBulk.block") : t("adminBulk.unblock"),
+);
+
+/**
+ * The noun, agreeing with the count.
+ *
+ * The button read `` `${verb} ${n} package${n !== 1 ? "s" : ""}` ``: a French
+ * verb, a count, and an English noun carrying an English plural rule. Both
+ * halves now come from the catalogue, and the sentence that joins them is
+ * `destructive.summary` — the same one the confirmation dialog below renders,
+ * so the button and the dialog it opens cannot drift apart.
+ */
+const packageNoun = computed(() =>
+  validRows.value.length === 1 ? t("adminBulk.packageNoun") : t("adminBulk.packageNounPlural"),
+);
+
+const submitLabel = computed(() =>
+  t("destructive.summary", {
+    action: actionVerb.value,
+    count: validRows.value.length,
+    item: packageNoun.value,
+  }),
+);
 
 /** The registries the pending action touches, for the dialog's scope line. */
 const affectedScope = computed(() => {
@@ -233,7 +259,7 @@ function reset() {
           tabindex="0"
           role="group"
           :aria-label="t('adminBulk.csvFormat')"
-          class="text-xs font-mono bg-muted rounded p-3 overflow-x-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          class="text-xs font-mono bg-muted rounded-sm p-3 overflow-x-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
 registry,name,version,artifact,reason
 npm,lodash,4.17.21,,CVE-2021-23337
@@ -309,7 +335,7 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
             v-model="csvText"
             rows="8"
             placeholder="registry,name,version,artifact,reason&#10;npm,lodash,4.17.21,,CVE-2021-23337"
-            class="flex w-full rounded-sm border border-input bg-transparent px-3 py-2 text-sm font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
+            class="flex w-full rounded-sm border border-input bg-transparent px-3 py-2 text-sm font-mono placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
           />
         </div>
 
@@ -350,11 +376,7 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
             </span>
           </CardTitle>
           <Button :disabled="validRows.length === 0 || submitting" @click="requestSubmit">
-            {{
-              submitting
-                ? t("adminBulk.processing")
-                : `${action === "block" ? t("common.block") : t("common.unblock")} ${validRows.length} package${validRows.length !== 1 ? "s" : ""}`
-            }}
+            {{ submitting ? t("adminBulk.processing") : submitLabel }}
           </Button>
         </div>
       </CardHeader>
@@ -371,11 +393,9 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
             </TableRow>
           </TableHeader>
           <TableBody>
-            <TableRow
-              v-for="(row, i) in parsedRows"
-              :key="i"
-              :class="row.error ? 'bg-destructive/5' : ''"
-            >
+            <!-- No row tint: 1.03:1 is not a channel. The last cell carries
+                 the verdict, as a badge with its own word. -->
+            <TableRow v-for="(row, i) in parsedRows" :key="i">
               <TableCell class="font-mono text-xs">
                 {{ row.registry || "—" }}
               </TableCell>
@@ -405,9 +425,10 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
 
     <DestructiveConfirm
       :open="confirmOpen"
-      :action="action === 'block' ? t('adminBulk.block') : t('adminBulk.unblock')"
+      :action="actionVerb"
       :count="validRows.length"
       :item-noun="t('adminBulk.packageNoun')"
+      :item-noun-plural="t('adminBulk.packageNounPlural')"
       :scope="affectedScope"
       reversible
       :loading="submitting"
@@ -443,7 +464,10 @@ github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
             </TableRow>
           </TableHeader>
           <TableBody>
-            <TableRow v-for="(f, i) in result.failures" :key="i" class="bg-destructive/5">
+            <!-- Every row in this table is a failure and the error column says
+                 so with an icon and the message; a 1.03:1 wash over all of them
+                 added nothing. -->
+            <TableRow v-for="(f, i) in result.failures" :key="i">
               <TableCell class="font-mono text-xs">
                 {{ f.registry }}
               </TableCell>

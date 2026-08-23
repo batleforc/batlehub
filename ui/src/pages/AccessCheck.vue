@@ -5,10 +5,12 @@ import { ref } from "vue";
 import { checkAccess } from "@/client/sdk.gen";
 import type { AccessCheckResponse } from "@/client/types.gen";
 import { API_BASE_URL } from "@/config";
+import { extractMessage } from "@/composables/useApi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Resolution } from "@/components/ui/resolution";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Select } from "@/components/ui/select";
 import { useRegistryOptions } from "@/composables/useRegistryOptions";
@@ -61,12 +63,16 @@ async function check() {
       },
     });
     if (apiErr || !data) {
-      error.value = apiErr ? String(apiErr) : "No response";
+      // `String(apiErr)` on the API's error object rendered `[object Object]`
+      // to the operator asking why a pull was refused — the one page whose
+      // whole job is to answer that question. `extractMessage` reads the
+      // object's `message`/`error` field, which is where the answer is.
+      error.value = apiErr ? extractMessage(apiErr) : t("accessCheck.noResponse");
     } else {
       result.value = data;
     }
   } catch (e) {
-    error.value = String(e);
+    error.value = extractMessage(e);
   } finally {
     loading.value = false;
   }
@@ -127,8 +133,24 @@ async function check() {
 
       <div v-if="result" class="rounded-sm border p-4 space-y-2">
         <div class="flex items-center gap-2">
-          <Badge :variant="result.can_access ? 'default' : 'destructive'">
-            {{ result.can_access ? t("accessCheck.allowed") : t("accessCheck.denied") }}
+          <!-- Three channels, never one (DESIGN.md). `default` and
+               `destructive` both resolve to `--accent` — `assets/index.css`
+               sets `--destructive: var(--accent)` — so the page whose entire
+               job is to answer "was I allowed?" painted both answers the same
+               crimson, and hue was the only channel it used.
+
+               `Resolution` sits *inside* the badge rather than beside it: it
+               already renders the word next to its matrix, so pairing them
+               would say "Allowed" twice, once to the eye and once to a screen
+               reader. Inside, the badge is the frame, the matrix is the
+               pattern, the word is the word, and the hue Resolution sets on
+               itself is the one its variant already carries. -->
+          <Badge :variant="result.can_access ? 'known' : 'destructive'">
+            <Resolution
+              :state="result.can_access ? 'cached' : 'blocked'"
+              :label="result.can_access ? t('accessCheck.allowed') : t('accessCheck.denied')"
+              class="gap-2"
+            />
           </Badge>
           <span v-if="!result.can_access" class="text-sm text-muted-foreground">
             {{ result.reason ?? t("accessCheck.noReasonGiven") }}

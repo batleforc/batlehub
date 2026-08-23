@@ -71,6 +71,8 @@ async fn make_generic_app(
         artifact_meta: NoopArtifactMeta::arc(),
         metrics: proxy_metrics.clone(),
         sbom: None,
+        readme: None,
+        discovery: Default::default(),
     });
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);

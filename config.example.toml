@@ -83,6 +83,12 @@ user_id = "user-1"
 # OIDC provider — JWT validation + browser SSO login.
 # Works with any standards-compliant provider (Authentik, Keycloak, Dex, …).
 #
+# In an Eclipse Che workspace there is no compose to run Authentik in; the dex
+# sidecar in devfile.yaml takes its place on the same port 9000. `task
+# dex:config` writes the two [[auth]] blocks that match it — issuer, redirect
+# and frontend URLs all carry this workspace's FQDN — into dev/dex/auth.toml,
+# to be pasted over the two below.
+#
 # Local Authentik (docker compose --profile authentik up):
 [[auth]]
 type = "oidc"
@@ -187,6 +193,12 @@ role_claim = "groups"
 # are 1–1.7 GB).
 # [limits]
 # max_artifact_size_bytes = 2147483648   # 2 GiB — required for JetBrains IDE archives
+# versions_per_page       = 100          # rows in one package-detail answer: the default
+#                                        # for a caller that asks for none, and the most
+#                                        # one may ask for (1–1000)
+# packages_per_page       = 20           # the same, for one page of the catalog. Two keys
+#                                        # because a screenful of names and a query's worth
+#                                        # of enriched version rows are not one question.
 
 # ── Storage backend ────────────────────────────────────────────────────────────
 

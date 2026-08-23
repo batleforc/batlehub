@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onBeforeUnmount } from "vue";
 import { auditLog } from "@/client/sdk.gen";
 import type { AuditLogResponse } from "@/client/types.gen";
 import { useApi, extractMessage } from "@/composables/useApi";
@@ -62,11 +62,49 @@ const PER_PAGE = 100;
 const asRfc3339 = (value: string): string | undefined =>
   value ? new Date(value).toISOString() : undefined;
 
+/**
+ * The two free-text filters, settled.
+ *
+ * `query` is a dependency of `useApi`, so every keystroke in either box was a
+ * request — typing `svc-ci-runner` fired thirteen of them, twelve of which
+ * described a query nobody had finished asking. The boxes stay live; what is
+ * debounced is the value the request is built from.
+ *
+ * 300 ms, the number the catalogue and the version list already use, so the
+ * three search boxes in the console feel like one thing.
+ */
+const registryQuery = ref("");
+const userQuery = ref("");
+let filterTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Copy the boxes into the query now, cancelling any pending copy. */
+function commitFilters() {
+  if (filterTimer) clearTimeout(filterTimer);
+  filterTimer = null;
+  registryQuery.value = registryFilter.value;
+  userQuery.value = userFilter.value;
+}
+
+watch([registryFilter, userFilter], () => {
+  if (filterTimer) clearTimeout(filterTimer);
+  filterTimer = setTimeout(() => {
+    filterTimer = null;
+    registryQuery.value = registryFilter.value;
+    userQuery.value = userFilter.value;
+  }, 300);
+});
+
+// Leaving the page within 300 ms of a keystroke would otherwise run the copy —
+// and the fetch it triggers — against a component that is gone.
+onBeforeUnmount(() => {
+  if (filterTimer) clearTimeout(filterTimer);
+});
+
 const query = computed(() => ({
   page: page.value,
   per_page: PER_PAGE,
-  ...(registryFilter.value.trim() ? { registry: registryFilter.value.trim() } : {}),
-  ...(userFilter.value.trim() ? { user_id: userFilter.value.trim() } : {}),
+  ...(registryQuery.value.trim() ? { registry: registryQuery.value.trim() } : {}),
+  ...(userQuery.value.trim() ? { user_id: userQuery.value.trim() } : {}),
   ...(deniedOnly.value ? { denied_only: true } : {}),
   ...(asRfc3339(from.value) ? { from: asRfc3339(from.value) } : {}),
   ...(asRfc3339(to.value) ? { to: asRfc3339(to.value) } : {}),
@@ -95,7 +133,11 @@ const totalPages = computed(() => Math.max(1, Math.ceil(total.value / PER_PAGE))
 // Any filter change re-queries from the first page. Staying on page 4 of a
 // result set that just shrank to one page is how a filter looks like it
 // returned nothing.
-watch([registryFilter, userFilter, deniedOnly, from, to], () => {
+//
+// Watched on the *settled* text rather than on the boxes, so the page reset and
+// the new filter reach `query` in the same tick — watching the boxes would fire
+// one request for the page reset and a second, 300 ms later, for the filter.
+watch([registryQuery, userQuery, deniedOnly, from, to], () => {
   page.value = 0;
 });
 
@@ -114,6 +156,8 @@ function clearFilters() {
   deniedOnly.value = false;
   from.value = "";
   to.value = "";
+  // A button press is not typing: it should not wait 300 ms to take effect.
+  commitFilters();
 }
 
 // ── Export ────────────────────────────────────────────────────────────────────
@@ -233,7 +277,7 @@ async function purge() {
             <select
               v-model="exportFormat"
               :aria-label="t('auditLog.exportFormat')"
-              class="h-8 rounded-sm border border-input bg-transparent px-2 text-sm shadow-sm text-foreground"
+              class="h-8 rounded-sm border border-input bg-transparent px-2 text-sm text-foreground"
             >
               <option value="csv">CSV</option>
               <option value="json">JSON</option>
@@ -306,11 +350,9 @@ async function purge() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            <TableRow
-              v-for="ev in events"
-              :key="ev.id"
-              :class="ev.result.outcome === 'denied' ? 'bg-destructive/5' : ''"
-            >
+            <!-- No row tint: 1.03:1 is not a channel. The outcome cell carries
+                 it in words and in hue. -->
+            <TableRow v-for="ev in events" :key="ev.id">
               <TableCell class="whitespace-nowrap text-xs tabular-nums">
                 {{ formatDate(ev.timestamp) }}
               </TableCell>
@@ -409,7 +451,9 @@ async function purge() {
       :count="1"
       :item-noun="t('auditLog.retentionWindow')"
       :scope="t('auditLog.purgeScope', { before: purgeBefore })"
+      :consequence="t('auditLog.purgeConsequence')"
       :confirm-name="t('auditLog.purgeConfirmWord')"
+      confirm-case-insensitive
       :loading="purging"
       :error="purgeError"
       @update:open="

@@ -281,7 +281,7 @@ fn warm_artifact_is_the_plugin_sub_coordinate() {
     // `plugin/download` handler reads it back from the same one.
     assert_eq!(
         RegistryKind::JetbrainsMarketplace.warm_artifact(),
-        Some("plugin")
+        Some(batlehub_core::entities::FetchArtifact::Fixed("plugin"))
     );
 }
 

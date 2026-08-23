@@ -57,7 +57,6 @@ serde_json.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
 tar = { version = "0.4", optional = true }
-thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
@@ -115,7 +114,12 @@ default = [
   "storage-fs",
   "vuln-scan"
 ]
-auth-actions-oidc = ["dep:jsonwebtoken", "dep:regex"]
+# `auth-oidc`, not just `jsonwebtoken`: `actions_oidc` calls
+# `crate::auth::oidc::required_spec_claims`, and `auth::oidc` is gated on
+# `auth-oidc`. Without this, `--no-default-features --features auth-actions-oidc`
+# — a combination this feature list advertises as valid, and which nothing in CI
+# builds — fails with an unresolved-module error.
+auth-actions-oidc = ["auth-oidc", "dep:jsonwebtoken", "dep:regex"]
 auth-kubernetes = []
 auth-oidc = ["dep:jsonwebtoken"]
 auth-token = []
@@ -175,7 +179,18 @@ registry-terraform = []
 registry-vscode-marketplace = []
 storage-fs = []
 storage-s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
-sbom = ["db-postgres", "dep:flate2", "dep:tar", "dep:zip", "dep:quick-xml"]
+# `bzip2`/`zstd` are for conda's two container formats, which the README
+# extractor reads `info/about.json` out of (RFC 0007 §4.3). Both are already in
+# the default build through `registry-conda`, so this widens no dependency tree.
+sbom = [
+  "db-postgres",
+  "dep:flate2",
+  "dep:tar",
+  "dep:zip",
+  "dep:quick-xml",
+  "dep:bzip2",
+  "dep:zstd",
+]
 vuln-scan = ["db-postgres"]
 
 [lints]
