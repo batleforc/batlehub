@@ -284,12 +284,7 @@ pub async fn explore_packages(
         vec![]
     };
 
-    let sort_by = match query.sort.as_deref() {
-        Some("name") => ExploreSortBy::Name,
-        Some("recent") => ExploreSortBy::Recent,
-        Some("fetched") => ExploreSortBy::Fetched,
-        _ => ExploreSortBy::Downloads,
-    };
+    let sort_by = sort_by_from_query(query.sort.as_deref());
 
     // Snapshot the per-registry resolution inputs before any `await`, per the
     // hot-reload convention: clone out of the lock and let a config swap
@@ -307,16 +302,14 @@ pub async fn explore_packages(
     // The prose half, when there is one. Run first because it decides how the
     // rest of the request is shaped: with prose hits the two result sets are
     // merged in memory, and without them this is byte for byte the old path.
-    let prose = match (scope.searches_prose(), term.as_deref()) {
-        (true, Some(term)) => {
-            let searched: Vec<String> = match query.registry.clone() {
-                Some(one) => vec![one],
-                None => accessible.iter().cloned().collect(),
-            };
-            prose_hits(&proxy_svc, &searched, term).await
-        }
-        _ => Vec::new(),
-    };
+    let prose = prose_for_query(
+        &proxy_svc,
+        scope,
+        term.as_deref(),
+        query.registry.as_deref(),
+        &accessible,
+    )
+    .await;
     let truncated = prose.len() as u64 > PROSE_SEARCH_CAP;
     let prose: Vec<_> = prose.into_iter().take(PROSE_SEARCH_CAP as usize).collect();
 
@@ -371,16 +364,135 @@ pub async fn explore_packages(
         }));
     }
 
-    // The merged path. Both halves are read whole, up to the cap, because
-    // "name first, then prose" cannot be expressed as one SQL ordering without
-    // a weight — and a weight is exactly what lets a sufficiently dense README
-    // out-score a package that *is* called the thing (RFC 0007-bis §4.3).
+    let MergedSearchResult {
+        merged,
+        upstream_unavailable,
+        names_truncated,
+    } = merged_search(MergedSearch {
+        admin_svc: &admin_svc,
+        filter,
+        registries,
+        sort_by,
+        viewer,
+        registry: query.registry.as_deref(),
+        prose: &prose,
+        scope,
+        resolution: &resolution,
+        identity: &identity,
+        now,
+    })
+    .await?;
+    let truncated = truncated || names_truncated;
+
+    let total = merged.len();
+    let start = (page * per_page).min(total as u64) as usize;
+    let end = (start + per_page as usize).min(total);
+    let items = merged[start..end].to_vec();
+
+    Ok(web::Json(ExplorePackageListResponse {
+        total,
+        items,
+        page,
+        per_page,
+        upstream_unavailable,
+        readme_search_enabled,
+        searched_in: scope.as_str().to_owned(),
+        truncated,
+    }))
+}
+
+/// The catalogue's sort order, defaulting to downloads for anything unknown.
+///
+/// An unrecognised `sort=` is the default rather than a `400`: the parameter
+/// names an ordering, and every ordering answers the same question.
+fn sort_by_from_query(sort: Option<&str>) -> ExploreSortBy {
+    match sort {
+        Some("name") => ExploreSortBy::Name,
+        Some("recent") => ExploreSortBy::Recent,
+        Some("fetched") => ExploreSortBy::Fetched,
+        _ => ExploreSortBy::Downloads,
+    }
+}
+
+/// The prose half of the answer, when this request has one.
+///
+/// Run before the rest because it decides how the request is shaped: with prose
+/// hits the two result sets are merged in memory, and without them the handler
+/// is byte for byte the old path.
+async fn prose_for_query(
+    proxy_svc: &ProxyService,
+    scope: SearchScope,
+    term: Option<&str>,
+    registry: Option<&str>,
+    accessible: &std::collections::HashSet<String>,
+) -> Vec<batlehub_core::ports::ReadmeSearchHit> {
+    if !scope.searches_prose() {
+        return Vec::new();
+    }
+    let Some(term) = term else {
+        return Vec::new();
+    };
+    let searched: Vec<String> = match registry {
+        Some(one) => vec![one.to_owned()],
+        None => accessible.iter().cloned().collect(),
+    };
+    prose_hits(proxy_svc, &searched, term).await
+}
+
+/// Everything the merged name+prose path reads, in one place — the same shape
+/// `detail.rs`'s `LinkInput` uses, and for the same reason: this answer is drawn
+/// from four sources and threading them positionally makes the call site
+/// unreadable.
+struct MergedSearch<'a> {
+    admin_svc: &'a AdminService,
+    /// The listing filter the plain path would have used; the name half reuses
+    /// it with its own limit and offset.
+    filter: ExploreFilter,
+    registries: Vec<String>,
+    sort_by: ExploreSortBy,
+    viewer: batlehub_core::entities::ExploreViewer,
+    registry: Option<&'a str>,
+    prose: &'a [batlehub_core::ports::ReadmeSearchHit],
+    scope: SearchScope,
+    resolution: &'a HashMap<String, ResolutionPolicy>,
+    identity: &'a AuthIdentity,
+    now: chrono::DateTime<Utc>,
+}
+
+/// The merged list, and what the response has to disclose about how it was read.
+struct MergedSearchResult {
+    merged: Vec<ExploreEntryDto>,
+    upstream_unavailable: bool,
+    names_truncated: bool,
+}
+
+/// Name matches first, then prose-only hits in rank order.
+///
+/// Both halves are read whole, up to the cap, because "name first, then prose"
+/// cannot be expressed as one SQL ordering without a weight — and a weight is
+/// exactly what lets a sufficiently dense README out-score a package that *is*
+/// called the thing (RFC 0007-bis §4.3).
+async fn merged_search(input: MergedSearch<'_>) -> Result<MergedSearchResult, AppError> {
+    let MergedSearch {
+        admin_svc,
+        filter,
+        registries,
+        sort_by,
+        viewer,
+        registry,
+        prose,
+        scope,
+        resolution,
+        identity,
+        now,
+    } = input;
+
     let (name_rows, name_unavailable) = if scope.searches_names() {
         admin_svc
             .explore_packages(ExploreFilter {
                 // One more than the cap, so "there were more" is distinguishable
                 // from "there were exactly this many" — the same trick the prose
-                // half needs and the reason `truncated` below counts both.
+                // half needs and the reason `truncated` counts both.
                 limit: PROSE_SEARCH_CAP + 1,
                 offset: 0,
                 ..filter
@@ -396,15 +508,10 @@ pub async fn explore_packages(
     // silently shortened list reading as "that is all there is", which is
     // precisely what the field's own doc comment says it exists to prevent.
     let names_truncated = name_rows.len() as u64 > PROSE_SEARCH_CAP;
-    let name_rows: Vec<_> = name_rows
-        .into_iter()
-        .take(PROSE_SEARCH_CAP as usize)
-        .collect();
-    let truncated = truncated || names_truncated;
 
     let mut merged: Vec<ExploreEntryDto> = Vec::new();
     let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
-    for entry in name_rows {
+    for entry in name_rows.into_iter().take(PROSE_SEARCH_CAP as usize) {
         let key = (entry.registry.clone(), entry.name.clone());
         // A row that matched both ways says so, and keeps the snippet — the
         // reader gets the label *and* the reason.
@@ -415,12 +522,7 @@ pub async fn explore_packages(
         let snippet = also.map(|h| h.snippet.clone());
         seen.insert(key);
         merged.push(to_dto(
-            entry,
-            &resolution,
-            &identity,
-            now,
-            matched_in,
-            snippet,
+            entry, resolution, identity, now, matched_in, snippet,
         ));
     }
 
@@ -429,66 +531,93 @@ pub async fn explore_packages(
         .iter()
         .filter(|h| !seen.contains(&(h.registry.clone(), h.name.clone())))
         .collect();
-    if !prose_only.is_empty() {
-        // The catalogue rows for those coordinates, through the same visibility
-        // gate the listing applies — a package hidden from the listing must not
-        // become visible by quoting a phrase from its README (RFC 0007-bis §7.3).
-        let names: Vec<(String, String)> = prose_only
-            .iter()
-            .map(|h| (h.registry.clone(), h.name.clone()))
-            .collect();
-        let (rows, _) = admin_svc
-            .explore_packages(ExploreFilter {
-                registry: query.registry.clone(),
-                registries,
-                name_contains: None,
-                name_in: names,
-                sort_by,
-                limit: PROSE_SEARCH_CAP,
-                offset: 0,
-                viewer,
-            })
-            .await
-            .map_err(AppError::from)?;
-        // Ordered by the search's ranking, not by the catalogue's sort: the
-        // reader asked a question and these are the answers in order of how well
-        // they answer it.
-        for hit in prose_only {
-            let Some(entry) = rows
-                .iter()
-                .find(|e| e.registry == hit.registry && e.name == hit.name)
-            else {
-                // No row: the package's README is stored but the catalogue does
-                // not show it to this caller. Dropped silently, which is the
-                // point — a `404` would confirm it exists.
-                continue;
-            };
-            merged.push(to_dto(
-                entry.clone(),
-                &resolution,
-                &identity,
-                now,
-                "readme",
-                Some(hit.snippet.clone()),
-            ));
-        }
-    }
+    append_prose_only_rows(AppendProseOnly {
+        merged: &mut merged,
+        prose_only: &prose_only,
+        admin_svc,
+        registry,
+        registries,
+        sort_by,
+        viewer,
+        resolution,
+        identity,
+        now,
+    })
+    .await?;
 
-    let total = merged.len();
-    let start = (page * per_page).min(total as u64) as usize;
-    let end = (start + per_page as usize).min(total);
-    let items = merged[start..end].to_vec();
-
-    Ok(web::Json(ExplorePackageListResponse {
-        total,
-        items,
-        page,
-        per_page,
+    Ok(MergedSearchResult {
+        merged,
         upstream_unavailable: name_unavailable,
-        readme_search_enabled,
-        searched_in: scope.as_str().to_owned(),
-        truncated,
-    }))
+        names_truncated,
+    })
+}
+
+/// What [`append_prose_only_rows`] needs, for the same reason [`MergedSearch`]
+/// is a struct.
+struct AppendProseOnly<'a> {
+    merged: &'a mut Vec<ExploreEntryDto>,
+    prose_only: &'a [&'a batlehub_core::ports::ReadmeSearchHit],
+    admin_svc: &'a AdminService,
+    registry: Option<&'a str>,
+    registries: Vec<String>,
+    sort_by: ExploreSortBy,
+    viewer: batlehub_core::entities::ExploreViewer,
+    resolution: &'a HashMap<String, ResolutionPolicy>,
+    identity: &'a AuthIdentity,
+    now: chrono::DateTime<Utc>,
+}
+
+/// Append the packages whose README matched but whose name did not.
+///
+/// Their catalogue rows are read through the same visibility gate the listing
+/// applies — a package hidden from the listing must not become visible by
+/// quoting a phrase from its README (RFC 0007-bis §7.3).
+async fn append_prose_only_rows(input: AppendProseOnly<'_>) -> Result<(), AppError> {
+    if input.prose_only.is_empty() {
+        return Ok(());
+    }
+    let names: Vec<(String, String)> = input
+        .prose_only
+        .iter()
+        .map(|h| (h.registry.clone(), h.name.clone()))
+        .collect();
+    let (rows, _) = input
+        .admin_svc
+        .explore_packages(ExploreFilter {
+            registry: input.registry.map(str::to_owned),
+            registries: input.registries,
+            name_contains: None,
+            name_in: names,
+            sort_by: input.sort_by,
+            limit: PROSE_SEARCH_CAP,
+            offset: 0,
+            viewer: input.viewer,
+        })
+        .await
+        .map_err(AppError::from)?;
+    // Ordered by the search's ranking, not by the catalogue's sort: the reader
+    // asked a question and these are the answers in order of how well they
+    // answer it.
+    for hit in input.prose_only {
+        // No row means the package's README is stored but the catalogue does not
+        // show it to this caller. Dropped silently, which is the point — a `404`
+        // would confirm it exists.
+        let Some(entry) = rows
+            .iter()
+            .find(|e| e.registry == hit.registry && e.name == hit.name)
+        else {
+            continue;
+        };
+        input.merged.push(to_dto(
+            entry.clone(),
+            input.resolution,
+            input.identity,
+            input.now,
+            "readme",
+            Some(hit.snippet.clone()),
+        ));
+    }
+    Ok(())
 }
 
 /// The prose search, or nothing when this instance cannot run one.

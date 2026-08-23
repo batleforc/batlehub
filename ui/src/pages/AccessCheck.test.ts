@@ -1,7 +1,17 @@
-import { mount } from "@vue/test-utils";
+import { mount, flushPromises } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 
+const { checkAccessMock } = vi.hoisted(() => ({ checkAccessMock: vi.fn() }));
+vi.mock("@/client/sdk.gen", () => ({
+  checkAccess: checkAccessMock,
+  listRegistries: vi.fn().mockResolvedValue({ data: [] }),
+  explorePackages: vi.fn().mockResolvedValue({ data: { items: [] } }),
+  listPackageVersions: vi.fn().mockResolvedValue({ data: { items: [] } }),
+}));
+
 import AccessCheck from "./AccessCheck.vue";
+import { Badge } from "@/components/ui/badge";
+import { Resolution } from "@/components/ui/resolution";
 
 /**
  * The denial → diagnostics path (RFC 0003 §4.4).
@@ -62,5 +72,65 @@ describe("AccessCheck prefill", () => {
     const wrapper = mountWith({});
 
     expect(registryValue(wrapper)).toBe("github");
+  });
+});
+
+/**
+ * The answer, in three channels.
+ *
+ * `--destructive` resolves to `--accent` (`assets/index.css`), so
+ * `variant="default"` and `variant="destructive"` paint the same crimson. This
+ * page's only job is to answer "was I allowed?", and it rendered both answers
+ * identically — one channel, hue, saying nothing.
+ *
+ * DESIGN.md: "Never colour alone — pattern, word and hue all carry it."
+ */
+describe("AccessCheck answer", () => {
+  const answerWith = async (canAccess: boolean) => {
+    mockRoute = { query: {} };
+    checkAccessMock.mockResolvedValue({
+      data: {
+        can_access: canAccess,
+        reason: canAccess ? null : "blocked by rule",
+        proxy_url: null,
+      },
+    });
+    const wrapper = mountWith({});
+    // Not `find("button")`: the registry Select and both Comboboxes render
+    // triggers of their own, and the first one in the DOM is a radix element.
+    const submit = wrapper.findAll("button").find((b) => /check access/i.test(b.text()))!;
+    await submit.trigger("click");
+    await flushPromises();
+    return wrapper;
+  };
+
+  it("does not paint an allowed answer in the refusal hue", async () => {
+    const wrapper = await answerWith(true);
+    const badge = wrapper.findComponent(Badge);
+    expect(badge.props("variant")).toBe("known");
+  });
+
+  it("paints a refusal in the refusal hue", async () => {
+    const wrapper = await answerWith(false);
+    expect(wrapper.findComponent(Badge).props("variant")).toBe("destructive");
+  });
+
+  /**
+   * The channel that survives a monochrome display and a colour-blind reader.
+   * `Resolution`'s matrix is `aria-hidden` and it requires its own `label`, so
+   * this costs nothing in the accessible name — the word is still the word.
+   */
+  it("carries the answer in the pattern as well as the hue", async () => {
+    const allowed = await answerWith(true);
+    expect(allowed.findComponent(Resolution).props("state")).toBe("cached");
+    expect(allowed.find("[data-testid=resolution-matrix]").attributes("aria-hidden")).toBe("true");
+
+    const denied = await answerWith(false);
+    expect(denied.findComponent(Resolution).props("state")).toBe("blocked");
+  });
+
+  it("still says the answer in words", async () => {
+    expect((await answerWith(true)).text()).toContain("Allowed");
+    expect((await answerWith(false)).text()).toContain("Denied");
   });
 });

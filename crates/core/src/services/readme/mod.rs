@@ -247,7 +247,7 @@ impl ReadmeService {
             }
         }
 
-        let fetched = match fetcher.fetch(url, cfg.max_bytes).await {
+        let fetched = match fetcher.fetch(url, &cfg.allowed_hosts, cfg.max_bytes).await {
             Ok(Some(fetched)) => vouch_for(fetched, url),
             Ok(None) => None,
             Err(e) => {

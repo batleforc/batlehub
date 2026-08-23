@@ -100,19 +100,6 @@ pub async fn explore_fetch_version(
         version,
     } = path.into_inner();
 
-    // `404` rather than `403` on a visibility refusal, exactly as the detail and
-    // README endpoints do: a `403` confirms the package exists, which is the
-    // fact a non-public package is trying not to disclose.
-    if local_svc
-        .check_visibility(&registry, &name, &identity)
-        .await
-        .is_err()
-    {
-        return Err(AppError::not_found(format!(
-            "package '{name}' not found in registry '{registry}'"
-        )));
-    }
-
     // **A session is required to pull.**
     //
     // This endpoint used to admit an anonymous caller, on the reasoning above:
@@ -132,14 +119,34 @@ pub async fn explore_fetch_version(
     // to go and get something* without saying who you are — the audit row for
     // which would read `anonymous`.
     //
-    // After the visibility check on purpose: a package this caller may not see
-    // must answer `404` first, or `401` becomes an oracle for whether a private
-    // package exists.
+    // **Before** the visibility check, not after it. Ordered the other way this
+    // status pair is an existence oracle: `check_visibility` answers `Public`
+    // for any name with no `local_packages` row, so an unauthenticated
+    // `POST …/{registry}/{name}/1.0.0/fetch` came back `404` exactly when
+    // `name` is a published `internal`/`team` package and `401` otherwise —
+    // which enumerates private package names to a caller with no session at
+    // all, the disclosure the `404`-not-`403` rule exists to prevent. Refusing
+    // first leaks nothing: an anonymous caller gets `401` for every coordinate,
+    // existing or not, and a signed-in one still meets the visibility check
+    // below and its uniform `404`.
     if identity.0.role == Role::Anonymous {
         return Err(AppError::unauthorized(
             "fetching a version requires a signed-in session".to_owned(),
         )
         .coded(FETCH_UNAUTHENTICATED));
+    }
+
+    // `404` rather than `403` on a visibility refusal, exactly as the detail and
+    // README endpoints do: a `403` confirms the package exists, which is the
+    // fact a non-public package is trying not to disclose.
+    if local_svc
+        .check_visibility(&registry, &name, &identity)
+        .await
+        .is_err()
+    {
+        return Err(AppError::not_found(format!(
+            "package '{name}' not found in registry '{registry}'"
+        )));
     }
 
     // Gate: `rbac.explore` on the registry — the same gate `explore_detail`,

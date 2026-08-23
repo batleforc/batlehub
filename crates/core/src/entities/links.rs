@@ -80,6 +80,47 @@ impl MetadataLinks {
 /// ones that matter, but enumerating them is the wrong shape — a scheme nobody
 /// thought of is exactly the one that gets through a blocklist, and this string
 /// reaches an authenticated console page with no sanitiser behind it.
+/// `ssh://git@host/path` and the scp-like `git@host:path` → `https://host/path`.
+///
+/// Both name a browsable page on every forge anyone actually uses. Split out of
+/// [`normalize_url`] because telling the scp-like form apart from
+/// `https://user@host/x` — which must be left exactly as it is — takes three
+/// guards, and reading them next to the one-line rewrites obscured both.
+///
+/// `None` means "not one of these forms", not "not a link": the caller keeps
+/// what it had and the allow-list at the end of [`normalize_url`] still decides.
+fn rewrite_ssh_form(url: &str) -> Option<String> {
+    if let Some(rest) = url.strip_prefix("ssh://") {
+        let host_and_path = rest.split_once('@').map_or(rest, |(_, r)| r);
+        return Some(format!("https://{host_and_path}"));
+    }
+    let (prefix, rest) = url.split_once('@')?;
+    // Only when there is no scheme at all, or `https://user@host/x` would be
+    // mangled. A scp-like address has no `//` before the `@`.
+    if prefix.contains("://") || prefix.contains('/') || !rest.contains(':') {
+        return None;
+    }
+    Some(format!("https://{}", rest.replacen(':', "/", 1)))
+}
+
+/// `github:user/repo` → `https://github.com/user/repo`, npm's shorthand.
+///
+/// Deliberately only the forges whose shorthand is unambiguous — `user/repo` on
+/// its own is not a URL, and guessing which forge it means would be inventing a
+/// destination.
+fn rewrite_forge_shorthand(url: &str) -> Option<String> {
+    for (shorthand, host) in [
+        ("github:", "github.com"),
+        ("gitlab:", "gitlab.com"),
+        ("bitbucket:", "bitbucket.org"),
+    ] {
+        if let Some(rest) = url.strip_prefix(shorthand) {
+            return Some(format!("https://{host}/{rest}"));
+        }
+    }
+    None
+}
+
 pub fn normalize_url(raw: &str) -> Option<String> {
     let mut url = raw.trim().to_owned();
     if url.is_empty() {
@@ -95,29 +136,13 @@ pub fn normalize_url(raw: &str) -> Option<String> {
     if let Some(rest) = url.strip_prefix("git://") {
         url = format!("https://{rest}");
     }
-    // `ssh://git@host/path` and the scp-like `git@host:path`, both of which name
-    // a browsable page on every forge anyone actually uses.
-    if let Some(rest) = url.strip_prefix("ssh://") {
-        url = format!("https://{}", rest.split_once('@').map_or(rest, |(_, r)| r));
-    } else if let Some((prefix, rest)) = url.split_once('@') {
-        // Only when there is no scheme at all, or `https://user@host/x` would be
-        // mangled. A scp-like address has no `//` before the `@`.
-        if !prefix.contains("://") && !prefix.contains('/') && rest.contains(':') {
-            url = format!("https://{}", rest.replacen(':', "/", 1));
-        }
+    // `ssh://git@host/path` and the scp-like `git@host:path`.
+    if let Some(rewritten) = rewrite_ssh_form(&url) {
+        url = rewritten;
     }
-    // `github:user/repo`, npm's shorthand. Deliberately only the forges whose
-    // shorthand is unambiguous — `user/repo` on its own is not a URL and
-    // guessing which forge it means would be inventing a destination.
-    for (shorthand, host) in [
-        ("github:", "github.com"),
-        ("gitlab:", "gitlab.com"),
-        ("bitbucket:", "bitbucket.org"),
-    ] {
-        if let Some(rest) = url.strip_prefix(shorthand) {
-            url = format!("https://{host}/{rest}");
-            break;
-        }
+    // `github:user/repo`, npm's shorthand.
+    if let Some(rewritten) = rewrite_forge_shorthand(&url) {
+        url = rewritten;
     }
     // A trailing `.git` is how the clone URL is spelled, not the page.
     if let Some(rest) = url.strip_suffix(".git") {

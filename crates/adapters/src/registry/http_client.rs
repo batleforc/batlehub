@@ -407,6 +407,9 @@ pub async fn fetch_linked_text(
 ///   attack this exists to stop — and never attaches the operator's
 ///   credentials, because an image host is by definition not the upstream they
 ///   were configured for;
+/// - `allowed_hosts` (`remote_image_hosts`) is re-checked against the URL that
+///   **answered**, so a redirect cannot walk an allow-listed CDN's response off
+///   the list;
 /// - the body is read **incrementally** to `max_bytes` and refused if it would
 ///   exceed it, rather than buffered then truncated: half a PNG is a broken
 ///   image, and an upstream must not be able to make this hold a gigabyte in
@@ -421,8 +424,10 @@ pub async fn fetch_linked_text(
 pub async fn fetch_image(
     plain: &reqwest::Client,
     url: &str,
+    allowed_hosts: &[String],
     max_bytes: usize,
 ) -> Result<Option<FetchedImage>, CoreError> {
+    use batlehub_core::services::readme::image::image_host_allowed;
     use futures::StreamExt;
 
     let parsed = reqwest::Url::parse(url)
@@ -437,6 +442,31 @@ pub async fn fetch_image(
     // property of the call rather than of where the redirect chain happens to
     // end, and the empty origin makes the SSRF check apply to every hop.
     let resp = super::ssrf::fetch_following_redirects(plain, plain, &None, "", parsed).await?;
+
+    // **The host that answered**, not the host that was asked for.
+    //
+    // `remote_image_hosts` is documented as deciding which hosts this server
+    // will dial, and the caller can only check the URL in the README — the
+    // redirect chain is followed inside `fetch_following_redirects`. Checked
+    // only there, an allow-listed badge CDN that answers
+    // `302 Location: https://evil.example/x.svg` had those bytes served back
+    // from the console's own origin, under a `Content-Type` this function
+    // vouches for. The bytes are what the allow-list is about, so this is where
+    // it has to hold.
+    //
+    // Every hop is still *dialled*: `ensure_public_url` refuses a private or
+    // loopback target on each one, so what a redirect can still cost is a
+    // request to a public host — the same residue `fetch_linked_text` accepts,
+    // and for the same reason (a second HTTP client with its own redirect
+    // policy is a larger surface than the thing it would protect).
+    if !image_host_allowed(resp.url().as_str(), allowed_hosts) {
+        tracing::debug!(
+            url,
+            answered = %resp.url(),
+            "readme image: redirected off the allow-listed hosts"
+        );
+        return Ok(None);
+    }
 
     if !resp.status().is_success() {
         tracing::debug!(url, status = %resp.status(), "readme image: upstream refused");

@@ -7,6 +7,7 @@ import { readdirSync, existsSync } from "node:fs";
 
 import { buildCsp, resolveLivePort } from "./build/csp.ts";
 import { denyDesignProofPlugin } from "./build/deny-design-proof.ts";
+import { themeInitPlugin } from "./build/theme-init.ts";
 
 /** Injects the derived CSP into the `%VITE_CSP%` placeholder in index.html. */
 function cspPlugin(apiBaseUrl: string, livePort: number | null): Plugin {
@@ -84,6 +85,10 @@ export default defineConfig(({ mode }) => {
       // `ui/design-proof/` sits inside Vite's root without being part of the
       // console, so the dev server published it — see `build/deny-design-proof.ts`.
       denyDesignProofPlugin(),
+      // The blocking <head> script that decides the rendition before the first
+      // paint. Emitted rather than copied from `public/` so it ships minified
+      // — every byte here is a byte before anything is drawn.
+      themeInitPlugin(),
     ],
     resolve: {
       alias: {

@@ -425,6 +425,61 @@ async fn an_anonymous_attempt_pulls_nothing() {
     );
 }
 
+/// **And the refusal says nothing about whether the package exists.**
+///
+/// The anonymous check used to run *after* the visibility check, on the
+/// reasoning that a package a caller may not see must answer `404` first. It is
+/// the wrong way round: `check_visibility` answers `Public` for any name with no
+/// `local_packages` row, so the pair `401`/`404` told an unauthenticated caller
+/// exactly which names are published `internal` or `team` — an enumeration
+/// oracle for private package names, handed to someone with no session at all.
+///
+/// Refusing first leaks nothing, which is what this asserts: the same `401` for
+/// a name that is internal here and for one that does not exist.
+#[actix_web::test]
+async fn an_anonymous_refusal_does_not_disclose_a_private_package() {
+    use batlehub_core::entities::Visibility;
+    use batlehub_core::ports::TeamNamespacePort;
+
+    let ns_store = batlehub_adapters::in_memory::InMemoryTeamNamespaceStore::new();
+    ns_store
+        .set_visibility(REG, "widget", Visibility::Internal)
+        .await
+        .unwrap();
+
+    let ns_port: std::sync::Arc<dyn TeamNamespacePort> = ns_store;
+    let mut parts = local_registry_app_parts(REG, "npm", RegistryMode::Proxy, None);
+    let base = std::sync::Arc::clone(&parts.local_svc);
+    parts.local_svc = std::sync::Arc::new(batlehub_core::services::LocalRegistryService {
+        backend: std::sync::Arc::clone(&base.backend),
+        storage: std::sync::Arc::clone(&base.storage),
+        hot: std::sync::Arc::clone(&base.hot),
+        quota: None,
+        ownership: None,
+        team_namespace: Some(ns_port),
+        sbom: None,
+        explore_cache: None,
+        package_repo: None,
+        readme: None,
+    });
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+
+    for name in ["widget", "no-such-package"] {
+        let resp = call_service(
+            &app,
+            TestRequest::post()
+                .uri(&fetch_uri(name, "1.0.0"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "{name}: an anonymous caller must be refused identically, existing or not"
+        );
+    }
+}
+
 /// The console is told, so it does not draw a button the API will refuse.
 ///
 /// The offer and the endpoint have to agree — that is the whole reason the

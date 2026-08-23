@@ -15,7 +15,7 @@
 //! *markup in an operator's authenticated session* (RFC 0007 §7.2).
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::services::hot_config::RemoteImagePolicy;
 
@@ -280,10 +280,21 @@ fn builder(
             if element != "img" || attribute != "src" {
                 return Some(std::borrow::Cow::Borrowed(value));
             }
-            if value.starts_with("http://") || value.starts_with("https://") {
+            // Read the way a browser reads it: a scheme is ASCII
+            // case-insensitive and surrounding whitespace is stripped before
+            // the reference is resolved. Compared byte-exactly,
+            // `src="HTTPS://cdn.example/logo.png"` and `src=" https://…"` fell
+            // through to the `None` below — the `src` was dropped, no index was
+            // reserved, and the image disappeared with nothing said, which is
+            // the same silent failure `proxy_prefix` refuses a relative prefix
+            // to prevent. The *trimmed* value is what is recorded, because it is
+            // what the fetcher will be handed.
+            let candidate = value.trim();
+            let lower = candidate.to_ascii_lowercase();
+            if lower.starts_with("http://") || lower.starts_with("https://") {
                 let index = {
-                    let mut urls = sink.lock().unwrap_or_else(|e| e.into_inner());
-                    urls.push(value.to_owned());
+                    let mut urls = sink.lock().unwrap_or_else(PoisonError::into_inner);
+                    urls.push(candidate.to_owned());
                     urls.len() - 1
                 };
                 return Some(std::borrow::Cow::Owned(format!("{prefix}{index}")));
@@ -334,7 +345,7 @@ pub fn sanitize_capturing_images(
     let cleaned = builder(policy, image_proxy_prefix, &captured)
         .clean(html)
         .to_string();
-    let urls = std::mem::take(&mut *captured.lock().unwrap_or_else(|e| e.into_inner()));
+    let urls = std::mem::take(&mut *captured.lock().unwrap_or_else(PoisonError::into_inner));
     (cleaned, urls)
 }
 

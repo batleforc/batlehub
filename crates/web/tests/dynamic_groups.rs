@@ -154,20 +154,20 @@ async fn make_group_app(
     // github: everyone can access (role-based)
     // github2: only accessible via group membership (no role-based access for anon/user)
     let access_config = new_access_lock(batlehub_web::AccessConfig {
-        anonymous: ["github"].iter().map(|s| s.to_string()).collect(),
-        user: ["github"].iter().map(|s| s.to_string()).collect(),
+        anonymous: ["github"].iter().map(ToString::to_string).collect(),
+        user: ["github"].iter().map(ToString::to_string).collect(),
         admin: ["github", "github2"]
             .iter()
-            .map(|s| s.to_string())
+            .map(ToString::to_string)
             .collect(),
         groups: [
             (
                 "team-a".to_owned(),
-                ["github2"].iter().map(|s| s.to_string()).collect(),
+                ["github2"].iter().map(ToString::to_string).collect(),
             ),
             (
                 "team-b".to_owned(),
-                ["github2"].iter().map(|s| s.to_string()).collect(),
+                ["github2"].iter().map(ToString::to_string).collect(),
             ),
         ]
         .into_iter()

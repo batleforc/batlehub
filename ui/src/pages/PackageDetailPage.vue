@@ -2,18 +2,22 @@
 import { useI18n } from "vue-i18n";
 import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
-import { ArrowLeft, Check, Copy, FileJson, FileCode, Download } from "@lucide/vue";
-import { explorePackageDetail, exploreFetchVersion, listRegistries } from "@/client/sdk.gen";
+import { ArrowLeft, Check, Copy, FileJson, FileCode, Download, Search } from "@lucide/vue";
+import {
+  explorePackageDetail,
+  exploreFetchVersion,
+  listRegistries,
+  packageDetail,
+} from "@/client/sdk.gen";
 import type {
   ExplorePackageDetailResponse,
   ExploreVersionDto,
   FirewallDto,
+  PackageDetailResponse,
   RegistryInfo,
 } from "@/client/types.gen";
 import { installCommandFor } from "@/config/registryTypes";
 import { useAuth } from "@/composables/useAuth";
-import { packageDetail } from "@/client/sdk.gen";
-import type { PackageDetailResponse } from "@/client/types.gen";
 import PackageVersionsTable from "@/components/admin/PackageVersionsTable.vue";
 import PackageBetaChannel from "@/components/admin/PackageBetaChannel.vue";
 import PackageVisibility from "@/components/admin/PackageVisibility.vue";
@@ -31,7 +35,6 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Pagination } from "@/components/ui/pagination";
-import { Search } from "@lucide/vue";
 import {
   Table,
   TableHeader,
@@ -456,12 +459,15 @@ async function onFetchVersion(version: string) {
       // download would have given, so the operator can take it to the RBAC
       // simulator and get the same verdict explained.
       const body = apiErr as { code?: string; message?: string };
-      fetchResult.value[version] =
-        body.code === "fetch.already-held"
-          ? t("packageDetailPage.fetchAlreadyHeld")
-          : body.message
-            ? t("packageDetailPage.fetchDenied", { reason: body.message })
-            : t("packageDetailPage.fetchFailed");
+      let failure: string;
+      if (body.code === "fetch.already-held") {
+        failure = t("packageDetailPage.fetchAlreadyHeld");
+      } else if (body.message) {
+        failure = t("packageDetailPage.fetchDenied", { reason: body.message });
+      } else {
+        failure = t("packageDetailPage.fetchFailed");
+      }
+      fetchResult.value[version] = failure;
       return;
     }
     const size = (res as { size_bytes?: number }).size_bytes ?? 0;
@@ -1406,17 +1412,16 @@ const {
             t("packageDetailPage.sbomPending")
           }}</span>
         </div>
-        <p
+        <output
           v-if="sbomError[artifactKey(selectedRow.version)]"
-          class="mt-2 text-sm text-destructive"
-          role="status"
+          class="mt-2 block text-sm text-destructive"
         >
           {{
             t("packageDetailPage.sbomFailed", {
               reason: sbomError[artifactKey(selectedRow.version)],
             })
           }}
-        </p>
+        </output>
 
         <!-- The one filled action on the reader's half of the page, and the only
              act here that spends this instance's bandwidth and writes an audit
@@ -1524,7 +1529,7 @@ const {
                  so this comment states the position rather than a fix that was
                  never made: three announcements can still land on one page turn,
                  and consolidating them is a change to those components. -->
-            <span class="text-xs text-muted-foreground" role="status" aria-live="polite">
+            <output class="text-xs text-muted-foreground" aria-live="polite">
               {{
                 filterPending
                   ? t("packageDetailPage.filtering")
@@ -1533,7 +1538,7 @@ const {
                       total: unfilteredTotal,
                     })
               }}
-            </span>
+            </output>
           </div>
           <Table :label="t('packageDetailPage.tableLabel', { name })">
             <!-- A visible caption stating the count and the order.

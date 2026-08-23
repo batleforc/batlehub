@@ -73,7 +73,7 @@ impl ProxyService {
             (client, policy, integrity, limit)
         };
 
-        let cache_key = format!("meta:{}", req.package_id.cache_key());
+        let cache_key = super::proxy_meta_key(&req.package_id);
         let ttl = policy.as_ref().and_then(|p| p.metadata_ttl);
 
         Ok(RequestPrelude {
@@ -87,16 +87,6 @@ impl ProxyService {
         })
     }
 
-    /// Resolve a package's metadata through the cache-first / stale-on-error
-    /// pipeline **without** streaming an artifact, enforcing the registry's
-    /// policy rules against the resolved metadata (`AccessDenied` on deny).
-    ///
-    /// This is the metadata-only sibling of [`Self::handle`] — same coordinate
-    /// validation, same hot-config snapshot, same `meta:` cache key and TTL —
-    /// for handlers that render responses from `PackageMetadata.extra` (e.g.
-    /// the JetBrains Marketplace per-plugin endpoints). Because it goes through
-    /// `resolve_metadata_cached`, anything resolved once keeps resolving from
-    /// cache (or stale cache, when `serve_stale` allows) after upstream loss.
     /// The metadata for a coordinate **if it is already cached**, never fetching.
     ///
     /// The sibling of [`Self::resolve_metadata_for`] for callers that must not
@@ -128,12 +118,23 @@ impl ProxyService {
             package_id.artifact.as_deref(),
         )
         .ok()?;
-        // Spelled as `request_prelude` spells it — the two must not drift, or
-        // this reads a key nothing ever writes and silently answers `None`.
-        let cache_key = format!("meta:{}", package_id.cache_key());
+        // The same helper `request_prelude` writes through — the two must not
+        // drift, or this reads a key nothing ever writes and silently answers
+        // `None`.
+        let cache_key = super::proxy_meta_key(package_id);
         Some(self.cache.get(&cache_key).await.ok()??.metadata)
     }
 
+    /// Resolve a package's metadata through the cache-first / stale-on-error
+    /// pipeline **without** streaming an artifact, enforcing the registry's
+    /// policy rules against the resolved metadata (`AccessDenied` on deny).
+    ///
+    /// This is the metadata-only sibling of [`Self::handle`] — same coordinate
+    /// validation, same hot-config snapshot, same `meta:` cache key and TTL —
+    /// for handlers that render responses from `PackageMetadata.extra` (e.g.
+    /// the JetBrains Marketplace per-plugin endpoints). Because it goes through
+    /// `resolve_metadata_cached`, anything resolved once keeps resolving from
+    /// cache (or stale cache, when `serve_stale` allows) after upstream loss.
     pub async fn resolve_metadata_for(
         &self,
         req: &ProxyRequest,

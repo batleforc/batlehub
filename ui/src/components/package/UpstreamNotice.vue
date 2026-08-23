@@ -66,13 +66,12 @@ const message = computed(() => {
 </script>
 
 <template>
-  <p
+  <output
     v-if="message"
     class="flex items-start gap-2 text-sm text-muted-foreground"
     :class="kind === 'unreachable' ? 'text-destructive' : ''"
-    role="status"
   >
     <component :is="icon" class="mt-1 h-4 w-4 shrink-0" />
     <span>{{ message }}</span>
-  </p>
+  </output>
 </template>

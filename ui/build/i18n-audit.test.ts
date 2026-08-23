@@ -66,6 +66,34 @@ describe("i18n audit", () => {
       const findings = scan(`const q = { error: "State mismatch — try again." };`, false);
       expect(findings).toContain('error: "State mismatch — try again."');
     });
+
+    /**
+     * The three positions that reported `0 across 0` over fifteen live English
+     * strings. Each one is a *half* of a shape the scanner already knew: the
+     * else-branch of a ternary it only read the then-branch of, the second
+     * argument of a call it only read the first of, and the middle of a
+     * template it only read the ends of.
+     */
+    it("the else-branch of a ternary fails, not just the then-branch", () => {
+      // Seven of the fifteen. The then-branch carries the value that was
+      // found; the hardcoded sentence is always in the branch for when it was
+      // not, which is the half this pass could not see.
+      const findings = scan(vue(`msg.value = e instanceof Error ? e.message : "Export failed";`));
+      expect(findings.join("\n")).toContain("Export failed");
+    });
+
+    it("a fallback message that is not the first argument fails", () => {
+      const findings = scan(vue(`err.value = apiErrorMessage(e, "Failed to revoke token.");`));
+      expect(findings.join("\n")).toContain("Failed to revoke token.");
+    });
+
+    it("a connective between two interpolations fails", () => {
+      // Two characters, all lowercase: under the length floor *and* caught by
+      // the bare-word rule, so the only English word in the sentence was the
+      // only part of it the gate could not read.
+      const findings = scan(vue("const s = `${head} of ${scope}`;"));
+      expect(findings.join("\n")).toContain("of");
+    });
   });
 
   describe("stays quiet about text that is not prose", () => {
@@ -111,6 +139,46 @@ describe("i18n audit", () => {
 
     it("a class list bound with :class passes", () => {
       const findings = scan(vue("", `<div :class="ok ? 'text-foreground' : 'text-destructive'" />`));
+      expect(findings).toEqual([]);
+    });
+
+    /**
+     * The cost of reading a ternary's `:`. A colon is the one operator in that
+     * pass that also occurs inside strings and inside object literals, so each
+     * of these is a way the widened rule could have started lying.
+     */
+    it("an object key is reported once, under its key, not twice", () => {
+      // `label: "Registries"` is a colon followed by a literal too. Reporting
+      // it from both passes would inflate the count and make the budget
+      // un-drivable to zero for reasons that have nothing to do with the text.
+      const findings = scan(vue(`const m = { label: "Registries" };`));
+      expect(findings).toEqual(['label: "Registries"']);
+    });
+
+    it("a namespace separator inside a template passes", () => {
+      // `` `${registry}::` `` ends in two colons, and one glued to the
+      // template's own closing backtick pairs with the *next* backtick in the
+      // file: this reported five lines of cache eviction as a sentence.
+      const findings = scan(
+        vue(
+          "for (const k of _store.keys()) {\n" +
+            "  if (k.startsWith(`${registry}::`)) _store.delete(k);\n" +
+            "}\n" +
+            "for (const k of _upstream.keys()) {\n" +
+            "  if (k.endsWith(`::${registry}`)) _upstream.delete(k);\n" +
+            "}",
+        ),
+      );
+      expect(findings).toEqual([]);
+    });
+
+    it("a separator between two interpolations is not a connective", () => {
+      // The counter-case to the bridge rule: position says "between two
+      // values", but `/`, `://` and `.` are punctuation joining a path, not a
+      // word joining a sentence.
+      const findings = scan(
+        vue("const u = `${scheme}://${host}/${owner}/${repo}@${maj}.${min}`;"),
+      );
       expect(findings).toEqual([]);
     });
   });

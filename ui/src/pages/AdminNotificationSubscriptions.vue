@@ -215,7 +215,7 @@ async function submitForm() {
     dialogOpen.value = false;
     reloadSubs();
   } catch (e) {
-    formError.value = e instanceof Error ? e.message : "Unknown error";
+    formError.value = extractMessage(e);
   } finally {
     formLoading.value = false;
   }
@@ -240,7 +240,7 @@ async function confirmDelete() {
     deleteTarget.value = null;
     reloadSubs();
   } catch (e) {
-    deleteError.value = e instanceof Error ? e.message : "Unknown error";
+    deleteError.value = extractMessage(e);
   } finally {
     deleteLoading.value = false;
   }
@@ -454,7 +454,7 @@ async function testSubscription(id: string) {
               v-for="et in ALL_EVENT_TYPES"
               :key="et"
               type="button"
-              class="px-2 py-1 rounded border text-xs font-mono transition-colors"
+              class="px-2 py-1 rounded-sm border text-xs font-mono transition-colors"
               :class="
                 form.event_types.includes(et)
                   ? 'bg-foreground text-background border-foreground'

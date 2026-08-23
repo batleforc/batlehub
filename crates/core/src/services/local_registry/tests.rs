@@ -528,7 +528,7 @@ struct MemBetaChannel {
 impl MemBetaChannel {
     fn with_users(ids: &[&str]) -> Arc<Self> {
         Arc::new(Self {
-            members: ids.iter().map(|s| s.to_string()).collect(),
+            members: ids.iter().map(ToString::to_string).collect(),
         })
     }
     fn empty() -> Arc<Self> {

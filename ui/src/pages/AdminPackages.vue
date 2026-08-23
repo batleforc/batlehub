@@ -414,6 +414,10 @@ const confirmProps = computed(() => {
         registry: id.registry,
       }),
       reversible: false,
+      // Stated here rather than inherited. This is the one action the stock
+      // sentence was ever true of, and leaving it implicit is what let three
+      // other irreversible verbs borrow a consequence that does not happen.
+      consequence: t("adminPackages.deleteConsequence"),
       confirmName: id.name,
     };
   }
@@ -447,6 +451,7 @@ const confirmProps = computed(() => {
       itemNoun: t("adminPackages.itemPackageRecord"),
       scope: t("adminPackages.scopeDeleteSelection"),
       reversible: false,
+      consequence: t("adminPackages.deleteConsequence"),
       confirmName: "delete",
     };
   }
@@ -511,7 +516,7 @@ async function runPending(): Promise<void> {
     <!-- Bulk action bar -->
     <div
       v-if="selected.size > 0"
-      class="sticky top-16 z-30 flex items-center gap-3 rounded-sm border bg-card px-4 py-2.5 shadow-sm"
+      class="sticky top-16 z-30 flex items-center gap-3 rounded-sm border bg-card px-4 py-2.5"
     >
       <span class="text-sm font-medium">{{ selected.size }} selected</span>
       <Button
@@ -636,11 +641,29 @@ async function runPending(): Promise<void> {
               </TableRow>
             </TableHeader>
             <TableBody>
-              <TableRow
-                v-for="(pkg, i) in filteredPackages"
-                :key="i"
-                :class="pkg.status.status === 'blocked' ? 'bg-destructive/5' : ''"
-              >
+              <!-- No row tint. `bg-destructive/5` measured 1.03:1 in dark and
+                   1.09:1 in light — DESIGN.md's Undependable Fill Rule in its
+                   plainest form, a fill standing in for a state channel while
+                   being, measurably, invisible. The state is carried by the
+                   status cell below: the word ("Blocked"), the hue (the
+                   `destructive` badge) and the reason under it. -->
+              <!--
+                Keyed by the package, not by its position.
+
+                `:key="i"` made the *row element* the identity, so filtering
+                re-labelled the existing rows in place instead of moving them.
+                Nothing bound broke — every visible bit of a row is a bound
+                value, and `:checked` is written on every patch — but keyboard
+                focus is not a bound value. It sits on a DOM node, and the node
+                stayed where it was: focus a checkbox, type in the filter, and
+                the focus ring is now on a *different package*, silently. On a
+                page whose row actions are block, unblock and delete.
+
+                `pkgKey` was already here for the selection `Set`. It is the
+                row's identity in every other respect; it is its identity here
+                too.
+              -->
+              <TableRow v-for="pkg in filteredPackages" :key="pkgKey(pkg)">
                 <TableCell class="w-8">
                   <input
                     type="checkbox"

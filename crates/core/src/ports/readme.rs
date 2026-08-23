@@ -137,9 +137,15 @@ pub trait ReadmeImageFetcher: Send + Sync {
     /// same way for the reader — the chip the `strip` policy would have shown —
     /// so none of them is an error. `Err` is for a request that could not be
     /// made or a connection that broke mid-body.
+    ///
+    /// `allowed_hosts` is `remote_image_hosts`, and it travels with the URL
+    /// because the implementation follows redirects: the caller can only check
+    /// the host it *asked* for, and the host that *answers* is the one whose
+    /// bytes get served from this console's own origin.
     async fn fetch(
         &self,
         url: &str,
+        allowed_hosts: &[String],
         max_bytes: usize,
     ) -> Result<Option<crate::services::readme::image::FetchedImage>, CoreError>;
 }

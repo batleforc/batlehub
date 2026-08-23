@@ -51,6 +51,17 @@ pub fn proxy_artifact_key(package_id: &crate::entities::PackageId) -> String {
     format!("artifact:{}", package_id.cache_key())
 }
 
+/// The cache key a coordinate's resolved metadata is stored under.
+///
+/// The `meta:` sibling of [`proxy_artifact_key`], and a function for the same
+/// reason: `request_prelude` writes it and `ProxyService::cached_metadata_for`
+/// reads it without ever going through the prelude, so the two spellings must
+/// not drift — a reader that formats the key one character differently answers
+/// `None` for every coordinate and looks like an empty cache.
+pub(crate) fn proxy_meta_key(package_id: &crate::entities::PackageId) -> String {
+    format!("meta:{}", package_id.cache_key())
+}
+
 /// Output of `ProxyService::handle`.
 pub enum ProxyResponse {
     /// Artifact stream to forward to the HTTP client.

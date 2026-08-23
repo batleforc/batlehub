@@ -444,3 +444,42 @@ fn a_local_reference_survives_however_it_is_spelled() {
     let out = String::from_utf8(out).expect("utf-8 out");
     assert!(!out.contains("evil.test"), "{out}");
 }
+
+/// **One attribute per name in the output.**
+///
+/// The allow-list matches the *local* name, so the prefix is stripped before the
+/// attribute is written back — and `version="1.1" inkscape:version="1.0.2"`, on
+/// every file Inkscape has ever saved, came back out as two `version`
+/// attributes. Duplicate attribute names violate XML's Unique Att Spec: a
+/// browser refuses the whole document, so a benign proxied logo rendered as a
+/// broken image. It survived the idempotence test because `with_checks(false)`
+/// is precisely the setting that lets this parser read back what a browser will
+/// not.
+#[test]
+fn a_namespaced_attribute_cannot_duplicate_the_one_it_shadows() {
+    let out = sanitize_svg(
+        br#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://inkscape" version="1.1" inkscape:version="1.0.2"><rect/></svg>"#,
+    )
+    .expect("a well-formed svg");
+    let out = String::from_utf8(out).expect("utf-8 out");
+    assert_eq!(
+        out.matches("version=").count(),
+        1,
+        "exactly one `version` attribute must be emitted: {out}"
+    );
+    // And it is the SVG one, not the editor's note that happens to share a
+    // local name.
+    assert!(out.contains(r#"version="1.1""#), "{out}");
+}
+
+/// Order does not decide it: the un-prefixed spelling wins whichever came first.
+#[test]
+fn the_unprefixed_spelling_wins_whatever_the_order() {
+    let out = sanitize_svg(
+        br#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://inkscape" inkscape:version="1.0.2" version="1.1"><rect/></svg>"#,
+    )
+    .expect("a well-formed svg");
+    let out = String::from_utf8(out).expect("utf-8 out");
+    assert_eq!(out.matches("version=").count(), 1, "{out}");
+    assert!(out.contains(r#"version="1.1""#), "{out}");
+}

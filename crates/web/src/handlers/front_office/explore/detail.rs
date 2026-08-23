@@ -453,13 +453,16 @@ pub async fn explore_package_detail(
     // Two settings out of one read: the socket.dev badge flag (per registry, by
     // feature flag) and the page size (global). Both are copied out of the guard
     // before the first `await` below, the rule every handler here follows.
-    let (socket_badge_enabled, versions_per_page) = {
+    let (socket_badge_enabled, versions_per_page, upstream_detail_enabled) = {
         let hot = local_svc.hot.read().await;
         (
             hot.feature_flags
                 .get(registry)
                 .is_none_or(|f| f.socket_badge),
             hot.versions_per_page,
+            // Absent means on, the same reading `build_upstream_detail_map`
+            // gives an absent `[registries.upstream_detail]` block.
+            hot.upstream_detail.get(registry).is_none_or(|d| d.enabled),
         )
     };
     let registry_type = registry_map.type_of(registry);
@@ -472,73 +475,10 @@ pub async fn explore_package_detail(
             .and_then(|t| socket_badge_url(t, name, version))
     };
 
-    // Gate: the catalogue's own registry list, the same set `list.rs` filters
-    // its rows by, `stats.rs` counts over and `resolve_readme` refuses on.
-    //
-    // This endpoint used to only *report* the answer, in `gate.registry_accessible`,
-    // and serve the page either way — so a registry an operator took out of
-    // `rbac.explore` had no rows in the listing, no counts in the stats and a
-    // full detail page for anyone who typed the URL. The README and its images
-    // are refused; refusing them while this still answered left the same facts
-    // reachable one endpoint over, which is not a gate but a speed bump.
-    //
-    // `404` and not `403`, exactly as the visibility check below: denied and
-    // absent look identical from outside, so a refusal does not confirm the
-    // package exists.
-    //
-    // Note this is *narrower* than the proxy access `gate.registry_accessible`
-    // used to report: `explore_accessible_registries_for` is proxy access
-    // intersected with the role's explore permission. Anyone who gets past here
-    // can necessarily proxy from the registry too, which is why the gate card
-    // has nothing left to say and the field is gone from the response.
-    if !access
-        .read()
-        .await
-        .explore_accessible_registries_for(&identity)
-        .contains(registry)
-    {
-        tracing::debug!(
-            registry = %registry, package = %name,
-            "explore detail: registry not browsable by this caller"
-        );
-        return Err(AppError::not_found(format!(
-            "package '{name}' not found in registry '{registry}'"
-        )));
-    }
-
-    // Gate: per-package visibility. The listing filters `internal`/`team`
-    // packages out entirely, so the detail view has to agree — otherwise the
-    // name is hidden from the index while remaining readable to anyone who
-    // guesses or is told the URL, and the filter buys nothing.
-    //
-    // 404 rather than 403 on purpose: a 403 confirms the package exists, which
-    // is the fact a non-public package is trying not to disclose. Denied and
-    // absent look identical from outside.
-    if let Err(e) = local_svc.check_visibility(registry, name, &identity).await {
-        tracing::debug!(
-            registry = %registry, package = %name, error = %e,
-            "explore detail: hidden by package visibility"
-        );
-        return Err(AppError::not_found(format!(
-            "package '{name}' not found in registry '{registry}'"
-        )));
-    }
+    enforce_detail_gates(&access, &local_svc, registry, name, &identity).await?;
 
     // Gate: beta channel membership
-    let beta_member = {
-        let beta_port = local_svc
-            .hot
-            .read()
-            .await
-            .beta_channel
-            .get(registry)
-            .cloned();
-        if let Some(bp) = beta_port {
-            bp.is_member(registry, &identity).await.unwrap_or(false)
-        } else {
-            false
-        }
-    };
+    let beta_member = beta_member_for(&local_svc, registry, &identity).await;
 
     // Proxied versions from package_statuses
     let proxied_filter = PackageFilter {
@@ -556,12 +496,19 @@ pub async fn explore_package_detail(
             Err(_) => (vec![], true),
         };
 
-    // Local versions from local_packages
-    let local_versions = local_svc
-        .backend
-        .get_versions(registry, name)
-        .await
-        .unwrap_or_default();
+    // Local versions from local_packages.
+    //
+    // The read is kept as a `Result` because two different things are drawn from
+    // it and they must fail in opposite directions — see `published_locally`
+    // below.
+    let local_versions_read = local_svc.backend.get_versions(registry, name).await;
+    if let Err(ref e) = local_versions_read {
+        tracing::warn!(
+            registry = %registry, package = %name, error = %e,
+            "explore detail: local version read failed; treating the package as hosted here"
+        );
+    }
+    let local_versions = local_versions_read.as_deref().unwrap_or_default().to_vec();
 
     // Which versions have a stored README, in **one** query rather than a probe
     // per row: the table can be hundreds of versions long and a lookup each
@@ -596,35 +543,18 @@ pub async fn explore_package_detail(
     // discovery read — not whether we happen to hold some of its versions.
     // Holding three versions out of forty is exactly the case where the missing
     // rows are worth showing; the suppression is about provenance (§4.2).
-    let published_locally = !local_versions.is_empty();
+    //
+    // **A failed read counts as published.** `unwrap_or_default()` read a pool
+    // timeout or a Postgres restart as "not published here", which lifts the
+    // suppression — so one transient backend error was enough to send an
+    // internal package's name to the public upstream index on the next page
+    // view, which is precisely the disclosure §4.4/§7.7 exist to prevent. The
+    // cost of failing the other way is a page that shows fewer upstream rows
+    // while the database is down, and that is the right trade: we cannot tell
+    // whether the package is private, so we must not act as though it is not.
+    let published_locally = local_versions_read.map_or(true, |rows| !rows.is_empty());
 
-    // Blocked versions, so an upstream-only row shows `Blocked` with its reason
-    // rather than as installable. Read once for the whole merge.
-    let blocked_versions: std::collections::HashMap<String, (String, String, String)> = admin_svc
-        .list_packages(PackageFilter {
-            registry: Some(registry.clone()),
-            registries: vec![],
-            name_exact: Some(name.clone()),
-            name_contains: None,
-            blocked_only: true,
-            limit: 500,
-            offset: 0,
-        })
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|summary| match summary.status {
-            PackageStatus::Blocked {
-                reason,
-                blocked_by,
-                blocked_at,
-            } => Some((
-                summary.package_id.version,
-                (reason, blocked_by, blocked_at.to_rfc3339()),
-            )),
-            PackageStatus::Available => None,
-        })
-        .collect();
+    let blocked_versions = blocked_version_map(&admin_svc, registry, name).await;
 
     // Build version entries.
     //
@@ -640,86 +570,7 @@ pub async fn explore_package_detail(
     //
     // Nothing above the slice may depend on them: the sort is by pre-release and
     // version string, and the default selection is by source. Both hold.
-    let mut versions: Vec<ExploreVersionDto> = Vec::new();
-
-    // Track which versions came from local to avoid duplicating proxied entries
-    let local_version_set: std::collections::HashSet<&str> =
-        local_versions.iter().map(|v| v.version.as_str()).collect();
-
-    for summary in proxied_summaries {
-        // Skip versions also present in local (they'll appear as "local")
-        if local_version_set.contains(summary.package_id.version.as_str()) {
-            continue;
-        }
-        let firewall = match summary.status {
-            PackageStatus::Available => FirewallDto::Clear,
-            PackageStatus::Blocked {
-                reason,
-                blocked_by,
-                blocked_at,
-            } => FirewallDto::Blocked {
-                reason,
-                blocked_by,
-                blocked_at: blocked_at.to_rfc3339(),
-            },
-        };
-        let is_prerelease = summary.package_id.version.contains('-');
-        let readme = readme_state(&summary.package_id.version);
-        versions.push(ExploreVersionDto {
-            readme,
-            // Every version in this list is one this instance has pulled
-            // through, so the scanner has had the bytes and the empty list means
-            // "clear" rather than "never looked".
-            vulnerabilities_scanned: true,
-            // Graded in `enrich_page`, the one funnel every rendered row passes
-            // through — see `version_state`.
-            state: String::new(),
-            version: summary.package_id.version,
-            source: "proxied".to_string(),
-            firewall,
-            download_count: Some(summary.access_count),
-            last_accessed: summary.last_accessed.map(format_dt),
-            published_at: None,
-            is_prerelease,
-            // Filled by `enrich_page`, for the rows that survive to the answer.
-            vulnerabilities: Vec::new(),
-            license: None,
-            sbom: SbomDto::unknown(),
-            socket_badge_url: None,
-            deprecated: false,
-            deprecation_message: None,
-            unlisted: false,
-        });
-    }
-
-    for pkg in local_versions {
-        let firewall = if pkg.yanked {
-            FirewallDto::Yanked
-        } else {
-            FirewallDto::Clear
-        };
-        let is_prerelease = pkg.version.contains('-');
-        let readme = readme_state(&pkg.version);
-        versions.push(ExploreVersionDto {
-            readme,
-            vulnerabilities_scanned: true,
-            state: String::new(),
-            version: pkg.version,
-            source: "local".to_string(),
-            firewall,
-            download_count: Some(0),
-            last_accessed: None,
-            published_at: Some(pkg.published_at.to_rfc3339()),
-            is_prerelease,
-            vulnerabilities: Vec::new(),
-            license: None,
-            sbom: SbomDto::unknown(),
-            socket_badge_url: None,
-            deprecated: pkg.deprecated,
-            deprecation_message: pkg.deprecation_message,
-            unlisted: pkg.unlisted,
-        });
-    }
+    let mut versions = held_version_rows(proxied_summaries, local_versions, &readme_state);
 
     // ── The discovery read ────────────────────────────────────────────────
     //
@@ -759,65 +610,12 @@ pub async fn explore_package_detail(
     )
     .await;
 
-    if let Some(detail) = upstream.detail.as_ref() {
-        // Local rows win every collision: a version we hold is described by what
-        // we know about it, and the upstream document cannot overwrite any of
-        // it. The merge only adds rows the local sources did not have — the same
-        // precedence `SearchMode::Hybrid` already uses, and for the same reason.
-        let held: std::collections::HashSet<&str> =
-            versions.iter().map(|v| v.version.as_str()).collect();
-        let mut extra: Vec<ExploreVersionDto> = Vec::new();
-        for candidate in &detail.versions {
-            if held.contains(candidate.version.as_str()) {
-                continue;
-            }
-            // Rules are evaluated for *display*, never for permission: the
-            // blocked set is consulted so an administrator's block shows as
-            // `Blocked` with its reason rather than as installable. The gate
-            // that matters still runs on the download.
-            let firewall = match blocked_versions.get(candidate.version.as_str()) {
-                Some((reason, by, at)) => FirewallDto::Blocked {
-                    reason: reason.clone(),
-                    blocked_by: by.clone(),
-                    blocked_at: at.clone(),
-                },
-                None if candidate.yanked => FirewallDto::Yanked,
-                None => FirewallDto::Clear,
-            };
-            extra.push(ExploreVersionDto {
-                readme: if detail.readmes.contains_key(&candidate.version) {
-                    ReadmeState::Available
-                } else {
-                    absent_state
-                },
-                // Nothing has ever opened these bytes, so an empty
-                // vulnerability list here means *never scanned* — and a green
-                // row on a package this instance has never held is a claim we
-                // cannot support.
-                vulnerabilities_scanned: false,
-                state: String::new(),
-                version: candidate.version.clone(),
-                source: "upstream".to_owned(),
-                firewall,
-                download_count: None,
-                last_accessed: None,
-                published_at: candidate.published_at.map(|t| t.to_rfc3339()),
-                is_prerelease: candidate.is_prerelease,
-                vulnerabilities: Vec::new(),
-                license: None,
-                // Left `unknown`: `enrich_page` skips upstream-only rows, and it
-                // must — nothing has ever opened these bytes, so there is no
-                // SBOM to find and *none* would read as a fact about a version
-                // this instance has never held.
-                sbom: SbomDto::unknown(),
-                socket_badge_url: None,
-                deprecated: candidate.deprecated.is_some(),
-                deprecation_message: candidate.deprecated.clone(),
-                unlisted: false,
-            });
-        }
-        versions.extend(extra);
-    }
+    merge_upstream_rows(
+        &mut versions,
+        upstream.detail.as_ref(),
+        &blocked_versions,
+        absent_state,
+    );
 
     // Sort: stable versions first, then pre-release; within each group newest
     // first.
@@ -842,13 +640,335 @@ pub async fn explore_package_detail(
             .then_with(|| super::newest_first(&a.version, &b.version))
     });
 
-    // ── Filter, then page ─────────────────────────────────────────────────────
-    //
-    // Both counted against the whole list before anything is sliced: every
-    // number the console says out loud — `42 of 44 shown`, `Show 3 pre-releases`
-    // — is a statement about the package, and a count taken after the slice
-    // would make each of them a statement about page one wearing the package's
-    // name.
+    let VersionPage {
+        mut versions,
+        page,
+        per_page,
+        total,
+        unfiltered_total,
+        prerelease_total,
+        hidden_prereleases,
+        default_version,
+        selected_version,
+        subject_version,
+        subject_row,
+    } = paginate_versions(versions, &query, versions_per_page);
+
+    enrich_page(
+        &mut versions,
+        &admin_svc,
+        &sbom_svc,
+        registry,
+        name,
+        &badge_for,
+    )
+    .await;
+
+    // The subject's row goes through the same enrichment as the page. When it is
+    // on the page there is nothing to do but take the enriched copy; when it is
+    // not, it is enriched alone — one extra vulnerability read and one licence
+    // read, for the one row the reader is actually looking at.
+    let selected = match subject_row {
+        Some(row) => match versions.iter().find(|r| r.version == row.version) {
+            Some(on_page) => Some(on_page.clone()),
+            None => {
+                let mut one = vec![row];
+                enrich_page(&mut one, &admin_svc, &sbom_svc, registry, name, &badge_for).await;
+                Some(one.remove(0))
+            }
+        },
+        None => None,
+    };
+
+    // The row the reader is actually looking at, which is what its links should
+    // describe: npm carries `repository` per version, and a package that changed
+    // forge between releases named the old one in the old version.
+    let selected_version_for_links = subject_version;
+
+    Ok(web::Json(ExplorePackageDetailResponse {
+        registry: registry.clone(),
+        name: name.clone(),
+        gate: GateDto { beta_member },
+        versions,
+        versions_page: VersionPageDto {
+            page,
+            per_page,
+            total,
+            unfiltered_total,
+            prerelease_total,
+            hidden_prereleases,
+        },
+        default_version,
+        selected_version,
+        selected,
+        upstream_unavailable,
+        upstream: upstream.dto,
+        fetch: fetch_offer(&local_svc, &registry_map, registry.as_str(), &identity.0).await,
+        links: package_links(LinkInput {
+            proxy_svc: &proxy_svc,
+            local_svc: &local_svc,
+            mode_map: &mode_map,
+            registry,
+            name,
+            version: selected_version_for_links.as_deref(),
+            kind,
+            // The document the version table above was built from. Reading it
+            // again costs nothing and is the difference between a link that is
+            // there and one that depends on what else has been requested.
+            listing: upstream.detail.as_ref().and_then(|d| d.links.as_ref()),
+            identity: &identity.0,
+            // The two switches the discovery read honours, honoured here too.
+            //
+            // `package_links` makes its own upstream request when the listing
+            // cannot carry the answer, and it was consulting neither: so
+            // `?upstream=skip` — documented as "answer from local rows only …
+            // the cheap answer" — and an operator who set
+            // `[registries.upstream_detail] enabled = false` both still paid one
+            // outbound request per page view on every PyPI, cargo, NuGet, Maven,
+            // RubyGems, Terraform and gallery registry. A switch that half the
+            // page ignores is not a switch.
+            may_ask_upstream: query.upstream != UpstreamMode::Skip && upstream_detail_enabled,
+        })
+        .await,
+    }))
+}
+
+/// Every blocked version of the package, by version string.
+///
+/// Read once for the whole merge, so an upstream-only row shows `Blocked` with
+/// its reason rather than as installable.
+async fn blocked_version_map(
+    admin_svc: &AdminService,
+    registry: &str,
+    name: &str,
+) -> std::collections::HashMap<String, (String, String, String)> {
+    admin_svc
+        .list_packages(PackageFilter {
+            registry: Some(registry.to_owned()),
+            registries: vec![],
+            name_exact: Some(name.to_owned()),
+            name_contains: None,
+            blocked_only: true,
+            limit: 500,
+            offset: 0,
+        })
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|summary| match summary.status {
+            PackageStatus::Blocked {
+                reason,
+                blocked_by,
+                blocked_at,
+            } => Some((
+                summary.package_id.version,
+                (reason, blocked_by, blocked_at.to_rfc3339()),
+            )),
+            PackageStatus::Available => None,
+        })
+        .collect()
+}
+
+/// The rows for versions this instance holds bytes of — proxied, then local.
+///
+/// ── What is deliberately *not* built here ─────────────────────────────────
+///
+/// Three fields — `vulnerabilities`, `license`, `socket_badge_url` — are left at
+/// their empty value and filled in by [`enrich_page`] after the list has been
+/// filtered and sliced. They used to be built in these loops, which cost one
+/// vulnerability read and one SBOM read *per version of the package*: 169 of
+/// each for `@babel/plugin-transform-runtime`, to serve a page showing 25 rows.
+/// Paginating the answer while still enriching every row would have moved the
+/// bytes and left the cost, which is most of the point.
+///
+/// Nothing above the slice may depend on them: the sort is by pre-release and
+/// version string, and the default selection is by source. Both hold.
+fn held_version_rows(
+    proxied_summaries: Vec<batlehub_core::entities::PackageSummary>,
+    local_versions: Vec<batlehub_core::entities::PublishedPackage>,
+    readme_state: &impl Fn(&str) -> ReadmeState,
+) -> Vec<ExploreVersionDto> {
+    let mut versions: Vec<ExploreVersionDto> = Vec::new();
+
+    // Track which versions came from local to avoid duplicating proxied entries.
+    let local_version_set: std::collections::HashSet<&str> =
+        local_versions.iter().map(|v| v.version.as_str()).collect();
+
+    for summary in &proxied_summaries {
+        // Skip versions also present in local (they'll appear as "local").
+        if local_version_set.contains(summary.package_id.version.as_str()) {
+            continue;
+        }
+        let firewall = match &summary.status {
+            PackageStatus::Available => FirewallDto::Clear,
+            PackageStatus::Blocked {
+                reason,
+                blocked_by,
+                blocked_at,
+            } => FirewallDto::Blocked {
+                reason: reason.clone(),
+                blocked_by: blocked_by.clone(),
+                blocked_at: blocked_at.to_rfc3339(),
+            },
+        };
+        versions.push(ExploreVersionDto {
+            readme: readme_state(&summary.package_id.version),
+            // Every version in this list is one this instance has pulled
+            // through, so the scanner has had the bytes and the empty list means
+            // "clear" rather than "never looked".
+            vulnerabilities_scanned: true,
+            // Graded in `enrich_page`, the one funnel every rendered row passes
+            // through — see `version_state`.
+            state: String::new(),
+            is_prerelease: summary.package_id.version.contains('-'),
+            version: summary.package_id.version.clone(),
+            source: "proxied".to_string(),
+            firewall,
+            download_count: Some(summary.access_count),
+            last_accessed: summary.last_accessed.map(format_dt),
+            published_at: None,
+            // Filled by `enrich_page`, for the rows that survive to the answer.
+            vulnerabilities: Vec::new(),
+            license: None,
+            sbom: SbomDto::unknown(),
+            socket_badge_url: None,
+            deprecated: false,
+            deprecation_message: None,
+            unlisted: false,
+        });
+    }
+
+    for pkg in local_versions {
+        let firewall = if pkg.yanked {
+            FirewallDto::Yanked
+        } else {
+            FirewallDto::Clear
+        };
+        versions.push(ExploreVersionDto {
+            readme: readme_state(&pkg.version),
+            vulnerabilities_scanned: true,
+            state: String::new(),
+            is_prerelease: pkg.version.contains('-'),
+            version: pkg.version,
+            source: "local".to_string(),
+            firewall,
+            download_count: Some(0),
+            last_accessed: None,
+            published_at: Some(pkg.published_at.to_rfc3339()),
+            vulnerabilities: Vec::new(),
+            license: None,
+            sbom: SbomDto::unknown(),
+            socket_badge_url: None,
+            deprecated: pkg.deprecated,
+            deprecation_message: pkg.deprecation_message,
+            unlisted: pkg.unlisted,
+        });
+    }
+
+    versions
+}
+
+/// Add the versions only upstream knows about.
+///
+/// Local rows win every collision: a version we hold is described by what we
+/// know about it, and the upstream document cannot overwrite any of it. The
+/// merge only *adds* rows the local sources did not have — the same precedence
+/// `SearchMode::Hybrid` already uses, and for the same reason. That is also what
+/// makes this path safe by construction: a bug here cannot change what the page
+/// says about a version this instance holds (RFC 0007 §6.4).
+fn merge_upstream_rows(
+    versions: &mut Vec<ExploreVersionDto>,
+    detail: Option<&batlehub_core::services::UpstreamDetail>,
+    blocked_versions: &std::collections::HashMap<String, (String, String, String)>,
+    absent_state: ReadmeState,
+) {
+    let Some(detail) = detail else {
+        return;
+    };
+    let held: std::collections::HashSet<&str> =
+        versions.iter().map(|v| v.version.as_str()).collect();
+    let extra: Vec<ExploreVersionDto> = detail
+        .versions
+        .iter()
+        .filter(|candidate| !held.contains(candidate.version.as_str()))
+        .map(|candidate| {
+            // Rules are evaluated for *display*, never for permission: the
+            // blocked set is consulted so an administrator's block shows as
+            // `Blocked` with its reason rather than as installable. The gate
+            // that matters still runs on the download.
+            let firewall = match blocked_versions.get(candidate.version.as_str()) {
+                Some((reason, by, at)) => FirewallDto::Blocked {
+                    reason: reason.clone(),
+                    blocked_by: by.clone(),
+                    blocked_at: at.clone(),
+                },
+                None if candidate.yanked => FirewallDto::Yanked,
+                None => FirewallDto::Clear,
+            };
+            ExploreVersionDto {
+                readme: if detail.readmes.contains_key(&candidate.version) {
+                    ReadmeState::Available
+                } else {
+                    absent_state
+                },
+                // Nothing has ever opened these bytes, so an empty vulnerability
+                // list here means *never scanned* — and a green row on a package
+                // this instance has never held is a claim we cannot support.
+                vulnerabilities_scanned: false,
+                state: String::new(),
+                version: candidate.version.clone(),
+                source: "upstream".to_owned(),
+                firewall,
+                download_count: None,
+                last_accessed: None,
+                published_at: candidate.published_at.map(|t| t.to_rfc3339()),
+                is_prerelease: candidate.is_prerelease,
+                vulnerabilities: Vec::new(),
+                license: None,
+                // Left `unknown`: `enrich_page` skips upstream-only rows, and it
+                // must — nothing has ever opened these bytes, so there is no
+                // SBOM to find and *none* would read as a fact about a version
+                // this instance has never held.
+                sbom: SbomDto::unknown(),
+                socket_badge_url: None,
+                deprecated: candidate.deprecated.is_some(),
+                deprecation_message: candidate.deprecated.clone(),
+                unlisted: false,
+            }
+        })
+        .collect();
+    versions.extend(extra);
+}
+
+/// One page of versions, and every count taken over the whole list before the
+/// slice.
+struct VersionPage {
+    versions: Vec<ExploreVersionDto>,
+    page: u64,
+    per_page: u64,
+    total: u64,
+    unfiltered_total: u64,
+    prerelease_total: u64,
+    hidden_prereleases: u64,
+    default_version: Option<String>,
+    selected_version: Option<String>,
+    /// The version the subject region is about — the one asked for, else the
+    /// default. Also what the package's links are resolved for.
+    subject_version: Option<String>,
+    subject_row: Option<ExploreVersionDto>,
+}
+
+/// Filter the sorted version list, then slice it.
+///
+/// Every count is taken against the whole list before anything is sliced: each
+/// number the console says out loud — `42 of 44 shown`, `Show 3 pre-releases` —
+/// is a statement about the *package*, and a count taken after the slice would
+/// make each of them a statement about page one wearing the package's name.
+fn paginate_versions(
+    mut versions: Vec<ExploreVersionDto>,
+    query: &PackageDetailQuery,
+    versions_per_page: u64,
+) -> VersionPage {
     let unfiltered_total = versions.len() as u64;
     let prerelease_total = versions.iter().filter(|v| v.is_prerelease).count() as u64;
     let default_version = default_selection(&versions);
@@ -932,78 +1052,108 @@ pub async fn explore_package_detail(
     .min(last_page);
 
     let start = (page * per_page) as usize;
-    let mut versions: Vec<ExploreVersionDto> = versions
-        .into_iter()
-        .skip(start)
-        .take(per_page as usize)
-        .collect();
-
-    enrich_page(
-        &mut versions,
-        &admin_svc,
-        &sbom_svc,
-        registry,
-        name,
-        &badge_for,
-    )
-    .await;
-
-    // The subject's row goes through the same enrichment as the page. When it is
-    // on the page there is nothing to do but take the enriched copy; when it is
-    // not, it is enriched alone — one extra vulnerability read and one licence
-    // read, for the one row the reader is actually looking at.
-    let selected = match subject_row {
-        Some(row) => match versions.iter().find(|r| r.version == row.version) {
-            Some(on_page) => Some(on_page.clone()),
-            None => {
-                let mut one = vec![row];
-                enrich_page(&mut one, &admin_svc, &sbom_svc, registry, name, &badge_for).await;
-                Some(one.remove(0))
-            }
-        },
-        None => None,
-    };
-
-    // The row the reader is actually looking at, which is what its links should
-    // describe: npm carries `repository` per version, and a package that changed
-    // forge between releases named the old one in the old version.
-    let selected_version_for_links = subject_version;
-
-    Ok(web::Json(ExplorePackageDetailResponse {
-        registry: registry.clone(),
-        name: name.clone(),
-        gate: GateDto { beta_member },
-        versions,
-        versions_page: VersionPageDto {
-            page,
-            per_page,
-            total,
-            unfiltered_total,
-            prerelease_total,
-            hidden_prereleases,
-        },
+    VersionPage {
+        versions: versions
+            .into_iter()
+            .skip(start)
+            .take(per_page as usize)
+            .collect(),
+        page,
+        per_page,
+        total,
+        unfiltered_total,
+        prerelease_total,
+        hidden_prereleases,
         default_version,
         selected_version,
-        selected,
-        upstream_unavailable,
-        upstream: upstream.dto,
-        fetch: fetch_offer(&local_svc, &registry_map, registry.as_str(), &identity.0).await,
-        links: package_links(LinkInput {
-            proxy_svc: &proxy_svc,
-            local_svc: &local_svc,
-            mode_map: &mode_map,
-            registry,
-            name,
-            version: selected_version_for_links.as_deref(),
-            kind,
-            // The document the version table above was built from. Reading it
-            // again costs nothing and is the difference between a link that is
-            // there and one that depends on what else has been requested.
-            listing: upstream.detail.as_ref().and_then(|d| d.links.as_ref()),
-            identity: &identity.0,
-        })
-        .await,
-    }))
+        subject_version,
+        subject_row,
+    }
+}
+
+/// The two refusals that decide whether this package is answerable at all.
+///
+/// **The catalogue's own registry list**, the same set `list.rs` filters its
+/// rows by, `stats.rs` counts over and `resolve_readme` refuses on. This
+/// endpoint used to only *report* the answer, in `gate.registry_accessible`, and
+/// serve the page either way — so a registry an operator took out of
+/// `rbac.explore` had no rows in the listing, no counts in the stats and a full
+/// detail page for anyone who typed the URL. The README and its images are
+/// refused; refusing them while this still answered left the same facts
+/// reachable one endpoint over, which is not a gate but a speed bump.
+///
+/// Note it is *narrower* than the proxy access `gate.registry_accessible` used
+/// to report: `explore_accessible_registries_for` is proxy access intersected
+/// with the role's explore permission. Anyone who gets past here can necessarily
+/// proxy from the registry too, which is why the gate card has nothing left to
+/// say and the field is gone from the response.
+///
+/// **Per-package visibility.** The listing filters `internal`/`team` packages
+/// out entirely, so the detail view has to agree — otherwise the name is hidden
+/// from the index while remaining readable to anyone who guesses or is told the
+/// URL, and the filter buys nothing.
+///
+/// Both answer `404`, never `403`: a 403 confirms the package exists, which is
+/// the fact a non-public package is trying not to disclose. Denied and absent
+/// look identical from outside.
+async fn enforce_detail_gates(
+    access: &crate::AccessConfigLock,
+    local_svc: &LocalRegistryService,
+    registry: &str,
+    name: &str,
+    identity: &AuthIdentity,
+) -> Result<(), AppError> {
+    let not_found = || {
+        AppError::not_found(format!(
+            "package '{name}' not found in registry '{registry}'"
+        ))
+    };
+
+    if !access
+        .read()
+        .await
+        .explore_accessible_registries_for(identity)
+        .contains(registry)
+    {
+        tracing::debug!(
+            registry = %registry, package = %name,
+            "explore detail: registry not browsable by this caller"
+        );
+        return Err(not_found());
+    }
+
+    if let Err(e) = local_svc.check_visibility(registry, name, identity).await {
+        tracing::debug!(
+            registry = %registry, package = %name, error = %e,
+            "explore detail: hidden by package visibility"
+        );
+        return Err(not_found());
+    }
+
+    Ok(())
+}
+
+/// Whether this caller is in the registry's beta channel, for the gate card.
+///
+/// A registry with no channel configured has no members, and a membership
+/// lookup that fails is not one: neither is an error the page reports, because
+/// the channel decides what a *download* may do and this is a badge.
+async fn beta_member_for(
+    local_svc: &LocalRegistryService,
+    registry: &str,
+    identity: &AuthIdentity,
+) -> bool {
+    let beta_port = local_svc
+        .hot
+        .read()
+        .await
+        .beta_channel
+        .get(registry)
+        .cloned();
+    let Some(port) = beta_port else {
+        return false;
+    };
+    port.is_member(registry, identity).await.unwrap_or(false)
 }
 
 /// Everything [`package_links`] consults, in one place — the `ResolveInput`
@@ -1026,6 +1176,10 @@ struct LinkInput<'a> {
     listing: Option<&'a batlehub_core::entities::MetadataLinks>,
     /// The reader, because the resolve below is rule-evaluated like any other.
     identity: &'a Identity,
+    /// Whether this request is allowed to cause egress at all — `?upstream=` and
+    /// the registry's `[registries.upstream_detail] enabled`, as the discovery
+    /// read reads them. `false` confines this to the cache and the listing.
+    may_ask_upstream: bool,
 }
 
 /// The package's own links: the cache, then the listing, then — only where
@@ -1066,6 +1220,7 @@ async fn package_links(input: LinkInput<'_>) -> Option<PackageLinksDto> {
         kind,
         listing,
         identity,
+        may_ask_upstream,
     } = input;
 
     // A local-only registry has no upstream to ask, and a locally published
@@ -1074,14 +1229,19 @@ async fn package_links(input: LinkInput<'_>) -> Option<PackageLinksDto> {
     if mode_map.get(registry) == RegistryMode::Local {
         return None;
     }
-    if !local_svc
-        .backend
-        .get_versions(registry, name)
-        .await
-        .unwrap_or_default()
-        .is_empty()
-    {
-        return None;
+    // The same suppression, failing the same way: a read that errored is treated
+    // as "this package is hosted here", so a transient backend fault cannot turn
+    // a private package's link resolution into an upstream request naming it.
+    match local_svc.backend.get_versions(registry, name).await {
+        Ok(rows) if rows.is_empty() => {}
+        Ok(_) => return None,
+        Err(e) => {
+            tracing::warn!(
+                registry = %registry, package = %name, error = %e,
+                "explore links: local version read failed; not asking upstream"
+            );
+            return None;
+        }
     }
 
     // What a legitimate resolve already put there — a package manager's request,
@@ -1108,7 +1268,8 @@ async fn package_links(input: LinkInput<'_>) -> Option<PackageLinksDto> {
         // what the page already has.
         None => match (package_id, kind) {
             (Some(package_id), Some(kind))
-                if !batlehub_core::services::upstream_detail::listing_carries_links(kind) =>
+                if may_ask_upstream
+                    && !batlehub_core::services::upstream_detail::listing_carries_links(kind) =>
             {
                 let req = batlehub_core::services::proxy::ProxyRequest {
                     package_id,

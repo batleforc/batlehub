@@ -286,72 +286,131 @@ impl ProxyService {
         tokio::spawn(async move {
             // Pull the just-stored bytes back from storage. One read, one
             // decompression, however many consumers.
-            let data = match storage.retrieve(&key_clone).await {
-                Ok(Some(artifact)) => {
-                    match crate::ports::collect_byte_stream(artifact.stream).await {
-                        Ok(bytes) => bytes,
-                        Err(e) => {
-                            tracing::warn!(key = %key_clone, error = %e, "introspection: failed to read cached artifact (non-fatal)");
-                            return;
-                        }
-                    }
-                }
-                Ok(None) => {
-                    tracing::warn!(key = %key_clone, "introspection: cached artifact vanished before it could be read (non-fatal)");
-                    return;
-                }
-                Err(e) => {
-                    tracing::warn!(key = %key_clone, error = %e, "introspection: storage retrieve failed (non-fatal)");
-                    return;
-                }
+            let Some(data) = read_cached_artifact(&storage, &key_clone).await else {
+                return;
             };
 
             if let Some((readme_svc, cfg)) = readme_job {
-                // The README comes out of the same `extract` call the SBOM uses,
-                // so a registry with SBOM off still gets one — the extractor is
-                // a pure function over the bytes and does not need the SBOM
-                // service to be enabled, only to exist.
-                if let Some(extractor) = extractor {
-                    if let Some(found) = extractor.extract(&data, &registry_type).readme {
-                        if let Err(e) = readme_svc
-                            .record_from_archive(
-                                &meta_clone.id.registry,
-                                &meta_clone.id.name,
-                                &meta_clone.id.version,
-                                found.content,
-                                found.format,
-                                &cfg,
-                            )
-                            .await
-                        {
-                            tracing::warn!(key = %key_clone, error = %e, "readme: archive capture failed (non-fatal)");
-                        }
-                    }
-                }
+                capture_readme_from_archive(ArchiveReadme {
+                    svc: &readme_svc,
+                    cfg: &cfg,
+                    extractor: extractor.as_ref(),
+                    data: &data,
+                    metadata: &meta_clone,
+                    registry_type: &registry_type,
+                    key: &key_clone,
+                })
+                .await;
             }
 
             if let Some((sbom, cfg)) = sbom_job {
-                let formats: Vec<SbomFormat> = cfg
-                    .formats
-                    .iter()
-                    .filter_map(|s| SbomFormat::parse(s))
-                    .collect();
-                if let Err(e) = sbom
-                    .record_for_proxied(
-                        &meta_clone,
-                        &key_clone,
-                        &data,
-                        SbomProxiedOptions {
-                            registry_type: &registry_type,
-                            formats: &formats,
-                            fetch_upstream: cfg.fetch_upstream,
-                        },
-                    )
-                    .await
-                {
-                    tracing::warn!(key = %key_clone, error = %e, "sbom generation failed (non-fatal)");
-                }
+                generate_sbom(&sbom, &cfg, &meta_clone, &key_clone, &data, &registry_type).await;
             }
         });
+    }
+}
+
+/// Read a just-stored artifact back out of storage and buffer it.
+///
+/// `None` is never fatal: every consumer of these bytes is best-effort, and each
+/// failure mode logs the line that says which one it was. Split out of
+/// [`ProxyService::maybe_introspect_artifact`] so the spawned task reads as the
+/// three steps it is — read, README, SBOM — rather than a match nested inside a
+/// match inside an async block.
+async fn read_cached_artifact(
+    storage: &Arc<dyn crate::ports::StorageBackend>,
+    key: &str,
+) -> Option<bytes::Bytes> {
+    let artifact = match storage.retrieve(key).await {
+        Ok(Some(artifact)) => artifact,
+        Ok(None) => {
+            tracing::warn!(key = %key, "introspection: cached artifact vanished before it could be read (non-fatal)");
+            return None;
+        }
+        Err(e) => {
+            tracing::warn!(key = %key, error = %e, "introspection: storage retrieve failed (non-fatal)");
+            return None;
+        }
+    };
+    match crate::ports::collect_byte_stream(artifact.stream).await {
+        Ok(bytes) => Some(bytes),
+        Err(e) => {
+            tracing::warn!(key = %key, error = %e, "introspection: failed to read cached artifact (non-fatal)");
+            None
+        }
+    }
+}
+
+/// What [`capture_readme_from_archive`] needs, as one argument.
+///
+/// Seven borrows threaded from the spawned task into one call; a struct rather
+/// than a seven-parameter signature so the call site names each one.
+struct ArchiveReadme<'a> {
+    svc: &'a crate::services::readme::ReadmeService,
+    cfg: &'a crate::services::hot_config::ReadmeConfig,
+    extractor: Option<&'a Arc<dyn crate::ports::SbomExtractor>>,
+    data: &'a bytes::Bytes,
+    metadata: &'a crate::entities::PackageMetadata,
+    registry_type: &'a str,
+    key: &'a str,
+}
+
+/// Record the README found in the artifact, if there is one. Non-fatal.
+///
+/// The README comes out of the same `extract` call the SBOM uses, so a registry
+/// with SBOM off still gets one — the extractor is a pure function over the
+/// bytes and does not need the SBOM service to be enabled, only to exist.
+async fn capture_readme_from_archive(job: ArchiveReadme<'_>) {
+    let Some(extractor) = job.extractor else {
+        return;
+    };
+    let Some(found) = extractor.extract(job.data, job.registry_type).readme else {
+        return;
+    };
+    let id = &job.metadata.id;
+    if let Err(e) = job
+        .svc
+        .record_from_archive(
+            &id.registry,
+            &id.name,
+            &id.version,
+            found.content,
+            found.format,
+            job.cfg,
+        )
+        .await
+    {
+        tracing::warn!(key = %job.key, error = %e, "readme: archive capture failed (non-fatal)");
+    }
+}
+
+/// Generate and store the SBOM for a just-cached artifact. Non-fatal.
+async fn generate_sbom(
+    sbom: &crate::services::sbom::SbomService,
+    cfg: &crate::services::hot_config::SbomConfig,
+    metadata: &crate::entities::PackageMetadata,
+    key: &str,
+    data: &bytes::Bytes,
+    registry_type: &str,
+) {
+    let formats: Vec<SbomFormat> = cfg
+        .formats
+        .iter()
+        .filter_map(|s| SbomFormat::parse(s))
+        .collect();
+    if let Err(e) = sbom
+        .record_for_proxied(
+            metadata,
+            key,
+            data,
+            SbomProxiedOptions {
+                registry_type,
+                formats: &formats,
+                fetch_upstream: cfg.fetch_upstream,
+            },
+        )
+        .await
+    {
+        tracing::warn!(key = %key, error = %e, "sbom generation failed (non-fatal)");
     }
 }

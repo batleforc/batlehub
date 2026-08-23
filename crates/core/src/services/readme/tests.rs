@@ -643,3 +643,45 @@ async fn rendering_works_with_no_cache_at_all() {
         .await;
     assert!(html.contains("<h1"), "{html}");
 }
+
+/// **A scheme is case-insensitive and whitespace around a URL is not part of it.**
+///
+/// Compared byte-exactly, `HTTPS://cdn.example/logo.png` and `" https://…"` were
+/// neither proxied nor charted: the rewrite fell through, `url_relative(Deny)`
+/// dropped the `src`, and the image disappeared with no chip and no warning —
+/// the silent failure `proxy_prefix` refuses a relative prefix to prevent. A
+/// browser resolves both, so this server has to read both.
+#[test]
+fn an_image_src_is_read_the_way_a_browser_reads_it() {
+    for src in [
+        "HTTPS://cdn.example/logo.png",
+        " https://cdn.example/logo.png ",
+        "Http://cdn.example/logo.png",
+    ] {
+        let urls = render::image_urls(
+            &format!(r#"<img src="{src}">"#),
+            ReadmeFormat::Markdown,
+            &[],
+        );
+        assert_eq!(urls.len(), 1, "{src}: no image was charted");
+        assert_eq!(
+            urls[0],
+            src.trim(),
+            "{src}: the trimmed URL is what gets fetched"
+        );
+    }
+}
+
+/// And the host allow-list reads it the same way, or the two disagree about
+/// which images exist.
+#[test]
+fn the_host_allow_list_is_case_insensitive_about_the_scheme() {
+    assert!(image::image_host_allowed(
+        "HTTPS://cdn.example/logo.png",
+        &["cdn.example".to_owned()]
+    ));
+    assert!(image::image_host_allowed(
+        " https://cdn.example/logo.png ",
+        &["cdn.example".to_owned()]
+    ));
+}

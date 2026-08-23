@@ -26,12 +26,22 @@ pub struct AppError {
 }
 
 impl AppError {
-    pub fn not_found(msg: impl Into<String>) -> Self {
+    /// One refusal, spelled once.
+    ///
+    /// Every named constructor below is this with its status filled in — a
+    /// private funnel rather than eleven copies of the same three fields, so a
+    /// field added to `AppError` is added in one place and cannot be forgotten
+    /// on the eleventh.
+    fn with_status(status: StatusCode, msg: impl Into<String>) -> Self {
         Self {
-            status: StatusCode::NOT_FOUND,
+            status,
             message: msg.into(),
             code: None,
         }
+    }
+
+    pub fn not_found(msg: impl Into<String>) -> Self {
+        Self::with_status(StatusCode::NOT_FOUND, msg)
     }
 
     /// The same refusal, carrying a slug a client can branch on.
@@ -49,43 +59,23 @@ impl AppError {
     /// [`forbidden`](Self::forbidden), which means "we know who you are and the
     /// answer is no".
     pub fn unauthorized(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::UNAUTHORIZED,
-            message: msg.into(),
-            code: None,
-        }
+        Self::with_status(StatusCode::UNAUTHORIZED, msg)
     }
 
     pub fn forbidden(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::FORBIDDEN,
-            message: msg.into(),
-            code: None,
-        }
+        Self::with_status(StatusCode::FORBIDDEN, msg)
     }
 
     pub fn bad_request(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::BAD_REQUEST,
-            message: msg.into(),
-            code: None,
-        }
+        Self::with_status(StatusCode::BAD_REQUEST, msg)
     }
 
     pub fn internal(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: msg.into(),
-            code: None,
-        }
+        Self::with_status(StatusCode::INTERNAL_SERVER_ERROR, msg)
     }
 
     pub fn conflict(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::CONFLICT,
-            message: msg.into(),
-            code: None,
-        }
+        Self::with_status(StatusCode::CONFLICT, msg)
     }
 
     /// The route exists and the request is well-formed, but this server does
@@ -93,43 +83,23 @@ impl AppError {
     /// not here at all. The distinction matters to a client deciding whether to
     /// retry elsewhere or to stop.
     pub fn not_implemented(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::NOT_IMPLEMENTED,
-            message: msg.into(),
-            code: None,
-        }
+        Self::with_status(StatusCode::NOT_IMPLEMENTED, msg)
     }
 
     pub fn unprocessable(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::UNPROCESSABLE_ENTITY,
-            message: msg.into(),
-            code: None,
-        }
+        Self::with_status(StatusCode::UNPROCESSABLE_ENTITY, msg)
     }
 
     pub fn too_many_requests(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::TOO_MANY_REQUESTS,
-            message: msg.into(),
-            code: None,
-        }
+        Self::with_status(StatusCode::TOO_MANY_REQUESTS, msg)
     }
 
     pub fn service_unavailable(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::SERVICE_UNAVAILABLE,
-            message: msg.into(),
-            code: None,
-        }
+        Self::with_status(StatusCode::SERVICE_UNAVAILABLE, msg)
     }
 
     pub fn bad_gateway(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::BAD_GATEWAY,
-            message: msg.into(),
-            code: None,
-        }
+        Self::with_status(StatusCode::BAD_GATEWAY, msg)
     }
 }
 
@@ -169,49 +139,25 @@ impl From<CoreError> for AppError {
                 Self::bad_request(format!("unknown registry: {name}"))
             }
             CoreError::Conflict(msg) => Self::conflict(msg),
-            CoreError::PayloadTooLarge(msg) => Self {
-                status: StatusCode::PAYLOAD_TOO_LARGE,
-                message: msg,
-                code: None,
-            },
-            CoreError::QuotaExceeded(msg) => Self {
-                status: StatusCode::TOO_MANY_REQUESTS,
-                message: msg,
-                code: None,
-            },
+            CoreError::PayloadTooLarge(msg) => {
+                Self::with_status(StatusCode::PAYLOAD_TOO_LARGE, msg)
+            }
+            CoreError::QuotaExceeded(msg) => Self::with_status(StatusCode::TOO_MANY_REQUESTS, msg),
             CoreError::InvalidVersion(msg) => Self::unprocessable(msg),
             CoreError::InvalidInput(msg) => Self::bad_request(msg),
-            CoreError::Registry(msg) => Self {
-                status: StatusCode::BAD_GATEWAY,
-                message: msg,
-                code: None,
-            },
+            CoreError::Registry(msg) => Self::with_status(StatusCode::BAD_GATEWAY, msg),
             // Upstream served bytes that fail their advertised checksum (or
             // provided none when one is required) → 502, never the bad artifact.
-            CoreError::IntegrityFailure(msg) => Self {
-                status: StatusCode::BAD_GATEWAY,
-                message: msg,
-                code: None,
-            },
+            CoreError::IntegrityFailure(msg) => Self::with_status(StatusCode::BAD_GATEWAY, msg),
             // Dependency unavailability → 503 so load-balancers can retry elsewhere.
-            CoreError::Storage(msg) | CoreError::Cache(msg) => Self {
-                status: StatusCode::SERVICE_UNAVAILABLE,
-                message: msg,
-                code: None,
-            },
-            CoreError::Database(msg) => Self {
-                status: StatusCode::SERVICE_UNAVAILABLE,
-                message: msg,
-                code: None,
-            },
+            CoreError::Storage(msg) | CoreError::Cache(msg) => {
+                Self::with_status(StatusCode::SERVICE_UNAVAILABLE, msg)
+            }
+            CoreError::Database(msg) => Self::with_status(StatusCode::SERVICE_UNAVAILABLE, msg),
             // Reaching HTTP at all means a handler asked a registry type for
             // something its protocol has no answer for; 501 says that plainly
             // rather than dressing a capability gap up as a server fault.
-            CoreError::NotSupported(msg) => Self {
-                status: StatusCode::NOT_IMPLEMENTED,
-                message: msg,
-                code: None,
-            },
+            CoreError::NotSupported(msg) => Self::with_status(StatusCode::NOT_IMPLEMENTED, msg),
             other => {
                 tracing::error!(error = %other, "internal error");
                 Self::internal("internal server error")

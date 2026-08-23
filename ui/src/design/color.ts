@@ -75,16 +75,55 @@ export function contrastRatio(a: Rgb, b: Rgb): number {
   return (hi + 0.05) / (lo + 0.05);
 }
 
+const clamp = (v: number) => Math.min(1, Math.max(0, v));
+
+/** Linear → gamma-encoded sRGB, one channel. */
+const encodeSrgb = (v: number) =>
+  v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+
+/** Gamma-encoded sRGB → linear, one channel. */
+const decodeSrgb = (v: number) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
+
+/**
+ * `fg` at `alpha` over `bg`, as a browser composites it.
+ *
+ * The gap this closes: every ratio in DESIGN.md is measured on tokens at full
+ * opacity, and the component layer then paints them through an alpha —
+ * `text-muted-foreground/60`, `border-primary/40`, `bg-primary/85`. What the
+ * reader sees is the *composite*, which is a different colour with a different
+ * ratio, and nothing measured it. Nine pairings turned out to sit under their
+ * floor while `tokens.test.ts` was green and correct about every number in it.
+ *
+ * The mix happens on the **gamma-encoded** channels, not in linear light.
+ * Compositing in linear space is arguably the more correct rendering and it is
+ * emphatically not what CSS does: `simple alpha compositing` in the Compositing
+ * spec operates on the encoded values. Mixing in linear light puts
+ * `--ink-dim/60` on `--ground` at 3.17:1 instead of 2.57:1 — a difference that
+ * spans the AA floor, in the direction that would have hidden the defect.
+ *
+ * In and out in linear sRGB, so the result feeds `contrastRatio` directly.
+ */
+export function composite(fg: Rgb, bg: Rgb, alpha: number): Rgb {
+  const mix = (f: number, b: number) =>
+    decodeSrgb(encodeSrgb(clamp(f)) * alpha + encodeSrgb(clamp(b)) * (1 - alpha));
+  return [mix(fg[0], bg[0]), mix(fg[1], bg[1]), mix(fg[2], bg[2])];
+}
+
+/** `#rgb` / `#rrggbb` → linear sRGB, for the colours that arrive as hex. */
+export function fromHex(hex: string): Rgb {
+  const raw = hex.replace("#", "");
+  const full = raw.length === 3 ? [...raw].map((ch) => ch + ch).join("") : raw;
+  const byte = (i: number) => Number.parseInt(full.slice(i * 2, i * 2 + 2), 16) / 255;
+  return [decodeSrgb(byte(0)), decodeSrgb(byte(1)), decodeSrgb(byte(2))];
+}
+
 /** Gamma-encoded hex, for reporting. Clamps out-of-gamut components. */
 export function toHex(rgb: Rgb): string {
-  const encode = (v: number) => (v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055);
   return (
     "#" +
     rgb
       .map((v) => {
-        const byte = Math.round(
-          Math.min(255, Math.max(0, encode(Math.min(1, Math.max(0, v))) * 255)),
-        );
+        const byte = Math.round(Math.min(255, Math.max(0, encodeSrgb(clamp(v)) * 255)));
         return byte.toString(16).padStart(2, "0");
       })
       .join("")

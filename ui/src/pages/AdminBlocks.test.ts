@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 
 const { listUsers, listIps, blockUserMock, unblockUserMock, blockIpMock, unblockIpMock } =
@@ -26,6 +26,23 @@ import { DestructiveConfirm } from "@/components/ui/destructive-confirm";
 /** Seconds since the epoch, which is what `BlockedIpDto` carries. */
 const epoch = (offsetMs: number) => Math.floor((Date.now() + offsetMs) / 1000);
 
+/**
+ * Teardown is load-bearing here, not hygiene.
+ *
+ * `Dialog` teleports its content to `document.body`, and `mountPage` attaches
+ * there too. Without an unmount, the previous test's dialog is still in the
+ * document, so `querySelector("#block-subject")` returns *its* input — the
+ * next test types into a detached form and reads a count of zero from the
+ * live one.
+ */
+let active: ReturnType<typeof mount> | null = null;
+
+afterEach(() => {
+  active?.unmount();
+  active = null;
+  document.body.innerHTML = "";
+});
+
 async function mountPage() {
   const wrapper = mount(AdminBlocks, {
     // `Dialog` teleports, so the tree has to be in the document for the
@@ -34,7 +51,43 @@ async function mountPage() {
     global: { stubs: { RouterLink: { template: "<a><slot /></a>" }, SectionTabs: true } },
   });
   await flushPromises();
+  active = wrapper;
   return wrapper;
+}
+
+/**
+ * The confirmation currently on screen.
+ *
+ * Both halves of this page route through `DestructiveConfirm` now — adding a
+ * block and lifting one — so `findComponent` returns whichever is first in the
+ * tree rather than whichever is open.
+ */
+function openConfirm(wrapper: ReturnType<typeof mount>) {
+  const dialog = wrapper.findAllComponents(DestructiveConfirm).find((d) => d.props("open"));
+  if (!dialog) throw new Error("no DestructiveConfirm is open");
+  return dialog;
+}
+
+/** Open the adder for one kind and type a subject into it. */
+async function openAdder(
+  wrapper: ReturnType<typeof mount>,
+  button: RegExp,
+  subject: string,
+): Promise<void> {
+  await wrapper
+    .findAll("button")
+    .find((b) => button.test(b.text()))!
+    .trigger("click");
+  await flushPromises();
+
+  if (subject) {
+    // `Dialog` teleports its content out of the wrapper, so the form lives on
+    // the document rather than inside the mounted tree.
+    const input = document.querySelector<HTMLInputElement>("#block-subject")!;
+    input.value = subject;
+    input.dispatchEvent(new Event("input"));
+    await flushPromises();
+  }
 }
 
 describe("AdminBlocks", () => {
@@ -153,7 +206,9 @@ describe("AdminBlocks", () => {
     await lift.trigger("click");
     await flushPromises();
 
-    const dialog = wrapper.findComponent(DestructiveConfirm);
+    // Both halves of this page use the contract now, so the one that is *open*
+    // is the one under test — `findComponent` would always return the adder.
+    const dialog = openConfirm(wrapper);
     expect(dialog.props("open")).toBe(true);
     expect(dialog.props("scope")).toBeTruthy();
 
@@ -165,20 +220,85 @@ describe("AdminBlocks", () => {
   it("surfaces a failed block instead of closing silently", async () => {
     blockUserMock.mockResolvedValue({ error: { message: "not permitted" } });
     const wrapper = await mountPage();
-    const open = wrapper.findAll("button").find((b) => /block account/i.test(b.text()))!;
-    await open.trigger("click");
-    await flushPromises();
+    await openAdder(wrapper, /block account/i, "mallory");
 
-    // `Dialog` teleports its content out of the wrapper, so the form lives on
-    // the document rather than inside the mounted tree.
-    const subject = document.querySelector<HTMLInputElement>("#block-subject")!;
-    subject.value = "mallory";
-    subject.dispatchEvent(new Event("input"));
-    await flushPromises();
-
-    document.querySelector<HTMLButtonElement>('[data-testid="block-submit"]')!.click();
+    openConfirm(wrapper).vm.$emit("confirm");
     await flushPromises();
     expect(document.body.textContent).toContain("not permitted");
+  });
+
+  /**
+   * PRODUCT.md principle 2 names blocking as one of the four actions that must
+   * state scope, count and consequence. Adding one went through a bare
+   * `Dialog` — no confirmation at all — while *lifting* one, seven lines below
+   * it in the same file, got the full contract. The restorative half was
+   * confirmed and the destructive half was not.
+   */
+  it("routes adding a block through the destructive contract too", async () => {
+    const wrapper = await mountPage();
+    await openAdder(wrapper, /block account/i, "mallory");
+
+    const dialog = openConfirm(wrapper);
+    expect(dialog.props("count")).toBe(1);
+    expect(dialog.props("scope")).toBe("mallory");
+    // A block is lifted by this very page, so it is reversible and takes no
+    // typed-name step — uniform friction teaches people to type through it.
+    expect(dialog.props("reversible")).toBe(true);
+
+    dialog.vm.$emit("confirm");
+    await flushPromises();
+    expect(blockUserMock).toHaveBeenCalledTimes(1);
+  });
+
+  /** Zero until an address is named — which is also what disables the confirm. */
+  it("confirms nothing while the subject is empty", async () => {
+    const wrapper = await mountPage();
+    await openAdder(wrapper, /block account/i, "");
+    expect(openConfirm(wrapper).props("count")).toBe(0);
+  });
+
+  /**
+   * The mechanism, stated. Both middlewares run *before* any rule is
+   * evaluated, so a mistyped CIDR does not degrade a policy — it cuts off
+   * every agent behind that egress. The dialog said none of it.
+   */
+  it("states what a block actually does, per kind", async () => {
+    const wrapper = await mountPage();
+    await openAdder(wrapper, /block account/i, "mallory");
+    expect(document.body.textContent).toContain("401");
+
+    await openAdder(wrapper, /block address/i, "203.0.113.9");
+    expect(document.body.textContent).toContain("403");
+  });
+
+  /**
+   * The duration was `<input type="number">` in raw seconds, defaulting to
+   * 3600: the operator had to know a day is 86400 and type it correctly under
+   * pressure, and one mistyped digit is the difference between an hour and
+   * eleven days.
+   */
+  it("offers durations rather than raw seconds", async () => {
+    const wrapper = await mountPage();
+    await openAdder(wrapper, /block address/i, "203.0.113.9");
+
+    const duration = document.querySelector("#block-duration");
+    expect(duration, "the duration field exists").not.toBeNull();
+    expect(duration!.getAttribute("type")).not.toBe("number");
+  });
+
+  /**
+   * The self-lockout warning fired for *every* address typed —
+   * `dialogKind === "ip" && subject.length > 0` — so it never told anyone
+   * anything, and a warning that is always on teaches people to click past it.
+   *
+   * Comparing against the address the server actually saw needs an API that
+   * exposes it; `MeResponse` carries only role, groups and user_id. Removed
+   * rather than left lying, and reinstated when the endpoint exists.
+   */
+  it("does not warn about a self-lockout it cannot detect", async () => {
+    const wrapper = await mountPage();
+    await openAdder(wrapper, /block address/i, "203.0.113.9");
+    expect(document.body.textContent).not.toMatch(/lock (yourself )?out/i);
   });
 
   it("says nobody is blocked when nobody is", async () => {

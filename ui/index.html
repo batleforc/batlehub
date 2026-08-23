@@ -24,6 +24,26 @@
 
     <link rel="icon" type="image/svg+xml" href="/logo.svg" />
 
+    <!--
+      The rendition, before the first paint. `tokens.css` makes dark the default
+      and light opt-in through `[data-theme="light"]`, and the attribute was not
+      set until `useColorMode` mounted — so every reader on a light preference
+      got a full page of near-black first.
+
+      Blocking on purpose: no `defer`, no `async`, and not `type="module"`,
+      because a module script is deferred by definition and a deferred theme is
+      the flash this removes. An external file rather than an inline block
+      because the policy above is `script-src 'self'` with no nonce and no hash,
+      and the server can only narrow it.
+
+      Its source is `build/theme-init.js` and it is emitted here minified by
+      `build/theme-init.ts` — 268 bytes of the 3.1 kB the source spends on
+      explaining why it must agree with `useColorMode`. Every one of those bytes
+      is time before the first paint, which is why it is not in `public/`, whose
+      contents are copied verbatim.
+    -->
+    <script src="/theme-init.js"></script>
+
     <!-- Open Graph -->
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="BatleHub" />

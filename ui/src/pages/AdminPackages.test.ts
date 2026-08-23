@@ -319,7 +319,12 @@ describe("AdminPackages", () => {
 
     expect(row.text()).toContain("Blocked");
     expect(row.text()).toContain("CVE-2026-0001");
-    expect(row.attributes("class")).toContain("bg-destructive/5");
+    /* Not a row tint. `bg-destructive/5` measured 1.03:1 in dark and 1.09:1 in
+       light — DESIGN.md's Undependable Fill Rule in its plainest form, a fill
+       standing in for a state channel while being invisible. The word and the
+       badge above are the channels; `system-rules.test.ts` keeps the tint from
+       coming back. */
+    expect(row.attributes("class") ?? "").not.toContain("bg-destructive/");
     expect(row.findAll("button").map((b) => b.text())).toEqual(["Unblock", "Delete"]);
   });
 
@@ -679,5 +684,89 @@ describe("AdminPackages", () => {
       version: "1.0.0",
       artifact: "lib-1.0.0.jar",
     });
+  });
+});
+
+/**
+ * Rows are keyed by the package, not by their position in the filtered list.
+ *
+ * The reported symptom — checked boxes migrating to the wrong rows — does not
+ * happen, and it is worth writing down why, because the reasoning is what says
+ * these tests are the right ones: `:checked` is a bound value and Vue's
+ * `patchDOMProp` writes it on every patch, while `@change` re-syncs `selected`
+ * before the next render. Nothing *bound* can drift.
+ *
+ * Keyboard focus is not a bound value. It lives on a DOM node, and with an
+ * index key the node stays put while its contents are re-labelled — so the
+ * focus ring ends up on a different package than the one the reader put it on,
+ * with no visible change to say so. On a page whose row actions are block,
+ * unblock and delete.
+ */
+describe("AdminPackages row identity", () => {
+  const named = (name: string) =>
+    pkg({ id: name, package_id: { registry: "npm", name, version: "1.0.0", artifact: null } });
+
+  /** Which package's row holds the focused element. */
+  const focusedRow = () =>
+    document.activeElement?.closest("tr")?.textContent?.match(/zulu|beta|gamma/)?.[0];
+
+  async function withRows() {
+    mocks.listPackages.mockResolvedValue(listing([named("zulu"), named("beta"), named("gamma")]));
+    const wrapper = mount(AdminPackages, {
+      attachTo: document.body,
+      global: { stubs: { SectionTabs: true } },
+    });
+    await flushPromises();
+    return wrapper;
+  }
+
+  /** The filter that drops the first row, shifting the other two up. */
+  const dropFirst = (wrapper: Awaited<ReturnType<typeof withRows>>) =>
+    wrapper.find('input[type="text"], input:not([type])').setValue("a");
+
+  it("keeps keyboard focus on the package it was put on", async () => {
+    const wrapper = await withRows();
+    const boxes = () => wrapper.findAll('tbody input[type="checkbox"]');
+
+    (boxes()[1].element as HTMLInputElement).focus();
+    expect(focusedRow()).toBe("beta");
+
+    await dropFirst(wrapper);
+    await flushPromises();
+    expect(focusedRow(), "focus followed the row element, not the package").toBe("beta");
+    wrapper.unmount();
+  });
+
+  /**
+   * The counter-assertion, so the test above cannot pass by the list simply
+   * not having changed.
+   */
+  it("really does drop a row when filtered", async () => {
+    const wrapper = await withRows();
+    expect(wrapper.findAll("tbody tr")).toHaveLength(3);
+    await dropFirst(wrapper);
+    await flushPromises();
+    expect(wrapper.findAll("tbody tr")).toHaveLength(2);
+    expect(wrapper.text()).not.toContain("zulu");
+    wrapper.unmount();
+  });
+
+  it("carries a selection through a filter change", async () => {
+    // True before the fix as well — recorded because it is what the report
+    // claimed was broken, and a reader who finds this file should be able to
+    // see that it was checked rather than assumed.
+    const wrapper = await withRows();
+    const boxes = () => wrapper.findAll('tbody input[type="checkbox"]');
+    await boxes()[1].setValue(true);
+    await flushPromises();
+
+    await dropFirst(wrapper);
+    await flushPromises();
+
+    const rows = wrapper.findAll("tbody tr").map((r) => r.text().match(/zulu|beta|gamma/)?.[0]);
+    const checked = boxes().map((b) => (b.element as HTMLInputElement).checked);
+    expect(rows).toEqual(["beta", "gamma"]);
+    expect(checked).toEqual([true, false]);
+    wrapper.unmount();
   });
 });

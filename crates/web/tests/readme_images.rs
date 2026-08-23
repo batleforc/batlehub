@@ -47,6 +47,13 @@ struct ScriptedFetcher {
     answers: Vec<(String, &'static str, Vec<u8>)>,
     calls: AtomicUsize,
     seen: Mutex<Vec<String>>,
+    /// The `remote_image_hosts` each call arrived with.
+    ///
+    /// Recorded because the fetcher follows redirects and the *caller* cannot:
+    /// the list has to reach the implementation or the host that answers is
+    /// never checked against it, which is how an allow-listed CDN's `302` gets
+    /// an arbitrary host's bytes served from this console's origin.
+    allowed: Mutex<Vec<Vec<String>>>,
 }
 
 impl ScriptedFetcher {
@@ -55,6 +62,7 @@ impl ScriptedFetcher {
             answers,
             calls: AtomicUsize::new(0),
             seen: Mutex::new(Vec::new()),
+            allowed: Mutex::new(Vec::new()),
         })
     }
     fn calls(&self) -> usize {
@@ -63,13 +71,22 @@ impl ScriptedFetcher {
     fn seen(&self) -> Vec<String> {
         self.seen.lock().unwrap().clone()
     }
+    fn allowed(&self) -> Vec<Vec<String>> {
+        self.allowed.lock().unwrap().clone()
+    }
 }
 
 #[async_trait]
 impl ReadmeImageFetcher for ScriptedFetcher {
-    async fn fetch(&self, url: &str, _max_bytes: usize) -> Result<Option<FetchedImage>, CoreError> {
+    async fn fetch(
+        &self,
+        url: &str,
+        allowed_hosts: &[String],
+        _max_bytes: usize,
+    ) -> Result<Option<FetchedImage>, CoreError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.seen.lock().unwrap().push(url.to_owned());
+        self.allowed.lock().unwrap().push(allowed_hosts.to_vec());
         Ok(self
             .answers
             .iter()
@@ -526,6 +543,48 @@ async fn an_unauthenticated_caller_gets_the_same_answer_from_both_endpoints() {
 const CHAIN: &str = "![dead](https://img.shields.io/dead.svg) then \
                      ![build](https://img.shields.io/build.svg) and \
                      ![logo](https://cdn.example/logo.png)";
+
+/// **The allow-list reaches the fetcher**, which is the only place it can hold.
+///
+/// The fetcher follows redirects; the caller cannot. Checked only against the
+/// URL written in the README, an allow-listed CDN answering
+/// `302 Location: https://evil.example/x.svg` had *that* host's bytes served
+/// back from this console's own origin under a vouched-for `Content-Type`. The
+/// re-check lives in `http_client::fetch_image`, against the URL that answered
+/// — so what this asserts is the half a test can see: that the configured list
+/// arrives there at all, rather than an empty one that allows everything.
+#[actix_web::test]
+async fn the_host_allow_list_is_handed_to_the_fetcher() {
+    let fetcher = scripted();
+    let hosts = vec!["shields.io".to_owned(), "cdn.example".to_owned()];
+    let app = app_with_hosts(
+        CHAIN,
+        RemoteImagePolicy::Proxy,
+        Arc::clone(&fetcher),
+        hosts.clone(),
+    )
+    .await;
+
+    for index in 0..3 {
+        let _ = call_service(
+            &app,
+            TestRequest::get()
+                .uri(&image_uri(index))
+                .insert_header(("Authorization", bearer(USER_TOKEN)))
+                .to_request(),
+        )
+        .await;
+    }
+
+    let seen = fetcher.allowed();
+    assert!(!seen.is_empty(), "the fetcher was never called");
+    for list in seen {
+        assert_eq!(
+            list, hosts,
+            "the configured remote_image_hosts must reach the fetcher"
+        );
+    }
+}
 
 /// One image failing must not take the ones after it with it, and a kept image
 /// must keep its alt text.

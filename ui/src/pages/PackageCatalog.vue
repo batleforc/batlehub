@@ -619,11 +619,23 @@ function onSortChange(val: string) {
  * cached row uses, so there is nothing to resolve first: deciding *before* the
  * click whether a package deserves a page is the check that was wrong, not the
  * URL it built.
+ *
+ * A path rather than a handler, because the row used to be a `@click` on
+ * `<TableRow>` with no `tabindex`, no `role` and no key handler, and the
+ * package name was plain text rather than a link. The only keyboard route to a
+ * package's page was the **details** link *inside a refusal note*, which
+ * renders only when `noteKey(row)` is set — so for a normally cached package,
+ * a keyboard user could not open its detail page at all. That is the product's
+ * primary navigation path, and WCAG 2.1.1 Keyboard (A) is the floor it missed.
+ *
+ * The link navigates with a **push**, not a `replace`. The version list on the
+ * detail page replaces, for the reason stated there; this one must not.
+ * `goBack()` restores the catalog's search, scope, sort, page and scroll offset
+ * only when `history.state.back` is `/packages`, and replacing the catalog
+ * entry on the way in is exactly what would stop it being that.
  */
-function goToDetail(row: ExploreRow) {
-  router.push({
-    path: `/packages/${encodeURIComponent(row.registry)}/${encodeURIComponent(row.name)}`,
-  });
+function detailPath(row: ExploreRow): string {
+  return `/packages/${encodeURIComponent(row.registry)}/${encodeURIComponent(row.name)}`;
 }
 
 function goToPage(p: number) {
@@ -759,7 +771,7 @@ onMounted(() => {
       </h1>
       <p
         v-if="specimenFacts.length"
-        class="relative z-10 mt-3 border-t border-border pt-3 text-sm text-muted-foreground max-w-[72ch]"
+        class="relative z-10 mt-3 border-t border-border pt-3 text-sm max-w-[72ch]"
       >
         <template v-for="(fact, i) in specimenFacts" :key="fact">
           <span v-if="i > 0" class="px-2 text-border" aria-hidden="true">·</span>
@@ -964,12 +976,15 @@ onMounted(() => {
             </TableRow>
 
             <template v-for="row in tableRows" :key="rowId(row)">
+              <!-- No `@click` and no `cursor-pointer`: the row is not the
+                   control, the name is. A whole-row handler is unreachable by
+                   keyboard and invisible to assistive tech, and dressing it as
+                   clickable promised a target that only a mouse could take. -->
               <TableRow
                 :class="[
-                  'cursor-pointer border-dashed border-rule-soft align-baseline hover:border-solid hover:border-border',
+                  'border-dashed border-rule-soft align-baseline hover:border-solid hover:border-border',
                   noteKey(row) ? 'border-b-0' : '',
                 ]"
-                @click="goToDetail(row)"
               >
                 <TableCell class="pl-0 pr-3 py-3 align-baseline">
                   <Resolution :state="rowState(row)" :label="t(STATE_LABEL_KEYS[rowState(row)])" />
@@ -990,7 +1005,17 @@ onMounted(() => {
                   class="[overflow-wrap:anywhere] pl-0 pr-3 py-3 align-baseline text-base"
                   :aria-describedby="noteKey(row) ? `note-${rowId(row)}` : undefined"
                 >
-                  {{ row.name }}
+                  <!-- The package name *is* the link — the pattern the version
+                       list on the detail page already uses. `anywhere` rather
+                       than `break-words` for the same min-content reason as the
+                       cell above, and an underline on hover because the row no
+                       longer carries any other affordance. -->
+                  <RouterLink
+                    :to="detailPath(row)"
+                    class="[overflow-wrap:anywhere] hover:underline underline-offset-[3px]"
+                  >
+                    {{ row.name }}
+                  </RouterLink>
                   <!-- One list, provenance stated per row. The question a reader
                      actually has is "does this instance already have it?", and
                      splitting the table into two makes that harder to answer,
@@ -1082,8 +1107,7 @@ onMounted(() => {
                       <RouterLink
                         v-if="row.kind === 'cached'"
                         class="text-primary underline underline-offset-[3px]"
-                        :to="`/packages/${encodeURIComponent(row.registry)}/${encodeURIComponent(row.name)}`"
-                        @click.stop
+                        :to="detailPath(row)"
                         >{{ t("packageCatalog.noteDetails") }}</RouterLink
                       >
                     </span>

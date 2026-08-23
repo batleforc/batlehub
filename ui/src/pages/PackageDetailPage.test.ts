@@ -555,7 +555,7 @@ describe("PackageDetailPage default selection", () => {
     navigateTo({ version: "1.0.55" });
     await flushPromises();
 
-    expect(explorePackageDetailMock.mock.calls.length).toBe(afterMount + 1);
+    expect(explorePackageDetailMock.mock.calls).toHaveLength(afterMount + 1);
     expect(wrapper.find("#subject-heading").text()).toContain("1.0.55");
     routeState.query = {};
   });
@@ -571,7 +571,7 @@ describe("PackageDetailPage default selection", () => {
     navigateTo({ version: "1.0.3" });
     await flushPromises();
 
-    expect(explorePackageDetailMock.mock.calls.length).toBe(afterMount);
+    expect(explorePackageDetailMock.mock.calls).toHaveLength(afterMount);
     expect(wrapper.find("#subject-heading").text()).toContain("1.0.3");
     routeState.query = {};
   });

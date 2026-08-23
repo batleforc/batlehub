@@ -221,88 +221,131 @@ fn strips_images(opts: &RenderOptions) -> bool {
 /// chips only the images whose host is not in it, which is the allow-list case:
 /// the kept ones flow on to the sanitiser and are rewritten to this server.
 fn strip_images<'a>(parser: Parser<'a>, keep_hosts: &[String]) -> Vec<Event<'a>> {
-    let mut out: Vec<Event<'a>> = Vec::new();
-    // Images nest: the alt text between `Start(Image)` and `End(Image)` is
-    // itself an event stream, and it can contain another image. A depth counter
-    // rather than a bool, so a nested one does not end the outer chip early.
-    let mut depth = 0usize;
-    let mut alt = String::new();
-    let mut host: Option<String> = None;
-    /* The image's own events, replayed verbatim when its host is allowed.
-    Buffered rather than re-parsed: what reaches the sanitiser then is exactly
-    what `pulldown-cmark` produced, and the alt text — which is a stream of
-    events, not a string — survives intact. */
-    let mut buffered: Vec<Event<'a>> = Vec::new();
-    let mut keep = false;
-
+    let mut walk = ImageWalk::new();
     for event in parser {
         match event {
             Event::Start(Tag::Image { ref dest_url, .. }) => {
-                if depth == 0 {
-                    alt.clear();
-                    host = url_host(dest_url);
-                    keep = !keep_hosts.is_empty() && image_host_allowed(dest_url, keep_hosts);
-                    buffered.clear();
-                }
-                depth += 1;
-                if keep {
-                    buffered.push(event);
-                }
+                let dest_url = dest_url.clone();
+                walk.start_image(event, &dest_url, keep_hosts);
             }
-            Event::End(TagEnd::Image) => {
-                depth = depth.saturating_sub(1);
-                if keep {
-                    buffered.push(event);
-                }
-                if depth == 0 {
-                    if keep {
-                        out.append(&mut buffered);
-                        keep = false;
-                    } else {
-                        out.push(Event::Html(CowStr::from(chip(&alt, host.as_deref()))));
-                    }
-                }
-            }
+            Event::End(TagEnd::Image) => walk.end_image(event),
             // Raw HTML inside markdown: `pulldown-cmark` hands it over
             // untouched, so an author who wrote `<img>` or a `<picture>` rather
             // than `![…]()` would otherwise reach the sanitiser as an element
             // that is not in the allow-list, and vanish entirely.
-            Event::Html(html) if depth == 0 => out.push(Event::Html(CowStr::from(
+            Event::Html(html) if walk.depth == 0 => walk.out.push(Event::Html(CowStr::from(
                 chip_html_images(&html, keep_hosts),
             ))),
-            Event::InlineHtml(html) if depth == 0 => out.push(Event::InlineHtml(CowStr::from(
-                chip_html_images(&html, keep_hosts),
-            ))),
-            // Inside an image, everything is alt text — collected for the chip,
-            // and buffered too when the image is being kept.
-            //
-            // Both halves matter, and the second was missing: a kept image whose
-            // alt events were dropped is replayed as `<img src="…" alt="">`, and
-            // the panel styles a failed image to "read like the chip, showing its
-            // alt text" — so an image that could not be fetched showed the reader
-            // nothing at all. Unreachable until `remote_image_hosts` was actually
-            // passed to the renderer, which is why it survived: with an empty
-            // list `keep` is never true and nothing is ever buffered.
-            Event::Text(ref text) | Event::Code(ref text) if depth > 0 => {
-                alt.push_str(text);
-                if keep {
-                    buffered.push(event);
-                }
+            Event::InlineHtml(html) if walk.depth == 0 => {
+                walk.out
+                    .push(Event::InlineHtml(CowStr::from(chip_html_images(
+                        &html, keep_hosts,
+                    ))))
             }
-            other if depth > 0 => {
-                // Any other markup inside alt text (emphasis, a nested link)
-                // contributes nothing a *chip* can show, so it is dropped there —
-                // emitting it would put stray tags outside the chip. A kept image
-                // is replayed verbatim instead: the sanitiser is what decides
-                // about that markup, exactly as it would for an unfiltered render.
-                if keep {
-                    buffered.push(other);
-                }
+            Event::Text(ref text) | Event::Code(ref text) if walk.depth > 0 => {
+                let text = text.clone();
+                walk.push_alt_text(event, &text);
             }
-            other => out.push(other),
+            other if walk.depth > 0 => walk.push_inside_image(other),
+            other => walk.out.push(other),
         }
     }
-    out
+    walk.out
+}
+
+/// The state [`strip_images`] carries across one event stream.
+///
+/// A struct with a method per event kind rather than five `mut` locals and a
+/// match arm that mutates all of them: every arm of that match had to be read
+/// against every other to know what `keep` meant at that point, and the arms are
+/// independent once the state has names.
+struct ImageWalk<'a> {
+    out: Vec<Event<'a>>,
+    /// Images nest: the alt text between `Start(Image)` and `End(Image)` is
+    /// itself an event stream, and it can contain another image. A depth counter
+    /// rather than a bool, so a nested one does not end the outer chip early.
+    depth: usize,
+    alt: String,
+    host: Option<String>,
+    /// The image's own events, replayed verbatim when its host is allowed.
+    /// Buffered rather than re-parsed: what reaches the sanitiser then is
+    /// exactly what `pulldown-cmark` produced, and the alt text — which is a
+    /// stream of events, not a string — survives intact.
+    buffered: Vec<Event<'a>>,
+    keep: bool,
+}
+
+impl<'a> ImageWalk<'a> {
+    fn new() -> Self {
+        Self {
+            out: Vec::new(),
+            depth: 0,
+            alt: String::new(),
+            host: None,
+            buffered: Vec::new(),
+            keep: false,
+        }
+    }
+
+    fn start_image(&mut self, event: Event<'a>, dest_url: &str, keep_hosts: &[String]) {
+        if self.depth == 0 {
+            self.alt.clear();
+            self.host = url_host(dest_url);
+            self.keep = !keep_hosts.is_empty() && image_host_allowed(dest_url, keep_hosts);
+            self.buffered.clear();
+        }
+        self.depth += 1;
+        if self.keep {
+            self.buffered.push(event);
+        }
+    }
+
+    fn end_image(&mut self, event: Event<'a>) {
+        self.depth = self.depth.saturating_sub(1);
+        if self.keep {
+            self.buffered.push(event);
+        }
+        if self.depth > 0 {
+            return;
+        }
+        if self.keep {
+            self.out.append(&mut self.buffered);
+            self.keep = false;
+        } else {
+            self.out.push(Event::Html(CowStr::from(chip(
+                &self.alt,
+                self.host.as_deref(),
+            ))));
+        }
+    }
+
+    /// Inside an image, everything is alt text — collected for the chip, and
+    /// buffered too when the image is being kept.
+    ///
+    /// Both halves matter, and the second was missing: a kept image whose alt
+    /// events were dropped is replayed as `<img src="…" alt="">`, and the panel
+    /// styles a failed image to "read like the chip, showing its alt text" — so
+    /// an image that could not be fetched showed the reader nothing at all.
+    /// Unreachable until `remote_image_hosts` was actually passed to the
+    /// renderer, which is why it survived: with an empty list `keep` is never
+    /// true and nothing is ever buffered.
+    fn push_alt_text(&mut self, event: Event<'a>, text: &str) {
+        self.alt.push_str(text);
+        if self.keep {
+            self.buffered.push(event);
+        }
+    }
+
+    /// Any other markup inside alt text (emphasis, a nested link) contributes
+    /// nothing a *chip* can show, so it is dropped there — emitting it would put
+    /// stray tags outside the chip. A kept image is replayed verbatim instead:
+    /// the sanitiser is what decides about that markup, exactly as it would for
+    /// an unfiltered render.
+    fn push_inside_image(&mut self, event: Event<'a>) {
+        if self.keep {
+            self.buffered.push(event);
+        }
+    }
 }
 
 /// Replace every raw-HTML `<img>` in a fragment with the same chip a markdown
@@ -404,62 +447,90 @@ fn tag_end(bytes: &[u8], start: usize) -> Option<usize> {
 /// real alt text. Whatever comes out is escaped again by [`chip`], so this
 /// decoding cannot widen anything.
 fn tag_attribute(tag: &str, name: &str) -> Option<String> {
-    let bytes = tag.as_bytes();
-    // Past `<img`, so the element name is never mistaken for an attribute.
-    let mut i = 4.min(bytes.len());
-    while i < bytes.len() {
-        while i < bytes.len() && (bytes[i].is_ascii_whitespace() || bytes[i] == b'/') {
-            i += 1;
-        }
-        let name_start = i;
-        while i < bytes.len()
-            && !bytes[i].is_ascii_whitespace()
-            && bytes[i] != b'='
-            && bytes[i] != b'>'
-            && bytes[i] != b'/'
-        {
-            i += 1;
-        }
-        if i == name_start {
-            i += 1;
+    let mut scan = TagScanner::new(tag);
+    while !scan.at_end() {
+        scan.skip_while(|b| b.is_ascii_whitespace() || b == b'/');
+        let found =
+            scan.take_while(|b| !b.is_ascii_whitespace() && b != b'=' && b != b'>' && b != b'/');
+        if found.is_empty() {
+            // Only `=` or `>` can stop the name where it started — whitespace
+            // and `/` were just skipped — so this always steps over one ASCII
+            // byte and the next slice still lands on a char boundary.
+            scan.i += 1;
             continue;
         }
-        let found = &tag[name_start..i];
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        let mut value = String::new();
-        if bytes.get(i) == Some(&b'=') {
-            i += 1;
-            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-                i += 1;
-            }
-            match bytes.get(i) {
-                Some(q @ (b'"' | b'\'')) => {
-                    let q = *q;
-                    i += 1;
-                    let value_start = i;
-                    while i < bytes.len() && bytes[i] != q {
-                        i += 1;
-                    }
-                    value.push_str(&tag[value_start..i]);
-                    i = (i + 1).min(bytes.len());
-                }
-                Some(_) => {
-                    let value_start = i;
-                    while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'>' {
-                        i += 1;
-                    }
-                    value.push_str(&tag[value_start..i]);
-                }
-                None => {}
-            }
-        }
+        let value = scan.read_value();
         if found.eq_ignore_ascii_case(name) {
-            return Some(decode_basic_entities(&value));
+            return Some(decode_basic_entities(value));
         }
     }
     None
+}
+
+/// A byte cursor over one tag's source text, for [`tag_attribute`].
+///
+/// The scan is a hand-rolled tokenizer because the sanitiser — not this pass —
+/// is the security boundary (see [`chip_html_images`]), and every stop byte it
+/// looks for is ASCII, so slicing at the cursor is always a char boundary.
+struct TagScanner<'a> {
+    tag: &'a str,
+    i: usize,
+}
+
+impl<'a> TagScanner<'a> {
+    fn new(tag: &'a str) -> Self {
+        // Past `<img`, so the element name is never mistaken for an attribute.
+        Self {
+            tag,
+            i: 4.min(tag.len()),
+        }
+    }
+
+    fn at_end(&self) -> bool {
+        self.i >= self.tag.len()
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.tag.as_bytes().get(self.i).copied()
+    }
+
+    /// Advance while `pred` holds, returning the span crossed.
+    fn take_while(&mut self, pred: impl Fn(u8) -> bool) -> &'a str {
+        let bytes = self.tag.as_bytes();
+        let start = self.i;
+        while self.i < bytes.len() && pred(bytes[self.i]) {
+            self.i += 1;
+        }
+        &self.tag[start..self.i]
+    }
+
+    fn skip_while(&mut self, pred: impl Fn(u8) -> bool) {
+        self.take_while(pred);
+    }
+
+    /// The value following an attribute name, in whichever of the three forms
+    /// HTML allows — double-quoted, single-quoted, bare — or `""` for a bare
+    /// attribute with no `=` at all.
+    fn read_value(&mut self) -> &'a str {
+        self.skip_while(|b| b.is_ascii_whitespace());
+        if self.peek() != Some(b'=') {
+            return "";
+        }
+        self.i += 1;
+        self.skip_while(|b| b.is_ascii_whitespace());
+        match self.peek() {
+            Some(quote @ (b'"' | b'\'')) => {
+                self.i += 1;
+                let value = self.take_while(|b| b != quote);
+                // Past the closing quote — or to the end, if the tag never
+                // closed it.
+                self.i = (self.i + 1).min(self.tag.len());
+                value
+            }
+            Some(_) => self.take_while(|b| !b.is_ascii_whitespace() && b != b'>'),
+            None => "",
+        }
+    }
 }
 
 /// The five named entities that actually appear in alt text and URLs.
@@ -508,9 +579,22 @@ pub(super) fn url_host(url: &str) -> Option<String> {
         .chars()
         .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
         .collect();
-    let rest = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))?;
+    // A scheme is ASCII case-insensitive (RFC 3986 §3.1) and surrounding
+    // whitespace is stripped before a browser resolves the reference. Compared
+    // byte-exactly, `HTTPS://cdn.example/logo.png` and `" https://…"` had no
+    // host at all — so the allow-list refused them and the proxy rewrite
+    // dropped their `src`, and the image vanished with nothing said. Read the
+    // URL the way the thing that will fetch it reads it.
+    let url = url.trim();
+    let lower = url.to_ascii_lowercase();
+    let scheme_len = if lower.starts_with("https://") {
+        "https://".len()
+    } else if lower.starts_with("http://") {
+        "http://".len()
+    } else {
+        return None;
+    };
+    let rest = &url[scheme_len..];
     let host = rest
         .split(['/', '\\', '?', '#'])
         .next()?

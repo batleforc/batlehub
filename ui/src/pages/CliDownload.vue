@@ -3,6 +3,7 @@ import { useI18n } from "vue-i18n";
 import { ref, computed } from "vue";
 import { Terminal, Download, Package, AlertCircle } from "@lucide/vue";
 import { useAuth } from "@/composables/useAuth";
+import { extractMessage } from "@/composables/useApi";
 import { API_BASE_URL } from "@/config";
 import { PageHeader } from "@/components/ui/page-header";
 import { CopyButton } from "@/components/ui/copy-button";
@@ -37,7 +38,7 @@ async function triggerDownload() {
       downloadError.value =
         resp.status === 404
           ? t("cliDownload.binaryNotConfigured")
-          : `Download failed: HTTP ${resp.status}${detail}`;
+          : t("cliDownload.downloadFailed", { status: resp.status, detail });
       return;
     }
     const blob = await resp.blob();
@@ -50,7 +51,7 @@ async function triggerDownload() {
     a.click();
     URL.revokeObjectURL(url);
   } catch (e) {
-    downloadError.value = e instanceof Error ? e.message : "Unknown error";
+    downloadError.value = extractMessage(e);
   } finally {
     downloading.value = false;
   }

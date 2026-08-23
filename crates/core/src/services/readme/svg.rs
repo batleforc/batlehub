@@ -193,98 +193,18 @@ pub fn sanitize_svg(svg: &[u8]) -> Result<Vec<u8>, SvgRejected> {
     config.trim_text(false);
     config.check_end_names = false;
 
-    let mut writer = Writer::new(Cursor::new(Vec::new()));
+    let mut walk = SvgWalk::new();
     let mut buf = Vec::new();
-
-    // Depth of the disallowed subtree currently being skipped. A counter rather
-    // than a flag so a `<script>` inside a `<foreignObject>` does not end the
-    // skip when the inner one closes.
-    let mut skipping = 0usize;
-    // Elements written, so their ends can be matched. A disallowed element's end
-    // must not be emitted even when it arrives after the skip has unwound — a
-    // malformed document can do that.
-    let mut open: Vec<Vec<u8>> = Vec::new();
-    let mut saw_root = false;
 
     loop {
         match reader.read_event_into(&mut buf) {
             Err(e) => return Err(SvgRejected::Malformed(e.to_string())),
             Ok(Event::Eof) => break,
-
-            Ok(Event::Start(e)) => {
-                let name = local_name(e.name().as_ref());
-                if skipping > 0 || !is_allowed_element(&name) {
-                    skipping += 1;
-                    continue;
-                }
-                if name == b"svg" {
-                    saw_root = true;
-                }
-                let cleaned = clean_element(&e, &name);
-                open.push(name);
-                writer
-                    .write_event(Event::Start(cleaned))
-                    .map_err(|e| SvgRejected::Malformed(e.to_string()))?;
-            }
-
-            Ok(Event::Empty(e)) => {
-                let name = local_name(e.name().as_ref());
-                if skipping > 0 || !is_allowed_element(&name) {
-                    continue;
-                }
-                if name == b"svg" {
-                    saw_root = true;
-                }
-                let cleaned = clean_element(&e, &name);
-                writer
-                    .write_event(Event::Empty(cleaned))
-                    .map_err(|e| SvgRejected::Malformed(e.to_string()))?;
-            }
-
-            Ok(Event::End(e)) => {
-                if skipping > 0 {
-                    skipping -= 1;
-                    continue;
-                }
-                let name = local_name(e.name().as_ref());
-                if open.last().map(|n| n == &name).unwrap_or(false) {
-                    open.pop();
-                    writer
-                        .write_event(Event::End(quick_xml::events::BytesEnd::new(
-                            String::from_utf8_lossy(&name).into_owned(),
-                        )))
-                        .map_err(|e| SvgRejected::Malformed(e.to_string()))?;
-                }
-            }
-
-            // Text survives only where it is content rather than decoration.
-            // `quick-xml` gives it to us escaped as it appeared; writing it back
-            // through `Event::Text` re-escapes on output, so a `<` in a label
-            // cannot become a tag.
-            Ok(Event::Text(t)) => {
-                if skipping == 0 && open.last().map(|n| holds_text(n)).unwrap_or(false) {
-                    let decoded = t.decode().unwrap_or_default().into_owned();
-                    let decoded = strip_forbidden_chars(&decoded);
-                    writer
-                        .write_event(Event::Text(quick_xml::events::BytesText::new(&decoded)))
-                        .map_err(|e| SvgRejected::Malformed(e.to_string()))?;
-                }
-            }
-
-            // `quick-xml` reports an entity or character reference as its own
-            // event rather than resolving it into the surrounding text, so
-            // dropping it silently would delete the `<` from a label reading
-            // `coverage &lt; 80%`.
-            Ok(Event::GeneralRef(r)) => {
-                if skipping == 0 && open.last().map(|n| holds_text(n)).unwrap_or(false) {
-                    if let Some(resolved) = resolve_reference(&r) {
-                        writer
-                            .write_event(Event::Text(quick_xml::events::BytesText::new(&resolved)))
-                            .map_err(|e| SvgRejected::Malformed(e.to_string()))?;
-                    }
-                }
-            }
-
+            Ok(Event::Start(e)) => walk.start(&e)?,
+            Ok(Event::Empty(e)) => walk.empty(&e)?,
+            Ok(Event::End(e)) => walk.end(&e)?,
+            Ok(Event::Text(t)) => walk.text(&t)?,
+            Ok(Event::GeneralRef(r)) => walk.general_ref(&r)?,
             // Everything else is dropped without comment: CDATA (a `<script>`
             // hiding place), comments (which re-parse in some engines — the mXSS
             // family), processing instructions, and the doctype, which is where
@@ -294,10 +214,128 @@ pub fn sanitize_svg(svg: &[u8]) -> Result<Vec<u8>, SvgRejected> {
         buf.clear();
     }
 
-    if !saw_root {
-        return Err(SvgRejected::NotSvg);
+    walk.finish()
+}
+
+/// The document being written, and what [`sanitize_svg`] must remember between
+/// events to write it.
+///
+/// One method per event kind rather than one match arm per event kind: each arm
+/// read and wrote the same three pieces of state, so none of them could be
+/// understood without the others, and `skipping` in particular had four
+/// different meanings depending on which arm you were standing in.
+struct SvgWalk {
+    writer: Writer<Cursor<Vec<u8>>>,
+    /// Depth of the disallowed subtree currently being skipped. A counter rather
+    /// than a flag so a `<script>` inside a `<foreignObject>` does not end the
+    /// skip when the inner one closes.
+    skipping: usize,
+    /// Elements written, so their ends can be matched. A disallowed element's
+    /// end must not be emitted even when it arrives after the skip has unwound —
+    /// a malformed document can do that.
+    open: Vec<Vec<u8>>,
+    saw_root: bool,
+}
+
+impl SvgWalk {
+    fn new() -> Self {
+        Self {
+            writer: Writer::new(Cursor::new(Vec::new())),
+            skipping: 0,
+            open: Vec::new(),
+            saw_root: false,
+        }
     }
-    Ok(writer.into_inner().into_inner())
+
+    /// A write failure is reported as `Malformed`: the only writer here is an
+    /// in-memory `Cursor`, so this is the unreachable arm rather than a mode.
+    fn write(&mut self, event: Event<'_>) -> Result<(), SvgRejected> {
+        self.writer
+            .write_event(event)
+            .map_err(|e| SvgRejected::Malformed(e.to_string()))
+    }
+
+    /// Whether text arriving now is content — inside `<text>`/`<tspan>`/
+    /// `<title>`/`<desc>` and not inside a subtree being skipped.
+    fn holds_text_now(&self) -> bool {
+        self.skipping == 0 && self.open.last().is_some_and(|n| holds_text(n))
+    }
+
+    fn start(&mut self, element: &BytesStart<'_>) -> Result<(), SvgRejected> {
+        let name = local_name(element.name().as_ref());
+        if self.skipping > 0 || !is_allowed_element(&name) {
+            self.skipping += 1;
+            return Ok(());
+        }
+        if name == b"svg" {
+            self.saw_root = true;
+        }
+        let cleaned = clean_element(element, &name);
+        self.open.push(name);
+        self.write(Event::Start(cleaned))
+    }
+
+    fn empty(&mut self, element: &BytesStart<'_>) -> Result<(), SvgRejected> {
+        let name = local_name(element.name().as_ref());
+        if self.skipping > 0 || !is_allowed_element(&name) {
+            return Ok(());
+        }
+        if name == b"svg" {
+            self.saw_root = true;
+        }
+        let cleaned = clean_element(element, &name);
+        self.write(Event::Empty(cleaned))
+    }
+
+    fn end(&mut self, element: &quick_xml::events::BytesEnd<'_>) -> Result<(), SvgRejected> {
+        if self.skipping > 0 {
+            self.skipping -= 1;
+            return Ok(());
+        }
+        let name = local_name(element.name().as_ref());
+        if self.open.last() != Some(&name) {
+            return Ok(());
+        }
+        self.open.pop();
+        self.write(Event::End(quick_xml::events::BytesEnd::new(
+            String::from_utf8_lossy(&name).into_owned(),
+        )))
+    }
+
+    /// Text survives only where it is content rather than decoration.
+    /// `quick-xml` gives it to us escaped as it appeared; writing it back
+    /// through `Event::Text` re-escapes on output, so a `<` in a label cannot
+    /// become a tag.
+    fn text(&mut self, text: &quick_xml::events::BytesText<'_>) -> Result<(), SvgRejected> {
+        if !self.holds_text_now() {
+            return Ok(());
+        }
+        let decoded = strip_forbidden_chars(&text.decode().unwrap_or_default());
+        self.write(Event::Text(quick_xml::events::BytesText::new(&decoded)))
+    }
+
+    /// `quick-xml` reports an entity or character reference as its own event
+    /// rather than resolving it into the surrounding text, so dropping it
+    /// silently would delete the `<` from a label reading `coverage &lt; 80%`.
+    fn general_ref(
+        &mut self,
+        reference: &quick_xml::events::BytesRef<'_>,
+    ) -> Result<(), SvgRejected> {
+        if !self.holds_text_now() {
+            return Ok(());
+        }
+        let Some(resolved) = resolve_reference(reference) else {
+            return Ok(());
+        };
+        self.write(Event::Text(quick_xml::events::BytesText::new(&resolved)))
+    }
+
+    fn finish(self) -> Result<Vec<u8>, SvgRejected> {
+        if !self.saw_root {
+            return Err(SvgRejected::NotSvg);
+        }
+        Ok(self.writer.into_inner().into_inner())
+    }
 }
 
 /// An attribute value as a parser will see it, so what is written is what was
@@ -394,10 +432,26 @@ fn holds_text(name: &[u8]) -> bool {
 }
 
 /// Rebuild `element` with only its allow-listed attributes.
+///
+/// **At most one attribute per emitted name.** The allow-list is matched on the
+/// *local* name, so the namespace prefix is stripped before the attribute is
+/// written back — and two source attributes can then collapse onto one output
+/// name. Inkscape writes `version="1.1" inkscape:version="1.0.2"` on every file
+/// it saves, which came back out as `version="1.1" version="1.0.2"`: duplicate
+/// attribute names violate XML's Unique Att Spec, so a browser refuses the whole
+/// document and a perfectly benign proxied logo renders as a broken image. It
+/// also survived the module's idempotence test, because `with_checks(false)` is
+/// exactly the setting that lets this parser read back what a browser will not.
+///
+/// The un-prefixed spelling wins when both are present: `version` is the SVG
+/// attribute and `inkscape:version` is an editor's note that happens to share a
+/// local name.
 fn clean_element<'a>(element: &BytesStart<'a>, name: &[u8]) -> BytesStart<'a> {
-    let mut out = BytesStart::new(String::from_utf8_lossy(name).into_owned());
+    // `(local name, value, was prefixed)`, in source order.
+    let mut kept: Vec<(Vec<u8>, String, bool)> = Vec::new();
     for attribute in element.attributes().with_checks(false).flatten() {
-        let key = local_name(attribute.key.as_ref());
+        let qname = attribute.key.as_ref().to_vec();
+        let key = local_name(&qname);
         if !ALLOWED_ATTRIBUTES
             .iter()
             .any(|allowed| allowed.as_bytes() == key)
@@ -418,8 +472,21 @@ fn clean_element<'a>(element: &BytesStart<'a>, name: &[u8]) -> BytesStart<'a> {
         if !safe_value(&value) {
             continue;
         }
+        let prefixed = qname.contains(&b':');
+        match kept.iter().position(|(seen, _, _)| *seen == key) {
+            Some(index) => {
+                if kept[index].2 && !prefixed {
+                    kept[index] = (key, value, prefixed);
+                }
+            }
+            None => kept.push((key, value, prefixed)),
+        }
+    }
+
+    let mut out = BytesStart::new(String::from_utf8_lossy(name).into_owned());
+    for (key, value, _) in &kept {
         out.push_attribute((
-            String::from_utf8_lossy(&key).into_owned().as_str(),
+            String::from_utf8_lossy(key).into_owned().as_str(),
             value.as_str(),
         ));
     }

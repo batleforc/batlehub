@@ -173,7 +173,7 @@ async function simulate() {
           <select
             id="aac-resource-type"
             v-model="resourceType"
-            class="w-full rounded border border-border bg-background px-3 py-1.5 text-sm"
+            class="w-full rounded-sm border border-border bg-background px-3 py-1.5 text-sm"
           >
             <option v-for="rt in RESOURCE_TYPES" :key="rt" :value="rt">{{ rt }}</option>
           </select>
@@ -192,7 +192,7 @@ async function simulate() {
           <select
             id="aac-role"
             v-model="role"
-            class="w-full rounded border border-border bg-background px-3 py-1.5 text-sm"
+            class="w-full rounded-sm border border-border bg-background px-3 py-1.5 text-sm"
           >
             <option value="anonymous">anonymous</option>
             <option value="user">user</option>
@@ -226,7 +226,7 @@ async function simulate() {
             id="aac-groups"
             v-model="groups"
             :placeholder="t('adminAccessCheck.oidc1TeamATeam')"
-            class="w-full rounded border border-border bg-background px-3 py-1.5 text-sm"
+            class="w-full rounded-sm border border-border bg-background px-3 py-1.5 text-sm"
           />
         </div>
         <!--
@@ -244,7 +244,7 @@ async function simulate() {
             id="aac-client-ip"
             v-model="clientIp"
             placeholder="10.0.0.7"
-            class="w-full rounded border border-border bg-background px-3 py-1.5 text-sm"
+            class="w-full rounded-sm border border-border bg-background px-3 py-1.5 text-sm"
           />
           <p class="text-xs text-muted-foreground">
             {{ t("adminAccessCheck.clientIpHelp") }}
@@ -255,7 +255,7 @@ async function simulate() {
       <button
         type="submit"
         :disabled="loading"
-        class="rounded bg-primary text-primary-foreground px-4 py-1.5 text-sm font-medium disabled:opacity-50"
+        class="rounded-sm bg-primary text-primary-foreground px-4 py-1.5 text-sm font-medium disabled:opacity-50"
       >
         {{ loading ? t("accessCheck.checking") : t("adminAccessCheck.checkAccess") }}
       </button>
@@ -263,14 +263,14 @@ async function simulate() {
 
     <div
       v-if="error"
-      class="rounded border border-destructive/50 px-4 py-3 text-sm text-destructive"
+      class="rounded-sm border border-destructive/50 px-4 py-3 text-sm text-destructive"
     >
       {{ error }}
     </div>
 
     <div
       v-if="result"
-      class="rounded border px-4 py-3 space-y-1"
+      class="rounded-sm border px-4 py-3 space-y-1"
       :class="result.decision === 'allow' ? 'border-foreground/50' : 'border-destructive/50'"
     >
       <p

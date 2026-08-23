@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mount, flushPromises } from "@vue/test-utils";
+import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
 
 const { explorePackagesMock, exploreUpstreamSearchMock, listRegistriesMock, statsMock } =
   vi.hoisted(() => ({
@@ -67,10 +67,23 @@ const graded = (state: string, over: Record<string, unknown> = {}) => ({
   },
 });
 
+/** The href behind a row's package name — the row's one destination. */
+function nameLink(wrapper: VueWrapper, name: string): string | undefined {
+  const row = wrapper.findAll("tbody tr").find((r) => r.text().includes(name));
+  return row
+    ?.findAll("a")
+    .find((a) => a.text().trim() === name)
+    ?.attributes("href");
+}
+
 async function mountPage() {
   const wrapper = mount(PackageCatalog, {
     global: {
-      stubs: { RouterLink: { template: "<a><slot /></a>" } },
+      // The `href` is rendered, not dropped: the destination of a row is now
+      // carried by a link rather than by a `router.push` in a click handler,
+      // so a stub that swallows `to` would make every navigation assertion
+      // below unfalsifiable.
+      stubs: { RouterLink: { template: "<a :href='String(to)'><slot /></a>", props: ["to"] } },
     },
   });
   await flushPromises();
@@ -665,18 +678,45 @@ describe("PackageCatalog browsing", () => {
    *
    * Both kinds are asserted in one test on purpose: the point is that they now
    * resolve to the *same* address from the same two fields.
+   *
+   * Asserted on the **link**, not on a click. The row used to carry the
+   * destination in a `@click` handler with no `tabindex`, no `role` and no key
+   * handler, so the assertion this replaces could pass over a target no
+   * keyboard could reach — see the WCAG 2.1.1 case below.
    */
-  it("opens a package's page on click whether or not this instance holds it", async () => {
+  it("links a package's page whether or not this instance holds it", async () => {
     exploreUpstreamSearchMock.mockResolvedValue({ data: { items: [upstreamHit("left-pad")] } });
     const wrapper = await mountPage();
     await typeSearch(wrapper, "l@test");
 
-    const rows = wrapper.findAll("tbody tr");
-    await rows.find((r) => r.text().includes("left-pad"))!.trigger("click");
-    expect(pushMock).toHaveBeenCalledWith({ path: "/packages/npm/left-pad" });
+    expect(nameLink(wrapper, "left-pad")).toBe("/packages/npm/left-pad");
+    expect(nameLink(wrapper, "lodash")).toBe("/packages/npm/lodash");
+  });
 
-    await rows.find((r) => r.text().includes("lodash"))!.trigger("click");
-    expect(pushMock).toHaveBeenCalledWith({ path: "/packages/npm/lodash" });
+  /**
+   * WCAG 2.1.1 Keyboard (A), on the product's primary navigation path.
+   *
+   * `<TableRow @click>` gave a mouse the whole row and a keyboard nothing —
+   * no `tabindex`, no `role`, no key handler — and the package name was plain
+   * text. The one keyboard route to a detail page was the **details** link
+   * inside a refusal note, which renders only when the row *has* a note. So a
+   * normally cached package could not be opened from the keyboard at all.
+   *
+   * The row must also stay un-clickable as a whole: a second navigation on the
+   * row would double every activation and re-introduce a mouse-only target.
+   */
+  it("puts the destination on the name, not on the row", async () => {
+    const wrapper = await mountPage();
+
+    const row = wrapper.findAll("tbody tr").find((r) => r.text().includes("lodash"))!;
+    const link = row.findAll("a").find((a) => a.text().trim() === "lodash");
+    expect(link, "the package name renders as a link").toBeDefined();
+    expect(link!.attributes("href")).toBe("/packages/npm/lodash");
+
+    pushMock.mockClear();
+    await row.trigger("click");
+    expect(pushMock, "the row itself navigates nowhere").not.toHaveBeenCalled();
+    expect(row.classes()).not.toContain("cursor-pointer");
   });
 
   /**
@@ -694,14 +734,9 @@ describe("PackageCatalog browsing", () => {
     const wrapper = await mountPage();
     await typeSearch(wrapper, "chalk");
 
-    await wrapper
-      .findAll("tbody tr")
-      .find((r) => r.text().includes("github.com/ttacon/chalk"))!
-      .trigger("click");
-
-    expect(pushMock).toHaveBeenCalledWith({
-      path: "/packages/go/github.com%2Fttacon%2Fchalk",
-    });
+    expect(nameLink(wrapper, "github.com/ttacon/chalk")).toBe(
+      "/packages/go/github.com%2Fttacon%2Fchalk",
+    );
   });
 });
 

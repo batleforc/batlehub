@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 
 const { auditLogMock } = vi.hoisted(() => ({ auditLogMock: vi.fn() }));
@@ -26,12 +26,42 @@ const envelope = (items: unknown[], over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+/**
+ * Teardown is load-bearing since the filter boxes gained a debounce: a test
+ * that types and does not wait leaves a timer behind, and it fires inside the
+ * *next* test — which then sees a request for a filter it never set. It also
+ * exercises the `onBeforeUnmount` that stops the same thing happening when a
+ * reader navigates away mid-keystroke.
+ */
+let active: ReturnType<typeof mount> | null = null;
+
+afterEach(() => {
+  active?.unmount();
+  active = null;
+});
+
 async function mountPage() {
   const wrapper = mount(AuditLog, {
     global: { stubs: { RouterLink: { template: "<a><slot /></a>" }, SectionTabs: true } },
   });
   await flushPromises();
+  active = wrapper;
   return wrapper;
+}
+
+/**
+ * The two free-text boxes are debounced by 300 ms — every keystroke used to be
+ * a request. Tests that type into them have to let that settle, or they assert
+ * against the query as it was before the character they just typed.
+ */
+async function typeFilter(
+  wrapper: Awaited<ReturnType<typeof mountPage>>,
+  selector: string,
+  value: string,
+) {
+  await wrapper.find(selector).setValue(value);
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  await flushPromises();
 }
 
 describe("AuditLog", () => {
@@ -85,8 +115,7 @@ describe("AuditLog", () => {
    */
   it("sends the user filter to the server rather than filtering the page", async () => {
     const wrapper = await mountPage();
-    await wrapper.find("#al-user").setValue("bob");
-    await flushPromises();
+    await typeFilter(wrapper, "#al-user", "bob");
 
     expect(auditLogMock).toHaveBeenLastCalledWith(
       expect.objectContaining({ query: expect.objectContaining({ user_id: "bob" }) }),
@@ -121,8 +150,7 @@ describe("AuditLog", () => {
       expect.objectContaining({ query: expect.objectContaining({ page: 1 }) }),
     );
 
-    await wrapper.find("#al-user").setValue("bob");
-    await flushPromises();
+    await typeFilter(wrapper, "#al-user", "bob");
     expect(auditLogMock).toHaveBeenLastCalledWith(
       expect.objectContaining({ query: expect.objectContaining({ page: 0, user_id: "bob" }) }),
     );
@@ -168,5 +196,53 @@ describe("AuditLog", () => {
     auditLogMock.mockResolvedValue({ error: { message: "boom" } });
     const wrapper = await mountPage();
     expect(wrapper.text()).toContain("boom");
+  });
+});
+
+/**
+ * One request per *filter*, not one per keystroke.
+ *
+ * `query` is a dependency of `useApi`, so every character typed into either
+ * free-text box was a round trip — `svc-ci-runner` fired thirteen, twelve of
+ * them describing a query nobody had finished asking. On the audit log, where
+ * a query can scan a large table, that is the page asking the database to do
+ * twelve times the work for an answer nobody reads.
+ */
+describe("AuditLog filter debounce", () => {
+  it("does not query on every keystroke", async () => {
+    const wrapper = await mountPage();
+    const before = auditLogMock.mock.calls.length;
+
+    const box = wrapper.find("#al-user");
+    for (const value of ["b", "bo", "bob", "bobb", "bobby"]) {
+      await box.setValue(value);
+    }
+    await flushPromises();
+    expect(auditLogMock.mock.calls.length, "mid-typing").toBe(before);
+
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await flushPromises();
+    expect(auditLogMock.mock.calls.length - before, "once the typing settles").toBe(1);
+    expect(auditLogMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ query: expect.objectContaining({ user_id: "bobby" }) }),
+    );
+  });
+
+  /** A button press is not typing; it should not wait out the debounce. */
+  it("applies Clear filters immediately", async () => {
+    const wrapper = await mountPage();
+    await typeFilter(wrapper, "#al-user", "bob");
+    const before = auditLogMock.mock.calls.length;
+
+    await wrapper
+      .findAll("button")
+      .find((b) => /clear/i.test(b.text()))!
+      .trigger("click");
+    await flushPromises();
+
+    expect(auditLogMock.mock.calls.length).toBeGreaterThan(before);
+    expect(auditLogMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ query: expect.not.objectContaining({ user_id: "bob" }) }),
+    );
   });
 });

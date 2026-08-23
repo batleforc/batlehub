@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  composite,
   contrastRatio,
+  fromHex,
   isInGamut,
   maxChroma,
   oklchToLinearSrgb,
   parseOklch,
   relativeLuminance,
   toHex,
+  type Rgb,
 } from "./color.ts";
 
 describe("oklchToLinearSrgb", () => {
@@ -117,5 +120,55 @@ describe("parseOklch", () => {
     for (const bad of ["#ff343d", "rgb(255 51 60)", "oklch()", "", "oklch(0.5 0.1)"]) {
       expect(parseOklch(bad), bad).toBeNull();
     }
+  });
+});
+
+describe("fromHex", () => {
+  it("round-trips through toHex", () => {
+    for (const hex of ["#000000", "#ffffff", "#57606a", "#bdc4cc"]) {
+      expect(toHex(fromHex(hex))).toBe(hex);
+    }
+  });
+
+  it("expands the three-digit form", () => {
+    expect(toHex(fromHex("#abc"))).toBe("#aabbcc");
+  });
+});
+
+/**
+ * `composite` is what twelve failing contrast assertions rest on, so it is
+ * worth proving on its own rather than only through them.
+ */
+describe("composite", () => {
+  const BLACK: Rgb = [0, 0, 0];
+  const WHITE: Rgb = [1, 1, 1];
+
+  it("returns the background at alpha 0 and the foreground at alpha 1", () => {
+    expect(composite(WHITE, BLACK, 0)).toEqual(BLACK);
+    expect(toHex(composite(WHITE, BLACK, 1))).toBe("#ffffff");
+  });
+
+  /**
+   * The whole reason this function exists rather than a linear-space lerp.
+   *
+   * CSS simple alpha compositing operates on the *encoded* channels, so white
+   * at 50% over black is mid-grey **by byte value** — `#7f7f7f`, half of 255
+   * rounding down — which carries 21.4% of white's luminance. Mixing in linear
+   * light instead gives `#bcbcbc` at 50% luminance: a visibly different colour,
+   * and at the ratios this codebase measures, the difference between clearing
+   * 4.5:1 and missing it.
+   */
+  it("mixes on the gamma-encoded channels, as a browser does", () => {
+    expect(toHex(composite(WHITE, BLACK, 0.5))).toBe("#7f7f7f");
+    expect(relativeLuminance(composite(WHITE, BLACK, 0.5))).toBeCloseTo(0.214, 3);
+
+    // The linear-space answer, for contrast — not what any engine paints.
+    expect(toHex([0.5, 0.5, 0.5])).toBe("#bcbcbc");
+    expect(relativeLuminance([0.5, 0.5, 0.5])).toBeCloseTo(0.5, 3);
+  });
+
+  it("is symmetric in the pair when alpha is halved from either side", () => {
+    // `a over b` at 0.5 and `b over a` at 0.5 are the same mixture.
+    expect(toHex(composite(WHITE, BLACK, 0.5))).toBe(toHex(composite(BLACK, WHITE, 0.5)));
   });
 });

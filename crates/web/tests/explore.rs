@@ -127,7 +127,8 @@ async fn make_explore_app_full(
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
 
-    let regs: std::collections::HashSet<String> = reg_names.iter().map(|s| s.to_string()).collect();
+    let regs: std::collections::HashSet<String> =
+        reg_names.iter().map(ToString::to_string).collect();
     let access_config = new_access_lock(batlehub_web::AccessConfig {
         anonymous: regs.clone(),
         user: regs.clone(),

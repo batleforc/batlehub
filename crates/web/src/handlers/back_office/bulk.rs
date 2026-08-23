@@ -68,37 +68,6 @@ fn bulk_response(result: BulkResult) -> BulkPackageResponse {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::require_admin;
-    use crate::extractors::AuthIdentity;
-    use batlehub_core::entities::{Identity, Role};
-
-    fn id(role: Role) -> AuthIdentity {
-        AuthIdentity(Identity {
-            user_id: Some("u".into()),
-            role,
-            auth_provider: None,
-            groups: vec![],
-        })
-    }
-
-    #[test]
-    fn require_admin_passes_for_admin() {
-        assert!(require_admin(&id(Role::Admin)).is_ok());
-    }
-
-    #[test]
-    fn require_admin_fails_for_user() {
-        assert!(require_admin(&id(Role::User)).is_err());
-    }
-
-    #[test]
-    fn require_admin_fails_for_anonymous() {
-        assert!(require_admin(&id(Role::Anonymous)).is_err());
-    }
-}
-
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct BulkPackageItem {
     pub name: String,
@@ -403,4 +372,35 @@ pub async fn relist(
         .await
         .map_err(AppError::from)?;
     Ok(HttpResponse::Ok().json(OkResponse::new()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::require_admin;
+    use crate::extractors::AuthIdentity;
+    use batlehub_core::entities::{Identity, Role};
+
+    fn id(role: Role) -> AuthIdentity {
+        AuthIdentity(Identity {
+            user_id: Some("u".into()),
+            role,
+            auth_provider: None,
+            groups: vec![],
+        })
+    }
+
+    #[test]
+    fn require_admin_passes_for_admin() {
+        assert!(require_admin(&id(Role::Admin)).is_ok());
+    }
+
+    #[test]
+    fn require_admin_fails_for_user() {
+        assert!(require_admin(&id(Role::User)).is_err());
+    }
+
+    #[test]
+    fn require_admin_fails_for_anonymous() {
+        assert!(require_admin(&id(Role::Anonymous)).is_err());
+    }
 }

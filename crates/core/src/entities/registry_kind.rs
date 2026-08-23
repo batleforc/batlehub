@@ -206,7 +206,7 @@ pub enum RegistryKind {
 impl RegistryKind {
     /// All known registry kinds, in the same order the config validator and
     /// `server/src/builders.rs` have historically listed them.
-    pub const ALL: &'static [RegistryKind] = &[
+    pub const ALL: &[RegistryKind] = &[
         Self::Github,
         Self::Forgejo,
         Self::Gitlab,

@@ -547,8 +547,21 @@ impl AuthProvider for OidcAuthProvider {
             return Ok(None);
         };
 
-        let header = decode_header(token)
-            .map_err(|e| CoreError::Auth(format!("invalid JWT header: {e}")))?;
+        // Not a JWT at all is "not ours", not a fault — the same `Ok(None)` the
+        // wrong-`aud`/wrong-`iss` arm below returns, and for the same reason.
+        //
+        // Returned as `Err`, this counted every personal access token as an
+        // authentication *failure*: a PAT is `bh_pat_…` and carries no dots, the
+        // OIDC provider is consulted before `UserTokenAuthProvider`, so on any
+        // OIDC deployment every PAT-authenticated request logged a WARN and
+        // incremented `batlehub_auth_failures_total{provider="oidc"}`. A CI job
+        // pulling at 100 rps produced 100 warn lines a second and pinned any
+        // alert built on that metric — while the credential it was complaining
+        // about was perfectly valid for the provider one place down the list.
+        let Ok(header) = decode_header(token) else {
+            tracing::debug!(provider = %self.name, "credential is not a JWT; not ours");
+            return Ok(None);
+        };
 
         let decoding_key = self.get_decoding_key(header.kid.as_deref()).await?;
 
@@ -776,14 +789,25 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         assert!(p.authenticate(&req).await.unwrap().is_none());
     }
 
+    /// A credential this provider cannot even read as a JWT is somebody else's,
+    /// not a fault of this one.
+    ///
+    /// It used to be `Err(CoreError::Auth(…))`, which the middleware turns into
+    /// a WARN line and a `batlehub_auth_failures_total{provider="oidc"}`
+    /// increment. A personal access token is `bh_pat_…` — no dots, no header to
+    /// decode — and the OIDC provider is consulted before
+    /// `UserTokenAuthProvider`, so on any OIDC deployment *every* PAT request
+    /// logged a failure for a credential that was about to authenticate
+    /// perfectly well one provider down the list.
     #[tokio::test]
-    async fn malformed_token_string_returns_auth_error() {
+    async fn a_credential_that_is_not_a_jwt_is_declined_not_failed() {
         let p = default_provider();
-        let err = p
-            .authenticate(&bearer("not.a.valid.jwt"))
-            .await
-            .unwrap_err();
-        assert!(matches!(err, CoreError::Auth(_)));
+        for token in ["not.a.valid.jwt", "bh_pat_abcdef0123456789", ""] {
+            assert!(
+                p.authenticate(&bearer(token)).await.unwrap().is_none(),
+                "{token} must be declined, leaving the next provider its turn"
+            );
+        }
     }
 
     // ── Role mapping ──────────────────────────────────────────────────────────

@@ -132,6 +132,41 @@ export const isProse = (text) =>
   !isBareWordNotProse(text);
 
 /**
+ * A word standing *between* two interpolations of a template literal.
+ *
+ * `` `${head} of ${scope}` `` strips to `of`, and both of `isProse`'s guards
+ * throw it away: two characters is under the three-character floor, and a
+ * bare all-lowercase word reads as a domain term. So the one English word in
+ * that sentence is the one part of it the gate could not see, and the summary
+ * line of every destructive confirmation shipped half-translated.
+ *
+ * Neither guard is wrong in general. The floor exists because stripping an
+ * interpolation leaves residue — `({{ days }}d)` becomes `(d)` — and the
+ * lowercase rule exists because `latest`, `yank` and `npm` are terms §4.6
+ * keeps verbatim. Lowering either one globally re-admits exactly what it was
+ * put there to reject.
+ *
+ * What separates the two cases is *position*, not shape. A residue trails its
+ * value; a word with an interpolation on **both** sides is a connective
+ * somebody wrote to join two values into a sentence — `of`, `on`, `to`, `and`,
+ * `sur`, `de` — and it is that sentence's entire translatable content.
+ *
+ * So: letters and inner separators only, at least two of them, and the domain
+ * nouns still excluded. `${owner}/${repo}`, `${scheme}://${host}`,
+ * `${maj}.${min}.${patch}` and `${h}h${m}` all fail it, which is the point.
+ */
+export const isBridgeText = (text) =>
+  /^\p{L}{2,}(?:[\s'’-]\p{L}+)*$/u.test(text) && !DOMAIN_NOUNS.has(text);
+
+/** The bridge words of one literal, in order. Empty for a non-template. */
+export const templateBridges = (raw) =>
+  raw
+    .split(/\$\{[^}]*\}/)
+    .slice(1, -1) // the first and last parts are flanked on one side only
+    .map((part) => part.trim())
+    .filter((part) => isBridgeText(part));
+
+/**
  * Everything the two tools agree is a user-visible string.
  *
  * A trailing colon is stripped before classification. `Source:` is a field

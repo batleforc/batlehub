@@ -4,7 +4,7 @@ import { computed, ref, watch } from "vue";
 import { getPackageVisibility, setPackageVisibility } from "@/client/sdk.gen";
 import type { Visibility } from "@/client/types.gen";
 import { VISIBILITY_OPTIONS } from "@/config/visibility";
-import { useApi } from "@/composables/useApi";
+import { useApi, extractMessage } from "@/composables/useApi";
 import { useAuth } from "@/composables/useAuth";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -48,7 +48,7 @@ async function save() {
     if (apiErr) throw new Error((apiErr as { message?: string })?.message ?? t("common.apiError"));
     reload();
   } catch (e) {
-    error.value = e instanceof Error ? e.message : "Unknown error";
+    error.value = extractMessage(e);
   } finally {
     saving.value = false;
   }

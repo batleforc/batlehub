@@ -3,6 +3,7 @@ import { useI18n } from "vue-i18n";
 import { ref, computed } from "vue";
 import type { RegistryInfo } from "@/client/types.gen";
 import { useAuthFetch } from "@/composables/useAuthFetch";
+import { extractMessage } from "@/composables/useApi";
 import { API_BASE_URL } from "@/config";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -86,7 +87,7 @@ function buildUploadTarget(type: string, reg: string): { url: string; method: st
     case "vscode-marketplace": {
       const id = uploadExtId.value.trim();
       const version = uploadVersion.value.trim();
-      if (!id || !version) throw new Error("Extension ID and version are required");
+      if (!id || !version) throw new Error(t("namespaceUpload.extensionIdAndVersionRequired"));
       return {
         url: `${base}/${encodeURIComponent(id)}/${encodeURIComponent(version)}/vsix`,
         method: "PUT",
@@ -95,7 +96,7 @@ function buildUploadTarget(type: string, reg: string): { url: string; method: st
     case "goproxy": {
       const mod = uploadModule.value.trim();
       const version = uploadVersion.value.trim();
-      if (!mod || !version) throw new Error("Module path and version are required");
+      if (!mod || !version) throw new Error(t("namespaceUpload.modulePathAndVersionRequired"));
       return {
         url: `${base}/${encodeURIComponent(mod)}/@v/${encodeURIComponent(version)}.zip`,
         method: "PUT",
@@ -104,7 +105,8 @@ function buildUploadTarget(type: string, reg: string): { url: string; method: st
     case "deb": {
       const dist = uploadDistribution.value.trim();
       const component = uploadComponent.value.trim();
-      if (!dist || !component) throw new Error("Distribution and component are required");
+      if (!dist || !component)
+        throw new Error(t("namespaceUpload.distributionAndComponentRequired"));
       return {
         url: `${base}/deb/pool/${encodeURIComponent(dist)}/${encodeURIComponent(component)}/upload`,
         method: "PUT",
@@ -142,7 +144,7 @@ async function doUpload() {
       success.value = false;
     }, 4000);
   } catch (e_) {
-    error.value = e_ instanceof Error ? e_.message : "Unknown error";
+    error.value = extractMessage(e_);
   } finally {
     loading.value = false;
   }
@@ -322,7 +324,10 @@ const currentSnippet = computed(
           <Button :disabled="!uploadFile || loading" @click="doUpload">
             {{ loading ? t("namespaceUpload.uploading") : t("namespaceUpload.upload") }}
           </Button>
-          <span v-if="success" class="text-sm text-primary">{{
+          <!-- Full ink, not `text-primary`: that resolves to `--accent`, the same
+               crimson as the failure line below it, so a publish that worked and
+               a publish that did not rendered identically. -->
+          <span v-if="success" class="text-sm text-foreground">{{
             t("namespaceUpload.publishedSuccessfully")
           }}</span>
           <span v-if="error" class="text-sm text-destructive">{{ error }}</span>

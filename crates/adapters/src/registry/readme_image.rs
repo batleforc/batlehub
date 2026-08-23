@@ -52,8 +52,13 @@ impl HttpReadmeImageFetcher {
 
 #[async_trait]
 impl ReadmeImageFetcher for HttpReadmeImageFetcher {
-    async fn fetch(&self, url: &str, max_bytes: usize) -> Result<Option<FetchedImage>, CoreError> {
-        fetch_image(&self.client, url, max_bytes).await
+    async fn fetch(
+        &self,
+        url: &str,
+        allowed_hosts: &[String],
+        max_bytes: usize,
+    ) -> Result<Option<FetchedImage>, CoreError> {
+        fetch_image(&self.client, url, allowed_hosts, max_bytes).await
     }
 }
 
@@ -81,7 +86,7 @@ mod tests {
 
         let fetcher = HttpReadmeImageFetcher::new(&UpstreamHttpOptions::default()).unwrap();
         let err = fetcher
-            .fetch(&format!("{}/badge.svg", upstream.url()), 1024)
+            .fetch(&format!("{}/badge.svg", upstream.url()), &[], 1024)
             .await
             .expect_err("a loopback host must be refused");
         assert!(
@@ -103,13 +108,13 @@ mod tests {
             "file:///etc/passwd",
             "ftp://example.com/x.png",
         ] {
-            assert_eq!(fetcher.fetch(url, 1024).await.unwrap(), None, "{url}");
+            assert_eq!(fetcher.fetch(url, &[], 1024).await.unwrap(), None, "{url}");
         }
     }
 
     #[tokio::test]
     async fn a_url_that_is_not_a_url_is_an_error_not_a_panic() {
         let fetcher = HttpReadmeImageFetcher::new(&UpstreamHttpOptions::default()).unwrap();
-        assert!(fetcher.fetch("not a url at all", 1024).await.is_err());
+        assert!(fetcher.fetch("not a url at all", &[], 1024).await.is_err());
     }
 }

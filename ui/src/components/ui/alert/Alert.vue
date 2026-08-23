@@ -8,8 +8,11 @@ const alertVariants = cva(
     variants: {
       variant: {
         default: "bg-background text-foreground",
-        destructive:
-          "border-destructive/50 text-destructive dark:border-destructive [&>svg]:text-destructive",
+        /* Opaque. At `/50` this measured 2.62:1 in light against a 3:1 floor
+           — and `dark:border-destructive` already made it opaque in dark, so
+           the two renditions disagreed about how loud a refusal is. One value
+           now, and the `dark:` override has nothing left to override. */
+        destructive: "border-destructive text-destructive [&>svg]:text-destructive",
         // "known" in the One Synthetic Rule's terms: a confirmation is full ink
         // against a rule that carries more weight, not a fifth hue. Green was
         // outside this palette entirely and its pairing was never measured.

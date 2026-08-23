@@ -37,7 +37,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
-import { isTranslatable } from "./i18n-shared.mjs";
+import { isTranslatable, templateBridges } from "./i18n-shared.mjs";
 
 const ROOT = new URL("../src", import.meta.url).pathname;
 
@@ -173,46 +173,112 @@ const SILENT_SUFFIX = new RegExp(`[a-z0-9](?:${SILENT_WORDS.map(capitalise).join
 const SILENT_EXACT = new RegExp(`^(?:${SILENT_WORDS.join("|")})$`, "i");
 const SILENT_TARGET = { test: (name) => SILENT_EXACT.test(name) || SILENT_SUFFIX.test(name) };
 
+/**
+ * An object-literal value: `dark: "Theme: dark"`, `{ error: "…" }`.
+ *
+ * Named because the fallback pass has to recognise the same shape in order to
+ * *not* report it — a ternary's `:` and a key's `:` are one character, and the
+ * only thing that tells them apart is what sits in front. Two passes reading
+ * one shape from one definition is the difference between counting a string
+ * once and counting it twice.
+ */
+const OBJECT_VALUE =
+  /(?<![\w.$])([A-Za-z_$][\w$]*)\s*:\s*(?:"([^"\\\n]*)"|'([^'\\\n]*)'|`([^`\\]*)`)/g;
+
+/** `OBJECT_VALUE`'s left half, anchored to the end of the text before a `:`. */
+const OBJECT_KEY = /(?<![\w.$])[A-Za-z_$][\w$]*\s*$/;
+
+// A `${…}` residue is a value, not a sentence. Without this, a code snippet
+// inside a backtick template reads as prose the moment it contains a quoted
+// attribute.
+const strip = (text) => text.replace(/\$\{[^}]*\}/g, "").trim();
+
+/**
+ * Every user-visible string one source literal yields.
+ *
+ * Usually one: the literal with its interpolations stripped. A template can
+ * yield a second kind, though — the connective *between* two interpolations,
+ * which survives neither the length floor nor the bare-word rule and so was
+ * invisible however the literal was reached. See `templateBridges`.
+ *
+ * Every literal in this file goes through here, so a template found in an
+ * assignment, a call argument, a ternary or an object value is read the same
+ * way. The alternative is four call sites that agree today and drift apart the
+ * first time one of them is fixed.
+ */
+const textsOf = (raw) => {
+  const whole = strip(raw);
+  const out = isTranslatable(whole) ? [whole] : [];
+  out.push(...templateBridges(raw));
+  return out;
+};
+
 function scriptStrings(source) {
   const out = [];
   const script = scriptOf(source);
-  // A `${…}` residue is a value, not a sentence — the same rule `boundLiterals`
-  // applies. Without it a code snippet inside a backtick template reads as
-  // prose the moment it contains a quoted attribute.
-  const strip = (text) => text.replace(/\$\{[^}]*\}/g, "").trim();
 
   // Assignment: `x = "…"`, `x.value = "…"`, `obj.prop = "…"`.
   for (const [, target, single, double, backtick] of script.matchAll(
     /([\w.$[\]"']+)\s*=(?!=)\s*(?:"([^"\\\n]*)"|'([^'\\\n]*)'|`([^`\\]*)`)/g,
   )) {
-    const text = strip(single ?? double ?? backtick);
     /* The name being assigned to, however it was reached: `parseError.value`,
        `row.error`, `headers["Authorization"]`. The last identifier in the
        expression is the one that names the destination. */
     const name = target.replace(/\.value$/, "").match(/[A-Za-z_$][\w$]*/g)?.pop() ?? target;
     if (SILENT_TARGET.test(name)) continue;
-    if (isTranslatable(text)) out.push(`${target} = "${text}"`);
+    for (const text of textsOf(single ?? double ?? backtick)) out.push(`${target} = "${text}"`);
   }
 
-  // Call argument: `setError("…")`, `announce("…")`, `ref("…")`. The callee is
-  // read from the text *before* the paren — `match.index`, not `indexOf`, which
-  // would resolve every repeat of a common call to its first occurrence.
-  for (const match of script.matchAll(/\(\s*(?:"([^"\\\n]*)"|'([^'\\\n]*)'|`([^`\\]*)`)/g)) {
-    const text = strip(match[1] ?? match[2] ?? match[3]);
+  /* Call argument: `setError("…")`, `announce("…")`, `ref("…")`. The callee is
+     read from the text *before* the paren — `match.index`, not `indexOf`, which
+     would resolve every repeat of a common call to its first occurrence.
+
+     The literal does not have to be the *first* argument, and the fallback
+     message almost never is: `apiErrorMessage(err, "Failed to revoke token.")`
+     is the shape this codebase writes every API error in, and anchoring the
+     literal to the open paren meant not one of them was ever read. Preceding
+     arguments are matched conservatively — identifiers and member access, no
+     nested call and no earlier literal — so that `console.error("a", "b")`
+     still resolves its callee to `console.error` and stays silent, and so that
+     the 40-character window behind `match.index` still lands on the callee
+     rather than inside an argument list. */
+  for (const match of script.matchAll(
+    /\(\s*(?:[\w.$?![\]]+\s*,\s*)*(?:"([^"\\\n]*)"|'([^'\\\n]*)'|`([^`\\]*)`)/g,
+  )) {
     if (SILENT_SINK.test(script.slice(Math.max(0, match.index - 40), match.index))) continue;
-    if (isTranslatable(text)) out.push(`(… "${text}")`);
+    for (const text of textsOf(match[1] ?? match[2] ?? match[3])) out.push(`(… "${text}")`);
   }
 
   /* A fallback expression: `x ?? "Unknown"`, `ok ? "Yes" : "No"`, `a || "—"`.
      This is where default human text hides — `errorMsg.value = e instanceof
      Error ? e.message : "Export failed"` is an assignment whose right-hand side
      is an expression, so the assignment sink above cannot see it, and it is the
-     shape every "…or a default message" line takes. */
+     shape every "…or a default message" line takes.
+
+     `:` is in the alternation because the *else* branch is where the default
+     sits: the `?` branch carries the value that was found and the `:` branch
+     the sentence somebody wrote for when it was not. Without it this pass read
+     the half of the ternary that is never the hardcoded one, which is how
+     seven `: "Unknown error"` fallbacks sat behind a zero.
+
+     It cannot be matched blind, because `label: "Registries"` is the same two
+     characters. A `:` preceded by a bare identifier is left to the
+     object-literal pass below, which already reports it under the key's name —
+     the point is not to hide it here but to count it once, in one place.
+
+     The `:` branch alone demands a space before the literal and refuses a
+     neighbouring `:`, because a colon is the one operator here that also
+     occurs *inside* strings. `` `${registry}::` `` ends in two of them, and a
+     colon glued to the template's own closing backtick pairs with the *next*
+     backtick in the file — five lines of `_store.delete(k)` were reported as
+     an untranslated sentence. Formatting puts a space after a ternary's colon
+     and never after a namespace separator, so that space is what tells a
+     colon between two expressions from a colon inside one string. */
   for (const match of script.matchAll(
-    /(?:\?\?|\?|\|\|)\s*(?:"([^"\\\n]*)"|'([^'\\\n]*)'|`([^`\\]*)`)/g,
+    /((?:\?\?|\?|\|\|)|(?<!:):(?!:)(?=\s))\s*(?:"([^"\\\n]*)"|'([^'\\\n]*)'|`([^`\\]*)`)/g,
   )) {
-    const text = strip(match[1] ?? match[2] ?? match[3]);
-    if (isTranslatable(text)) out.push(`… ?? "${text}"`);
+    if (match[1] === ":" && OBJECT_KEY.test(script.slice(0, match.index))) continue;
+    for (const text of textsOf(match[2] ?? match[3] ?? match[4])) out.push(`… ?? "${text}"`);
   }
 
   /* Object-literal value: `dark: "Theme: dark"` in a lookup table. This is the
@@ -221,12 +287,9 @@ function scriptStrings(source) {
      map. This replaces a pass that scanned `label:` and `title:` only, because
      those are the two keys text had been found under before; the key's *name*
      is not what makes the value text. */
-  for (const [, name, single, double, backtick] of script.matchAll(
-    /(?<![\w.$])([A-Za-z_$][\w$]*)\s*:\s*(?:"([^"\\\n]*)"|'([^'\\\n]*)'|`([^`\\]*)`)/g,
-  )) {
+  for (const [, name, single, double, backtick] of script.matchAll(OBJECT_VALUE)) {
     if (SILENT_TARGET.test(name)) continue;
-    const text = strip(single ?? double ?? backtick);
-    if (isTranslatable(text)) out.push(`${name}: "${text}"`);
+    for (const text of textsOf(single ?? double ?? backtick)) out.push(`${name}: "${text}"`);
   }
 
   return [...new Set(out)];
@@ -256,7 +319,6 @@ function boundLiterals(template) {
      entirely. Length is `isProse`'s job; this regex's only job is finding where
      a literal starts and ends. */
   const literal = /'([^']*)'|`([^`]*)`/g;
-  const strip = (text) => text.replace(/\$\{[^}]*\}/g, "").trim();
 
   for (const [, colonAttr, directive, value] of template.matchAll(
     /(?::([\w.-]+)|v-([\w:.-]+))="([^"]*)"/g,
@@ -264,8 +326,7 @@ function boundLiterals(template) {
     const attr = colonAttr ?? directive ?? "";
     if (/^(class|style)$/.test(attr) || /^bind:(class|style)$/.test(attr)) continue;
     for (const [, single, backtick] of value.matchAll(literal)) {
-      const text = strip(single ?? backtick);
-      if (isTranslatable(text)) out.push(`:${attr}="… '${text}'"`);
+      for (const text of textsOf(single ?? backtick)) out.push(`:${attr}="… '${text}'"`);
     }
   }
 
@@ -279,8 +340,7 @@ function boundLiterals(template) {
       // See the note on `literal` above: a length floor here mis-pairs quotes.
       /'([^']*)'|"([^"]*)"|`([^`]*)`/g,
     )) {
-      const text = strip(single ?? double ?? backtick);
-      if (isTranslatable(text)) out.push(`{{ … '${text}' }}`);
+      for (const text of textsOf(single ?? double ?? backtick)) out.push(`{{ … '${text}' }}`);
     }
   }
   return out;

@@ -72,11 +72,21 @@ fn parse_coordinate(raw: &str) -> Result<(String, String, Option<String>)> {
     }
     match rest.rfind('@') {
         // A leading `@` is a scope, not a version separator.
-        Some(at) if at > 0 => Ok((
-            registry.to_owned(),
-            rest[..at].to_owned(),
-            Some(rest[at + 1..].to_owned()),
-        )),
+        Some(at) if at > 0 => {
+            let version = &rest[at + 1..];
+            // A trailing `@` names no version. Passed through it became
+            // `?version=`, which the server reads as a request for the empty
+            // version rather than for the newest one — a `404` for a typo the
+            // client can see for itself.
+            if version.is_empty() {
+                anyhow::bail!("expected registry/name[@version], got '{raw}'");
+            }
+            Ok((
+                registry.to_owned(),
+                rest[..at].to_owned(),
+                Some(version.to_owned()),
+            ))
+        }
         _ => Ok((registry.to_owned(), rest.to_owned(), None)),
     }
 }
@@ -285,6 +295,16 @@ mod tests {
     #[test]
     fn a_coordinate_with_no_registry_is_rejected() {
         for bad in ["express", "/express", "npm1/", ""] {
+            assert!(parse_coordinate(bad).is_err(), "{bad} should be rejected");
+        }
+    }
+
+    /// A trailing `@` names no version. Read as `Some("")` it travelled as
+    /// `?version=`, which asks the server for the empty version rather than for
+    /// the newest one — a `404` for something the client can see is a typo.
+    #[test]
+    fn a_trailing_at_is_rejected_rather_than_sent_as_an_empty_version() {
+        for bad in ["npm1/express@", "npm1/@scope/pkg@"] {
             assert!(parse_coordinate(bad).is_err(), "{bad} should be rejected");
         }
     }

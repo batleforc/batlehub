@@ -82,7 +82,7 @@ function selectNamespace(ns: TeamNamespaceDto) {
       <Card>
         <CardHeader>
           <CardTitle class="text-base">{{ t("myNamespace.myNamespaces") }}</CardTitle>
-          <CardDescription>{{ t("myNamespace.clickARowTo") }}</CardDescription>
+          <CardDescription>{{ t("myNamespace.chooseANamespaceTo") }}</CardDescription>
         </CardHeader>
         <CardContent>
           <p v-if="namespacesLoading" class="text-sm text-muted-foreground">
@@ -104,19 +104,43 @@ function selectNamespace(ns: TeamNamespaceDto) {
               </TableRow>
             </TableHeader>
             <TableBody>
+              <!-- The control is the prefix, not the row.
+                   `@click` on `<TableRow>` with no `tabindex`, no `role` and no
+                   key handler gave a mouse the whole row and a keyboard nothing
+                   — and this list is the only way into the packages table
+                   below, so from the keyboard that table could not be reached
+                   at all (WCAG 2.1.1, A).
+
+                   A `<button>` in a cell rather than `role="button"` on the
+                   `<tr>`: the latter would name the row a button and take its
+                   three cells out of the table with it. This is a selection and
+                   not a navigation — there is no URL for a chosen namespace —
+                   so it is a button carrying `aria-pressed`, not a link. -->
               <TableRow
                 v-for="ns in myNamespaces"
                 :key="`${ns.registry}:${ns.prefix}`"
-                class="cursor-pointer"
                 :class="
                   selectedNs?.registry === ns.registry && selectedNs?.prefix === ns.prefix
                     ? 'bg-muted/60'
                     : 'hover:bg-muted/40'
                 "
-                @click="selectNamespace(ns)"
               >
                 <TableCell class="font-mono text-xs">{{ ns.registry }}</TableCell>
-                <TableCell class="font-mono text-xs">{{ ns.prefix }}</TableCell>
+                <TableCell class="font-mono text-xs">
+                  <button
+                    type="button"
+                    class="hover:underline underline-offset-[3px]"
+                    :aria-pressed="
+                      selectedNs?.registry === ns.registry && selectedNs?.prefix === ns.prefix
+                    "
+                    :aria-label="
+                      t('myNamespace.browseNamespace', { ns: `${ns.registry}/${ns.prefix}` })
+                    "
+                    @click="selectNamespace(ns)"
+                  >
+                    {{ ns.prefix }}
+                  </button>
+                </TableCell>
                 <TableCell class="font-mono text-xs">{{
                   ns.group_id.replaceAll(" ", "")
                 }}</TableCell>

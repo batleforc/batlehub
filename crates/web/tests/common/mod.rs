@@ -629,7 +629,7 @@ pub fn bearer(token: &str) -> String {
 /// it from a helper's silence.
 pub fn access_config(anonymous: &[&str], user_admin: &[&str]) -> batlehub_web::AccessConfigLock {
     let to_set = |names: &[&str]| -> std::collections::HashSet<String> {
-        names.iter().map(|s| s.to_string()).collect()
+        names.iter().map(ToString::to_string).collect()
     };
     new_access_lock(batlehub_web::AccessConfig {
         anonymous: to_set(anonymous),
@@ -655,7 +655,7 @@ pub fn access_config_for(names: &[&str]) -> batlehub_web::AccessConfigLock {
 /// the catalogue scopes — are the ones that read the explore set *directly*, and
 /// the call site saying so is worth a line of indirection.
 pub fn access_config_with_explore(names: &[&str]) -> batlehub_web::AccessConfigLock {
-    let set: std::collections::HashSet<String> = names.iter().map(|s| s.to_string()).collect();
+    let set: std::collections::HashSet<String> = names.iter().map(ToString::to_string).collect();
     new_access_lock(batlehub_web::AccessConfig {
         anonymous: set.clone(),
         user: set.clone(),
@@ -673,7 +673,7 @@ pub fn access_config_with_explore(names: &[&str]) -> batlehub_web::AccessConfigL
 /// may not browse. Spelled out here rather than left to a helper's default, so a
 /// test asserting the catalogue's refusal says which setting it is asserting.
 pub fn access_config_explore_denied(names: &[&str]) -> batlehub_web::AccessConfigLock {
-    let set: std::collections::HashSet<String> = names.iter().map(|s| s.to_string()).collect();
+    let set: std::collections::HashSet<String> = names.iter().map(ToString::to_string).collect();
     new_access_lock(batlehub_web::AccessConfig {
         anonymous: set.clone(),
         user: set.clone(),
