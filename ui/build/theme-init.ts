@@ -27,7 +27,7 @@ export const readThemeInit = (): string => readFileSync(themeInitSource(), "utf8
  * first paint. The file is mostly comment, and the comment is load-bearing:
  * this script has to agree with `useColorMode` exactly or the flash it removes
  * comes back at mount. Both facts are true at once, which is what this plugin
- * is for: the reader gets the reasoning, the browser gets 268 bytes.
+ * is for: the reader gets the reasoning, the browser gets 277 bytes.
  *
  * `public/` was the obvious home and is the wrong one — Vite copies that
  * directory verbatim, so the shipped file would be the commented source and

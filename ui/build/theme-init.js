@@ -57,12 +57,23 @@
     // palette's default, so this falls through rather than giving up.
   }
 
-  var resolved =
-    stored === "light" || stored === "dark"
-      ? stored
-      : window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
-        ? "dark"
-        : "light";
+  // Read once, and read to `false` where `matchMedia` is unavailable — which is
+  // the fallback listed above, and vueuse's, not the palette's own default.
+  var systemDark = false;
+  if (window.matchMedia) {
+    systemDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  }
 
-  document.documentElement.setAttribute("data-theme", resolved);
+  // Light is the base case, so the two ways of arriving at dark — asked for, or
+  // preferred — each read as one branch instead of one nested conditional.
+  var resolved = "light";
+  if (stored === "light" || stored === "dark") {
+    resolved = stored;
+  } else if (systemDark) {
+    resolved = "dark";
+  }
+
+  // `dataset.theme` is the `data-theme` attribute `tokens.css` selects on and
+  // `useColorMode` writes; the minifier makes it the shorter of the two, too.
+  document.documentElement.dataset.theme = resolved;
 })();

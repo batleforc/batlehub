@@ -91,40 +91,34 @@ afterEach(() => {
 
 describe("theme-init", () => {
   describe.each(FORMS)("resolves the rendition the way useColorMode will (%s)", (_form, code) => {
-    it("honours a stored light preference over the system", () => {
-      dom.localStorage.setItem("batlehub.theme", "light");
-      systemPrefers(true);
-      run(code);
-      expect(applied()).toBe("light");
-    });
+    /**
+     * The four cases that differ only in what storage holds, because they are
+     * one rule: a stored `light` or `dark` wins over the system, and everything
+     * else — `auto`, or a value nobody recognises — resolves from it.
+     *
+     * `auto` is a row here rather than a special case because `emitAuto: true`
+     * makes it a value really written to storage, not just an internal state:
+     * `useStorage` writes the default on first read, so a reader who has never
+     * touched the toggle has a stored `auto`, not an empty key.
+     */
+    const STORED: [stored: string, systemDark: boolean, expected: string][] = [
+      ["light", true, "light"],
+      ["dark", false, "dark"],
+      ["auto", true, "dark"],
+      ["chartreuse", true, "dark"],
+    ];
 
-    it("honours a stored dark preference over the system", () => {
-      dom.localStorage.setItem("batlehub.theme", "dark");
-      systemPrefers(false);
+    it.each(STORED)("resolves a stored %p against a dark=%p system", (stored, dark, expected) => {
+      dom.localStorage.setItem("batlehub.theme", stored);
+      systemPrefers(dark);
       run(code);
-      expect(applied()).toBe("dark");
-    });
-
-    it("follows the system when the stored value is `auto`", () => {
-      // `emitAuto: true` means "auto" is a value really written to storage, not
-      // just an internal state — `useStorage` writes the default on first read.
-      dom.localStorage.setItem("batlehub.theme", "auto");
-      systemPrefers(true);
-      run(code);
-      expect(applied()).toBe("dark");
+      expect(applied()).toBe(expected);
     });
 
     it("follows the system on a first visit, with nothing stored", () => {
       systemPrefers(false);
       run(code);
       expect(applied()).toBe("light");
-    });
-
-    it("follows the system when the stored value is corrupt", () => {
-      dom.localStorage.setItem("batlehub.theme", "chartreuse");
-      systemPrefers(true);
-      run(code);
-      expect(applied()).toBe("dark");
     });
 
     /**

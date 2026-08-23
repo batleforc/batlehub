@@ -267,15 +267,23 @@ function scriptStrings(source) {
      the point is not to hide it here but to count it once, in one place.
 
      The `:` branch alone demands a space before the literal and refuses a
-     neighbouring `:`, because a colon is the one operator here that also
-     occurs *inside* strings. `` `${registry}::` `` ends in two of them, and a
-     colon glued to the template's own closing backtick pairs with the *next*
-     backtick in the file — five lines of `_store.delete(k)` were reported as
-     an untranslated sentence. Formatting puts a space after a ternary's colon
-     and never after a namespace separator, so that space is what tells a
-     colon between two expressions from a colon inside one string. */
+     *preceding* `:`, because a colon is the one operator here that also occurs
+     *inside* strings. `` `${registry}::` `` ends in two of them, and a colon
+     glued to the template's own closing backtick pairs with the *next* backtick
+     in the file — five lines of `_store.delete(k)` were reported as an
+     untranslated sentence. Formatting puts a space after a ternary's colon and
+     never after a namespace separator, so that space is what tells a colon
+     between two expressions from a colon inside one string. It is also why the
+     following colon needs no guard of its own: `\s` cannot match one.
+
+     All three operators sit in one alternation, and the pass is one scan, on
+     purpose. Read as two loops — `??`/`||`/`?` in one, `:` in the other — each
+     regex is simpler and the result is wrong: a second independent scan
+     re-reads what the first already consumed, and the `?` ending
+     `"…</span>?", confirmLabel:` pairs with the quote after it to report
+     `, confirmLabel:` as English. One scan cannot overlap itself. */
   for (const match of script.matchAll(
-    /((?:\?\?|\?|\|\|)|(?<!:):(?!:)(?=\s))\s*(?:"([^"\\\n]*)"|'([^'\\\n]*)'|`([^`\\]*)`)/g,
+    /(\?{1,2}|\|\||(?<!:):(?=\s))\s*(?:"([^"\\\n]*)"|'([^'\\\n]*)'|`([^`\\]*)`)/g,
   )) {
     if (match[1] === ":" && OBJECT_KEY.test(script.slice(0, match.index))) continue;
     for (const text of textsOf(match[2] ?? match[3] ?? match[4])) out.push(`… ?? "${text}"`);
