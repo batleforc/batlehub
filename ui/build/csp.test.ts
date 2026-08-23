@@ -257,7 +257,10 @@ describe("buildCsp — the socket.dev badge", () => {
 
     const parsed = directives(buildCsp(API_ORIGIN));
     const elsewhere = Object.entries(parsed)
-      .filter(([name, sources]) => name !== "img-src" && sources.includes(SOCKET_BADGE))
+      .filter(
+        ([name, sources]) =>
+          name !== "img-src" && sources.some((source) => source === SOCKET_BADGE),
+      )
       .map(([name]) => name);
     expect(elsewhere).toEqual([]);
   });

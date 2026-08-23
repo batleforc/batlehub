@@ -457,10 +457,16 @@ async fn an_id_token_bound_to_another_nonce_is_refused() {
     // succeeds — the identity provider is not the attacker here — and the
     // callback still refuses to mint a session.
     let mut server = mockito::Server::new_async().await;
-    let _token = mock_token_endpoint(&mut server, "a-nonce-from-some-other-login").await;
-    let (app, _states) = make_sso_app(&server.url()).await;
+    let (app, states) = make_sso_app(&server.url()).await;
 
     let (state, _) = start_login(&app, "spa").await;
+    // Derived from the nonce this login actually recorded, so the two are
+    // guaranteed to differ. A literal would only differ by assumption — and it
+    // reads to a scanner as a hard-coded cryptographic value, which it is not:
+    // the point of the fixture is to be the *wrong* nonce.
+    let other_nonce = format!("{}-from-some-other-login", states.recorded(&state).nonce);
+    let _token = mock_token_endpoint(&mut server, &other_nonce).await;
+
     let req = TestRequest::get()
         .uri(&format!(
             "/api/v1/auth/oidc/callback?code=abc&state={state}"
