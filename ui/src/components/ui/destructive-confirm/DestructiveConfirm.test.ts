@@ -103,6 +103,41 @@ describe("DestructiveConfirm", () => {
     expect(wrapper.emitted("confirm")).toBeUndefined();
   });
 
+  /**
+   * A keyword confirmation ("reload", "purge") has no case to disambiguate, so
+   * RELOAD — what a phone keyboard and the habit of typing commands produce —
+   * confirms. An identifier still does not: `Internal/Auth` is a different
+   * package from `internal/auth`.
+   */
+  it("accepts any case for a keyword confirmation", async () => {
+    const wrapper = await mountOpen({
+      action: "Reload",
+      confirmName: "reload",
+      confirmCaseInsensitive: true,
+    });
+    const button = buttonLabelled("Reload");
+    expect(button.hasAttribute("disabled")).toBe(true);
+
+    const input = document.querySelector("#destructive-confirm-name") as HTMLInputElement;
+    input.value = "RELOAD";
+    input.dispatchEvent(new Event("input"));
+    await wrapper.vm.$nextTick();
+
+    expect(button.hasAttribute("disabled")).toBe(false);
+  });
+
+  it("keeps an identifier confirmation case-sensitive", async () => {
+    const wrapper = await mountOpen({ confirmName: "internal/auth" });
+    const button = buttonLabelled("Delete");
+
+    const input = document.querySelector("#destructive-confirm-name") as HTMLInputElement;
+    input.value = "Internal/Auth";
+    input.dispatchEvent(new Event("input"));
+    await wrapper.vm.$nextTick();
+
+    expect(button.hasAttribute("disabled")).toBe(true);
+  });
+
   it("does not demand a typed name for a reversible action", async () => {
     await mountOpen({ action: "Yank", reversible: true, confirmName: "internal/auth" });
     expect(document.querySelector("#destructive-confirm-name")).toBeNull();

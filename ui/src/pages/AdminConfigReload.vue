@@ -724,6 +724,7 @@ onUnmounted(() => {
       :scope="t('adminConfigReload.thisInstance')"
       :consequence="t('adminConfigReload.forceConsequence')"
       :confirm-name="t('adminConfigReload.reloadConfirmWord')"
+      confirm-case-insensitive
       :loading="loadingForce"
       @confirm="
         () => {

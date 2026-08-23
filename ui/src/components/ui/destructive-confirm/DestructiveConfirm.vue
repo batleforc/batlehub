@@ -80,6 +80,21 @@ const props = withDefaults(
      * become a plain confirm dialog for the most dangerous actions.
      */
     confirmName?: string;
+    /**
+     * Compare `confirmName` without regard to case.
+     *
+     * Off by default, because most call sites type back an *identifier* — a
+     * package name, a token name — where `Foo` and `foo` are two different
+     * objects and accepting either would confirm the action against something
+     * the operator did not name.
+     *
+     * On for the call sites whose confirmation is a *keyword* ("reload",
+     * "purge", "delete"): there is nothing for the case to disambiguate, so a
+     * capitalised word — which is what a phone keyboard and a habit of typing
+     * commands both produce — was rejected with no explanation beyond the
+     * button staying grey.
+     */
+    confirmCaseInsensitive?: boolean;
     loading?: boolean;
     error?: string | null;
     /**
@@ -102,6 +117,7 @@ const props = withDefaults(
     reversible: false,
     consequence: "",
     confirmName: "",
+    confirmCaseInsensitive: false,
     loading: false,
     error: null,
     allowEmpty: false,
@@ -139,7 +155,20 @@ const consequenceText = computed(
 );
 
 const needsTypedName = computed(() => !props.reversible && props.confirmName.length > 0);
-const nameMatches = computed(() => typed.value.trim() === props.confirmName);
+/**
+ * Case-folding is done by a collator rather than `toLowerCase()`: the words are
+ * translated, and the naive fold is the one that turns Turkish `İ` into two code
+ * points that no longer equal the `i` the operator typed. `sensitivity: "accent"`
+ * ignores case and keeps accents, so `purger` still differs from `purgér`.
+ */
+const caseFoldingCollator = new Intl.Collator(undefined, { sensitivity: "accent" });
+
+const nameMatches = computed(() => {
+  const entered = typed.value.trim();
+  return props.confirmCaseInsensitive
+    ? caseFoldingCollator.compare(entered, props.confirmName) === 0
+    : entered === props.confirmName;
+});
 const canConfirm = computed(
   () =>
     !props.loading &&

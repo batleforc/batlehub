@@ -453,6 +453,7 @@ async function purge() {
       :scope="t('auditLog.purgeScope', { before: purgeBefore })"
       :consequence="t('auditLog.purgeConsequence')"
       :confirm-name="t('auditLog.purgeConfirmWord')"
+      confirm-case-insensitive
       :loading="purging"
       :error="purgeError"
       @update:open="

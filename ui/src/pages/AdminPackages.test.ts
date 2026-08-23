@@ -610,6 +610,30 @@ describe("AdminPackages", () => {
     expect(wrapper.text()).toContain("Deleted 1 package.");
   });
 
+  /**
+   * The bulk gate is a keyword, so the case an operator's keyboard produces is
+   * not a reason to refuse. The single delete above stays case-sensitive: its
+   * gate is the package's own name.
+   */
+  it("accepts the bulk delete keyword typed in upper case", async () => {
+    authFetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ succeeded_count: 1, failed_count: 0 }),
+    });
+    const wrapper = await mountPage();
+
+    await selectAll(wrapper);
+    await barButton(wrapper, /^Delete selected$/i).trigger("click");
+    await flushPromises();
+
+    await typeConfirmName("DELETE");
+    confirmButton("Delete").click();
+    await flushPromises();
+
+    expect(authFetchMock.mock.calls[0][0]).toContain("/api/v1/admin/packages/bulk-delete");
+  });
+
   it("reports a bulk delete that never reached the server", async () => {
     authFetchMock.mockRejectedValue(new Error("network unreachable"));
     const wrapper = await mountPage();

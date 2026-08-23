@@ -452,7 +452,11 @@ const confirmProps = computed(() => {
       scope: t("adminPackages.scopeDeleteSelection"),
       reversible: false,
       consequence: t("adminPackages.deleteConsequence"),
+      // A keyword, not an identifier: unlike `delete-one` above — where the
+      // typed name is the package's own and `Foo` is a different package from
+      // `foo` — there is nothing here for the case to disambiguate.
       confirmName: "delete",
+      confirmCaseInsensitive: true,
     };
   }
   return {

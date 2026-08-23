@@ -671,7 +671,8 @@ in-memory storage, listening on **9000**, the same port Authentik uses. So
 tells the two apart.
 
 ```bash
-task dex:config                     # render the config + the [[auth]] blocks
+task dex:config                     # render the config + the [[auth]] blocks — live in ~2s
+task dex:reload                     # re-read the config without changing it
 task dex:check                      # discovery document — is it up, and as whom?
 task run:space                      # the server, already pointed at dex
 task dex:token -- admin@example.com password   # a JWT for curl, no browser
@@ -680,6 +681,38 @@ task dex:logs -f                    # follow the sidecar
 
 Two accounts, both with the password `password`: `admin@example.com` → `admin`
 and `dev@example.com` → `user`.
+
+**A config change costs two seconds, not a workspace.** Dex has no reload: it
+parses its config once, at startup, and there is no signal that makes it read the
+file again. The obvious way to run it again — end the container and let the
+kubelet bring it back — is the expensive one here, because a container that
+terminates in this pod does not come back alone: the pod is replaced and every
+sidecar goes down with it. That is a workspace restart with extra steps, and it
+cost three of them before it was understood.
+
+So dex is not PID 1 in its container. A small supervisor is, and it never exits;
+dex is its child. The supervisor hashes `dev/dex/config.yaml` and `dev/dex/reload`
+every two seconds, and on any change kills dex and starts it again in place. The
+container stays `Running` throughout and its restart count stays `0` — nothing
+outside that one process notices. `task dex:config` ends by calling
+`task dex:reload`, so rendering a new config *is* applying it; `task dex:reload`
+on its own bumps the `reload` file, for a config whose bytes did not change.
+
+Three details worth knowing, because each is load-bearing:
+
+- **It is checked before it is applied.** `dex:reload` first boots the candidate
+  config with the same dex binary, in the same container, on ports 19000-19002,
+  and looks for `server=http` in the output — logged only after parsing,
+  validation and the bind have all succeeded. A config that fails leaves the
+  running instance untouched.
+- **The answer comes from the sidecar, not the port.** The supervisor writes
+  `dev/dex/state` each time it starts dex, and the task waits for that value to
+  change. Polling `:9000` alone cannot distinguish "restarted" from "the old dex
+  is still answering with the config you just replaced".
+- **A bad config makes it hold, not loop.** If dex exits on a config nobody has
+  touched since, starting it again would fail identically and bury the one log
+  line that explains why. The supervisor stops and says what would end the hold;
+  the next `task dex:config` starts it again by itself.
 
 **`task run:space` needs no pasting.** `config.example-space.toml` is the
 workspace's config, and its two `[[auth]] type = "oidc"` blocks already describe
@@ -724,8 +757,11 @@ passer-by reaching; for a sealed setup, use `LOCAL=1` and switch the endpoint to
 `exposure: internal`.
 
 As with the browser sidecar, **a devfile change needs a workspace restart** —
-`task dex:check` fails with a connection error until then. The container waits for
-`dev/dex/config.yaml` rather than exiting when it is missing, so a workspace that
-has never run `task dex:config` still starts; it would otherwise crash-loop and
-leave the pod short of Ready.
+`task dex:check` fails with a connection error until then. That includes the
+supervisor above: a pod started before it was added still runs the boot-once
+container, and `task dex:reload` says so and changes nothing rather than pretending
+otherwise. One restart adopts it, and it is the last one a config change asks for.
+The container waits for `dev/dex/config.yaml` rather than exiting when it is
+missing, so a workspace that has never run `task dex:config` still starts; it would
+otherwise crash-loop and leave the pod short of Ready.
 
