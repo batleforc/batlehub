@@ -1,0 +1,98 @@
+version: "3"
+
+tasks:
+  compose:up:
+    desc: Start postgres + server via Podman Compose
+    cmds:
+      - podman compose up -d
+
+  compose:auth:
+    desc: Start the optional Authentik OIDC provider (requires compose:up)
+    cmds:
+      - podman compose --profile authentik up -d authentik-postgres
+      - podman compose --profile authentik up -d authentik-redis
+      - podman compose --profile authentik up -d authentik-server
+      - podman compose --profile authentik up -d authentik-worker
+
+  compose:auth:pwd:
+    desc: "Set admin password for the Authentik identity provider (default: akadmin)"
+    cmds:
+      - podman compose exec -T authentik-server ak shell -c "from authentik.core.models import User; u=User.objects.get(username='akadmin'); u.set_password('akadmin'); u.save(); print('password reset for', u.username)"
+
+  compose:down:
+    desc: Stop and remove compose containers
+    cmds:
+      - podman compose down
+
+  compose:logs:
+    desc: Tail server logs
+    cmds:
+      - podman compose logs -f server
+
+  compose:db:
+    desc: Start only postgres (for local cargo run)
+    cmds:
+      - podman compose up -d postgres
+
+  compose:build:
+    desc: (Re)build the server image
+    cmds:
+      - podman compose build
+
+  compose:otel:
+    desc: Start all services including Jaeger
+    cmds:
+      - podman compose --profile otel up -d
+
+  # ── S3 / RustFS ───────────────────────────────────────────────────────────────
+
+  compose:s3:up:
+    desc: Start the full S3 stack (postgres + RustFS + Authentik + Jaeger + server) via docker-compose.s3.yml
+    cmds:
+      - podman compose -f docker-compose.s3.yml up postgres -d
+      - podman compose -f docker-compose.s3.yml up authentik-postgres -d
+      - podman compose -f docker-compose.s3.yml up rustfs -d
+      - podman compose -f docker-compose.s3.yml up authentik-redis -d
+      - podman compose -f docker-compose.s3.yml up authentik-server -d
+      - podman compose -f docker-compose.s3.yml up authentik-worker -d
+      - podman compose -f docker-compose.s3.yml up jaeger -d
+
+  compose:s3:db:
+    desc: Start infrastructure only (postgres, RustFS, Authentik, Jaeger) for local cargo run
+    cmds:
+      - podman compose -f docker-compose.s3.yml up -d postgres rustfs rustfs-init authentik-postgres authentik-redis authentik-server authentik-worker jaeger
+
+  compose:s3:down:
+    desc: Stop and remove the S3 stack containers
+    cmds:
+      - podman compose -f docker-compose.s3.yml down {{ .CLI_ARGS }}
+
+  compose:s3:logs:
+    desc: Tail server logs from the S3 stack
+    cmds:
+      - podman compose -f docker-compose.s3.yml logs -f server
+
+  compose:s3:build:
+    desc: (Re)build the server image for the S3 stack
+    cmds:
+      - podman compose -f docker-compose.s3.yml build
+
+  compose:s3:auth:pwd:
+    desc: "Set admin password for the Authentik identity provider (default: akadmin)"
+    cmds:
+      - podman compose exec -T authentik-server ak shell -c "from authentik.core.models import User; u=User.objects.get(username='akadmin'); u.set_password('akadmin'); u.save(); print('password reset for', u.username)"
+
+  compose:s3:auth:pwd:
+    desc: "Set admin password for the Authentik identity provider (default: akadmin)"
+    # Same command as `compose:auth:pwd`, which was already the case: neither
+    # passes `-f`, so both talk to whichever stack `podman compose` resolves.
+    cmds:
+      - task: compose:auth:pwd
+
+  compose:s3:bucket:create:
+    desc: Create the "artifacts" bucket in RustFS (requires compose:s3:db)
+    cmds:
+      - until curl -sf http://localhost:9900/health; do sleep 1; done
+      - mc alias set local http://localhost:9900 rustfsadmin rustfsadmin
+      - mc mb --ignore-existing local/artifacts
+

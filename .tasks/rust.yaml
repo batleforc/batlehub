@@ -1,0 +1,143 @@
+version: "3"
+
+tasks:
+  build:
+    desc: Build the entire workspace
+    cmds:
+      - cargo build --workspace
+
+  check:
+    desc: Type-check the entire workspace without building
+    cmds:
+      - cargo check --workspace
+
+  clean:stale:
+    desc: "Drop build artefacts not touched since yesterday (cargo-sweep --time 1)"
+    # Cargo never removes anything from `target/`: when a metadata hash changes —
+    # a dependency bump, a feature flip, a new toolchain — the new artefact is
+    # written *beside* the old one and the old one stays forever. Measured on
+    # this workspace: editing a source file and rebuilding the same way adds
+    # nothing, while one change of build shape added 152 files and 167 MB that
+    # nothing would ever reclaim.
+    #
+    # `--time 1` is the answer to that and not to the incremental cache: anything
+    # today's work has touched is kept, anything left over from yesterday's is
+    # not. Run it after a dependency bump, or on a schedule.
+    #
+    # It is safe by construction — everything here is reproducible from source,
+    # and the only cost of sweeping something still wanted is rebuilding it
+    # (~11 min for the full workspace, far less for a subset).
+    cmds:
+      - cargo sweep --time 1
+      - 'du -sh target || true'
+
+  fuzz:
+    desc: "Run a fuzz target for up to MAX_TIME seconds (default: 30). Set TARGET to pick one: fuzz_rbac_evaluate | fuzz_package_id_cache_key | fuzz_deny_latest | fuzz_release_age | fuzz_readme_render | fuzz_svg_sanitize"
+    dir: fuzz
+    vars:
+      TARGET: '{{.TARGET | default "fuzz_deny_latest"}}'
+      MAX_TIME: '{{.MAX_TIME | default "30"}}'
+    cmds:
+      - cargo +nightly fuzz run {{.TARGET}} -- -max_total_time={{.MAX_TIME}}
+
+  fuzz:check:
+    desc: "Every fuzz target still compiles — what CI gates on each PR"
+    cmds:
+      # `fuzz/` is its own workspace, so `cargo check --workspace` and clippy
+      # never see it. Four of the six targets had been failing to compile against
+      # types that moved underneath them, and nothing said so: a target that does
+      # not build reads like a guard in the module docs that name it, and is
+      # none. Needs no nightly — a type error is a type error.
+      - cargo check --manifest-path fuzz/Cargo.toml --bins --all-targets
+
+  lint:
+    desc: Run clippy lints across the workspace
+    cmds:
+      - cargo clippy --workspace -- -D warnings
+      - cargo fmt --all --check
+
+  fmt:
+    desc: Format all Rust source files
+    cmds:
+      - cargo fmt --all
+
+  release:prepare:
+    desc: "Prepare a release — bumps versions, cuts the changelog, commits and tags locally (does not push). Pass args after --, e.g. task release:prepare -- 0.2.0 or task release:prepare -- --minor --dry-run"
+    cmds:
+      - bash scripts/prepare-release.sh {{.CLI_ARGS}}
+
+  run:
+    desc: Start the server with the example config (requires postgres)
+    cmds:
+      - cargo run -p batlehub-server -- --config config.example.toml
+
+  # config.example-space.toml names no workspace — it reads the three URLs below
+  # out of the environment, so the tracked file stays workspace-agnostic and the
+  # `url` helper remains the single source of truth for what this workspace is
+  # called. `url` prints a trailing slash; every one of these is concatenated
+  # with a path or compared against an `iss`, so all three are stripped.
+  #
+  # LOCAL=1 mirrors `task dex:config LOCAL=1`: loopback everywhere, reachable
+  # from the server and the che-browser sidecar but not from your own browser.
+  # The two must agree — the issuer here is checked against the one dex mints.
+  run:space:
+    desc: "Start the server against the dex sidecar (requires postgres; LOCAL=1 for the loopback issuer)"
+    env:
+      OIDC_CLIENT_SECRET: "proxy-auth-secret"
+      OIDC2_CLIENT_SECRET: "proxy-auth-secret"
+      BATLEHUB_FRONT_URL:
+        sh: if [ -n "{{.LOCAL}}" ]; then echo http://localhost:5173; else url front | sed 's#/$##'; fi
+      BATLEHUB_BACK_URL:
+        sh: if [ -n "{{.LOCAL}}" ]; then echo http://localhost:8080; else url back | sed 's#/$##'; fi
+      BATLEHUB_DEX_ISSUER:
+        sh: if [ -n "{{.LOCAL}}" ]; then echo http://localhost:9000; else url dex | sed 's#/$##'; fi
+    cmds:
+      - 'echo "front → $BATLEHUB_FRONT_URL    back → $BATLEHUB_BACK_URL    dex → $BATLEHUB_DEX_ISSUER"'
+      - cargo run -p batlehub-server -- --config config.example-space.toml
+
+  run:s3:
+    desc: Start the server with the S3 config (requires compose:s3:db; set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY first)
+    env:
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: rustfsadmin
+    cmds:
+      - cargo run -p batlehub-server --features storage-s3 -- --config config.example-s3.toml
+
+  generate:
+    desc: Regenerate the back client
+    cmds:
+      - task dump-spec
+      - task ui:generate
+
+  cli:
+    desc: "Run batlehub-cli with any arguments (e.g. task cli -- registry list)"
+    cmds:
+      - cargo run -p batlehub-cli -- {{.CLI_ARGS}}
+
+  cli:tui:
+    desc: Launch the batlehub-cli interactive TUI
+    cmds:
+      - cargo run -p batlehub-cli -- tui
+
+  cli:help:
+    desc: Print batlehub-cli help
+    cmds:
+      - cargo run -p batlehub-cli -- --help
+
+  dump-spec:
+    desc: Dump the OpenAPI spec to ui/openapi.json
+    cmds:
+      - cargo run -p batlehub-server -- --config config.example.toml dump-spec > ui/openapi.json
+
+  dev:
+    desc: Start Rust backend and Vite frontend in parallel (requires postgres)
+    deps:
+      - task: run
+      - task: ui:dev
+
+  dev:s3:
+    desc: Start Rust backend (S3 config) and Vite frontend in parallel (requires compose:s3:db)
+    deps:
+      - task: run:s3
+      - task: ui:dev
+

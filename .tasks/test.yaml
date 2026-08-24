@@ -1,0 +1,250 @@
+version: "3"
+
+tasks:
+  test:
+    desc: Run all workspace tests
+    cmds:
+      - cargo test --workspace
+
+  test:all:
+    desc: Run backend and frontend test suites in parallel
+    deps:
+      - task: test
+      - task: ui:test
+
+  test:cli:
+    desc: "Run every batlehub-cli test (unit + subprocess integration). Filter: task test:cli -- setup_detect"
+    cmds:
+      - cargo test -p batlehub-cli {{.CLI_ARGS}}
+
+  test:cli:unit:
+    desc: "Run batlehub-cli's inline unit tests only (seconds, no server started)"
+    cmds:
+      # `--bins`, not `--lib`: batlehub-cli is a binary-only crate, so `--lib`
+      # fails with "no library targets found in package".
+      - cargo test -p batlehub-cli --bins {{.CLI_ARGS}}
+
+  test:cli:integration:
+    desc: "Run the batlehub-cli integration suite (the built binary, as a subprocess, against an in-memory server)"
+    cmds:
+      - cargo test -p batlehub-cli --test integration {{.CLI_ARGS}}
+
+  test:cli:lint:
+    desc: "clippy + rustfmt over batlehub-cli, with the same -D warnings gate as CI"
+    cmds:
+      - cargo clippy -p batlehub-cli --all-targets -- -D warnings
+      - cargo fmt --all --check
+
+
+  # Every `test:pg-*` below is the same dance — start a throwaway Postgres, wait
+  # for it, run one integration binary against it, tear it down — differing only
+  # in which binary, on which port. That was nine copies of eighteen lines, and
+  # they had drifted: only `test:pg-explore` had the readiness probe that
+  # actually works. Now there is one copy and it is that one.
+  pg:
+    internal: true
+    label: 'pg:{{.TEST}}'
+    requires:
+      vars: [TEST]
+    vars:
+      # Overridden only where a task already used its own, so two suites can run
+      # side by side without fighting over the port.
+      CONTAINER: '{{.CONTAINER | default "batlehub-test-pg"}}'
+      PORT: '{{.PORT | default "15432"}}'
+      PG_PASSWORD: testpass
+      CONF_OVERRIDE: /tmp/batlehub-containers.conf
+    env:
+      CONTAINERS_CONF_OVERRIDE: "{{.CONF_OVERRIDE}}"
+      DATABASE_URL: "postgresql://postgres:{{.PG_PASSWORD}}@127.0.0.1:{{.PORT}}/postgres"
+    cmds:
+      - printf '[network]\ndefault_rootless_network_cmd = "pasta"\n' > {{.CONF_OVERRIDE}}
+      - defer: podman rm -f {{.CONTAINER}} 2>/dev/null || true
+      - podman run -d --name {{.CONTAINER}} -p {{.PORT}}:5432 -e POSTGRES_PASSWORD={{.PG_PASSWORD}} postgres:17-alpine
+      # Bounded, and probing TCP rather than the Unix socket. Two failure modes
+      # this avoids, both of which an unbounded `until … pg_isready` walks into:
+      # a container that never starts (bad image pull, port already bound) hangs
+      # the task forever with no output; and the postgres image runs a temporary
+      # server on the *socket only* during initdb, so a socket probe can report
+      # ready just before the real server restarts, handing the test a refused
+      # connection. `-h 127.0.0.1` forces the TCP listener, which only the final
+      # server binds.
+      - |
+        for _ in $(seq 1 60); do
+          if podman exec {{.CONTAINER}} pg_isready -U postgres -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
+            exit 0
+          fi
+          sleep 1
+        done
+        echo "postgres did not become ready within 60s" >&2
+        podman logs {{.CONTAINER}} >&2 || true
+        exit 1
+      - cargo test -p batlehub-adapters --test {{.TEST}} -- --nocapture
+
+  test:pg-cache:
+    desc: Run PgCacheStore integration tests (starts a temporary Postgres container via Podman)
+    cmds:
+      - task: pg
+        vars:
+          TEST: pg_cache
+
+  test:pg-vulnerability:
+    desc: Run PgVulnerabilityRepository integration tests (starts a temporary Postgres container via Podman)
+    cmds:
+      - task: pg
+        vars:
+          TEST: pg_vulnerability
+
+  test:pg-stats-history:
+    desc: Run PgStatsHistoryRepository integration tests (starts a temporary Postgres container via Podman)
+    cmds:
+      - task: pg
+        vars:
+          TEST: pg_stats_history
+          CONTAINER: batlehub-test-pg-stats
+          PORT: "15436"
+
+  test:pg-readmes:
+    desc: Run PgReadmeRepository integration tests (starts a temporary Postgres container via Podman)
+    cmds:
+      - task: pg
+        vars:
+          TEST: pg_readmes
+          CONTAINER: batlehub-test-pg-readmes
+          PORT: "15437"
+
+  test:pg-me-scoping:
+    desc: Run the /api/v1/me scoping integration tests (starts a temporary Postgres container via Podman)
+    cmds:
+      - task: pg
+        vars:
+          TEST: pg_me_scoping
+          CONTAINER: batlehub-test-pg-me
+          PORT: "15435"
+
+  test:pg-explore:
+    desc: Run explore per-package visibility integration tests (starts a temporary Postgres container via Podman)
+    cmds:
+      - task: pg
+        vars:
+          TEST: pg_explore_visibility
+          CONTAINER: batlehub-test-pg-explore
+          PORT: "15434"
+
+  test:pg-local-registry:
+    desc: Run PostgresLocalRegistry integration tests (starts a temporary Postgres container via Podman)
+    cmds:
+      - task: pg
+        vars:
+          TEST: local_registry
+          CONTAINER: batlehub-test-pg-local
+          PORT: "15433"
+
+  test:pg-storage-router:
+    desc: Run storage_router integration tests (starts a temporary Postgres container via Podman)
+    cmds:
+      - task: pg
+        vars:
+          TEST: storage_router
+
+  test:pg-artifact-meta:
+    desc: Run artifact_meta integration tests (starts a temporary Postgres container via Podman)
+    cmds:
+      - task: pg
+        vars:
+          TEST: artifact_meta
+
+  test:s3:
+    desc: Run S3 storage integration tests (starts a temporary MinIO container via Podman)
+    vars:
+      MINIO_CONTAINER: batlehub-test-minio
+      MINIO_PORT: "19000"
+      CONF_OVERRIDE: /tmp/batlehub-containers.conf
+    env:
+      CONTAINERS_CONF_OVERRIDE: "{{.CONF_OVERRIDE}}"
+      S3_TEST_ENDPOINT: "http://127.0.0.1:{{.MINIO_PORT}}"
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+    cmds:
+      - printf '[network]\ndefault_rootless_network_cmd = "pasta"\n' > {{.CONF_OVERRIDE}}
+      - defer: podman rm -f {{.MINIO_CONTAINER}} 2>/dev/null || true
+      - podman run -d --name {{.MINIO_CONTAINER}} -p {{.MINIO_PORT}}:9000 -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin minio/minio server /data
+      - until curl -sf http://127.0.0.1:{{.MINIO_PORT}}/minio/health/live; do sleep 1; done
+      - cargo test -p batlehub-adapters --features storage-s3 --test s3_storage -- --nocapture
+
+  test:repo-interop:
+    desc: Verify real apt + dnf + pacman accept BatleHub's signed Deb/RPM/pacman repos (needs podman or docker)
+    cmds:
+      - bash tests/interop/verify.sh
+
+  test:real-proxy:
+    desc: "Layer 4 smoke tests through a real proxy to real upstreams (needs mise + network; ~30 min)"
+    env:
+      # Turns every unmet prerequisite into a failure instead of a printed skip.
+      # Without it these tests return early when a toolchain or the network is
+      # missing, and libtest counts that as a pass — a suite of 17 could report
+      # "17 passed" having reached no upstream at all. A run that asks for them
+      # is asserting the prerequisites exist, so say so.
+      REAL_PROXY_REQUIRE: "1"
+    cmds:
+      # `--ignored` rather than `--include-ignored`: this file is entirely
+      # ignored-by-default scenarios, and there is nothing else in the binary to
+      # run alongside them.
+      - cargo test -p batlehub-examples --test real_proxy -- --ignored --nocapture {{.CLI_ARGS}}
+
+  test:marketplace-heavy:
+    desc: "Heavy marketplace integration: install weebo-bridge-notify into headless VS Code + IntelliJ from a local BatleHub instance (needs DATABASE_URL; downloads the IDEs on first run)"
+    cmds:
+      - bash tests/heavy/marketplace.sh
+
+  test:bundler-heavy:
+    desc: "Heavy Bundler integration: `bundle install` against a local rubygems registry, asserting the compact index's 206/304 answers are ones Bundler accepts (needs DATABASE_URL; installs bundler on first run)"
+    cmds:
+      - bash tests/heavy/bundler.sh
+
+  test:npm-heavy:
+    desc: "Heavy npm integration: publish/install/whoami/ping/dist-tags/search against a local registry, and `npm audit` on the path npm really sends (needs DATABASE_URL + network)"
+    cmds:
+      - bash tests/heavy/npm.sh
+
+  test:pypi-heavy:
+    desc: "Heavy PyPI integration: `twine upload` then `pip install`, and the PEP 658 `.metadata` sibling pip refuses to do without (needs DATABASE_URL + network)"
+    cmds:
+      - bash tests/heavy/pypi.sh
+
+  test:openvsx-heavy:
+    desc: "Heavy Open VSX integration: `ovsx publish` (token in a query parameter) and `ovsx get` following the rewritten download URL (needs DATABASE_URL + network)"
+    cmds:
+      - bash tests/heavy/openvsx.sh
+
+  test:conda-heavy:
+    desc: "Heavy conda integration: micromamba's `HEAD` probe for repodata.json.zst, and a package published after the compressed channel was warmed (needs DATABASE_URL; downloads micromamba on first run)"
+    cmds:
+      - bash tests/heavy/conda.sh
+
+  test:nuget-heavy:
+    desc: "Heavy NuGet integration: `dotnet nuget push`, `dotnet package search` (service discovery + skip pagination) and `dotnet add package` (needs DATABASE_URL + the .NET SDK)"
+    cmds:
+      - bash tests/heavy/nuget.sh
+
+  test:composer-heavy:
+    desc: "Heavy Composer integration: resolve from local and proxy repositories with Packagist disabled, and reach search.json through the advertised URL template (needs DATABASE_URL + network)"
+    cmds:
+      - bash tests/heavy/composer.sh
+
+  test:terraform-heavy:
+    desc: "Heavy Terraform integration: `terraform init` over TLS through host-routed discovery — versions, download document, shasums, signature and archive all through the proxy (needs DATABASE_URL + network)"
+    cmds:
+      - bash tests/heavy/terraform.sh
+
+  test:heavy:
+    desc: "Every heavy client suite except the marketplaces (which download two IDEs). Sequential: each one binds its own ports but they all share one Postgres."
+    cmds:
+      - bash tests/heavy/bundler.sh
+      - bash tests/heavy/npm.sh
+      - bash tests/heavy/pypi.sh
+      - bash tests/heavy/openvsx.sh
+      - bash tests/heavy/conda.sh
+      - bash tests/heavy/nuget.sh
+      - bash tests/heavy/composer.sh
+      - bash tests/heavy/terraform.sh
+

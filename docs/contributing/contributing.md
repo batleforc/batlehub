@@ -451,7 +451,7 @@ cargo llvm-cov report --html --output-dir coverage/html
 
 The workspace-level `[workspace.metadata.llvm-cov]` config excludes `server/src/main.rs` (startup wiring only) from the report. Every other module is expected to have at least some exercised lines.
 
-**Adding a new integration test to coverage**: integration tests that need no external service (mockito-only, like `actions_oidc`) must be listed explicitly in both the `coverage` and `coverage-check` tasks in `Taskfile.yml` — `cargo llvm-cov --workspace` does not pick up `crates/adapters/tests/*.rs` files automatically.
+**Adding a new integration test to coverage**: integration tests that need no external service (mockito-only, like `actions_oidc`) must be listed explicitly in the `cov:collect` task in `.tasks/coverage.yaml` (which both `coverage` and `coverage-check` run) — `cargo llvm-cov --workspace` does not pick up `crates/adapters/tests/*.rs` files automatically.
 
 ---
 

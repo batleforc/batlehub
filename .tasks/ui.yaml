@@ -1,0 +1,261 @@
+version: "3"
+
+tasks:
+  ui:install:
+    desc: Install frontend dependencies (pnpm)
+    dir: ui
+    cmds:
+      - pnpm install
+
+  ui:generate:
+    desc: Generate TypeScript client from the OpenAPI spec (run dump-spec first)
+    dir: ui
+    cmds:
+      - pnpm run generate
+
+  ui:tokens:
+    desc: Copy the design tokens to the docs site (single source is ui/src/design/tokens.css)
+    cmds:
+      - cp ui/src/design/tokens.css docs/.vitepress/theme/tokens.css
+
+  ui:tokens:check:
+    desc: Fail if the docs site's token copy has drifted from ui/src/design/tokens.css
+    cmds:
+      - task: ui:tokens
+      - |
+        if ! git diff --quiet -- docs/.vitepress/theme/tokens.css; then
+          echo "the docs site's token copy is stale — run 'task ui:tokens' and commit the result" >&2
+          git --no-pager diff -- docs/.vitepress/theme/tokens.css >&2
+          exit 1
+        fi
+
+  ui:build:
+    desc: Build the frontend SPA for production
+    dir: ui
+    cmds:
+      - pnpm run build
+
+  ui:lint:
+    desc: Run the frontend oxlint, eslint and oxfmt checks locally
+    dir: ui
+    cmds:
+      - pnpm run lint
+      - pnpm run lint:eslint
+      - pnpm run format:check
+
+  ui:i18n:
+    desc: Report user-visible text still hardcoded in templates
+    dir: ui
+    cmds:
+      - pnpm run i18n:audit
+
+  ui:i18n:check:
+    desc: Fail if the untranslated-string count rises above the current budget
+    dir: ui
+    cmds:
+      - pnpm run i18n:check
+
+  # Chromium cannot run in the tools container (no libglib-2.0, and no root to
+  # install it), so these run *inside* the browser sidecar. That works because
+  # the pod shares one network namespace — the sidecar reaches the dev server on
+  # plain localhost — and shares /home and /projects, so it runs the same
+  # mise-installed node and the same npx cache as every other task here.
+  #
+  # Two env details are load-bearing. PUPPETEER_EXECUTABLE_PATH reuses the
+  # sidecar's Chrome instead of letting puppeteer download a second copy into
+  # the shared cache. CI=1 is what makes impeccable pass --no-sandbox, which
+  # Chrome needs here for exactly the reason it does on a GitHub runner:
+  # unprivileged user namespaces are unavailable, and without it Chrome aborts
+  # with "No usable sandbox!".
+  ui:design:rendered:
+    desc: Run the rendered design gates against a running dev server (needs the browser sidecar)
+    deps: [browser:check]
+    vars:
+      # mise pins the node version, so resolve the bin dir rather than hardcode
+      # it. PATH is then set to a literal (no $PATH) so nothing expands in the
+      # outer shell before kubectl hands the string to the sidecar.
+      NODE_BIN:
+        sh: dirname "$(readlink -f "$(command -v node)")"
+      # 5174, not 5173: the gates run inside the pod, and that is the front
+      # wired to the API on localhost (`task ui:dev:local`).
+      BASE: '{{.BASE | default "http://localhost:5174"}}'
+      # Every route reachable without a session. `/me/*` and `/admin/*` sit
+      # behind requiresAuth/requiresAdmin and would redirect to /login, so
+      # scanning them would measure the login page 14 times over — see the
+      # note in RFC 0003 §13 about what this gate still cannot see.
+      #
+      # Keep this list identical to the `for route in …` loop in
+      # `.github/workflows/front-design.yaml`: a local reproduction that scans
+      # fewer routes than CI is the kind of gate you run, see green, push, and
+      # then watch go red — `/packages/npm/react` was in CI's loop and not in
+      # this one for exactly one commit.
+      ROUTES: '{{.ROUTES | default "/ /login /packages /packages/npm/react /setup /tools/access-check /tools/url-mapper"}}'
+      # cd into the repo so the detector loads DESIGN.md and .impeccable/ — a
+      # design-system-aware scan is the whole point of R6.
+      ENV: 'export PATH={{.NODE_BIN}}:/usr/local/bin:/usr/bin:/bin PUPPETEER_EXECUTABLE_PATH=/opt/chrome/chrome CI=1; cd {{.ROOT_DIR}};'
+      # One invocation per route, deliberately. Passing every URL to a single
+      # `detect` run reuses one browser session with a ~100ms settle, and an SPA
+      # that hydrates asynchronously then gets measured mid-hydration: three
+      # identical batched runs returned 1, 2 and 1 findings. Per-route is slower
+      # and repeatable, and a gate that fails at random is a gate people retry
+      # until it passes.
+      SCAN: 'for r in {{.ROUTES}}; do echo "→ $r"; npx --yes impeccable detect --viewport "$V" "{{.BASE}}$r" || fail=1; done; [ -z "$fail" ]'
+    cmds:
+      # The same two viewports CI's `impeccable detect` loop uses, and two is
+      # right *here*: these are anti-pattern rules over what is on the page, and
+      # they do not change between 1024 and 768. What does change at those widths
+      # is overflow and reflow, so the two middle widths went into
+      # `ui:design:routes` below, which measures them — it scans four.
+      - '{{.BROWSER_EXEC}} sh -c {{printf "%s V=1440x900; %s" .ENV .SCAN | squote}}'
+      - '{{.BROWSER_EXEC}} sh -c {{printf "%s V=390x844; %s" .ENV .SCAN | squote}}'
+      # axe and the ramp check now come from `ui:design:routes`, which measures
+      # these same routes *and* the authenticated ones with one set of
+      # assertions. `@axe-core/cli` used to batch the public routes here; it
+      # does not know what a type ramp is, which is precisely how `/packages`
+      # drifted from its own design proof behind a green gate (RFC 0004-bis
+      # §4.4). Anonymous-only, so this stays runnable without credentials.
+      - task: ui:design:routes
+        vars: { PUBLIC_ONLY: "--public-only", BASE: "{{.BASE}}" }
+
+  # One gate, every rendered route, four viewports — axe plus the type ramp and
+  # the display face (RFC 0004-bis §4.4). 1440 and 390 were the original pair;
+  # 1024 and 768 were added because the band between them is where fixed table
+  # columns starve the flexible one, and both ends of the old pair are blind to
+  # it (390 releases every fixed width, 1440 has room for all of them).
+  #
+  # The 15 admin pages and the 4 account pages sit behind router guards, and
+  # both `impeccable detect` and `@axe-core/cli` scan by URL with no way to
+  # carry a session, so scanning them graded the login page over and over. This
+  # seeds a token instead. The public routes are in the same list because a
+  # separate gate for them measured contrast and hierarchy and never the ramp.
+  #
+  # Tokens come from the environment and are never written to a file — they are
+  # credentials for a running instance. Pass them per invocation:
+  #
+  #   BATLEHUB_ADMIN_TOKEN=… BATLEHUB_USER_TOKEN=… task ui:design:routes
+  #
+  # Nothing is pinned in the script's EXPECTED_FAIL, and that is the result
+  # rather than the absence of one: `/packages` sat in it against its own design
+  # proof until RFC 0004-bis O3 was settled, and the pass that settled it fixed
+  # the page instead of the proof. A pinned route that comes back clean fails
+  # this gate by design, so an empty EXPECTED_FAIL is the honest entry.
+  ui:design:routes:
+    desc: axe + type ramp over every rendered route (needs BATLEHUB_{ADMIN,USER}_TOKEN)
+    deps: [browser:check]
+    dir: ui
+    vars:
+      NODE_BIN:
+        sh: dirname "$(readlink -f "$(command -v node)")"
+      BASE: '{{.BASE | default "http://localhost:5174"}}'
+      PUBLIC_ONLY: '{{.PUBLIC_ONLY | default ""}}'
+    cmds:
+      - |
+        if [ -z "{{.PUBLIC_ONLY}}" ] && { [ -z "$BATLEHUB_ADMIN_TOKEN" ] || [ -z "$BATLEHUB_USER_TOKEN" ]; }; then
+          echo "set BATLEHUB_ADMIN_TOKEN and BATLEHUB_USER_TOKEN (or pass PUBLIC_ONLY=--public-only)" >&2
+          exit 2
+        fi
+        {{.BROWSER_EXEC}} sh -c "export PATH={{.NODE_BIN}}:/usr/bin:/bin BASE={{.BASE}} \
+          BATLEHUB_ADMIN_TOKEN=$BATLEHUB_ADMIN_TOKEN BATLEHUB_USER_TOKEN=$BATLEHUB_USER_TOKEN; \
+          cd {{.ROOT_DIR}}/ui && node build/design-routes.mjs {{.PUBLIC_ONLY}}"
+
+  # Kept as an alias: RFC 0004 and the contributing docs name this target, and
+  # it is now one plan of `ui:design:routes` rather than its own script.
+  ui:design:rendered:authed:
+    desc: Alias for ui:design:routes (RFC 0004-bis §4.4 merged the two gates)
+    cmds:
+      - task: ui:design:routes
+
+  ui:design:
+    desc: Run the console's static design gates locally (detector, i18n)
+    cmds:
+      # The docs site's half of this scan moved to `docs:design`, together with
+      # the token-drift check it belongs with (RFC 0005 phase 4).
+      - npx --yes impeccable detect ui/src
+      - task: ui:i18n:check
+
+  ui:i18n:review:
+    desc: Regenerate the French review sheet from the catalogues
+    cmds:
+      - python3 scripts/i18n-review.py
+
+  # ── Dev servers ──────────────────────────────────────────────────────────────
+  # Two fronts, because the browser deciding what "localhost" means is not the
+  # same browser in the two cases:
+  #
+  #   5173  reached through the workspace's public `front` endpoint, from a real
+  #         browser on your machine. There, `localhost:8080` is *your* laptop, so
+  #         the API has to be named by its public FQDN — which is per-user and
+  #         per-workspace, hence generated by `url` rather than committed.
+  #   5174  reached from inside the pod (the browser sidecar, the rendered design
+  #         gates). The pod shares one network namespace, so plain localhost is
+  #         both correct and faster — no ingress, no TLS, no CORS preflight to a
+  #         public name.
+  #
+  # They differ only by which env file Vite loads: a `--mode` file outranks
+  # `.env`, so one working tree serves both without either clobbering the other.
+  # Both tasks state VITE_API_BASE_URL explicitly, and must. This Taskfile sets
+  # `dotenv: [ .env ]`, so the repo-root `.env` is injected into every task's
+  # environment — and Vite gives `process.env` priority over its own `.env`
+  # files. An inherited value therefore beats `ui/.env.localhost`, which is
+  # exactly how both fronts silently ended up on the same API. Naming it here is
+  # what makes each front's target a property of the task rather than of
+  # whatever happens to be in the root `.env`.
+  ui:dev:
+    desc: Front on 5173 → API via the workspace FQDN (open the `front` endpoint)
+    dir: ui
+    env:
+      # `url back` prints a trailing slash; the generated SDK appends
+      # "/api/v1/…", so leaving it produces a double slash in every request.
+      VITE_API_BASE_URL:
+        sh: url back | sed 's#/$##'
+    cmds:
+      - 'echo "API → $VITE_API_BASE_URL"'
+      - pnpm run dev:fqdn
+
+  ui:dev:local:
+    desc: 'Front on 5174 → API on localhost:8080 (in-pod: sidecar, rendered gates)'
+    dir: ui
+    env:
+      VITE_API_BASE_URL: http://localhost:8080
+    cmds:
+      - 'echo "API → $VITE_API_BASE_URL"'
+      - pnpm run dev:local
+
+  ui:test:
+    desc: Run the frontend test suite
+    dir: ui
+    cmds:
+      - pnpm run test
+
+  ui:coverage:
+    desc: Run the frontend test suite with coverage (enforces threshold)
+    dir: ui
+    cmds:
+      - pnpm run coverage
+
+  ui:fix:
+    desc: Auto-fix oxlint issues and format the frontend source with oxfmt
+    dir: ui
+    cmds:
+      - pnpm run lint:fix
+      - pnpm run format
+
+  # ── Design (Impeccable — RFC 0003) ───────────────────────────────────────────
+  # The skill is ~150 vendored files, so it is gitignored and installed on demand
+  # rather than reviewed as a diff. PRODUCT.md and DESIGN.md hold the decisions
+  # and are tracked. Reload the AI harness after installing or updating.
+  impeccable:install:
+    desc: Install the Impeccable design skill into .claude/ (project scope)
+    cmds:
+      - npx --yes impeccable install --providers=claude --scope=project
+
+  impeccable:update:
+    desc: Refresh an existing Impeccable install to the latest release
+    cmds:
+      - npx --yes impeccable update
+
+  impeccable:detect:
+    desc: Scan the UI and docs site for design anti-patterns (no LLM, no API key)
+    cmds:
+      - npx --yes impeccable detect ui/src docs/.vitepress
+

@@ -94,12 +94,12 @@ user_id = "user-1"
 type = "oidc"
 issuer_url = "http://localhost:9000/application/o/proxy-auth/"
 client_id = "proxy-auth"
-client_secret = "${OIDC_CLIENT_SECRET}"                           # set OIDC_CLIENT_SECRET env var
+client_secret = "${OIDC_CLIENT_SECRET}"  # set OIDC_CLIENT_SECRET env var
 redirect_uri = "http://localhost:8080/api/v1/auth/oidc/callback"
 scopes = ["openid", "profile", "email", "groups"]
 # Where to redirect after the OIDC callback. Defaults to "" (same origin as the
 # backend). Set this when running the Vite dev server separately.
-frontend_url = "http://localhost:5173"
+frontend_url = "http://localhost:5175"
 
 # JWT claim used as the user's identifier (default: "sub").
 # "preferred_username" gives a human-readable name (e.g. "akadmin") instead of a UUID.
@@ -120,7 +120,7 @@ name = "oidc2"
 type = "oidc"
 issuer_url = "http://localhost:9000/application/o/proxy-auth/"
 client_id = "proxy-auth"
-client_secret = "${OIDC2_CLIENT_SECRET}"                          # set OIDC2_CLIENT_SECRET env var
+client_secret = "${OIDC2_CLIENT_SECRET}"  # set OIDC2_CLIENT_SECRET env var
 redirect_uri = "http://localhost:8080/api/v1/auth/oidc2/callback"
 scopes = ["openid", "profile", "email", "groups"]
 # Where to redirect after the OIDC callback. Defaults to "" (same origin as the
@@ -443,7 +443,6 @@ anonymous = ["releases:read", "source:read"]
 user = ["releases:read", "source:read"]
 admin = ["*"]
 
-
 [[registries]]
 type = "openvsx"
 name = "openvsx"
@@ -540,9 +539,9 @@ admin = ["*"]
 #
 # # Hybrid example (fall through to rubygems.org when gem not found locally):
 [[registries]]
-type   = "rubygems"
-name   = "my-gems"
-mode   = "hybrid"
+type = "rubygems"
+name = "my-gems"
+mode = "hybrid"
 upstreams = ["https://rubygems.org"]
 
 # ── PHP Composer registry ────────────────────────────────────────────────────
@@ -562,9 +561,9 @@ upstreams = ["https://rubygems.org"]
 #
 # # Hybrid example — serve private packages, fall through to Packagist for the rest:
 [[registries]]
-type   = "composer"
-name   = "my-composer"
-mode   = "hybrid"
+type = "composer"
+name = "my-composer"
+mode = "hybrid"
 upstreams = ["https://repo.packagist.org"]
 
 # --- Maven Central registry --------------------------------------------------
@@ -572,9 +571,9 @@ upstreams = ["https://repo.packagist.org"]
 # Proxy mode: mirrors Maven Central artifact downloads, POM info, and version listing.
 # Local/hybrid mode: accepts `mvn deploy` for private artifacts.
 [[registries]]
-type   = "maven"
-name   = "my-maven"
-mode   = "hybrid"
+type = "maven"
+name = "my-maven"
+mode = "hybrid"
 upstreams = ["https://repo1.maven.org/maven2/"]
 
 # ── JetBrains IDE-archive proxy cache ────────────────────────────────────────
@@ -593,13 +592,15 @@ upstreams = ["https://repo1.maven.org/maven2/"]
 # `max_artifact_size_bytes` (default 500 MiB), so raise that limit for IDE
 # archives — see the [limits] section above.
 [[registries]]
-type   = "jetbrains"
-name   = "jetbrains-ide"
-mode   = "proxy"            # upstream defaults to https://download.jetbrains.com
+type = "jetbrains"
+name = "jetbrains-ide"
+mode = "proxy"  # upstream defaults to https://download.jetbrains.com
+
 # For the plugin ecosystem (plugins.jetbrains.com), use the dedicated
 # `jetbrains-marketplace` type below — not an upstream override here.
 [registries.rbac]
 anonymous = ["releases:read"]
+
 # Pre-warm specific upstream paths on startup (and via the /warm admin endpoint).
 # Path-addressed registries (deb/rpm/pacman/jetbrains/generic) use `warm_paths`
 # instead of `warm_packages`. Entries are upstream-relative paths.
@@ -623,12 +624,13 @@ warm_paths = ["idea/idea-2026.1.3.tar.gz"]
 [[registries]]
 type = "jetbrains-marketplace"
 name = "jbm"
-mode = "hybrid"             # "proxy", "local", or "hybrid"
-upstreams = ["https://plugins.jetbrains.com"]   # default
+mode = "hybrid"  # "proxy", "local", or "hybrid"
+upstreams = ["https://plugins.jetbrains.com"]  # default
+
 [registries.rbac]
 anonymous = ["releases:read"]
-user      = ["releases:read"]
-admin     = ["*"]
+user = ["releases:read"]
+admin = ["*"]
 
 # ── Generic file mirror (toolchains, vendor CDNs) ────────────────────────────
 #
@@ -654,11 +656,12 @@ admin     = ["*"]
 #
 # NOTE: toolchain archives can be large — see `max_artifact_size_bytes` above.
 [[registries]]
-type       = "generic"
-name       = "node-dist"
-mode       = "proxy"
-upstreams  = ["https://nodejs.org/dist"]
-path_allow = ["v*/**"]   # mise fetches the platform tarball AND the source tarball
+type = "generic"
+name = "node-dist"
+mode = "proxy"
+upstreams = ["https://nodejs.org/dist"]
+path_allow = ["v*/**"]  # mise fetches the platform tarball AND the source tarball
+
 [registries.rbac]
 anonymous = ["releases:read"]
 

@@ -1,0 +1,98 @@
+version: "3"
+
+tasks:
+  # Headed Chrome in a sidecar of this pod. CDP (9222), chromedriver (9515) and
+  # noVNC (6080) are plain localhost ports because the pod shares one network
+  # namespace; only what lives *inside* the sidecar needs the kubectl exec hop,
+  # which is what BROWSER_EXEC is. Both env vars it reads are exported into every
+  # Che workspace container: $HOSTNAME is the pod name, $DEVWORKSPACE_NAMESPACE
+  # the namespace (the `:+` guard keeps this working outside a workspace too).
+  browser:check:
+    desc: Verify the browser sidecar is up, and print its CDP version
+    cmds:
+      - curl -sf http://localhost:9222/json/version
+
+  browser:tabs:
+    desc: List the browser's open tabs (id, type, title, url)
+    cmds:
+      - |
+        curl -s http://localhost:9222/json | python3 -c '
+        import json, sys
+        for t in json.load(sys.stdin):
+            print("%-34s %-10s %-40s %s" % (t["id"], t["type"], t["title"][:40], t["url"]))
+        '
+
+  browser:open:
+    desc: 'Open a URL in a new tab (task browser:open URL=http://localhost:5173)'
+    requires:
+      vars: [URL]
+    cmds:
+      - curl -s -X PUT "http://localhost:9222/json/new?{{.URL}}"
+
+  browser:close:
+    desc: 'Close a tab by id (task browser:close ID=<id from browser:tabs>)'
+    requires:
+      vars: [ID]
+    cmds:
+      - curl -sf "http://localhost:9222/json/close/{{.ID}}"
+
+  browser:vnc:
+    desc: Print the noVNC password (open the `novnc` endpoint to watch Chrome)
+    cmds:
+      # Written by the sidecar entrypoint at boot onto the shared /projects
+      # mount; the log is the fallback if that mount ever goes away.
+      - |
+        cat /projects/.sidecar/vnc-password-browser.txt 2>/dev/null \
+          || {{.BROWSER_LOGS}} | grep -m1 'noVNC password:'
+      - "echo '→ open the novnc endpoint of this workspace and log in with it'"
+
+  # Chrome is gated behind a flag file the entrypoint's respawn loop watches, so
+  # it can be parked (freeing ~1 GiB) without taking the VNC stack down with it.
+  # `sidecar-app stop` group-kills the whole Chrome process tree — a bare pkill
+  # on the child processes leaves the parent to be respawned in a half state.
+  browser:status:
+    desc: Report whether Chrome is running, parked or starting
+    cmds:
+      - '{{.BROWSER_EXEC}} sidecar-app status'
+
+  browser:start:
+    desc: Launch Chrome in the sidecar and wait for CDP to answer
+    cmds:
+      - '{{.BROWSER_EXEC}} sidecar-app start'
+      - |
+        for _ in $(seq 1 30); do
+          curl -sf http://localhost:9222/json/version >/dev/null && exit 0
+          sleep 1
+        done
+        echo "CDP did not come up within 30s — check 'task browser:logs'" >&2
+        exit 1
+
+  browser:stop:
+    desc: Park Chrome (frees its memory; noVNC and chromedriver stay up)
+    cmds:
+      - '{{.BROWSER_EXEC}} sidecar-app stop'
+
+  browser:restart:
+    desc: Park Chrome and relaunch it with a clean window
+    cmds:
+      - task: browser:stop
+      - task: browser:start
+
+  browser:exec:
+    desc: 'Run a command inside the sidecar (task browser:exec CMD="ps -ef")'
+    requires:
+      vars: [CMD]
+    cmds:
+      - '{{.BROWSER_EXEC}} sh -c {{.CMD | quote}}'
+
+  browser:shell:
+    desc: Open an interactive shell in the browser sidecar
+    interactive: true
+    cmds:
+      - kubectl exec -it ${DEVWORKSPACE_NAMESPACE:+-n ${DEVWORKSPACE_NAMESPACE}} ${HOSTNAME} -c browser -- bash
+
+  browser:logs:
+    desc: Follow the browser sidecar log
+    cmds:
+      - '{{.BROWSER_LOGS}} -f'
+

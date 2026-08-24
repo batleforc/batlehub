@@ -17,6 +17,11 @@ host = "0.0.0.0"
 port = 8080
 # static_dir = "./ui/dist"
 
+cors_allowed_origins = [
+  "http://localhost:5173",
+  "http://localhost:5174",
+]
+
 [database]
 type = "postgresql"
 url = "postgresql://batlehub:changeme@localhost:5432/batlehub"
@@ -48,7 +53,7 @@ client_secret = "proxy-auth-secret"
 redirect_uri = "http://localhost:8080/api/v1/auth/oidc/callback"
 scopes = ["openid", "profile", "email", "groups"]
 # Point at the Vite dev server when running ui separately.
-frontend_url = "http://localhost:5173"
+frontend_url = "http://localhost:5174"
 
 user_id_claim = "preferred_username"
 role_claim = "groups"
@@ -326,7 +331,7 @@ mode = "local"
 # Example seed — replace with your own (32-byte Ed25519 seed, hex-encoded).
 seed_hex = "9d61b19deffeba00aa3f3b6e3b0fe6a3f3a76b08e2c0a3f3b6e3b0fe6a3f3a76"
 user_id = "Acme Repo <repo@acme.example>"
-created = 1700000000              # key creation unix time (keep stable)
+created = 1700000000  # key creation unix time (keep stable)
 
 [registries.rbac]
 anonymous = ["releases:read"]

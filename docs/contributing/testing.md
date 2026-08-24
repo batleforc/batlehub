@@ -353,8 +353,9 @@ to start under a restricted `ptrace_scope`, not a finding — re-run with
   integration test explicitly (pg_cache, pg_vulnerability, local_registry,
   artifact_meta, pg_rate_limit, storage_router, s3_storage [+`storage-s3`],
   actions_oidc, and the Redis suite [+`cache-redis`]).
-- Excluded paths live in the `COVERAGE_EXCLUDE` variable in `Taskfile.yml`
-  (kept identical between `coverage` and `coverage-check`). They are code that is
+- Excluded paths live in the `COVERAGE_EXCLUDE` variable in `.tasks/coverage.yaml`
+  (one variable, read by both `coverage` and `coverage-check`, which share their
+  whole collection step and so can no longer drift). They are code that is
   either environment-glue or exercised only against real infra: `server/src`
   wiring (`main`, `server_factory`, `setup`, `stores`, `watcher`), the OIDC auth
   handlers, `crates/adapters/src/db/`, the Postgres/Redis adapter

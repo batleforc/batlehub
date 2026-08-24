@@ -4,7 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-All task runner commands use `task` (Taskfile). The key ones:
+All task runner commands use `task` (Taskfile). `Taskfile.yml` is only the
+includes and the shared vars; the tasks live in `.tasks/<domain>.yaml`
+(`rust`, `test`, `coverage`, `security`, `ui`, `docs`, `compose`, `browser`,
+`dex`, `perf`) and are included with `flatten: true`, so every task keeps its
+plain name — `task ui:dev`, not `task ui:ui:dev`. Add a task to the file whose
+prefix it shares.
+
+The key ones:
 
 ```bash
 # Build / check
@@ -127,7 +134,7 @@ For **local/hybrid mode**, additionally implement `get_<name>_versions` (and rel
 
 Consequence: packages published via the local-registry HTTP endpoint do **not** appear in `GET /api/v1/packages` (which queries `AdminService`). Use `TestServer::seed_package()` to inject entries directly into `InMemoryPackageRepository` when testing commands like `package list`. To verify yank/unyank/delete state, query the registry-specific endpoints (e.g. the NuGet flat-index at `/proxy/{reg}/nuget/v3/flat/{id}/index.json`) rather than `package list`.
 
-Coverage is enforced at 80% lines. Excluded paths (DB adapters, some registry clients, auth/OIDC handlers, server main) are listed in the `COVERAGE_EXCLUDE` variable in `Taskfile.yml`.
+Coverage is enforced at 80% lines. Excluded paths (DB adapters, some registry clients, auth/OIDC handlers, server main) are listed in the `COVERAGE_EXCLUDE` variable in `.tasks/coverage.yaml`.
 
 ### Storage keys
 
