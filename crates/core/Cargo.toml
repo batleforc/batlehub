@@ -34,6 +34,7 @@ pulldown-cmark.workspace = true
 ammonia.workspace = true
 sha1 = "0.11"
 sha2.workspace = true
+hmac.workspace = true
 # The RubyGems compact index identifies each `/info/{gem}` document by the MD5
 # of its bytes, and Bundler compares that against what it fetched. Not a
 # security use — a wire format that names the algorithm.

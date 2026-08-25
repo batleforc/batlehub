@@ -144,6 +144,8 @@ function ctxFor(def: RegistryTypeDef): SnippetContext {
     netrcLogin: netrcLogin.value,
     identity: identity.value,
     selectedNames: selectedNames.value,
+    signedDownloads:
+      (registries.value ?? []).find((r) => r.name === registryName)?.signed_downloads ?? false,
   };
 }
 

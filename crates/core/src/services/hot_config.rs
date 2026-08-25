@@ -8,6 +8,7 @@ use tokio::sync::RwLock;
 use crate::entities::{ResolutionPolicy, Role};
 use crate::ports::{BetaChannelPort, RegistryClient};
 use crate::rules::Rule;
+use crate::services::signed_url::SignedUrlService;
 
 /// Per-registry behaviour configuration wired in at startup (or on reload).
 pub struct RegistryPolicy {
@@ -312,6 +313,22 @@ pub struct HotConfig {
     /// They are built from the identical config fields in one place
     /// (`server/src/builders.rs`) so the two cannot say different things.
     pub resolution: HashMap<String, ResolutionPolicy>,
+    /// Whether this registry mints and accepts signed download URLs, per
+    /// registry (RFC 0012 §4.1). A bare `bool` for the same reason
+    /// `console_fetch` is one: there is a single question to answer. An absent
+    /// entry means **off**, which is the safe direction — a registry that never
+    /// wrote the setting down keeps authenticating by header only.
+    pub signed_downloads: HashMap<String, bool>,
+    /// The instance signer for those URLs, or `None` when
+    /// `[server.signed_urls]` is absent.
+    ///
+    /// In the hot config rather than in app data so a secret can be rotated by
+    /// a config reload rather than a restart. It lives beside
+    /// `signed_downloads` so one read-lock snapshot answers both halves of the
+    /// question "may this registry mint, and with what" — a handler that had to
+    /// take two locks could observe a registry switched on with the signer from
+    /// before the reload.
+    pub signed_url: Option<Arc<SignedUrlService>>,
     /// Maximum artifact size when buffering from upstream; None = 500 MiB default.
     pub max_artifact_size_bytes: Option<u64>,
     /// How many versions one package-detail answer carries — the default for a
@@ -361,6 +378,8 @@ impl Default for HotConfig {
             integrity: HashMap::new(),
             beta_channel: HashMap::new(),
             resolution: HashMap::new(),
+            signed_downloads: HashMap::new(),
+            signed_url: None,
             max_artifact_size_bytes: None,
             versions_per_page: DEFAULT_VERSIONS_PER_PAGE,
             packages_per_page: DEFAULT_PACKAGES_PER_PAGE,

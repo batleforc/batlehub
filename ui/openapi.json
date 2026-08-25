@@ -16842,7 +16842,8 @@
         "required": [
           "name",
           "type",
-          "mode"
+          "mode",
+          "signed_downloads"
         ],
         "properties": {
           "mode": {
@@ -16857,6 +16858,10 @@
               "null"
             ],
             "description": "The registry's own hostname-rooted URL (`https://npm.acme.io`) when one is\nconfigured, otherwise `null` — clients then fall back to\n`{origin}/proxy/{name}`.\n\nShown to anonymous callers too. The endpoint already filters by\n`accessible_registries_for`, so a caller only ever sees registries they\ncan already reach; withholding the host from them would break the Setup\nGuide while hiding a name that is in public DNS anyway."
+          },
+          "signed_downloads": {
+            "type": "boolean",
+            "description": "Whether this registry mints signed download URLs (RFC 0012), and can\ntherefore be closed to anonymous callers even though the client fetches\nartifacts without credentials.\n\nHere so the Setup Guide can stop telling a Terraform user to open their\nregistry when it does not need opening. Not a secret: it changes the\nadvice on a page the caller can already read, and a caller who can list\na registry can discover the same fact by fetching from it."
           },
           "type": {
             "type": "string"

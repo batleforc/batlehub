@@ -1,9 +1,10 @@
 use super::{
-    collect_payload, delete, extract_signature_headers, post, put, require_local_mode,
-    require_registry_type, terraform_provider_binary_storage_key, terraform_set_yanked, web,
-    AppError, Arc, AuthIdentity, Digest, HttpRequest, HttpResponse, LocalRegistryService,
-    NotificationService, PublishPolicyRequest, PublishRequest, RegistryMap, RegistryModeMap,
-    Responder, Sha256, StorageMeta, TerraformYankRequest,
+    collect_payload, delete, extract_signature_headers, off_origin_checksum_urls, post, put,
+    registry_public_base, require_local_mode, require_registry_type,
+    terraform_provider_binary_storage_key, terraform_set_yanked, web, AppError, Arc, AuthIdentity,
+    Digest, HttpRequest, HttpResponse, LocalRegistryService, NotificationService,
+    PublishPolicyRequest, PublishRequest, RegistryMap, RegistryModeMap, Responder, Sha256,
+    StorageMeta, TerraformYankRequest,
 };
 use crate::handlers::schemas::{MessageResponse, OkResponse};
 
@@ -68,6 +69,32 @@ pub async fn terraform_provider_upload(
     let name = format!("providers/{namespace}/{ptype}");
     let (signature_bytes, signature_type) = extract_signature_headers(&req);
 
+    // A manifest may name checksum URLs on another host, and today that is the
+    // only way a local-mode install verifies anything — BatleHub has no key it
+    // could put in `signing_keys`, and Terraform refuses a provider whose
+    // checksum list it cannot get (measured, RFC 0012 §7.1). So this is told to
+    // the publisher rather than refused: that host will see every
+    // `terraform init` for this provider, and an air-gapped install will reach
+    // it. The URLs are never signed, whatever else happens to them.
+    let off_origin = off_origin_checksum_urls(&manifest, &registry_public_base(&req, &registry));
+    let message = if off_origin.is_empty() {
+        MessageResponse::new("provider version published")
+    } else {
+        tracing::warn!(
+            registry = %registry,
+            package = %name,
+            version = %version,
+            urls = ?off_origin,
+            "published manifest names checksum URLs on another host"
+        );
+        MessageResponse::new(format!(
+            "provider version published — note: {} points at another host, so `terraform init` \
+             fetches it from there rather than from this registry. It is never given a signed \
+             URL, and an air-gapped install will reach that host.",
+            off_origin.join(", ")
+        ))
+    };
+
     super::super::super::common::publish_and_respond(
         &local_svc,
         &notification_svc,
@@ -84,7 +111,7 @@ pub async fn terraform_provider_upload(
             signature_type,
         },
         actix_web::http::StatusCode::CREATED,
-        MessageResponse::new("provider version published"),
+        message,
     )
     .await
 }

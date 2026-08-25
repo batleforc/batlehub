@@ -13,6 +13,7 @@ pub mod readme;
 pub mod sbom;
 pub mod search;
 pub mod signature;
+pub mod signed_url;
 pub mod stats_rollup;
 pub mod upstream_detail;
 pub mod version_order;
@@ -47,6 +48,12 @@ pub use quota::{
 pub use readme::{truncate_to, ReadmeCapture, ReadmeService, RecordOutcome};
 pub use sbom::{SbomProxiedOptions, SbomPublishOptions, SbomService};
 pub use search::{SearchHit, SearchMode, SearchResults};
+pub use signed_url::{
+    Coordinate as SignedUrlCoordinate, SignedUrlError, SignedUrlService,
+    DEFAULT_TTL_SECONDS as SIGNED_URL_DEFAULT_TTL_SECONDS,
+    MAX_TTL_SECONDS as SIGNED_URL_MAX_TTL_SECONDS, MIN_SECRET_BYTES as SIGNED_URL_MIN_SECRET_BYTES,
+    QUERY_PARAM as SIGNED_URL_QUERY_PARAM,
+};
 pub use stats_rollup::{hour_start, StatsRollupService};
 pub use upstream_detail::{UpstreamDetail, UpstreamDetailCoordinator, UpstreamVersion};
 pub use version_order::newest_first;

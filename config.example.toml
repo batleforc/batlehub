@@ -45,6 +45,33 @@ port = 8080
 # for the deprecated `[ip_blocking].trusted_proxies` stays valid here.
 # trusted_proxies = ["10.42.0.0/16", "192.168.1.10"]
 
+# ── Signed download URLs ──────────────────────────────────────────────────────
+# For clients that authenticate the *documents* of an install and then fetch the
+# *artifact* with no credentials, because their protocol cannot send any.
+# Terraform is the measured case: the provider archive, its SHA256SUMS and the
+# detached signature over that all arrive bare.
+#
+# Without this, such a registry needs `anonymous = ["releases:read",
+# "source:read"]`, which is per registry — it opens every read on it. With it,
+# BatleHub signs the URLs inside the document the client did authenticate, and
+# the registry can keep `anonymous = []`. Turn it on per registry with
+# `signed_downloads = true` (see the [[registries]] entries below).
+#
+# The secret is HMAC key material: 32 bytes minimum, and interpolated from the
+# environment rather than written here. `signed_downloads = true` with no secret
+# configured is a startup error, not a warning.
+#
+# NOTE: a minted URL is a bearer capability until it expires, and BatleHub's
+# request span records the full target — query string included — at INFO. See
+# docs/guide/configuration.md, "[server.signed_urls]".
+#
+# [server.signed_urls]
+# secret      = "${BATLEHUB_URL_SIGNING_SECRET}"
+# ttl_seconds = 300                                  # default; capped at 3600
+# # Verified but never minted with, so a secret rotates without a flag day.
+# # An entry that interpolates to empty is ignored, so this line can stay.
+# previous_secrets = ["${BATLEHUB_URL_SIGNING_SECRET_OLD}"]
+
 [database]
 type = "postgresql"
 url = "postgresql://batlehub:changeme@localhost:5432/batlehub"

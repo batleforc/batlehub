@@ -32,15 +32,91 @@ use batlehub_web::{
 pub(super) struct BatleHubSpanBuilder;
 
 impl RootSpanBuilder for BatleHubSpanBuilder {
-    // `root_span!` expands to `ConnectionInfo::scheme`/`::host` calls, which
-    // `clippy.toml` disallows so no request-handling code reads a forwarded
-    // header without going through `proxy_trust`. This is third-party macro
-    // output and it only labels a tracing span — a spoofed host here mislabels a
-    // trace, it does not decide routing, URLs or a ban. Nothing else in the
-    // workspace carries this allow; see clippy.toml for why.
+    // Hand-written rather than `tracing_actix_web::root_span!`, for one field.
+    //
+    // The macro sets `http.target` from `uri().path_and_query()`
+    // (`tracing-actix-web-0.7.22/src/root_span_macro.rs:110`), so the **query
+    // string of every request lands in the root span at INFO** — the fmt
+    // subscriber, the OTLP exporter, and anything shipping either. That is
+    // ordinarily unremarkable and became a problem when RFC 0012 started
+    // putting a credential in a query parameter: `bh_sig` is a bearer
+    // capability for its lifetime, and logging it hands that capability to
+    // whoever reads the logs.
+    //
+    // The macro offers no way to override the field — its trailing `$($field)*`
+    // only appends, and re-declaring `http.target` makes `span!` reject the
+    // duplicate. So the fields are set here instead, identically **except**
+    // that the target is the path alone. `http.route` already carries the
+    // matched pattern, and no consumer of these spans wants a query string
+    // enough to justify logging credentials.
+    //
+    // Kept faithful to the macro on purpose: the same field set, the same
+    // names, the same `Empty` placeholders that `DefaultRootSpanBuilder::
+    // on_request_end` later records into (`http.status_code`,
+    // `otel.status_code`, `exception.message`, `exception.details`). Drop one
+    // and that call silently stops recording it.
+    //
+    // `ConnectionInfo::scheme`/`::host` are `clippy.toml`-disallowed so no
+    // request-handling code reads a forwarded header without going through
+    // `proxy_trust`. This only labels a span — a spoofed host mislabels a
+    // trace, it does not decide routing, URLs or a ban.
     #[allow(clippy::disallowed_methods)]
     fn on_request_start(request: &actix_web::dev::ServiceRequest) -> tracing::Span {
-        tracing_actix_web::root_span!(level = tracing::Level::INFO, request)
+        use tracing_actix_web::root_span_macro::private::{
+            extract_otel_trace_id, get_request_id, http_flavor, http_method_str, http_scheme,
+        };
+
+        let user_agent = request
+            .headers()
+            .get("User-Agent")
+            .map(|h| h.to_str().unwrap_or(""))
+            .unwrap_or("");
+        let http_route: std::borrow::Cow<'static, str> = request
+            .match_pattern()
+            .map(Into::into)
+            .unwrap_or_else(|| "default".into());
+        let http_method = http_method_str(request.method());
+        let connection_info = request.connection_info();
+        let request_id = get_request_id(request);
+        // The one deviation: path only, never `path_and_query`.
+        let http_target = request.uri().path();
+        let otel_trace_id = extract_otel_trace_id(request);
+
+        // Two arms because a field's value is fixed at macro expansion, and the
+        // upstream builder pre-populates `trace_id` *before* span creation so it
+        // is visible to `on_new_span` rather than recorded after the fact.
+        macro_rules! request_span {
+            ($trace_id:expr) => {
+                tracing::span!(
+                    tracing::Level::INFO,
+                    "HTTP request",
+                    http.method = %http_method,
+                    http.route = %http_route,
+                    http.flavor = %http_flavor(request.version()),
+                    http.scheme = %http_scheme(connection_info.scheme()),
+                    http.host = %connection_info.host(),
+                    http.client_ip = %request.connection_info().realip_remote_addr().unwrap_or(""),
+                    http.user_agent = %user_agent,
+                    http.target = %http_target,
+                    http.status_code = tracing::field::Empty,
+                    otel.name = %format!("{} {}", http_method, http_route),
+                    otel.kind = "server",
+                    otel.status_code = tracing::field::Empty,
+                    trace_id = $trace_id,
+                    request_id = %request_id,
+                    exception.message = tracing::field::Empty,
+                    exception.details = tracing::field::Empty,
+                )
+            };
+        }
+
+        // `field::display` and `field::Empty` are both `Value`s, so one arm
+        // covers each case — the upstream macro duplicates its whole field list
+        // instead, because `%tid` is not an expression.
+        match otel_trace_id {
+            Some(tid) => request_span!(tracing::field::display(tid)),
+            None => request_span!(tracing::field::Empty),
+        }
     }
 
     fn on_request_end<B: actix_web::body::MessageBody>(
@@ -297,4 +373,161 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod span_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use tracing::field::{Field, Visit};
+    use tracing::subscriber::with_default;
+    use tracing_subscriber::layer::{Context, SubscriberExt};
+    use tracing_subscriber::Layer;
+
+    /// What a span was created with: the values actually recorded, and the
+    /// full set of field *names* declared.
+    ///
+    /// The two differ, and the difference is the point: a field declared
+    /// `Empty` is not visited at creation, so a visitor alone cannot tell
+    /// "declared, awaiting a value" from "not declared at all" — which is
+    /// exactly the mistake that would silently break
+    /// `DefaultRootSpanBuilder::on_request_end`.
+    #[derive(Default, Clone)]
+    struct Sink {
+        values: Arc<Mutex<Vec<(String, String)>>>,
+        declared: Arc<Mutex<Vec<String>>>,
+    }
+
+    struct Captured(Sink);
+
+    struct Grab(Arc<Mutex<Vec<(String, String)>>>);
+
+    impl Visit for Grab {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((field.name().to_owned(), format!("{value:?}")));
+        }
+        fn record_str(&mut self, field: &Field, value: &str) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((field.name().to_owned(), value.to_owned()));
+        }
+    }
+
+    impl<S: tracing::Subscriber> Layer<S> for Captured {
+        fn on_new_span(
+            &self,
+            attrs: &tracing::span::Attributes<'_>,
+            _id: &tracing::span::Id,
+            _ctx: Context<'_, S>,
+        ) {
+            self.0.declared.lock().unwrap().extend(
+                attrs
+                    .metadata()
+                    .fields()
+                    .iter()
+                    .map(|f| f.name().to_owned()),
+            );
+            attrs.record(&mut Grab(Arc::clone(&self.0.values)));
+        }
+    }
+
+    fn fields_for(uri: &str) -> Vec<(String, String)> {
+        capture(uri).0
+    }
+
+    fn capture(uri: &str) -> (Vec<(String, String)>, Vec<String>) {
+        let sink = Sink::default();
+        let subscriber = tracing_subscriber::registry().with(Captured(sink.clone()));
+        with_default(subscriber, || {
+            let req = actix_web::test::TestRequest::get()
+                .uri(uri)
+                .to_srv_request();
+            // `TracingLogger` inserts this before calling the builder; a bare
+            // test request has none, and `get_request_id` unwraps it.
+            {
+                use actix_web::HttpMessage as _;
+                req.extensions_mut()
+                    .insert(tracing_actix_web::root_span_macro::private::generate_request_id());
+            }
+            let _span = BatleHubSpanBuilder::on_request_start(&req);
+        });
+        let values = sink.values.lock().unwrap().clone();
+        let declared = sink.declared.lock().unwrap().clone();
+        (values, declared)
+    }
+
+    fn value_of<'a>(fields: &'a [(String, String)], name: &str) -> &'a str {
+        fields
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+            .unwrap_or_else(|| panic!("no field {name} in {fields:?}"))
+    }
+
+    /// RFC 0012 §7.1. The reason this builder is hand-written instead of
+    /// `root_span!`: a signed download URL carries a bearer capability in
+    /// `bh_sig`, and the upstream macro would put it in the span at INFO.
+    #[test]
+    fn the_span_target_never_carries_a_query_string() {
+        let fields = fields_for(
+            "/proxy/tf/v1/providers/hashicorp/null/3.2.2/artifact/linux/amd64?bh_sig=1.PAYLOAD.MAC",
+        );
+        let target = value_of(&fields, "http.target");
+
+        assert_eq!(
+            target, "/proxy/tf/v1/providers/hashicorp/null/3.2.2/artifact/linux/amd64",
+            "http.target must be the path alone"
+        );
+        // Belt and braces: no field anywhere in the span may carry the token.
+        for (name, value) in &fields {
+            assert!(
+                !value.contains("bh_sig") && !value.contains("PAYLOAD"),
+                "field {name} leaked the signature: {value}"
+            );
+        }
+    }
+
+    /// A query that is not a credential is dropped too. That is the trade this
+    /// makes, and it is deliberate: `http.route` carries the matched pattern,
+    /// and no consumer wanted a query enough to justify logging credentials.
+    #[test]
+    fn an_ordinary_query_is_dropped_as_well() {
+        let fields = fields_for("/api/v1/packages?page=2&per_page=50");
+        assert_eq!(value_of(&fields, "http.target"), "/api/v1/packages");
+    }
+
+    /// The field set must stay identical to the macro's, because
+    /// `DefaultRootSpanBuilder::on_request_end` records into four of these by
+    /// name — drop one and it silently stops recording.
+    #[test]
+    fn every_field_the_upstream_builder_writes_into_is_declared() {
+        let (_values, names) = capture("/healthz");
+        for required in [
+            "http.method",
+            "http.route",
+            "http.flavor",
+            "http.scheme",
+            "http.host",
+            "http.client_ip",
+            "http.user_agent",
+            "http.target",
+            "http.status_code",
+            "otel.name",
+            "otel.kind",
+            "otel.status_code",
+            "trace_id",
+            "request_id",
+            "exception.message",
+            "exception.details",
+        ] {
+            assert!(
+                names.iter().any(|n| n == required),
+                "missing field {required}; declared: {names:?}"
+            );
+        }
+    }
 }

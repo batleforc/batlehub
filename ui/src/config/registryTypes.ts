@@ -21,6 +21,16 @@ export interface SnippetContext {
   identity: MeResponse | null;
   /** All configured registries keyed by API type — used by composite tabs like mise. */
   selectedNames: Record<string, string>;
+  /**
+   * Whether the selected registry mints signed download URLs (RFC 0012).
+   *
+   * Terraform fetches the provider archive with no `Authorization` header and
+   * cannot send one, so this page used to tell every Terraform operator to grant
+   * anonymous reads across the whole registry. When the registry signs, that
+   * advice is wrong — and telling someone to open a registry that is already
+   * closed and working is the kind of wrong that gets followed.
+   */
+  signedDownloads: boolean;
 }
 
 export interface SnippetDef {
@@ -707,10 +717,21 @@ export const REGISTRY_TYPE_DEFS: RegistryTypeDef[] = [
           }
           return lines.join("\n");
         },
-        note:
+        note: (ctx) =>
           `The <code>network_mirror</code> block redirects all ` +
           `provider downloads through this proxy. Providers are cached after first download in ` +
-          `Proxy/Hybrid mode, or served entirely locally in Local mode.`,
+          `Proxy/Hybrid mode, or served entirely locally in Local mode.` +
+          (ctx.signedDownloads
+            ? ` This registry <strong>signs its download URLs</strong>, so it can ` +
+              `stay closed: Terraform fetches the provider archive without ` +
+              `credentials, and the signature inside the document it did ` +
+              `authenticate stands in for the header. No <code>anonymous</code> ` +
+              `grant is needed.`
+            : ` Terraform fetches the provider archive <strong>without ` +
+              `credentials</strong> and has no way to send any, so this registry ` +
+              `needs <code>anonymous = ["releases:read", "source:read"]</code> ` +
+              `under <code>[registries.rbac]</code> — or set ` +
+              `<code>signed_downloads = true</code> on it and keep it closed.`),
       },
       {
         key: "terraform-module",

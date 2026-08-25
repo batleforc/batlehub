@@ -49,6 +49,57 @@ pub struct ServerConfig {
     /// `[ip_blocking].trusted_proxies` stays valid here.
     #[serde(default)]
     pub trusted_proxies: Option<Vec<String>>,
+    /// Signing material for RFC 0012 download URLs. Absent means the feature is
+    /// unavailable, and any registry with `signed_downloads = true` is a
+    /// startup error rather than a registry that quietly serves nothing.
+    #[serde(default)]
+    pub signed_urls: Option<SignedUrlsConfig>,
+}
+
+/// `[server.signed_urls]` — the instance secret that signs download URLs.
+///
+/// Global rather than per-registry because the key is a property of the
+/// instance, not of a registry; the per-registry switch is
+/// `[[registries]].signed_downloads`.
+///
+/// ```toml
+/// [server.signed_urls]
+/// # The loader interpolates ${VAR}; a signing key does not belong in a file
+/// # that gets committed. See docs/guide/configuration.md, "Sensitive values".
+/// secret           = "${BATLEHUB_URL_SIGNING_SECRET}"
+/// ttl_seconds      = 300   # default; hard-capped at 3600
+/// previous_secrets = ["${BATLEHUB_URL_SIGNING_SECRET_OLD}"]
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct SignedUrlsConfig {
+    /// HMAC signing secret, 32 bytes minimum.
+    pub secret: String,
+    /// Lifetime of a minted URL. Terraform follows one within milliseconds, so
+    /// the margin is for a slow runner rather than for a human.
+    #[serde(default = "default_signed_url_ttl")]
+    pub ttl_seconds: u64,
+    /// Verified against but never minted with, so a secret can be rotated
+    /// without a flag day. An entry that interpolates to empty is dropped —
+    /// `${VAR_OLD}` with no old secret set is the normal steady state, and
+    /// failing on it would make rotation a two-step config edit.
+    #[serde(default)]
+    pub previous_secrets: Vec<String>,
+}
+
+fn default_signed_url_ttl() -> u64 {
+    300
+}
+
+impl SignedUrlsConfig {
+    /// Previous secrets with the empties removed.
+    pub fn active_previous_secrets(&self) -> Vec<String> {
+        self.previous_secrets
+            .iter()
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
 }
 
 /// Parse `trusted_proxies` entries into CIDR prefixes.

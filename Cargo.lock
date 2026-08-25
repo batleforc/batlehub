@@ -1101,6 +1101,7 @@ dependencies = [
  "ed25519-dalek",
  "futures",
  "hex",
+ "hmac 0.13.0",
  "md-5",
  "metrics",
  "pulldown-cmark",

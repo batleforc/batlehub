@@ -1690,3 +1690,199 @@ fn distinct_auth_names_start() {
     .validate()
     .expect("distinct names are fine");
 }
+
+// ── Signed download URLs (RFC 0012 §4.1) ──────────────────────────────────────
+
+/// 32 ASCII bytes — the minimum a signing secret may be.
+const GOOD_SECRET: &str = "0123456789abcdef0123456789abcdef";
+
+fn signed_urls_config(extra_server: &str, registry_signed: bool) -> AppConfig {
+    parse_config(&format!(
+        r#"
+        [[registries]]
+        type = "terraform"
+        name = "tf"
+        signed_downloads = {registry_signed}
+
+        [server.signed_urls]
+{extra_server}
+        "#
+    ))
+}
+
+#[test]
+fn signed_downloads_defaults_to_false() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "terraform"
+        name = "tf""#,
+    );
+    assert!(!cfg.registries[0].signed_downloads);
+    cfg.validate().expect("a registry with no signing is fine");
+}
+
+#[test]
+fn a_valid_signed_urls_block_is_accepted() {
+    let cfg = signed_urls_config(&format!(r#"        secret = "{GOOD_SECRET}""#), true);
+    cfg.validate().expect("accepted");
+    let block = cfg.server.signed_urls.as_ref().expect("present");
+    assert_eq!(block.ttl_seconds, 300, "the documented default");
+    assert!(block.previous_secrets.is_empty());
+}
+
+/// The failure this whole feature exists to prevent: a registry that believes
+/// it is closed and is not.
+#[test]
+fn signed_downloads_without_a_secret_refuses_to_start() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "terraform"
+        name = "tf"
+        signed_downloads = true"#,
+    );
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("signed_downloads"), "{err}");
+    assert!(err.contains("tf"), "{err}");
+}
+
+#[test]
+fn a_short_signing_secret_refuses_to_start() {
+    let cfg = signed_urls_config(r#"        secret = "too-short""#, true);
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("32"), "{err}");
+}
+
+/// `${VAR}` that interpolates to nothing is the shape this catches: the file
+/// looks configured and the instance has no key.
+#[test]
+fn an_empty_signing_secret_refuses_to_start() {
+    let cfg = signed_urls_config(r#"        secret = """#, true);
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("empty"), "{err}");
+}
+
+#[test]
+fn a_zero_ttl_refuses_to_start() {
+    let cfg = signed_urls_config(
+        &format!("        secret = \"{GOOD_SECRET}\"\n        ttl_seconds = 0"),
+        true,
+    );
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("born expired"), "{err}");
+}
+
+#[test]
+fn a_ttl_over_the_ceiling_refuses_to_start() {
+    let cfg = signed_urls_config(
+        &format!("        secret = \"{GOOD_SECRET}\"\n        ttl_seconds = 2592000"),
+        true,
+    );
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("3600"), "{err}");
+}
+
+#[test]
+fn a_short_previous_secret_refuses_to_start() {
+    let cfg = signed_urls_config(
+        &format!("        secret = \"{GOOD_SECRET}\"\n        previous_secrets = [\"nope\"]"),
+        true,
+    );
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("previous_secrets[0]"), "{err}");
+}
+
+/// `previous_secrets = ["${VAR_OLD}"]` with no old secret set is the normal
+/// steady state between rotations; failing on it would make rotation a two-step
+/// config edit.
+#[test]
+fn an_empty_previous_secret_is_ignored() {
+    let cfg = signed_urls_config(
+        &format!("        secret = \"{GOOD_SECRET}\"\n        previous_secrets = [\"\", \"  \"]"),
+        true,
+    );
+    cfg.validate().expect("accepted");
+    assert!(cfg
+        .server
+        .signed_urls
+        .as_ref()
+        .unwrap()
+        .active_previous_secrets()
+        .is_empty());
+}
+
+#[test]
+fn an_unknown_key_in_the_signed_urls_block_is_refused() {
+    let raw = format!(
+        r#"
+        [database]
+        type = "postgresql"
+        url = "postgresql://localhost/test"
+
+        [storage]
+        type = "filesystem"
+        path = "/tmp/batlehub-test"
+
+        [server]
+        host = "127.0.0.1"
+        port = 8080
+
+        [server.signed_urls]
+        secret = "{GOOD_SECRET}"
+        ttl_second = 300
+        "#
+    );
+    // A typo in a security key must fail the load, not silently take a default.
+    assert!(toml::from_str::<AppConfig>(&raw).is_err());
+}
+
+// ── Signed-URL warnings (RFC 0012 §7) ─────────────────────────────────────────
+
+#[test]
+fn signing_alongside_an_anonymous_grant_warns() {
+    let cfg = parse_config(&format!(
+        r#"
+        [[registries]]
+        type = "terraform"
+        name = "tf"
+        signed_downloads = true
+
+        [registries.rbac]
+        anonymous = ["releases:read"]
+
+        [server.signed_urls]
+        secret = "{GOOD_SECRET}""#
+    ));
+    cfg.validate().expect("legal, just probably unintended");
+    let codes: Vec<String> = cfg.warnings().into_iter().map(|w| w.code).collect();
+    assert!(
+        codes
+            .iter()
+            .any(|c| c == warnings::SIGNED_URLS_ANONYMOUS_STILL_GRANTED),
+        "{codes:?}"
+    );
+}
+
+#[test]
+fn signing_with_an_empty_anonymous_grant_does_not_warn() {
+    let cfg = signed_urls_config(&format!(r#"        secret = "{GOOD_SECRET}""#), true);
+    let codes: Vec<String> = cfg.warnings().into_iter().map(|w| w.code).collect();
+    assert!(
+        !codes
+            .iter()
+            .any(|c| c == warnings::SIGNED_URLS_ANONYMOUS_STILL_GRANTED),
+        "{codes:?}"
+    );
+}
+
+#[test]
+fn a_signing_secret_no_registry_uses_warns() {
+    let cfg = signed_urls_config(&format!(r#"        secret = "{GOOD_SECRET}""#), false);
+    cfg.validate().expect("legal");
+    let codes: Vec<String> = cfg.warnings().into_iter().map(|w| w.code).collect();
+    assert!(
+        codes.iter().any(|c| c == warnings::SIGNED_URLS_UNUSED),
+        "{codes:?}"
+    );
+}

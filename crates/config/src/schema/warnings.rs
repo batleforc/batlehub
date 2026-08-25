@@ -72,6 +72,18 @@ pub const SUBDOMAIN_INVALID_DNS_LABEL: &str = "subdomain.invalid-dns-label";
 /// only happens when someone wrote it down, which is the point of the warning.
 pub const CORS_ANY_ORIGIN: &str = "cors.any-origin";
 
+/// A registry has `signed_downloads = true` *and* still grants the anonymous
+/// read that signing exists to remove. Legal — belt and braces — but almost
+/// certainly a migration someone stopped halfway: the signed URLs are minted
+/// and verified, and the registry is open to everyone anyway, so nothing is
+/// actually closed (RFC 0012 §7).
+pub const SIGNED_URLS_ANONYMOUS_STILL_GRANTED: &str = "signed-urls.anonymous-still-granted";
+
+/// `[server.signed_urls]` is configured and no registry sets
+/// `signed_downloads = true`, so the secret signs nothing. Harmless, and worth
+/// saying: it is the shape of a feature enabled on the wrong side.
+pub const SIGNED_URLS_UNUSED: &str = "signed-urls.unused";
+
 /// A `license_gate` rule is configured on a registry whose type has no manifest
 /// parser, so the licence of every version is permanently unknown and the gate
 /// can never observe what it claims to govern.

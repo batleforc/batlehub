@@ -214,6 +214,26 @@ impl RegistryClient for FixedRegistry {
                 }
             }
 
+            // The provider *download* document — one platform of one version,
+            // a different shape from the listing above (RFC 0009 §12.12).
+            // Its three URLs point at the upstream on purpose, like every other
+            // download URL in this fixture: repointing them at this host is the
+            // handler's job, and a test can only tell it happened if the
+            // fixture did not do it first.
+            ("terraform", k) if k == DocumentKind::PROVIDER_DOWNLOAD => {
+                Ok(VersionDocument::json(serde_json::json!({
+                    "protocols": ["5.0"],
+                    "os": "linux",
+                    "arch": "amd64",
+                    "filename": "terraform-provider-aws_1.0.0_linux_amd64.zip",
+                    "download_url": "https://upstream.invalid/terraform-provider-aws_1.0.0_linux_amd64.zip",
+                    "shasums_url": "https://upstream.invalid/terraform-provider-aws_1.0.0_SHA256SUMS",
+                    "shasums_signature_url": "https://upstream.invalid/terraform-provider-aws_1.0.0_SHA256SUMS.sig",
+                    "shasum": "0000000000000000000000000000000000000000000000000000000000000000",
+                    "signing_keys": { "gpg_public_keys": [] }
+                })))
+            }
+
             ("rubygems", DocumentKind::Versions) => Ok(VersionDocument::json(serde_json::json!([
                 { "number": "2.0.0-beta.1", "sha": "ccc" },
                 { "number": "1.1.0", "sha": "bbb" },

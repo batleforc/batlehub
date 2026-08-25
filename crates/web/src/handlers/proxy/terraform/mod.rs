@@ -43,4 +43,7 @@ pub use providers::{
     terraform_provider_shasums, terraform_provider_shasums_sig, terraform_provider_unyank,
     terraform_provider_upload, terraform_provider_versions, terraform_provider_yank,
 };
+use shared::{
+    identity_for_artifact, off_origin_checksum_urls, sign_download_document, DownloadCoords,
+};
 pub(super) use shared::{terraform_set_yanked, terraform_versions_response, TerraformYankRequest};

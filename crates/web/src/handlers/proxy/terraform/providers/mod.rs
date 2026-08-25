@@ -1,8 +1,9 @@
 use super::{
     append_signature_headers, collect_payload, collect_storage_stream, delete,
-    extract_signature_headers, get, post, proxy_stream, put, registry_public_base,
-    require_local_mode, require_registry_type, terraform_provider_binary_storage_key,
-    terraform_set_yanked, terraform_versions_response, web, AppError, Arc, AuthIdentity, Digest,
+    extract_signature_headers, get, identity_for_artifact, off_origin_checksum_urls, post,
+    proxy_stream, put, registry_public_base, require_local_mode, require_registry_type,
+    sign_download_document, terraform_provider_binary_storage_key, terraform_set_yanked,
+    terraform_versions_response, web, AppError, Arc, AuthIdentity, Digest, DownloadCoords,
     HttpRequest, HttpResponse, LocalRegistryService, NotificationService, PackageId, ProxyService,
     PublishPolicyRequest, PublishRequest, RegistryMap, RegistryMode, RegistryModeMap, Responder,
     Sha256, StorageMeta, TerraformPlatform, TerraformYankRequest,

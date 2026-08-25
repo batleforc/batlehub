@@ -249,6 +249,18 @@
   :root .VPNavBarHamburger {
     display: block;
   }
+
+  /* The third piece, and the one this override was missing: the panel the
+     hamburger opens carries its own `@media (min-width: 768px) { display:
+     none }` in the default theme, on the same assumption the two rules above
+     have just withdrawn — that above 768px the navbar is laid out flat and
+     nothing needs a screen. Without this the button rendered and animated
+     across the whole 768–1279 band and opened nothing at all: the element
+     mounted, at zero width, behind `display: none`. Every link the navbar had
+     just collapsed was unreachable in the one band that collapsed it. */
+  :root .VPNavScreen {
+    display: block;
+  }
 }
 
 /* ── Sidebar ─────────────────────────────────────────────────────────────────
@@ -608,7 +620,29 @@
    The one page that is a tool rather than a document, and the only one that
    opts out of the 688px measure. Its own styling is entirely `--vp-*`-driven,
    so the bridge repaints it without it being touched.
+
+   `max-width: none` alone was not enough, and the page had become unusable
+   because of what it missed. Two caps stack above the content column, and
+   lifting one leaves the other: the measure (this rule), and the site's
+   1440px layout — which centres the whole shell and, on anything wider,
+   spends the surplus on gutters and a padded sidebar rather than on the page.
+   A 1920px screen therefore reached the form with 1098px, the same as a 1440px
+   one, and the sidebar's 272px came out of that. Measured on the built site,
+   the form column was left with 442px at 1440 and 368px at 1366 — two fields
+   side by side in 180px each.
+
+   So the tool page opts out of the layout width too. `--vp-layout-max-width`
+   is the single variable every one of those calc()s reads, and the class sits
+   on `.Layout`, above the nav bar and the sidebar both: setting it to the
+   viewport makes the gutters resolve to zero and the page spend its full
+   width, nav bar included. The sidebar stays — losing the guide's navigation
+   is not the price of a usable form; the component below is what adapts, and
+   it does it with container queries against the width it is actually handed.
    ────────────────────────────────────────────────────────────────────────── */
+.page-config-gen {
+  --vp-layout-max-width: 100vw;
+}
+
 .page-config-gen .VPDoc .container,
 .page-config-gen .VPDoc .content,
 .page-config-gen .VPDoc .content-container {

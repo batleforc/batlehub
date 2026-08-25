@@ -3838,20 +3838,33 @@ curl -X POST \
 </template>
 
 <style scoped>
+/* One column is the floor, not the small-screen special case. The side-by-side
+   arrangement is what gets asked for, in the `@container` block at the bottom,
+   and only once there is room for it — the previous rules asked the *window*
+   whether there was room, which is a different question on a page carrying a
+   272px sidebar, and was the reason the form had become unusable at 1366 and
+   1440.
+
+   Flex-wrap rather than a grid, and the container declared here rather than on
+   a wrapper, so that the two are the same element: an element cannot size its
+   own grid columns from a query against itself, but its children can read it,
+   and `flex-basis` on the children is the same layout expressed where the
+   query is legal. `inline-size` and not `size` — the height here is the
+   content's, and a container that must resolve its own height first cannot
+   have one. */
 .cg-root {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 560px;
+  container: cg / inline-size;
+  display: flex;
+  flex-wrap: wrap;
   gap: 2rem;
-  align-items: start;
+  align-items: flex-start;
   margin-top: 1.5rem;
   width: 100%;
-  max-width: 1400px;
-  margin-left: auto;
-  margin-right: auto;
 }
 
 /* ── Form column ────────────────────────────────────────────────────── */
 .cg-form {
+  flex: 1 1 100%;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -3955,16 +3968,22 @@ textarea {
   font-size: var(--t-meta);
 }
 
-/* ── Grid layouts ────────────────────────────────────────────────── */
+/* ── Grid layouts ──────────────────────────────────────────────────
+   `auto-fit` + a floor, rather than a fixed count unpicked by a breakpoint.
+   These sit at four different nesting depths (a section, a list item, a
+   condition row inside a list item) so the width available to them is never
+   the width of anything a media query can name; what they can promise is that
+   a field is 13rem or it is on its own line. `min(100%, …)` is what keeps that
+   floor from becoming an overflow when the column really is narrower. */
 .cg-two-col {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr));
   gap: 0.75rem;
 }
 
 .cg-three-col {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr));
   gap: 0.6rem;
 }
 
@@ -4097,13 +4116,13 @@ textarea {
   margin-top: 0.75rem;
 }
 
-/* ── Preview column ──────────────────────────────────────────────── */
+/* ── Preview column ────────────────────────────────────────────────
+   Stacked below the form until the container says otherwise, so it is sized
+   here as a panel and re-sized as a sticky rail in the `@container` block. */
 .cg-preview {
+  flex: 1 1 100%;
   min-width: 0;
-  position: sticky;
-  top: calc(var(--vp-nav-height) + 1rem);
-  height: calc(100vh - var(--vp-nav-height) - 2rem);
-  min-height: 480px;
+  height: 520px;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--vp-c-divider);
@@ -4207,41 +4226,49 @@ textarea {
   line-height: 1.5;
 }
 
-/* ── Responsive ──────────────────────────────────────────────────── */
-@media (min-width: 1600px) {
-  .cg-root {
-    max-width: 1900px;
+/* ── Responsive ────────────────────────────────────────────────────
+   Three steps, each asked of the container and each stated as what it adds.
+   The numbers are the widths the arrangement needs, not the widths of any
+   particular screen: whether a 1440px window clears 60rem here depends on the
+   sidebar, and that is precisely what the component should not have to know.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* 60rem = 960px, which is what this page hands the component on a 1366px
+   laptop — the width the old 1300px window breakpoint got wrong by exactly
+   the sidebar. Below it the preview goes under the form rather than beside
+   it; above it there is room for a form column that still fits two 13rem
+   fields after the preview has taken its share. The preview is a proportion
+   with both ends pinned: never so narrow that a TOML line has nowhere to go,
+   never so wide that it is reading room taken from the form it previews. */
+@container cg (min-width: 60rem) {
+  .cg-form {
+    flex: 1 1 0;
   }
+
+  .cg-preview {
+    flex: 0 0 clamp(22rem, 34%, 35rem);
+    position: sticky;
+    top: calc(var(--vp-nav-height) + 1rem);
+    height: calc(100vh - var(--vp-nav-height) - 2rem);
+    min-height: 480px;
+  }
+}
+
+/* 90rem = 1440px, reached on a 1920px screen. Only here is the form column
+   itself wide enough that one stack of sections leaves half the row empty and
+   a text input is 450px for a port number. The old rule asked this of a 1600px
+   *window*, which on this page meant splitting a 442px column in two: inputs
+   came out 80px wide, and that is the state the page was reported in. */
+@container cg (min-width: 90rem) {
   .cg-form {
     display: block;
     columns: 2;
     column-gap: 1rem;
   }
+
   .cg-section {
     break-inside: avoid;
     margin-bottom: 1rem;
-  }
-}
-
-@media (max-width: 1300px) {
-  .cg-root {
-    grid-template-columns: 1fr;
-    max-width: 100%;
-  }
-  .cg-preview {
-    position: static;
-    width: 100%;
-    height: 520px;
-  }
-  .cg-three-col {
-    grid-template-columns: 1fr 1fr;
-  }
-}
-
-@media (max-width: 600px) {
-  .cg-two-col,
-  .cg-three-col {
-    grid-template-columns: 1fr;
   }
 }
 
