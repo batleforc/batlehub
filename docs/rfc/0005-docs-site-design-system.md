@@ -2,7 +2,9 @@
 
 | Field       | Value                                                                 |
 | ----------- | --------------------------------------------------------------------- |
-| Status      | In review — open questions resolved, §6.6 agreed, awaiting sign-off     |
+| Status      | **Implemented** — all nine phases landed; see the implementation notes in §13 |
+| Short       | One documentation tree |
+| Settles     | Merging the two documentation trees, and putting the design system on the result |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                                |
 | Co-author   | —                                                                      |
 | Created     | 2026-08-14                                                             |

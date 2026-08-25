@@ -3,6 +3,8 @@
 | Field       | Value                                                        |
 | ----------- | ------------------------------------------------------------ |
 | Status      | **Accepted** — every open question resolved (§11), two of them against this document's own first draft: SDKMAN's rendered version table is filtered rather than exempted, and an unknown publish date is now the operator's explicit choice rather than a hard-coded allow. Implementation may start; nodedist ships at phase 4 and sdkman at phase 7, each behind its own heavy suite |
+| Short       | The toolchain layer |
+| Settles     | Proxying the JDK and the Node runtime themselves, not only what they build: SDKMAN and the `nodejs.org/dist` tree as registry kinds, and making a blocked toolchain a refusal rather than a claim |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                       |
 | Co-author   | Claude Opus 5 (1M context) <noreply@anthropic.com>            |
 | Created     | 2026-08-18                                                    |

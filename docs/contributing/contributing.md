@@ -765,3 +765,56 @@ The container waits for `dev/dex/config.yaml` rather than exiting when it is
 missing, so a workspace that has never run `task dex:config` still starts; it would
 otherwise crash-loop and leave the pod short of Ready.
 
+
+---
+
+## 12. Writing an RFC
+
+An RFC is for a change worth arguing about *before* it is written: new
+user-facing surface, a cross-crate refactor, a security-relevant default, or
+anything where the wrong choice is expensive to undo. A bug fix is not an RFC.
+The published set is [Design history](/rfc/); the form itself is not published —
+it is `docs/internal/0000-rfc-template.md`, something you copy rather than read.
+
+```bash
+task rfc:new TITLE="Artifact retention policies" \
+             SETTLES="How long a cached artifact is kept, and who decides"
+```
+
+That takes the next free number (numbers are never reused, even by a rejected
+RFC), fills in the author from `git config`, dates it today, sets the status to
+`Draft`, and writes the page into both listings so it is not an orphan. A
+follow-on to an existing RFC — the *bis* convention — is `BIS=0004`; `SHORT=`
+overrides the sidebar label and `SLUG=` the filename.
+
+**Three header rows are read back out of the document**, by
+`docs/build/rfc-meta.mjs`:
+
+| Row | Where it is quoted |
+| --- | --- |
+| `Status` | the banner at the top of the published page |
+| `Short` | the `/rfc/` sidebar and the first column of the index table |
+| `Settles` | the "What it settles" column of that table |
+
+So the index table and the sidebar are **generated** — the blocks between the
+`rfc-index` markers in `docs/rfc/index.md` and the `rfc-sidebar` markers in
+`docs/.vitepress/config.ts`. Change the RFC and run `task rfc:index`; never edit
+those two blocks by hand. `task rfc:index:check` fails `task docs:design` when
+they have drifted, for the same reason every other generated table here has a
+drift check: a page that mislabels the project's own design history is the
+defect RFC 0005 exists to remove, one directory over.
+
+The status vocabulary is `Draft`, `In review`, `Accepted`, `Implemented`,
+`Rejected` and `Superseded by NNNN`; anything else fails the docs build rather
+than rendering an unlabelled page. `task rfc:status` prints where each document
+stands, including its open-question count — the template's own readiness test is
+that `### Still open` is empty, and the report flags an RFC that has reached it
+and not moved:
+
+```text
+RFC      Status              Open  Name
+0010     Accepted            0     The toolchain layer                          ← no open questions
+0011     Draft               7     Authenticated OpenVSX access
+
+17 RFCs — 8 settled, 9 still proposals; 23 open question(s) across 5 document(s)
+```

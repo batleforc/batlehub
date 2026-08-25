@@ -1,0 +1,61 @@
+version: "3"
+
+# The RFCs (docs/rfc/) — a new one, the two listings, and the state of play.
+#
+# Every fact about an RFC lives in that RFC's own header table: `Status`, the
+# `Short` name it is listed under, and the one line it `Settles`. Three surfaces
+# quote those rows — the status banner on the page, the table on /rfc/, and the
+# /rfc/ sidebar in docs/.vitepress/config.ts — and all three are generated, for
+# the reason every other generated table in this repository is: the drift was
+# already there. The index prose said "eight of the fifteen below" of seventeen
+# documents, and the index and the sidebar disagreed about what four of them
+# were called. A page that mislabels the project's own design history is the
+# defect RFC 0005 exists to remove, one directory over.
+#
+# The implementation is docs/build/rfc.mjs and docs/build/rfc-meta.mjs; the
+# latter is what .vitepress/config.ts imports for the banner, so the status
+# vocabulary is parsed in exactly one place.
+
+tasks:
+  rfc:new:
+    desc: 'Scaffold the next RFC from the template — TITLE="…" [SHORT=…] [SETTLES=…] [SLUG=…] [BIS=NNNN]'
+    dir: docs
+    # The number is one past the highest that has ever existed — numbers are
+    # never reused, even by a rejected RFC. Author comes from `git config`, the
+    # date from today, and the status starts at Draft. The new page is written
+    # into both listings straight away: a published page in no sidebar is an
+    # orphan, and `task docs:links` would otherwise fail on it at the end of the
+    # day rather than at the start.
+    cmds:
+      - node build/rfc.mjs new --title {{.TITLE | quote}} {{if .SHORT}}--short {{.SHORT | quote}}{{end}} {{if .SETTLES}}--settles {{.SETTLES | quote}}{{end}} {{if .SLUG}}--slug {{.SLUG | quote}}{{end}} {{if .BIS}}--bis {{.BIS | quote}}{{end}}
+
+  rfc:index:
+    desc: Regenerate the /rfc/ index table and sidebar from each RFC's header table
+    dir: docs
+    cmds:
+      - node build/rfc.mjs index
+
+  rfc:index:check:
+    desc: Fail if the /rfc/ index or sidebar has drifted from the documents
+    dir: docs
+    # Compares only the region between the markers, like the other generated
+    # tables: a whole-file `git diff` conflates "the generator would produce
+    # something different" with "this file has any uncommitted change at all"
+    # (RFC 0009 §13.21).
+    cmds:
+      - node build/rfc.mjs index --check
+
+  rfc:status:
+    desc: Every RFC's status, open-question count and readiness — a report, not a gate
+    dir: docs
+    # "Ready for sign-off" is the template's own test: the RFC is ready when
+    # "### Still open" is empty. Nothing read that section before this, so a
+    # document could sit in Draft for a month with every question answered.
+    cmds:
+      - node build/rfc.mjs status
+
+  rfc:status:json:
+    desc: The same report as machine-readable JSON
+    dir: docs
+    cmds:
+      - node build/rfc.mjs status --json

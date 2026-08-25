@@ -3,6 +3,8 @@
 | Field       | Value                                                        |
 | ----------- | ------------------------------------------------------------ |
 | Status      | Implemented. Every open question was resolved by measurement first (§13), two of them against the recommendation this RFC was drafted with; §14 records where the built thing differs from what §1–§12 proposed |
+| Short       | The three 0007 deferred |
+| Settles     | Rendering a README's images without telling their host who is reading, searching what a package says rather than what it is called, and asking for a version the page has told you exists |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                       |
 | Co-author   | —                                                             |
 | Created     | 2026-08-18                                                    |

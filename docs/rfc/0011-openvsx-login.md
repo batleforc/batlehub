@@ -3,6 +3,8 @@
 | Field      | Value                                                                  |
 | ---------- | ---------------------------------------------------------------------- |
 | Status     | Draft                                                                  |
+| Short      | Authenticated OpenVSX access |
+| Settles    | Giving an editor that has no credential hook a way to send one: a contract file that may point at a secret rather than hold it, the pod's own Kubernetes identity, a loopback proxy for editors we do not build, and a sign-in entry in the Extensions view instead of a blank one |
 | Author     | batleforc                                                              |
 | Co-author  | —                                                                      |
 | Created    | 2026-08-18                                                             |

@@ -3,6 +3,8 @@
 | Field       | Value                                                        |
 | ----------- | ------------------------------------------------------------ |
 | Status      | **Implemented** — all nine phases landed; see the implementation notes in §13. RFC 0009's dependency is discharged (it shipped), and the discovery read reuses the three rungs it built rather than inventing a second cache policy |
+| Short       | The README, per version |
+| Settles     | Storing each version's own README, rendering it safely on the server, and making the package page answer — versions and documentation — for packages this instance holds nothing of |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                       |
 | Co-author   | —                                                             |
 | Created     | 2026-08-15                                                    |

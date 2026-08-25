@@ -3,6 +3,8 @@
 | Field      | Value                                                                  |
 | ---------- | ---------------------------------------------------------------------- |
 | Status     | Draft                                                                  |
+| Short      | Namespace-scoped visibility |
+| Settles    | Making a team's packages visible to that team and to the groups it grants read to: a namespace separator per ecosystem, reader groups with a per-package override, and groups on a PAT |
 | Author     | batleforc                                                              |
 | Co-author  | —                                                                      |
 | Created    | 2026-08-20                                                             |

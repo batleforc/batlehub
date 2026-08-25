@@ -3,6 +3,8 @@
 | Field       | Value                                                                 |
 | ----------- | --------------------------------------------------------------------- |
 | Status      | **Implemented** — all six phases landed; see the implementation notes in §14 |
+| Short       | What 0004 left |
+| Settles     | The parts 0004 did not finish, and why they were not visible |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                                |
 | Co-author   | Claude Opus 5 (1M context) <noreply@anthropic.com>                     |
 | Created     | 2026-08-13                                                            |

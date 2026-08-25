@@ -3,6 +3,8 @@
 | Field      | Value                                                                       |
 | ---------- | --------------------------------------------------------------------------- |
 | Status     | Draft                                                                       |
+| Short      | Signed URLs for the credential-less request |
+| Settles    | Letting a client that sends no credential — Terraform's provider archive — download from a registry that is closed to everyone else |
 | Author     | batleforc                                                                   |
 | Co-author  | —                                                                           |
 | Created    | 2026-08-18                                                                  |

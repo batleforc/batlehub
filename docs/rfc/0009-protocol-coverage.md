@@ -3,6 +3,8 @@
 | Field       | Value                                                        |
 | ----------- | ------------------------------------------------------------ |
 | Status      | **Implemented** — all nine phases landed, residue closed (§13.23); every ecosystem is verified against its real client by a script in CI rather than a transcript (§12.16), which found six further shipped bugs; the compact index is incremental and measured (§13.24) |
+| Short       | Every endpoint the client actually calls |
+| Settles     | Serving the paths each package manager really requests, and two mechanisms so the next invented endpoint fails the build |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                       |
 | Co-author   | Claude Opus 5 (1M context) <noreply@anthropic.com>            |
 | Created     | 2026-08-16                                                    |

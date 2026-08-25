@@ -46,11 +46,13 @@ const MAX_SIDEBAR = 20;
 /**
  * A catalogue is one entry per thing catalogued, and its length is a property
  * of the domain rather than of anyone's editing. `/registries/` has 21 registry
- * types because BatleHub supports 21. The rule this file enforces is one
- * audience per sidebar, and the size cap is a proxy for it that does not apply
- * where the list is an index.
+ * types because BatleHub supports 21, and `/rfc/` has one entry per RFC ever
+ * written — that list only grows, and the way to shorten it would be to stop
+ * publishing design history. The rule this file enforces is one audience per
+ * sidebar, and the size cap is a proxy for it that does not apply where the
+ * list is an index.
  */
-const CATALOGUE = new Set(["/registries/"]);
+const CATALOGUE = new Set(["/registries/", "/rfc/"]);
 const HOME_CARDS = 3;
 /** A page with this many links into one directory is an index of it. */
 const INDEX_THRESHOLD = 10;

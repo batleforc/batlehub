@@ -3,6 +3,8 @@
 | Field       | Value                                                        |
 | ----------- | ------------------------------------------------------------ |
 | Status      | **Implemented** — all nine phases landed; see the implementation notes in §13 and §14 |
+| Short       | UI rework |
+| Settles     | The design system the console and this site both wear |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                       |
 | Co-author   | Claude Opus 5 (1M context) <noreply@anthropic.com>            |
 | Created     | 2026-08-11                                                    |

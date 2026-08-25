@@ -187,6 +187,11 @@ tasks:
       - task: docs:listing-coverage:check
       - task: docs:readme-coverage:check
       - task: docs:endpoints:check
+      # The /rfc/ table and sidebar, generated from the documents themselves —
+      # see .tasks/rfc.yaml. Ahead of docs:links because a new RFC missing from
+      # the sidebar reads as an orphan there, and "run task rfc:index" is a more
+      # useful sentence than "this page is in no sidebar".
+      - task: rfc:index:check
       - task: docs:links
       - task: docs:structure
       - task: docs:audience

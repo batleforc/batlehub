@@ -212,6 +212,26 @@ Two files in the tree are **generated and must not be hand-edited**:
 `ui/src/design/tokens.css`) and `docs/guide/roadmap.md` (`task docs:roadmap`,
 from `ROADMAP.md`). Both have a drift check that fails the build.
 
+### RFCs (`docs/rfc/`)
+
+Every fact a listing quotes about an RFC lives in that RFC's own header table —
+`Status`, the `Short` name it is listed under, and the one line it `Settles`.
+The status banner on the page, the **table between the `rfc-index` markers in
+`docs/rfc/index.md`**, and the **`/rfc/` sidebar between the `rfc-sidebar`
+markers in `docs/.vitepress/config.ts`** are all generated from those rows; edit
+the RFC, not the listings.
+
+```bash
+task rfc:new TITLE="…" SETTLES="…" [SHORT=…] [SLUG=…] [BIS=NNNN]  # next free number, from the template
+task rfc:index         # regenerate the /rfc/ table and sidebar
+task rfc:index:check   # drift gate, part of task docs:design
+task rfc:status        # status, open-question count and readiness per RFC
+```
+
+Implementation: `docs/build/rfc.mjs`, parsing in `docs/build/rfc-meta.mjs`
+(imported by `docs/.vitepress/config.ts`, so the status vocabulary is defined
+once). The template is `docs/internal/0000-rfc-template.md` and is not published.
+
 - **Roadmap** (ROADMAP.md at the repo root) — canonical; the published page is generated from it.
 - **Code comments** - doc directly in the codebase, especially for complex logic like the request lifecycle, hot reload, and registry client implementations. Use `///` for public items and `//` for internal comments.
 

@@ -1,12 +1,21 @@
 <!--
 HOW TO USE THIS TEMPLATE
 
-  cp docs/future-feature/0000-template.md docs/future-feature/NNNN-short-slug.md
+  task rfc:new TITLE="Artifact retention policies" SETTLES="How long a cached artifact is kept, and who decides"
+
+That copies this file to docs/rfc/NNNN-<slug>.md, fills in the number, the
+author, today's date and the header rows below, and regenerates the /rfc/ index
+and sidebar. A bis of an existing RFC: add BIS=0004. To do it by hand instead,
+copy this file to docs/rfc/NNNN-short-slug.md and run `task rfc:index` after.
 
 - NNNN is the next free number, zero-padded to 4. Numbers are never reused, even
   if an RFC is rejected or withdrawn.
 - The slug is kebab-case and describes the change, not the solution:
   `0002-artifact-retention-policies`, not `0002-add-a-cron-job`.
+- `Status`, `Short` and `Settles` are read back out of the header table by
+  `docs/build/rfc-meta.mjs`: the status banner on the published page, the table
+  on /rfc/ and the /rfc/ sidebar are all generated from them. Edit them here and
+  run `task rfc:index`; never edit those three surfaces directly.
 - Delete every HTML comment (including this one) as you fill the file in. What is
   left should read as a document, not as a filled-in form.
 - Sections that genuinely do not apply are deleted, not left with "N/A". Keep the
@@ -29,6 +38,8 @@ STATUS VOCABULARY
 | Field       | Value                                                        |
 | ----------- | ------------------------------------------------------------ |
 | Status      | Draft                                                         |
+| Short       | <How this is listed: a few words, no number>                  |
+| Settles     | <One line: what this settles, for the /rfc/ table>            |
 | Author      | Name <email>                                                  |
 | Co-author   | —                                                             |
 | Created     | YYYY-MM-DD                                                    |

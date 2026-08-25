@@ -3,6 +3,8 @@
 | Field       | Value                                                        |
 | ----------- | ------------------------------------------------------------ |
 | Status      | Draft — ready to schedule. The RFC 0009 dependency is discharged: the Go checksum database is proxied and cached (0009 §7.4, §13.12) and Terraform's checksum files are served locally (0009 §12.8), so the two ecosystems that reached upstream at their last step no longer do. §11's one blocking open question is measured and closed (mise 2026.8.6, 2026-08-17) |
+| Short       | mise in an air-gapped estate |
+| Settles     | Making `mise install` work with no route off the site: `mise.lock` as the bill of materials, a server that will not dial out, and verification moved to the connected side |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                       |
 | Co-author   | —                                                             |
 | Created     | 2026-08-15                                                    |

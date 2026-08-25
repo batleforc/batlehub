@@ -2,7 +2,9 @@
 
 | Field       | Value                                                        |
 | ----------- | ------------------------------------------------------------ |
-| Status      | In review                                                     |
+| Status      | **Implemented** — all five phases landed. Phase 5 delivered fifteen verdicts and executed all fifteen; the three it only partly discharged were finished by RFC 0004-bis, which records them in its §2.5 |
+| Short       | Admin composition |
+| Settles     | The API the console was missing |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                       |
 | Co-author   | Claude Opus 5 (1M context) <noreply@anthropic.com>            |
 | Created     | 2026-08-12                                                    |

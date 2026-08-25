@@ -3,6 +3,8 @@
 | Field       | Value                                                                 |
 | ----------- | --------------------------------------------------------------------- |
 | Status      | **Implemented** — all eight phases landed; see the implementation notes in §13 |
+| Short       | A block every ecosystem can see |
+| Settles     | Hiding blocked versions from every registry's listings, not just npm's, and stating which protocols cannot be filtered |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                                |
 | Co-author   | —                                                                      |
 | Created     | 2026-08-15                                                             |

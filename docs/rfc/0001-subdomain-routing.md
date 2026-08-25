@@ -3,6 +3,8 @@
 | Field       | Value                                                        |
 | ----------- | ------------------------------------------------------------ |
 | Status      | **Implemented** — all phases landed; see the implementation notes in §13 |
+| Short       | Subdomain routing |
+| Settles     | Reaching a registry by host name instead of by path |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                       |
 | Co-author   | Claude Opus 5 (1M context) <noreply@anthropic.com>            |
 | Created     | 2026-07-29                                                    |

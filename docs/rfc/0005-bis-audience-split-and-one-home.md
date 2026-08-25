@@ -2,7 +2,9 @@
 
 | Field       | Value                                                                 |
 | ----------- | --------------------------------------------------------------------- |
-| Status      | Draft                                                                  |
+| Status      | **Implemented** — all ten phases landed; see the implementation notes in §13, including phase 7's snippet check, which lives in `ui/` rather than `docs/build/` for the reason recorded there |
+| Short       | Two readers, one home each |
+| Settles     | Splitting the guide by audience, giving every instruction one home, cutting each page down to one subject, and turning the showcase back into an introduction |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                                |
 | Co-author   | —                                                                      |
 | Created     | 2026-08-14                                                             |

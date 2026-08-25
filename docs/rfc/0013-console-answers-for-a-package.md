@@ -3,6 +3,8 @@
 | Field      | Value                                                                                          |
 | ---------- | ---------------------------------------------------------------------------------------------- |
 | Status     | **Implemented** — all thirteen phases landed; §12 records what each one changed, and §11 O1 records the one decision this RFC reversed against its own first draft |
+| Short      | What the console owes a reader |
+| Settles    | Eleven things the package pages knew and could not act on — a search that survives a click, a version that is a link, a README you can read as source, the hosts an image may come from, and two lists that page on the operator's numbers rather than on a literal |
 | Author     | batleforc                                                                                       |
 | Co-author  | —                                                                                               |
 | Created    | 2026-08-18                                                                                      |
