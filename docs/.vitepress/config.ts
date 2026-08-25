@@ -503,6 +503,10 @@ const config = withMermaid(defineConfig({
               text: "0013 — What the console owes a reader",
               link: "/rfc/0013-console-answers-for-a-package",
             },
+            {
+              text: "0014 — Upstream disappearance",
+              link: "/rfc/0014-upstream-disappearance",
+            },
             // END rfc-sidebar
           ],
         },
