@@ -6142,11 +6142,14 @@
               }
             }
           },
+          "401": {
+            "description": "Unauthenticated"
+          },
           "403": {
-            "description": "Not an owner of this crate"
+            "description": "Not an owner of this crate, or the crate has no owners"
           },
           "404": {
-            "description": "Unknown registry, or ownership not enabled"
+            "description": "Unknown registry, not a local registry, or ownership not enabled"
           }
         },
         "security": [
@@ -6202,11 +6205,14 @@
               }
             }
           },
+          "401": {
+            "description": "Unauthenticated"
+          },
           "403": {
-            "description": "Not an owner of this crate"
+            "description": "Not an owner of this crate, or the crate has no owners"
           },
           "404": {
-            "description": "Unknown registry, or ownership not enabled"
+            "description": "Unknown registry, not a local registry, or ownership not enabled"
           },
           "409": {
             "description": "Removing this owner would leave the crate unowned"

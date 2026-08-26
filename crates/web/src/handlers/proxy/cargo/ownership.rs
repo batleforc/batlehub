@@ -1,7 +1,8 @@
 use super::{
-    delete, get, put, require_cargo, web, AppError, Arc, AuthIdentity, HttpResponse,
-    LocalRegistryService, RegistryMap, Responder,
+    delete, get, put, require_cargo, require_local_mode, web, AppError, Arc, AuthIdentity,
+    HttpResponse, LocalRegistryService, RegistryMap, RegistryModeMap, Responder,
 };
+use batlehub_core::entities::{Identity, Role};
 
 /// `cargo owner --list`'s response, in the shape crates.io defines.
 #[derive(serde::Serialize, utoipa::ToSchema)]
@@ -105,22 +106,63 @@ pub struct CargoOwnersChanged {
 
 /// Whether `identity` may change this crate's owners.
 ///
-/// Ownership changes are governed by ownership itself: an existing owner may
-/// grant and revoke. `can_publish` is the same predicate publishing uses, and
-/// deliberately returns `true` for a package with no owners yet — a crate
-/// nobody owns is one anybody with `User` may claim, which is how first publish
-/// works and must not be a back door for taking over an owned one.
-async fn require_owner(
+/// This is deliberately **not** `can_publish`. The two answer different
+/// questions, and only one of them is safe here:
+///
+/// - *May I publish `foo`?* — yes for an unowned crate. That is how first
+///   publish claims a name, and `can_publish` returns `true` accordingly.
+/// - *May I edit `foo`'s owner list?* — **no** for an unowned crate. There is
+///   nothing to edit, and treating "unowned" as "claimable through this route"
+///   made the claim itself free: nothing upstream of here rejects an
+///   unauthenticated request (`AuthMiddleware` inserts `Identity::anonymous()`
+///   rather than failing, and `AuthIdentity` falls back the same way), so an
+///   anonymous caller could name an arbitrary principal as owner of any crate
+///   nobody owned yet — including one never published. The victim's own first
+///   publish then made the planted principal a co-owner.
+///
+/// So ownership is created in exactly one place: `register_initial_owner`, on a
+/// package's first publish, from the authenticated publisher's identity. This
+/// route only ever *edits* an owner list that already exists. A crate published
+/// anonymously, or before ownership existed, has no owners and stays that way
+/// until an admin sets one through `/api/v1/admin/.../owners` — that path is
+/// `require_admin`-gated and is the intended recovery route.
+async fn require_owner_mutation(
     local_svc: &LocalRegistryService,
     registry: &str,
     name: &str,
-    identity: &batlehub_core::entities::Identity,
+    identity: &Identity,
 ) -> Result<(), AppError> {
     let Some(ref ownership) = local_svc.ownership else {
         return Err(AppError::not_found(
             "ownership management is not enabled for this registry".to_owned(),
         ));
     };
+
+    // An authenticated principal, always. Mirrors `enforce_publish_policy`,
+    // which requires `User` before it consults ownership at all. `user_id` is
+    // checked too: it is what `granted_by` records and what `can_publish`
+    // matches on, so an identity without one cannot meaningfully own anything.
+    if !identity.has_role_at_least(&Role::User) || identity.user_id.is_none() {
+        return Err(AppError::unauthorized(
+            "changing crate owners requires an authenticated user".to_owned(),
+        ));
+    }
+
+    let owners = ownership
+        .list_owners(registry, name)
+        .await
+        .map_err(AppError::from)?;
+
+    // Unowned: not claimable here, by anyone. See the doc comment above.
+    if owners.is_empty() {
+        return Err(AppError::forbidden(format!(
+            "'{name}' has no owners; ownership is established by publishing, \
+             not by claiming"
+        )));
+    }
+
+    // Owned: `can_publish` now reduces to "is an owner, directly or through a
+    // group", which is exactly the question being asked.
     if ownership
         .can_publish(registry, name, identity)
         .await
@@ -145,8 +187,9 @@ async fn require_owner(
     request_body = CargoOwnersRequest,
     responses(
         (status = 200, description = "Owners added", body = CargoOwnersChanged),
-        (status = 403, description = "Not an owner of this crate"),
-        (status = 404, description = "Unknown registry, or ownership not enabled"),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Not an owner of this crate, or the crate has no owners"),
+        (status = 404, description = "Unknown registry, not a local registry, or ownership not enabled"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -156,11 +199,15 @@ pub async fn cargo_add_owners(
     body: web::Json<CargoOwnersRequest>,
     identity: AuthIdentity,
     map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, name) = path.into_inner();
     require_cargo(&registry, &map)?;
-    require_owner(&local_svc, &registry, &name, &identity.0).await?;
+    // Ownership is a local-registry concept; a proxy-mode registry has none to
+    // change, and answering here would imply otherwise.
+    require_local_mode(&registry, &mode_map)?;
+    require_owner_mutation(&local_svc, &registry, &name, &identity.0).await?;
 
     let ownership = local_svc.ownership.as_ref().expect("checked above");
     let mut added = Vec::new();
@@ -205,8 +252,9 @@ pub async fn cargo_add_owners(
     request_body = CargoOwnersRequest,
     responses(
         (status = 200, description = "Owners removed", body = CargoOwnersChanged),
-        (status = 403, description = "Not an owner of this crate"),
-        (status = 404, description = "Unknown registry, or ownership not enabled"),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Not an owner of this crate, or the crate has no owners"),
+        (status = 404, description = "Unknown registry, not a local registry, or ownership not enabled"),
         (status = 409, description = "Removing this owner would leave the crate unowned"),
     ),
     security(("bearer_token" = [])),
@@ -217,17 +265,20 @@ pub async fn cargo_remove_owners(
     body: web::Json<CargoOwnersRequest>,
     identity: AuthIdentity,
     map: web::Data<RegistryMap>,
+    mode_map: web::Data<RegistryModeMap>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
 ) -> Result<impl Responder, AppError> {
     let (registry, name) = path.into_inner();
     require_cargo(&registry, &map)?;
-    require_owner(&local_svc, &registry, &name, &identity.0).await?;
+    require_local_mode(&registry, &mode_map)?;
+    require_owner_mutation(&local_svc, &registry, &name, &identity.0).await?;
 
     let ownership = local_svc.ownership.as_ref().expect("checked above");
 
-    // A crate with no owners is a crate anyone may publish to (see
-    // `require_owner`), so removing the last one is a privilege *escalation*
-    // dressed as a removal. Refused rather than allowed and warned about.
+    // A crate with no owners is a crate anyone may publish to, so removing the
+    // last one is a privilege *escalation* dressed as a removal. Refused rather
+    // than allowed and warned about. (`require_owner_mutation` guarantees the
+    // list was non-empty on entry, so this can only trip on a full removal.)
     let current = ownership
         .list_owners(&registry, &name)
         .await

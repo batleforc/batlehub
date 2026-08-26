@@ -1774,6 +1774,47 @@ pub async fn make_local_registry_app_with_sbom(
 
     build_local_registry_app(parts, cargo_indexes, sbom_svc).await
 }
+/// [`make_local_registry_app`] for cargo, with an ownership store wired in, and
+/// the store handed back so a test can seed and inspect it.
+///
+/// A separate entry point because the shared factory leaves `ownership: None`,
+/// and that is not a neutral default here: with the port absent, the
+/// `cargo owner --add`/`--remove` routes return `404` before reaching any
+/// authorization at all. Every ownership test written against the shared
+/// factory would therefore have passed without exercising a single check —
+/// which is exactly how the unauthenticated-claim bug survived to be found by
+/// review rather than by CI.
+pub async fn make_local_cargo_ownership_app(
+    mode: RegistryMode,
+) -> (
+    impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+    Arc<batlehub_adapters::in_memory::InMemoryOwnershipStore>,
+) {
+    let mut parts = local_registry_app_parts("local-cargo", "cargo", mode, None);
+    let ownership = batlehub_adapters::in_memory::InMemoryOwnershipStore::new();
+
+    let cur = parts.local_svc.clone();
+    parts.local_svc = Arc::new(LocalRegistryService {
+        backend: cur.backend.clone(),
+        storage: cur.storage.clone(),
+        hot: cur.hot.clone(),
+        quota: cur.quota.clone(),
+        ownership: Some(ownership.clone() as Arc<dyn batlehub_core::ports::OwnershipPort>),
+        team_namespace: cur.team_namespace.clone(),
+        sbom: cur.sbom.clone(),
+        explore_cache: cur.explore_cache.clone(),
+        package_repo: cur.package_repo.clone(),
+        readme: cur.readme.clone(),
+    });
+
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    (app, ownership)
+}
+
 pub async fn make_local_composer_app(
     mode: RegistryMode,
 ) -> impl actix_web::dev::Service<
