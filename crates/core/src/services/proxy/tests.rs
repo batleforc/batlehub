@@ -2293,7 +2293,13 @@ mod search_rungs {
     async fn an_unreachable_upstream_answers_from_held_packages() {
         let svc = svc_with_unreachable_upstream();
         let results = svc
-            .search("r1", "held", 20, SearchMode::Proxy, Vec::new())
+            .search(
+                "r1",
+                "held",
+                20,
+                SearchMode::Proxy,
+                crate::services::search::LocalSearch::empty(),
+            )
             .await
             .expect("search must not fail when the upstream is unreachable");
 
@@ -2314,15 +2320,19 @@ mod search_rungs {
     /// What a local registry has published. In production this comes from
     /// `LocalRegistryBackend` via the handler, not from `PackageRepository` —
     /// the two are different stores (see `ProxyService::search`).
-    fn held_hits() -> Vec<crate::services::SearchHit> {
-        ["held-alpha", "other-beta"]
+    fn held_hits() -> crate::services::search::LocalSearch {
+        let hits: Vec<crate::services::SearchHit> = ["held-alpha", "other-beta"]
             .iter()
             .map(|n| crate::services::SearchHit {
                 name: (*n).to_owned(),
                 version: "1.0.0".to_owned(),
                 description: None,
             })
-            .collect()
+            .collect();
+        crate::services::search::LocalSearch {
+            all_names: hits.iter().map(|h| h.name.clone()).collect(),
+            hits,
+        }
     }
 
     /// Local mode has no upstream and nothing proxied through, so published
@@ -2345,7 +2355,13 @@ mod search_rungs {
     async fn a_query_matching_nothing_is_an_empty_answer_not_a_failure() {
         let svc = svc_with_unreachable_upstream();
         let results = svc
-            .search("r1", "no-such-package", 20, SearchMode::Proxy, Vec::new())
+            .search(
+                "r1",
+                "no-such-package",
+                20,
+                SearchMode::Proxy,
+                crate::services::search::LocalSearch::empty(),
+            )
             .await
             .expect("still not an error");
         assert!(results.hits.is_empty());

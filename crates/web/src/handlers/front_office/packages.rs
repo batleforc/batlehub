@@ -73,16 +73,33 @@ pub async fn list_packages(
 ) -> Result<impl Responder, AppError> {
     let accessible = access.read().await.accessible_registries_for(&identity);
 
-    // If the caller requested a specific registry they can't access, return empty.
-    if let Some(ref reg) = query.registry {
-        if !accessible.contains(reg) {
-            return Ok(web::Json(PackageListResponse {
-                items: vec![],
-                total: 0,
-                page: query.page,
-                per_page: query.per_page,
-            }));
-        }
+    // An empty accessible set is **nothing**, not "no restriction".
+    //
+    // `PackageFilter::registries` is a scope, and every implementation of it
+    // reads an empty vector as unfiltered: `prepare_registries_param` binds
+    // `NULL` and the SQL is `$7::text[] IS NULL OR ps.registry = ANY($7)`
+    // (`db/packages/crud.rs`), the in-memory repository is
+    // `filter.registries.is_empty() || contains(…)`. That overload is load-
+    // bearing — the branch below deliberately passes `vec![]` to mean "no list
+    // restriction" once `query.registry` has been checked — so a caller who can
+    // reach *no* registry produced the same empty vector and was handed the
+    // entire catalogue by the endpoint whose whole job is to scope it.
+    //
+    // Refused here, before the scope is built, rather than by teaching four
+    // repositories to tell "all" from "none" apart. Mirrors the identical guard
+    // in `explore/list.rs`, which is the same trap on the sibling endpoint.
+    let denied_everywhere = accessible.is_empty();
+    let named_registry_denied = query
+        .registry
+        .as_ref()
+        .is_some_and(|reg| !accessible.contains(reg));
+    if denied_everywhere || named_registry_denied {
+        return Ok(web::Json(PackageListResponse {
+            items: vec![],
+            total: 0,
+            page: query.page,
+            per_page: query.per_page,
+        }));
     }
 
     // When no specific registry is requested, restrict to accessible registries at the DB level

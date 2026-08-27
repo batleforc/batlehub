@@ -1,8 +1,8 @@
 use super::{
     collect_payload, delete, extract_signature_headers, post, require_local_mode,
-    require_registry_type, terraform_set_yanked, web, AppError, Arc, AuthIdentity, Digest,
-    HttpRequest, LocalRegistryService, NotificationService, PublishRequest, RegistryMap,
-    RegistryModeMap, Responder, Sha256, TerraformYankRequest,
+    require_registry_type, terraform_set_yanked, web, AppError, Arc, ArtifactSignature,
+    AuthIdentity, Digest, HttpRequest, LocalRegistryService, NotificationService, PublishRequest,
+    RegistryMap, RegistryModeMap, Responder, Sha256, TerraformYankRequest,
 };
 use crate::handlers::schemas::MessageResponse;
 
@@ -24,6 +24,7 @@ use crate::handlers::schemas::MessageResponse;
     ),
     responses(
         (status = 201, description = "Module uploaded", body = MessageResponse),
+        (status = 400, description = "Malformed signature headers"),
         (status = 401, description = "Authentication required"),
         (status = 403, description = "Quota exceeded or ownership denied"),
         (status = 404, description = "Registry not found or not in local/hybrid mode"),
@@ -60,7 +61,8 @@ pub async fn terraform_module_upload(
     });
 
     let pkg_name = format!("modules/{namespace}/{name}/{provider}");
-    let (signature_bytes, signature_type) = extract_signature_headers(&req);
+    let (signature_bytes, signature_type) =
+        ArtifactSignature::split(extract_signature_headers(&req)?);
 
     super::super::super::common::publish_and_respond(
         &local_svc,

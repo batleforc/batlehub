@@ -33,7 +33,7 @@ impl LocalRegistryService {
         version: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
-        self.check_visibility(registry, module, identity).await?;
+        self.check_read_access(registry, module, identity).await?;
         self.check_prerelease_access(registry, version, identity)
             .await?;
         let pkg = self
@@ -69,7 +69,7 @@ impl LocalRegistryService {
         version: &str,
         identity: &Identity,
     ) -> Result<String, CoreError> {
-        self.check_visibility(registry, module, identity).await?;
+        self.check_read_access(registry, module, identity).await?;
         self.check_prerelease_access(registry, version, identity)
             .await?;
         let pkg = self

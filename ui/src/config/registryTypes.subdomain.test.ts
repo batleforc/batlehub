@@ -35,6 +35,7 @@ function contextFor(registryName: string): SnippetContext {
     identity: null,
     // The composite `mise` tab renders rules for three registries at once.
     selectedNames: { github: "gh1", npm: "npm1", cargo: "cargo1" },
+    signedDownloads: false,
   };
 }
 

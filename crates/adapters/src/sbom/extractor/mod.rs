@@ -2,6 +2,7 @@ use bytes::Bytes;
 
 use batlehub_core::ports::ExtractedManifest;
 
+mod anchor;
 mod cargo;
 mod composer;
 mod conda;

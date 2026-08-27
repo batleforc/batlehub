@@ -285,13 +285,14 @@ async fn composer_security_advisories_forwards_to_upstream_and_returns_response(
         Arc::new(rbac_policy(repo_dyn.clone())),
     )]
     .into();
-    let local_svc = make_local_svc(storage.clone());
+    let hot = new_hot_lock(HotConfig {
+        registries,
+        policies,
+        ..Default::default()
+    });
+    let local_svc = make_local_svc(hot.clone(), storage.clone());
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
+        hot: hot.clone(),
         storage,
         cache,
         repo: repo_dyn.clone(),

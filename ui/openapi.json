@@ -5077,6 +5077,9 @@
               }
             }
           },
+          "403": {
+            "description": "Access denied by the registry's rule chain"
+          },
           "404": {
             "description": "Unknown or non-npm registry"
           }
@@ -5984,6 +5987,9 @@
               }
             }
           },
+          "403": {
+            "description": "Access denied by the registry's rule chain"
+          },
           "404": {
             "description": "Unknown or non-cargo registry"
           }
@@ -6142,11 +6148,14 @@
               }
             }
           },
+          "401": {
+            "description": "Unauthenticated"
+          },
           "403": {
-            "description": "Not an owner of this crate"
+            "description": "Not an owner of this crate, or the crate has no owners"
           },
           "404": {
-            "description": "Unknown registry, or ownership not enabled"
+            "description": "Unknown registry, not a local registry, or ownership not enabled"
           }
         },
         "security": [
@@ -6202,11 +6211,14 @@
               }
             }
           },
+          "401": {
+            "description": "Unauthenticated"
+          },
           "403": {
-            "description": "Not an owner of this crate"
+            "description": "Not an owner of this crate, or the crate has no owners"
           },
           "404": {
-            "description": "Unknown registry, or ownership not enabled"
+            "description": "Unknown registry, not a local registry, or ownership not enabled"
           },
           "409": {
             "description": "Removing this owner would leave the crate unowned"
@@ -6364,6 +6376,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Malformed signature headers"
           },
           "403": {
             "description": "Access denied or quota exceeded"
@@ -7862,6 +7877,9 @@
               }
             }
           },
+          "400": {
+            "description": "Malformed multipart, or an unacceptable distribution filename"
+          },
           "403": {
             "description": "Access denied or quota exceeded"
           },
@@ -7917,6 +7935,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Access denied by the registry's rule chain"
           },
           "404": {
             "description": "Unknown or non-composer registry"
@@ -8320,6 +8341,9 @@
               }
             }
           },
+          "403": {
+            "description": "Access denied by the registry's rule chain"
+          },
           "404": {
             "description": "Unknown or non-nuget registry"
           }
@@ -8558,6 +8582,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Access denied by the registry's rule chain"
           }
         },
         "security": [
@@ -8799,6 +8826,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Access denied by the registry's rule chain"
           },
           "404": {
             "description": "Unknown registry"
@@ -9527,6 +9557,9 @@
               }
             }
           },
+          "403": {
+            "description": "Access denied by the registry's rule chain"
+          },
           "404": {
             "description": "Unknown or non-composer registry"
           }
@@ -10239,6 +10272,9 @@
               }
             }
           },
+          "400": {
+            "description": "Malformed signature headers"
+          },
           "401": {
             "description": "Authentication required"
           },
@@ -10518,6 +10554,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Malformed signature headers"
           },
           "401": {
             "description": "Authentication required"
@@ -10845,6 +10884,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Malformed signature headers"
           },
           "401": {
             "description": "Authentication required"
@@ -12888,6 +12930,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Malformed payload or signature headers"
           },
           "403": {
             "description": "Access denied or quota exceeded"
@@ -16842,7 +16887,8 @@
         "required": [
           "name",
           "type",
-          "mode"
+          "mode",
+          "signed_downloads"
         ],
         "properties": {
           "mode": {
@@ -16857,6 +16903,10 @@
               "null"
             ],
             "description": "The registry's own hostname-rooted URL (`https://npm.acme.io`) when one is\nconfigured, otherwise `null` — clients then fall back to\n`{origin}/proxy/{name}`.\n\nShown to anonymous callers too. The endpoint already filters by\n`accessible_registries_for`, so a caller only ever sees registries they\ncan already reach; withholding the host from them would break the Setup\nGuide while hiding a name that is in public DNS anyway."
+          },
+          "signed_downloads": {
+            "type": "boolean",
+            "description": "Whether this registry mints signed download URLs (RFC 0012), and can\ntherefore be closed to anonymous callers even though the client fetches\nartifacts without credentials.\n\nHere so the Setup Guide can stop telling a Terraform user to open their\nregistry when it does not need opening. Not a secret: it changes the\nadvice on a page the caller can already read, and a caller who can list\na registry can discover the same fact by fetching from it."
           },
           "type": {
             "type": "string"

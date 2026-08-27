@@ -1,9 +1,9 @@
 use super::helpers::{metadata_to_index_entry, parse_publish_body};
 use super::{
     collect_payload, delete, extract_signature_headers, put, require_cargo, require_local_mode,
-    web, AppError, Arc, AuthIdentity, Digest, HttpResponse, LocalRegistryService,
-    NotificationEventType, NotificationService, PublishRequest, RegistryMap, RegistryModeMap,
-    Responder, Sha256,
+    web, AppError, Arc, ArtifactSignature, AuthIdentity, Digest, HttpResponse,
+    LocalRegistryService, NotificationEventType, NotificationService, PublishRequest, RegistryMap,
+    RegistryModeMap, Responder, Sha256,
 };
 use batlehub_core::services::readme::detect;
 
@@ -90,7 +90,8 @@ pub async fn cargo_publish(
     let index_metadata =
         serde_json::to_value(&entry).map_err(|e| AppError::bad_request(e.to_string()))?;
 
-    let (signature_bytes, signature_type) = extract_signature_headers(&req);
+    let (signature_bytes, signature_type) =
+        ArtifactSignature::split(extract_signature_headers(&req)?);
     let actor = identity.0.user_id.clone().unwrap_or_default();
 
     let quota = local_svc

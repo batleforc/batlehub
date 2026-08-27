@@ -35,6 +35,15 @@ pub struct RegistryInfo {
     /// anyway, in the artifacts it returns.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upstream: Option<String>,
+    /// Whether this registry mints signed download URLs (RFC 0012), and can
+    /// therefore be closed to anonymous callers even though the client fetches
+    /// artifacts without credentials.
+    ///
+    /// Here so the Setup Guide can stop telling a Terraform user to open their
+    /// registry when it does not need opening. Not a secret: it changes the
+    /// advice on a page the caller can already read, and a caller who can list
+    /// a registry can discover the same fact by fetching from it.
+    pub signed_downloads: bool,
 }
 
 /// List configured registries visible to the current user.
@@ -54,9 +63,17 @@ pub async fn list_registries(
     hosts: Option<web::Data<RegistryHostMap>>,
     upstreams: Option<web::Data<crate::UpstreamMap>>,
     access: web::Data<crate::AccessConfigLock>,
+    svc: Option<web::Data<std::sync::Arc<batlehub_core::services::ProxyService>>>,
     identity: AuthIdentity,
 ) -> impl Responder {
     let accessible = access.read().await.accessible_registries_for(&identity);
+    // Read from the hot config rather than a parallel map, so a reload that
+    // turns signing on cannot leave this endpoint answering with the old value.
+    // Snapshotted under one short read lock; the list is built after it drops.
+    let signed: std::collections::HashMap<String, bool> = match svc.as_ref() {
+        Some(svc) => svc.hot.read().await.signed_downloads.clone(),
+        None => std::collections::HashMap::new(),
+    };
     let mut registries: Vec<RegistryInfo> = map
         .entries()
         .into_iter()
@@ -65,6 +82,7 @@ pub async fn list_registries(
             mode: modes.get(&name).as_str().to_owned(),
             public_url: hosts.as_ref().and_then(|h| h.public_url_for(&name)),
             upstream: upstreams.as_ref().and_then(|u| u.upstream_for(&name)),
+            signed_downloads: signed.get(&name).copied().unwrap_or(false),
             name,
             registry_type,
         })

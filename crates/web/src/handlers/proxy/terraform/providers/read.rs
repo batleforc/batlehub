@@ -1,10 +1,49 @@
 use super::{
-    append_signature_headers, collect_storage_stream, get, proxy_stream, registry_public_base,
-    require_registry_type, terraform_provider_binary_storage_key, terraform_versions_response, web,
-    AppError, Arc, AuthIdentity, HttpRequest, HttpResponse, LocalRegistryService, PackageId,
+    append_signature_headers, get, identity_for_artifact, mark_uncacheable_if_signed, proxy_stream,
+    registry_public_base, require_registry_type, sign_download_document,
+    terraform_provider_binary_storage_key, terraform_versions_response, web, AppError, Arc,
+    AuthIdentity, DownloadCoords, HttpRequest, HttpResponse, LocalRegistryService, PackageId,
     ProxyService, RegistryMap, RegistryMode, RegistryModeMap, Responder, TerraformPlatform,
 };
 use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
+use batlehub_core::services::SignedUrlCoordinate;
+
+/// Resolve the identity for one of the three routes Terraform fetches with no
+/// `Authorization` header (RFC 0012 §6.5): the provider zip, its `SHA256SUMS`,
+/// and the detached signature over that.
+///
+/// All three were measured arriving bare — 9 artifact fetches, 0 authenticated
+/// (§11) — so all three take the same treatment. This runs ahead of everything
+/// else in each handler and replaces exactly one thing: which `Identity` the
+/// rest of it authorises as. Every rule, block, gate, quota and audit entry
+/// downstream is unchanged and still applies (§6.6).
+async fn signed_identity(
+    req: &HttpRequest,
+    svc: &ProxyService,
+    registry: &str,
+    auth_name: &str,
+    version: &str,
+    artifact: &str,
+    identity: AuthIdentity,
+) -> Result<AuthIdentity, AppError> {
+    identity_for_artifact(
+        svc,
+        req,
+        SignedUrlCoordinate {
+            // From the request rather than a literal `"GET"`, so the method
+            // binding in §6.2 stays true if one of these paths ever gains a
+            // second verb.
+            method: req.method().as_str(),
+            registry,
+            package: auth_name,
+            version,
+            artifact,
+        },
+        identity,
+    )
+    .await
+    .map(AuthIdentity)
+}
 
 /// List available versions for a Terraform provider.
 #[utoipa::path(
@@ -90,7 +129,7 @@ pub async fn terraform_provider_download(
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
         let base_url = registry_public_base(&req, &registry);
         if let Some(resp) = try_local_provider_download(
-            &local_svc, &registry, &name, &version, &os, &arch, &base_url, &identity, mode,
+            &local_svc, &svc, &registry, &name, &version, &os, &arch, &base_url, &identity, mode,
         )
         .await?
         {
@@ -140,6 +179,9 @@ pub async fn terraform_provider_download(
     }
 
     let download_name = format!("{name}/{version}/download/{os}/{arch}");
+    // Kept for minting: `download_ctx` consumes the identity, and a signed URL
+    // has to carry the one the rule chain just approved.
+    let caller = identity.0.clone();
     let download_ctx = batlehub_core::services::ProxyRequest {
         package_id: PackageId::new(&registry, &download_name, &version),
         identity: identity.0,
@@ -192,19 +234,44 @@ pub async fn terraform_provider_download(
         );
     }
 
-    Ok(HttpResponse::Ok()
-        .content_type("application/json")
-        .body(match doc.body {
-            batlehub_core::ports::DocumentBody::Json(v) => {
-                serde_json::to_string(&v).unwrap_or_default()
-            }
-            batlehub_core::ports::DocumentBody::Text(t) => t,
-        }))
+    // RFC 0012 §5, the registry-protocol minting site. Legitimate for the same
+    // reason the mirror's is: the listing above ran the rule chain as this
+    // caller and refused a version it does not offer, so the signatures below
+    // record that verdict rather than creating one. Signed *after* the three
+    // fields are repointed at this host, so what is signed is what is served.
+    let mut signed = false;
+    if let Some(json) = doc.body.as_json_mut() {
+        signed = sign_download_document(
+            &svc,
+            json,
+            DownloadCoords {
+                registry: &registry,
+                package: &name,
+                version: &version,
+                os: &os,
+                arch: &arch,
+            },
+            &base,
+            &caller,
+        )
+        .await;
+    }
+
+    let mut resp = HttpResponse::Ok();
+    resp.content_type("application/json");
+    mark_uncacheable_if_signed(&mut resp, signed);
+    Ok(resp.body(match doc.body {
+        batlehub_core::ports::DocumentBody::Json(v) => {
+            serde_json::to_string(&v).unwrap_or_default()
+        }
+        batlehub_core::ports::DocumentBody::Text(t) => t,
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn try_local_provider_download(
     local_svc: &LocalRegistryService,
+    svc: &ProxyService,
     registry: &str,
     name: &str,
     version: &str,
@@ -225,8 +292,27 @@ pub(super) async fn try_local_provider_download(
         )
         .await
     {
-        Ok(json) => {
+        Ok(mut json) => {
+            // Local and hybrid name the same three URLs on this host, so the
+            // client fetches them just as bare. Signed here rather than in the
+            // core service, which has no signer and should not grow one: this
+            // is a transport concern, not a local-registry one.
+            let signed = sign_download_document(
+                svc,
+                &mut json,
+                DownloadCoords {
+                    registry,
+                    package: name,
+                    version,
+                    os,
+                    arch,
+                },
+                base_url,
+                &identity.0,
+            )
+            .await;
             let mut resp = HttpResponse::Ok();
+            mark_uncacheable_if_signed(&mut resp, signed);
             append_signature_headers(&mut resp, local_svc, registry, name, version).await;
             Ok(Some(resp.json(json)))
         }
@@ -264,6 +350,7 @@ pub(super) async fn try_local_provider_download(
 )]
 #[get("/proxy/{registry}/v1/providers/{namespace}/{ptype}/{version}/shasums")]
 pub async fn terraform_provider_shasums(
+    req: HttpRequest,
     path: web::Path<(String, String, String, String)>,
     identity: AuthIdentity,
     svc: web::Data<Arc<ProxyService>>,
@@ -271,12 +358,17 @@ pub async fn terraform_provider_shasums(
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, ptype, version) = path.into_inner();
     require_registry_type(&registry, "terraform", &map)?;
-    let pkg = PackageId::new(
-        &registry,
-        format!("providers/{namespace}/{ptype}"),
-        &version,
+    let auth_name = format!("providers/{namespace}/{ptype}");
+
+    // Terraform fetches this one bare too. Signing only the zip would leave
+    // `terraform init` failing one step later, at the checksum, with an error
+    // that points at checksums rather than at auth (§11, finding 2).
+    let identity = signed_identity(
+        &req, &svc, &registry, &auth_name, &version, "shasums", identity,
     )
-    .with_artifact("shasums");
+    .await?;
+
+    let pkg = PackageId::new(&registry, &auth_name, &version).with_artifact("shasums");
     proxy_stream(
         svc,
         pkg,
@@ -308,6 +400,7 @@ pub async fn terraform_provider_shasums(
 )]
 #[get("/proxy/{registry}/v1/providers/{namespace}/{ptype}/{version}/shasums.sig")]
 pub async fn terraform_provider_shasums_sig(
+    req: HttpRequest,
     path: web::Path<(String, String, String, String)>,
     identity: AuthIdentity,
     svc: web::Data<Arc<ProxyService>>,
@@ -315,12 +408,23 @@ pub async fn terraform_provider_shasums_sig(
 ) -> Result<impl Responder, AppError> {
     let (registry, namespace, ptype, version) = path.into_inner();
     require_registry_type(&registry, "terraform", &map)?;
-    let pkg = PackageId::new(
+    let auth_name = format!("providers/{namespace}/{ptype}");
+
+    // Terraform fetches this one bare too. Signing only the zip would leave
+    // `terraform init` failing one step later, at the checksum, with an error
+    // that points at checksums rather than at auth (§11, finding 2).
+    let identity = signed_identity(
+        &req,
+        &svc,
         &registry,
-        format!("providers/{namespace}/{ptype}"),
+        &auth_name,
         &version,
+        "shasums.sig",
+        identity,
     )
-    .with_artifact("shasums.sig");
+    .await?;
+
+    let pkg = PackageId::new(&registry, &auth_name, &version).with_artifact("shasums.sig");
     proxy_stream(
         svc,
         pkg,
@@ -352,6 +456,7 @@ pub async fn terraform_provider_shasums_sig(
 )]
 #[get("/proxy/{registry}/v1/providers/{namespace}/{ptype}/{version}/artifact/{os}/{arch}")]
 pub async fn terraform_provider_artifact(
+    req: HttpRequest,
     path: web::Path<(String, String, String, String, String, String)>,
     identity: AuthIdentity,
     svc: web::Data<Arc<ProxyService>>,
@@ -375,6 +480,17 @@ pub async fn terraform_provider_artifact(
 
     let auth_name = format!("providers/{namespace}/{ptype}");
 
+    let identity = signed_identity(
+        &req,
+        &svc,
+        &registry,
+        &auth_name,
+        &version,
+        &format!("{os}/{arch}"),
+        identity,
+    )
+    .await?;
+
     // Proxy mode reaches here because `terraform_provider_download` now points
     // `download_url` at this route rather than at upstream's CDN (RFC 0009
     // §7.2). `proxy_stream` runs the rule chain, caches the zip and records the
@@ -392,27 +508,26 @@ pub async fn terraform_provider_artifact(
         .await;
     }
 
-    // Local/hybrid: no proxy fall-through, so enforce the registry rule chain
-    // here — otherwise `[registries.rbac]` is never applied to a provider-binary
-    // read served straight from local storage.
-    svc.authorize_read(
-        &PackageId::new(&registry, &auth_name, &version),
-        &identity.0,
-        batlehub_core::rules::resource_type::RELEASES_READ,
-    )
-    .await
-    .map_err(AppError::from)?;
-
-    local_svc
-        .check_prerelease_access(&registry, &version, &identity)
-        .await
-        .map_err(AppError::from)?;
-
+    // Local/hybrid: no proxy fall-through, so the gate `get_artifact_at_key`
+    // applies is the only one this read ever gets. One archive per platform
+    // means the key is built here, but reading `local_svc.storage` directly —
+    // as this did — skipped `check_visibility` entirely, so a caller refused
+    // both the version list and the download *document* could still fetch the
+    // binary by constructing its URL (survey finding 7).
     let key =
         terraform_provider_binary_storage_key(&registry, &namespace, &ptype, &version, &os, &arch);
-    let artifact = local_svc
-        .storage
-        .retrieve(&key)
+    // The same `{os}/{arch}` artifact the proxy branch above puts in its
+    // `PackageId`, so one provider version's platforms are told apart in the
+    // audit trail identically on both paths. Not a sidecar — this is the archive
+    // Terraform installs.
+    let pkg = PackageId::new(&registry, &auth_name, &version).with_artifact(format!("{os}/{arch}"));
+    let buf = local_svc
+        .get_artifact_at_key(
+            &pkg,
+            &key,
+            batlehub_core::rules::resource_type::RELEASES_READ,
+            &identity,
+        )
         .await
         .map_err(AppError::from)?
         .ok_or_else(|| {
@@ -421,7 +536,6 @@ pub async fn terraform_provider_artifact(
             ))
         })?;
 
-    let buf = collect_storage_stream(artifact.stream).await?;
     Ok(HttpResponse::Ok().content_type("application/zip").body(buf))
 }
 

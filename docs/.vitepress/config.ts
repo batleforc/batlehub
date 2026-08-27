@@ -507,6 +507,14 @@ const config = withMermaid(defineConfig({
               text: "0014 — Upstream disappearance",
               link: "/rfc/0014-upstream-disappearance",
             },
+            {
+              text: "0015 — Grants on the hierarchy",
+              link: "/rfc/0015-grants-on-the-resource-hierarchy",
+            },
+            {
+              text: "0016 — Retention and tombstones",
+              link: "/rfc/0016-retention-and-the-permanence-of-a-published-name",
+            },
             // END rfc-sidebar
           ],
         },

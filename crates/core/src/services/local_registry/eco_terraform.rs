@@ -78,7 +78,10 @@ impl LocalRegistryService {
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
         let TerraformPlatform { os, arch } = platform;
-        self.check_visibility(registry, name, identity).await?;
+        // Terraform is local-only — there is no proxy fall-through behind this
+        // document to run the registry's rule chain later, so this read is the
+        // only place it can run at all (survey finding 8).
+        self.check_read_access(registry, name, identity).await?;
         self.check_prerelease_access(registry, version, identity)
             .await?;
         let versions = self.backend.get_versions(registry, name).await?;

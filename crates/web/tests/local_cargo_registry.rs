@@ -10,6 +10,8 @@ use serde_json::Value;
 
 use batlehub_adapters::in_memory::InMemoryPackageRepository as InMemoryRepo;
 use batlehub_config::schema::RegistryMode;
+// `list_owners` is a trait method; the ownership tests below read the store back.
+use batlehub_core::ports::OwnershipPort;
 
 // ── config.json ───────────────────────────────────────────────────────────────
 
@@ -457,4 +459,167 @@ async fn hybrid_cargo_download_prefers_local_artifact() {
     assert_eq!(resp.status(), 200);
     let body = read_body(resp).await;
     assert_eq!(body.as_ref(), b"fake-crate-content");
+}
+
+// ── Ownership management (`cargo owner --add` / `--remove`) ───────────────────
+//
+// These routes gate on ownership itself, which made the unowned case subtle:
+// `can_publish` returns `true` for a crate nobody owns, because that is how a
+// first publish claims a name. Reusing it here meant "nobody owns this" was
+// read as "anybody may take it" — and since nothing upstream rejects an
+// unauthenticated request, "anybody" included callers with no credentials.
+//
+// The rule these tests pin: ownership is created *only* by first publish.
+// This route edits an existing owner list and never establishes one.
+
+#[actix_web::test]
+async fn cargo_add_owners_unauthenticated_is_refused() {
+    let (app, ownership) = make_local_cargo_ownership_app(RegistryMode::Local).await;
+
+    // No Authorization header, and a crate nobody owns.
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/acme-internal-auth/owners")
+        .set_json(serde_json::json!({ "users": ["mallory"] }))
+        .to_request();
+    let resp = call_service(&app, req).await;
+
+    assert_eq!(
+        resp.status(),
+        401,
+        "an anonymous caller must not be able to claim an unowned crate"
+    );
+    assert!(
+        ownership
+            .list_owners("local-cargo", "acme-internal-auth")
+            .await
+            .unwrap()
+            .is_empty(),
+        "no owner row may be created by a refused request"
+    );
+}
+
+#[actix_web::test]
+async fn cargo_add_owners_on_unowned_crate_is_refused_even_when_authenticated() {
+    let (app, ownership) = make_local_cargo_ownership_app(RegistryMode::Local).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/never-published/owners")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_json(serde_json::json!({ "users": ["user-1"] }))
+        .to_request();
+    let resp = call_service(&app, req).await;
+
+    assert_eq!(
+        resp.status(),
+        403,
+        "ownership is established by publishing, not by claiming through this route"
+    );
+    assert!(ownership
+        .list_owners("local-cargo", "never-published")
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[actix_web::test]
+async fn cargo_first_publish_registers_the_publisher_as_owner() {
+    let (app, ownership) = make_local_cargo_ownership_app(RegistryMode::Local).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(make_publish_payload("owned-crate", "0.1.0"))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+
+    let owners = ownership
+        .list_owners("local-cargo", "owned-crate")
+        .await
+        .unwrap();
+    assert_eq!(
+        owners.len(),
+        1,
+        "first publish is the one path that creates ownership"
+    );
+    assert_eq!(owners[0].principal_id, "user-1");
+}
+
+#[actix_web::test]
+async fn cargo_add_owners_lets_an_existing_owner_delegate() {
+    let (app, ownership) = make_local_cargo_ownership_app(RegistryMode::Local).await;
+
+    // Publish first: that is what makes user-1 the owner.
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(make_publish_payload("delegated-crate", "0.1.0"))
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/delegated-crate/owners")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_json(serde_json::json!({ "users": ["colleague"] }))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 200, "an owner may still grant to others");
+
+    let owners = ownership
+        .list_owners("local-cargo", "delegated-crate")
+        .await
+        .unwrap();
+    assert!(owners.iter().any(|o| o.principal_id == "colleague"));
+}
+
+#[actix_web::test]
+async fn cargo_add_owners_refuses_a_non_owner_of_an_owned_crate() {
+    let (app, _ownership) = make_local_cargo_ownership_app(RegistryMode::Local).await;
+
+    // user-1 publishes and therefore owns it.
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(make_publish_payload("someone-elses", "0.1.0"))
+        .to_request();
+    call_service(&app, req).await;
+
+    // The admin token is a different principal ("admin"), and ownership is not
+    // role-based: being an admin does not make you an owner on this route.
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/someone-elses/owners")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({ "users": ["mallory"] }))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn cargo_remove_owners_unauthenticated_is_refused() {
+    let (app, ownership) = make_local_cargo_ownership_app(RegistryMode::Local).await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(make_publish_payload("keepme", "0.1.0"))
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::delete()
+        .uri("/proxy/local-cargo/api/v1/crates/keepme/owners")
+        .set_json(serde_json::json!({ "users": ["user-1"] }))
+        .to_request();
+    let resp = call_service(&app, req).await;
+
+    assert_eq!(resp.status(), 401);
+    assert_eq!(
+        ownership
+            .list_owners("local-cargo", "keepme")
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "the owner must survive an unauthenticated removal attempt"
+    );
 }

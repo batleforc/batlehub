@@ -1,7 +1,6 @@
 use super::{
-    artifact_storage_key, build_metadata_xml, collect_storage_stream, content_type_for,
-    maven_artifact_storage_key, AppError, AuthIdentity, HttpResponse, LocalRegistryService,
-    MavenPathKind, RegistryMode,
+    artifact_storage_key, build_metadata_xml, content_type_for, maven_artifact_storage_key,
+    AppError, AuthIdentity, HttpResponse, LocalRegistryService, MavenPathKind, RegistryMode,
 };
 
 /// Try to serve a Maven request from local/hybrid storage.
@@ -71,30 +70,47 @@ pub async fn handle_maven_artifact(
     identity: &AuthIdentity,
     mode: RegistryMode,
 ) -> Result<Option<HttpResponse>, AppError> {
-    // Gate must be enforced before falling through to upstream.
-    local_svc
-        .check_prerelease_access(registry, version, identity)
-        .await
-        .map_err(AppError::from)?;
+    // A Maven version is several files, so the key is built here rather than by
+    // `get_artifact` — but the read goes through `get_artifact_at_key`, which
+    // applies the same gate (rule chain, visibility, pre-release). Reading
+    // `local_svc.storage` directly, as this did, skipped **both** the chain and
+    // `check_visibility`: `maven-metadata.xml` refused a team-visibility
+    // coordinate while the jar beside it was served to anyone (survey finding 6).
     let storage_key = if filename.ends_with(".pom") {
         artifact_storage_key(registry, name, version)
     } else {
         maven_artifact_storage_key(registry, name, version, filename)
     };
-    match local_svc.storage.retrieve(&storage_key).await {
-        Ok(Some(artifact)) => {
-            let buf = collect_storage_stream(artifact.stream).await?;
-            Ok(Some(
-                HttpResponse::Ok()
-                    .content_type(content_type_for(filename))
-                    .body(buf),
-            ))
-        }
+    // `filename` is what makes one `mvn` resolution count as one download
+    // rather than four: the `.sha1`/`.md5`/`.asc` beside the jar are recorded as
+    // metadata, not downloads. The proxy fall-through below passes the same
+    // value through `with_artifact`, so a Hybrid registry's counts do not depend
+    // on whether the artifact happened to be local.
+    let pkg =
+        batlehub_core::entities::PackageId::new(registry, name, version).with_artifact(filename);
+    match local_svc
+        .get_artifact_at_key(
+            &pkg,
+            &storage_key,
+            batlehub_core::rules::resource_type::RELEASES_READ,
+            identity,
+        )
+        .await
+    {
+        Ok(Some(buf)) => Ok(Some(
+            HttpResponse::Ok()
+                .content_type(content_type_for(filename))
+                .body(buf),
+        )),
         Ok(None) if mode == RegistryMode::Hybrid => Ok(None),
         Ok(None) => Err(AppError::not_found(format!(
             "{name}@{version}/{filename} not found in local registry"
         ))),
-        Err(e) if mode == RegistryMode::Hybrid => {
+        // A storage fault falls through upstream in hybrid, as before. An
+        // authorization refusal must not: `AccessDenied` is an answer, not a
+        // miss, and falling through would ask the upstream for a package this
+        // caller has just been refused.
+        Err(batlehub_core::error::CoreError::Storage(e)) if mode == RegistryMode::Hybrid => {
             tracing::warn!("local storage error, falling back to proxy: {e}");
             Ok(None)
         }

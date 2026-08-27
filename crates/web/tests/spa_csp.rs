@@ -16,7 +16,7 @@ use std::sync::Arc;
 use actix_web::test::{call_service, read_body, TestRequest};
 use actix_web::{web, App};
 
-use batlehub_core::services::{FeatureFlags, LocalRegistryService};
+use batlehub_core::services::{new_hot_lock, FeatureFlags, HotConfig, LocalRegistryService};
 
 /// The policy as `ui/build/csp.ts` emits it.
 const BUILT_POLICY: &str = "default-src 'self'; script-src 'self'; \
@@ -50,6 +50,13 @@ async fn app_with(
 
     let app = actix_web::test::init_service(
         App::new()
+            // As `server_factory` wraps it. The console is the reason that
+            // middleware is scoped to `/proxy/**` instead of being global, so the
+            // app that asserts the console's policy is the right place to hold
+            // the boundary.
+            .wrap(actix_web::middleware::from_fn(
+                batlehub_web::protocol_document_csp,
+            ))
             .app_data(web::Data::new(local_svc))
             .configure(|cfg| batlehub_web::configure_spa(cfg, path.clone())),
     )
@@ -60,7 +67,7 @@ async fn app_with(
 /// `make_local_svc` with one registry's badge flag set.
 async fn svc_with_badge(on: bool) -> Arc<LocalRegistryService> {
     let storage = batlehub_adapters::in_memory::InMemoryStorageBackend::new();
-    let svc = make_local_svc(storage);
+    let svc = make_local_svc(new_hot_lock(HotConfig::default()), storage);
     svc.hot
         .write()
         .await
@@ -96,6 +103,33 @@ async fn the_badge_origin_is_dropped_when_no_registry_draws_one() {
     // Everything else is the built policy, byte for byte.
     assert!(html.contains("script-src 'self'"), "{html}");
     assert!(html.contains("form-action 'self'"), "{html}");
+}
+
+/// The scope boundary, from the console's side.
+///
+/// `/proxy/**` carries `default-src 'none'; sandbox` as a **header** (survey
+/// finding 14). The console must not: that policy on this document is a blank
+/// page — no script, no stylesheet, no origin, and the `<meta>` policy it does
+/// carry would be the least of its problems. A future change that promotes the
+/// protocol-document CSP to a global one fails here rather than in a browser.
+#[actix_web::test]
+async fn the_console_document_carries_no_csp_header() {
+    let (_dir, app) = app_with(svc_with_badge(false).await).await;
+
+    for uri in ["/", "/index.html", "/packages/npm/chalk"] {
+        let resp = call_service(&app, TestRequest::get().uri(uri).to_request()).await;
+        assert_eq!(resp.status(), 200, "GET {uri}");
+        assert!(
+            resp.headers().get("content-security-policy").is_none(),
+            "GET {uri}: the console declares its policy in a <meta> tag; a header here overrides \
+             it and blanks the page"
+        );
+        let html = String::from_utf8(read_body(resp).await.to_vec()).expect("utf-8");
+        assert!(
+            html.contains("http-equiv=\"Content-Security-Policy\""),
+            "{uri}"
+        );
+    }
 }
 
 #[actix_web::test]
@@ -146,7 +180,7 @@ async fn the_policy_follows_a_hot_config_change() {
 #[actix_web::test]
 async fn a_registry_with_no_flags_block_still_gets_its_origin() {
     let storage = batlehub_adapters::in_memory::InMemoryStorageBackend::new();
-    let svc = make_local_svc(storage);
+    let svc = make_local_svc(new_hot_lock(HotConfig::default()), storage);
     svc.hot
         .write()
         .await

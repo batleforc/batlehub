@@ -7,7 +7,7 @@ use batlehub_core::services::{LocalRegistryService, ProxyService, PublishRequest
 
 use super::common::{
     attachment_disposition, collect_payload, extract_signature_headers, require_local_mode,
-    serve_local_or_proxy_artifact, LocalOrProxyArtifactOpts,
+    serve_local_or_proxy_artifact, ArtifactSignature, LocalOrProxyArtifactOpts,
 };
 use crate::handlers::schemas::{ArtifactBytes, OkResponse};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
@@ -171,7 +171,8 @@ pub async fn vsix_publish(
         }),
     };
 
-    let (signature_bytes, signature_type) = extract_signature_headers(&req);
+    let (signature_bytes, signature_type) =
+        ArtifactSignature::split(extract_signature_headers(&req)?);
 
     let quota = local_svc
         .publish(PublishRequest {

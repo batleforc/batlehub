@@ -280,8 +280,13 @@ impl ProxyService {
                 upstream.stream,
             );
             super::warn_if_audit_failed(
+                // `allowed_read`, not `allowed_download`: a `.sha1`/`.asc`
+                // beside a Maven jar is recorded as metadata, so one `mvn`
+                // resolution counts as one download rather than four. The local
+                // path calls the same function — see
+                // `PackageId::is_verification_sidecar`.
                 self.repo
-                    .record_access(AccessEvent::allowed_download(
+                    .record_access(AccessEvent::allowed_read(
                         req.package_id,
                         req.identity.user_id,
                         req.identity.role,
@@ -320,34 +325,6 @@ impl ProxyService {
             .await
     }
 
-    /// Snapshot a registry's policy out of [`HotConfig`], cloning the `Arc` so
-    /// the read lock is released before any `await` on a rule.
-    async fn policy_for(
-        &self,
-        package_id: &crate::entities::PackageId,
-    ) -> Option<Arc<crate::services::hot_config::RegistryPolicy>> {
-        let hot = self.hot.read().await;
-        hot.policies.get(package_id.registry.as_str()).cloned()
-    }
-
-    /// The coordinate the authorization entry points judge when no upstream
-    /// metadata has been resolved for it — a path-addressed file, or a listing
-    /// that names no single version. Every version-derived field is `None`,
-    /// which is what confines these calls to identity-keyed rules.
-    fn synthetic_metadata(
-        package_id: &crate::entities::PackageId,
-    ) -> crate::entities::PackageMetadata {
-        crate::entities::PackageMetadata {
-            id: package_id.clone(),
-            published_at: None,
-            download_url: None,
-            checksum: None,
-            is_signed: None,
-            extra: serde_json::Value::Null,
-            cache_control: None,
-        }
-    }
-
     /// Authorize a read against a registry's policy rules **without** resolving
     /// upstream metadata or streaming an artifact.
     ///
@@ -356,82 +333,51 @@ impl ProxyService {
     /// Local/Hybrid read enforces the same RBAC as the proxy fall-through (which
     /// builds the same synthetic `repo` coordinate and runs the full rule chain).
     /// Returns `AccessDenied` when the policy denies the read.
+    ///
+    /// The chain itself lives in [`crate::services::registry_authz`] so that
+    /// `LocalRegistryService` can run the same evaluation from its own read
+    /// funnels — see that module for why it is not a method here.
     pub async fn authorize_read(
         &self,
         package_id: &crate::entities::PackageId,
         identity: &crate::entities::Identity,
         resource_type: &str,
     ) -> Result<(), CoreError> {
-        let policy = self.policy_for(package_id).await;
-        let empty: Vec<Box<dyn crate::rules::Rule>> = vec![];
-        let rules = policy
-            .as_ref()
-            .map(|p| p.rules.as_slice())
-            .unwrap_or(empty.as_slice());
-
-        // Minimal metadata: deb/rpm files have no per-version upstream metadata,
-        // and the RBAC rule keys only off the identity. (The proxy fall-through
-        // evaluates the same rule set against the same synthetic coordinate.)
-        let metadata = Self::synthetic_metadata(package_id);
-        let ctx = RuleContext {
+        crate::services::registry_authz::authorize_read(
+            &self.hot,
+            package_id,
             identity,
-            package: &metadata,
             resource_type,
-            cache_entry: None,
-            requested_version: Some(&package_id.version),
-        };
-        match evaluate_rules(rules, &ctx).await {
-            RuleDecision::Deny { reason } => Err(CoreError::AccessDenied(reason)),
-            _ => Ok(()),
-        }
+        )
+        .await
     }
 
     /// Authorize a *listing* — a request for a whole package's version document,
-    /// not for one version of it.
+    /// not for one version of it. Only the identity-keyed `rbac` rule runs; see
+    /// [`crate::services::registry_authz::authorize_listing`] for why the rest
+    /// of the chain would blank the document rather than gate it.
     ///
-    /// Only the identity-keyed `rbac` rule runs. Every other rule in the chain
-    /// judges a **concrete version**, and a listing has none: the coordinate
-    /// carries the pseudo-version `"latest"` and metadata that is synthetic by
-    /// construction (`published_at`, `is_signed` and `checksum` are all `None`,
-    /// because no upstream document has been resolved for a single version).
+    /// Public because the web layer needs it for the routes that are listings by
+    /// shape rather than by name: a search names many packages and no single
+    /// version, and so does a whole-registry index such as Composer's
+    /// `packages.json`. Handing either to the full chain judges it against a
+    /// coordinate that describes nothing.
     ///
-    /// Handing that to the full chain does not gate the listing, it blanks it.
-    /// `LicenseGateRule` with `allow_unknown = false` finds no licence recorded
-    /// for `"latest"` and denies; `ReleaseAgeGateRule` with
-    /// `deny_missing_timestamp = true` sees `published_at: None` and denies;
-    /// `require_signed_release` sees `is_signed: None` and denies; a
-    /// `version_gate` allowlist matches nothing against the literal `"latest"`.
-    /// Each of those turns "one version in this package is gated" into "`npm
-    /// install` of anything from this registry fails", which is the opposite of
-    /// letting a resolver route *past* a gated version to one it may have.
-    ///
-    /// The chain is not skipped, only deferred: it still runs in full on the
-    /// download that follows, against the concrete version and its real
-    /// metadata. Blocked versions are separately stripped from the document
-    /// itself by [`Self::version_document`].
-    async fn authorize_listing(
+    /// Blocked versions are separately stripped from the document itself by
+    /// [`Self::version_document`].
+    pub async fn authorize_listing(
         &self,
         package_id: &crate::entities::PackageId,
         identity: &crate::entities::Identity,
         resource_type: &str,
     ) -> Result<(), CoreError> {
-        let Some(policy) = self.policy_for(package_id).await else {
-            return Ok(());
-        };
-        let metadata = Self::synthetic_metadata(package_id);
-        for rule in policy.rules.iter().filter(|r| r.name() == "rbac") {
-            let ctx = RuleContext {
-                identity,
-                package: &metadata,
-                resource_type,
-                cache_entry: None,
-                requested_version: None,
-            };
-            if let RuleDecision::Deny { reason } = rule.evaluate(&ctx).await {
-                return Err(CoreError::AccessDenied(reason));
-            }
-        }
-        Ok(())
+        crate::services::registry_authz::authorize_listing(
+            &self.hot,
+            package_id,
+            identity,
+            resource_type,
+        )
+        .await
     }
     /// Authorise a listing read, filing a denial as its own audit event.
     ///

@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod blocking;
 pub mod cache_control;
+pub mod escaping;
 pub mod eviction;
 pub mod explore_cache;
 pub mod hot_config;
@@ -10,9 +11,11 @@ pub mod metrics;
 pub mod proxy;
 pub mod quota;
 pub mod readme;
+pub mod registry_authz;
 pub mod sbom;
 pub mod search;
 pub mod signature;
+pub mod signed_url;
 pub mod stats_rollup;
 pub mod upstream_detail;
 pub mod version_order;
@@ -22,6 +25,7 @@ pub mod warming;
 pub use admin::{AdminService, BulkActionResult, BulkBlockItem};
 pub use blocking::{BlockedVersions, ListingContext};
 pub use cache_control::{parse_cache_control, CacheControlDirectives};
+pub use escaping::{escape_html, percent_encode_path_segment};
 pub use eviction::{CoherenceReport, EvictionConfig, EvictionReport, EvictionService};
 pub use explore_cache::ExploreCache;
 pub use hot_config::{
@@ -47,6 +51,12 @@ pub use quota::{
 pub use readme::{truncate_to, ReadmeCapture, ReadmeService, RecordOutcome};
 pub use sbom::{SbomProxiedOptions, SbomPublishOptions, SbomService};
 pub use search::{SearchHit, SearchMode, SearchResults};
+pub use signed_url::{
+    Coordinate as SignedUrlCoordinate, SignedUrlError, SignedUrlService,
+    DEFAULT_TTL_SECONDS as SIGNED_URL_DEFAULT_TTL_SECONDS,
+    MAX_TTL_SECONDS as SIGNED_URL_MAX_TTL_SECONDS, MIN_SECRET_BYTES as SIGNED_URL_MIN_SECRET_BYTES,
+    QUERY_PARAM as SIGNED_URL_QUERY_PARAM,
+};
 pub use stats_rollup::{hour_start, StatsRollupService};
 pub use upstream_detail::{UpstreamDetail, UpstreamDetailCoordinator, UpstreamVersion};
 pub use version_order::newest_first;

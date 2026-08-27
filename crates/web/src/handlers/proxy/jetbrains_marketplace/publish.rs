@@ -18,7 +18,8 @@ use batlehub_core::{
 use super::plugin_archive::extract_plugin_descriptor;
 use super::require_jbm;
 use crate::handlers::proxy::common::{
-    extract_signature_headers, publish_and_respond, require_local_mode, MAX_UPLOAD_BYTES,
+    extract_signature_headers, publish_and_respond, require_local_mode, ArtifactSignature,
+    MAX_UPLOAD_BYTES,
 };
 use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
@@ -188,7 +189,8 @@ pub async fn jbm_upload(
         "changeNotes": descriptor.change_notes,
     });
 
-    let (signature_bytes, signature_type) = extract_signature_headers(&req);
+    let (signature_bytes, signature_type) =
+        ArtifactSignature::split(extract_signature_headers(&req)?);
 
     let response_body = PluginPublishResponse {
         id: xml_id.clone(),

@@ -378,6 +378,49 @@ const TERRAFORM: &[Conformance] = &[
         "/proxy/{registry}/v1/providers/{namespace}/{ptype}/{version}/artifact/{os}/{arch}",
         "Terraform 1.8.5, observed: request 6 of 6 for a provider install",
     ),
+    // Request 2 of 3 of a *mirror* install, which the table did not carry until
+    // the RFC 0012 phase-7 run went looking for it. This is the document that
+    // names the archive, and therefore the one a signature is minted into.
+    Conformance::get(
+        "/proxy/terraform/registry.terraform.io/hashicorp/null/3.2.2.json",
+        "/proxy/{registry}/{hostname:[^/]+\\.[^/]+}/{namespace}/{ptype}/{version}.json",
+        "Terraform 1.8.5, observed: request 2 of 3 for a mirror install, sent with auth",
+    ),
+    // ── RFC 0012: the same three paths, signed ───────────────────────────────
+    //
+    // Observed against a live BatleHub with `anonymous = []` and
+    // `signed_downloads = true`: `terraform init` completed, and the archive
+    // arrived with **no `Authorization` header** and a `bh_sig` query string.
+    //
+    // What these pin is narrow and worth pinning: **a query string must not
+    // change which route matches.** Nothing about `bh_sig` is special to the
+    // router, which is exactly why a `web::Query<T>` extractor added later, or
+    // a pattern tightened to reject a query, would break signed downloads
+    // without breaking anything else — and would break them for the one client
+    // that cannot fall back to a header.
+    Conformance::get(
+        "/proxy/terraform/v1/providers/hashicorp/null/3.2.2/artifact/linux/amd64?bh_sig=1.eyJ2IjoxfQ.AAAA",
+        "/proxy/{registry}/v1/providers/{namespace}/{ptype}/{version}/artifact/{os}/{arch}",
+        "Terraform 1.8.5, observed: the provider zip, signed — fetched with no auth header",
+    ),
+    Conformance::get(
+        "/proxy/terraform/v1/providers/hashicorp/null/3.2.2/shasums?bh_sig=1.eyJ2IjoxfQ.AAAA",
+        "/proxy/{registry}/v1/providers/{namespace}/{ptype}/{version}/shasums",
+        "Terraform 1.8.5, observed: the checksum manifest, signed",
+    ),
+    Conformance::get(
+        "/proxy/terraform/v1/providers/hashicorp/null/3.2.2/shasums.sig?bh_sig=1.eyJ2IjoxfQ.AAAA",
+        "/proxy/{registry}/v1/providers/{namespace}/{ptype}/{version}/shasums.sig",
+        "Terraform 1.8.5, observed: the detached signature over the manifest, signed",
+    ),
+    // `shasums.sig` and `shasums` differ by a suffix, and `{version}.json` in
+    // the mirror routes shows the router does split on dots. With a query
+    // appended the two must still not collide.
+    Conformance::get(
+        "/proxy/terraform/registry.terraform.io/hashicorp/null/3.2.2.json?bh_sig=1.eyJ2IjoxfQ.AAAA",
+        "/proxy/{registry}/{hostname:[^/]+\\.[^/]+}/{namespace}/{ptype}/{version}.json",
+        "RFC 0012: the mirror document itself, were a client to append a query",
+    ),
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────

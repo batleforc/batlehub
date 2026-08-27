@@ -47,8 +47,8 @@ use batlehub_core::{
     },
     rules::{BlockListRule, RbacRule},
     services::{
-        new_hot_lock, AdminService, HotConfig, LocalRegistryService, ProxyMetrics, ProxyService,
-        ReadmeService, RegistryPolicy, SbomService,
+        new_hot_lock, AdminService, HotConfig, HotConfigLock, LocalRegistryService, ProxyMetrics,
+        ProxyService, ReadmeService, RegistryPolicy, SbomService,
     },
 };
 use batlehub_web::handlers::back_office::ops::eviction::EvictionServiceMap;
@@ -212,6 +212,26 @@ impl RegistryClient for FixedRegistry {
                         "modules": [{ "source": package, "versions": entries }]
                     })))
                 }
+            }
+
+            // The provider *download* document — one platform of one version,
+            // a different shape from the listing above (RFC 0009 §12.12).
+            // Its three URLs point at the upstream on purpose, like every other
+            // download URL in this fixture: repointing them at this host is the
+            // handler's job, and a test can only tell it happened if the
+            // fixture did not do it first.
+            ("terraform", k) if k == DocumentKind::PROVIDER_DOWNLOAD => {
+                Ok(VersionDocument::json(serde_json::json!({
+                    "protocols": ["5.0"],
+                    "os": "linux",
+                    "arch": "amd64",
+                    "filename": "terraform-provider-aws_1.0.0_linux_amd64.zip",
+                    "download_url": "https://upstream.invalid/terraform-provider-aws_1.0.0_linux_amd64.zip",
+                    "shasums_url": "https://upstream.invalid/terraform-provider-aws_1.0.0_SHA256SUMS",
+                    "shasums_signature_url": "https://upstream.invalid/terraform-provider-aws_1.0.0_SHA256SUMS.sig",
+                    "shasum": "0000000000000000000000000000000000000000000000000000000000000000",
+                    "signing_keys": { "gpg_public_keys": [] }
+                })))
             }
 
             ("rubygems", DocumentKind::Versions) => Ok(VersionDocument::json(serde_json::json!([
@@ -488,13 +508,14 @@ pub fn one_registry_proxy(
     .into();
     let policies: HashMap<String, Arc<RegistryPolicy>> =
         [(name.to_owned(), Arc::new(policy(repo.clone())))].into();
-    let local_svc = make_local_svc(storage.clone());
+    let hot = new_hot_lock(HotConfig {
+        registries,
+        policies,
+        ..Default::default()
+    });
+    let local_svc = make_local_svc(hot.clone(), storage.clone());
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
+        hot: hot.clone(),
         storage,
         cache,
         repo: repo.clone(),
@@ -703,8 +724,11 @@ pub fn test_auth_providers() -> Vec<Arc<dyn AuthProvider>> {
         (USER_TOKEN.to_owned(), Some("user-1".to_owned()), Role::User),
     ]))]
 }
-pub fn make_local_svc(storage: Arc<dyn StorageBackend>) -> Arc<LocalRegistryService> {
-    make_local_svc_with_repo(storage, None)
+pub fn make_local_svc(
+    hot: HotConfigLock,
+    storage: Arc<dyn StorageBackend>,
+) -> Arc<LocalRegistryService> {
+    make_local_svc_with_repo(hot, storage, None)
 }
 
 /// `make_local_svc` with the admin package store attached, as `server/src/main.rs`
@@ -716,10 +740,11 @@ pub fn make_local_svc(storage: Arc<dyn StorageBackend>) -> Arc<LocalRegistryServ
 /// packages, `InMemoryPackageRepository` holds statuses — see CLAUDE.md); it
 /// only lets the local service ask the second one which versions are blocked.
 pub fn make_local_svc_with_repo(
+    hot: HotConfigLock,
     storage: Arc<dyn StorageBackend>,
     package_repo: Option<Arc<dyn PackageRepository>>,
 ) -> Arc<LocalRegistryService> {
-    make_local_svc_with_readme(storage, package_repo, None)
+    make_local_svc_with_readme(hot, storage, package_repo, None)
 }
 
 /// [`make_local_svc_with_repo`] with a README store wired in.
@@ -728,6 +753,7 @@ pub fn make_local_svc_with_repo(
 /// README suite reads the store back, and every other caller would have to pass
 /// a `None` that means nothing to it.
 pub fn make_local_svc_with_readme(
+    hot: HotConfigLock,
     storage: Arc<dyn StorageBackend>,
     package_repo: Option<Arc<dyn PackageRepository>>,
     readme: Option<Arc<ReadmeService>>,
@@ -735,11 +761,7 @@ pub fn make_local_svc_with_readme(
     Arc::new(LocalRegistryService {
         backend: Arc::new(InMemoryLocalRegistry::new()),
         storage,
-        hot: new_hot_lock(HotConfig {
-            registries: HashMap::new(),
-            policies: HashMap::new(),
-            ..Default::default()
-        }),
+        hot,
         quota: None,
         ownership: None,
         team_namespace: None,
@@ -780,6 +802,29 @@ pub fn rbac_policy_anon_source(repo: Arc<dyn PackageRepository>) -> RegistryPoli
             Role::Anonymous,
             vec!["releases:read".to_owned(), "source:read".to_owned()],
         ),
+        (
+            Role::User,
+            vec!["releases:read".to_owned(), "source:read".to_owned()],
+        ),
+        (Role::Admin, vec!["*".to_owned()]),
+    ]);
+    RegistryPolicy {
+        metadata_ttl: Some(Duration::from_secs(300)),
+        firewall_only: false,
+        serve_stale_metadata: false,
+        artifact_ttl: None,
+        rules: vec![
+            Box::new(RbacRule::new(perms)),
+            Box::new(BlockListRule::new(repo)),
+        ],
+    }
+}
+/// Like [`rbac_policy`] but grants anonymous **nothing**. Use this for tests
+/// that isolate the *rule chain* axis: the package stays at the default `Public`
+/// visibility, so `[registries.rbac]` is the only thing that can refuse.
+pub fn rbac_policy_deny_anonymous(repo: Arc<dyn PackageRepository>) -> RegistryPolicy {
+    let perms = HashMap::from([
+        (Role::Anonymous, vec![]),
         (
             Role::User,
             vec!["releases:read".to_owned(), "source:read".to_owned()],
@@ -1039,6 +1084,24 @@ pub async fn make_app_with_defaults(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
+    make_app_with_defaults_and_access(repo, defaults, None).await
+}
+
+/// [`make_app_with_defaults`] with the `AccessConfig` substituted.
+///
+/// The default fixture grants every registry it wires to every tier, so **"a
+/// caller entitled to nothing" was not expressible** — which is a large part of
+/// why survey finding 2 (an empty accessible set scoping to the whole
+/// catalogue) shipped. `None` keeps the permissive default.
+pub async fn make_app_with_defaults_and_access(
+    repo: Arc<InMemoryRepo>,
+    defaults: ConfigureAppDefaults,
+    access: Option<batlehub_web::AccessConfigLock>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
     let proxy_metrics = Arc::clone(&defaults.proxy_metrics);
     let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
@@ -1121,13 +1184,14 @@ pub async fn make_app_with_defaults(
     ]
     .into();
 
-    let local_svc = make_local_svc_with_repo(storage.clone(), Some(repo_dyn.clone()));
+    let hot = new_hot_lock(HotConfig {
+        registries,
+        policies,
+        ..Default::default()
+    });
+    let local_svc = make_local_svc_with_repo(hot.clone(), storage.clone(), Some(repo_dyn.clone()));
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
+        hot: hot.clone(),
         storage,
         cache,
         repo: repo_dyn.clone(),
@@ -1140,10 +1204,12 @@ pub async fn make_app_with_defaults(
     let admin_svc = Arc::new(AdminService::new(repo_dyn));
 
     let token_repo: Arc<dyn UserTokenRepository> = Arc::new(NullTokenRepository);
-    let access_config = access_config_for(&[
-        "github", "npm", "cargo", "openvsx", "go", "vscode", "fj", "gl", "jb", "jbm", "nuget",
-        "composer",
-    ]);
+    let access_config = access.unwrap_or_else(|| {
+        access_config_for(&[
+            "github", "npm", "cargo", "openvsx", "go", "vscode", "fj", "gl", "jb", "jbm", "nuget",
+            "composer",
+        ])
+    });
     let registry_map = registry_map_for(&[
         ("github", "github"),
         ("npm", "npm"),
@@ -1216,14 +1282,19 @@ pub fn local_registry_app_parts_with_readme(
     let policies: HashMap<String, Arc<RegistryPolicy>> =
         [(name.to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
 
-    let local_svc =
-        make_local_svc_with_readme(storage.clone(), Some(repo_dyn.clone()), readme_svc.clone());
+    let hot = new_hot_lock(HotConfig {
+        registries,
+        policies,
+        ..Default::default()
+    });
+    let local_svc = make_local_svc_with_readme(
+        hot.clone(),
+        storage.clone(),
+        Some(repo_dyn.clone()),
+        readme_svc.clone(),
+    );
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
+        hot: hot.clone(),
         storage,
         cache,
         repo: repo_dyn.clone(),
@@ -1280,13 +1351,14 @@ pub fn local_only_app_parts(
     let policies: HashMap<String, Arc<RegistryPolicy>> =
         [(name.to_owned(), Arc::new(rbac_policy(repo.clone())))].into();
 
-    let local_svc = make_local_svc(storage.clone());
+    let hot = new_hot_lock(HotConfig {
+        registries,
+        policies,
+        ..Default::default()
+    });
+    let local_svc = make_local_svc(hot.clone(), storage.clone());
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
+        hot: hot.clone(),
         storage,
         cache,
         repo: repo.clone(),
@@ -1308,6 +1380,33 @@ pub fn local_only_app_parts(
         local_svc,
         mode_map,
     }
+}
+
+/// [`local_only_app_parts`] with the registry's rule chain substituted.
+///
+/// The default fixture policy grants anonymous `releases:read`, which is exactly
+/// the wrong thing for a test asking *whether the chain runs at all*: it allows,
+/// so a route that skips the chain and a route that runs it answer alike. Pass
+/// [`rbac_policy_deny_anonymous`] to isolate the chain, or
+/// [`rbac_policy_anon_source`] to isolate per-package visibility instead.
+///
+/// The policy goes into the one `HotConfig` both services share, so it governs
+/// the local read path and the proxy fall-through equally — which is the whole
+/// property the authorization matrix measures.
+pub async fn local_only_app_parts_with_policy(
+    name: &str,
+    kind: &str,
+    mode: RegistryMode,
+    upstream: bool,
+    policy: fn(Arc<dyn PackageRepository>) -> RegistryPolicy,
+) -> LocalRegistryAppParts {
+    let mut parts = local_only_app_parts(name, kind, mode, upstream);
+    let repo: Arc<dyn PackageRepository> = InMemoryRepo::new();
+    let policies: HashMap<String, Arc<RegistryPolicy>> =
+        [(name.to_owned(), Arc::new(policy(repo)))].into();
+    parts.proxy_svc.hot.write().await.policies = policies;
+    parts.access_config = access_config_for(&[name]);
+    parts
 }
 
 /// Finish wiring a `make_local_<type>_app` factory: configure the routes from `parts`
@@ -1425,9 +1524,10 @@ pub fn empty_app_parts() -> EmptyAppParts {
     let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let local_svc = make_local_svc_with_repo(storage.clone(), Some(repo_dyn.clone()));
+    let hot = new_hot_lock(HotConfig::default());
+    let local_svc = make_local_svc_with_repo(hot.clone(), storage.clone(), Some(repo_dyn.clone()));
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig::default()),
+        hot: hot.clone(),
         storage,
         cache,
         repo: repo_dyn.clone(),
@@ -1535,9 +1635,10 @@ pub async fn make_app_with_eviction(
     let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let local_svc = make_local_svc_with_repo(storage.clone(), Some(repo_dyn.clone()));
+    let hot = new_hot_lock(HotConfig::default());
+    let local_svc = make_local_svc_with_repo(hot.clone(), storage.clone(), Some(repo_dyn.clone()));
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig::default()),
+        hot: hot.clone(),
         storage: storage.clone(),
         cache,
         repo: repo_dyn.clone(),
@@ -1589,9 +1690,10 @@ pub async fn make_app_with_warming(
     let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let local_svc = make_local_svc_with_repo(storage.clone(), Some(repo_dyn.clone()));
+    let hot = new_hot_lock(HotConfig::default());
+    let local_svc = make_local_svc_with_repo(hot.clone(), storage.clone(), Some(repo_dyn.clone()));
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig::default()),
+        hot: hot.clone(),
         storage: storage.clone(),
         cache,
         repo: repo_dyn.clone(),
@@ -1754,6 +1856,47 @@ pub async fn make_local_registry_app_with_sbom(
 
     build_local_registry_app(parts, cargo_indexes, sbom_svc).await
 }
+/// [`make_local_registry_app`] for cargo, with an ownership store wired in, and
+/// the store handed back so a test can seed and inspect it.
+///
+/// A separate entry point because the shared factory leaves `ownership: None`,
+/// and that is not a neutral default here: with the port absent, the
+/// `cargo owner --add`/`--remove` routes return `404` before reaching any
+/// authorization at all. Every ownership test written against the shared
+/// factory would therefore have passed without exercising a single check —
+/// which is exactly how the unauthenticated-claim bug survived to be found by
+/// review rather than by CI.
+pub async fn make_local_cargo_ownership_app(
+    mode: RegistryMode,
+) -> (
+    impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+    Arc<batlehub_adapters::in_memory::InMemoryOwnershipStore>,
+) {
+    let mut parts = local_registry_app_parts("local-cargo", "cargo", mode, None);
+    let ownership = batlehub_adapters::in_memory::InMemoryOwnershipStore::new();
+
+    let cur = parts.local_svc.clone();
+    parts.local_svc = Arc::new(LocalRegistryService {
+        backend: cur.backend.clone(),
+        storage: cur.storage.clone(),
+        hot: cur.hot.clone(),
+        quota: cur.quota.clone(),
+        ownership: Some(ownership.clone() as Arc<dyn batlehub_core::ports::OwnershipPort>),
+        team_namespace: cur.team_namespace.clone(),
+        sbom: cur.sbom.clone(),
+        explore_cache: cur.explore_cache.clone(),
+        package_repo: cur.package_repo.clone(),
+        readme: cur.readme.clone(),
+    });
+
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    (app, ownership)
+}
+
 pub async fn make_local_composer_app(
     mode: RegistryMode,
 ) -> impl actix_web::dev::Service<
@@ -1821,13 +1964,14 @@ pub async fn make_local_nuget_app(
     )]
     .into();
 
-    let local_svc = make_local_svc_with_repo(storage.clone(), Some(repo_dyn.clone()));
+    let hot = new_hot_lock(HotConfig {
+        registries,
+        policies,
+        ..Default::default()
+    });
+    let local_svc = make_local_svc_with_repo(hot.clone(), storage.clone(), Some(repo_dyn.clone()));
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
+        hot: hot.clone(),
         storage,
         cache,
         repo: repo_dyn.clone(),

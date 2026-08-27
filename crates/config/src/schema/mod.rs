@@ -37,7 +37,7 @@ pub use rules::{
 };
 pub use server::{
     default_service_name, is_secure_issuer_url, parse_trusted_proxies, CacheConfig, DatabaseConfig,
-    OtelConfig, ServerConfig,
+    OtelConfig, ServerConfig, SignedUrlsConfig,
 };
 pub use warnings::ConfigWarning;
 
@@ -487,7 +487,96 @@ impl AppConfig {
         self.readme_warnings(&mut out);
         self.upstream_detail_warnings(&mut out);
         self.search_warnings(&mut out);
+        self.signed_url_warnings(&mut out);
+        self.require_signed_release_warnings(&mut out);
         out
+    }
+
+    /// `require_signed_release` on a registry that also accepts publishes,
+    /// without `[registries.signing] required = true` to match.
+    ///
+    /// The rule judges `PackageMetadata::is_signed`, and the two halves of a
+    /// hybrid registry fill that field very differently. A proxied artifact gets
+    /// whatever signal its adapter can find, and `None` where there is none —
+    /// which the rule skips unless `deny_missing_signature` is set. A locally
+    /// published row reports `Some(false)` as soon as it holds no signature
+    /// bytes, and `RequireSignedReleaseRule` denies `Some(false)`
+    /// *unconditionally*: `deny_missing_signature` never enters into it.
+    ///
+    /// The result is that turning this rule on to gate the proxied half also
+    /// refuses every local publish, and refuses it at download time — so the
+    /// consumer sees a `403` about a decision the publisher could have fixed.
+    /// `signing.required` refuses the same artifact at the publish request
+    /// instead, which is the same policy delivered to the person who can act
+    /// on it.
+    ///
+    /// Only local and hybrid registries are considered: a proxy-mode registry
+    /// accepts no publishes, so there is no second half to disagree with.
+    fn require_signed_release_warnings(&self, out: &mut Vec<ConfigWarning>) {
+        for (index, registry) in self.registries.iter().enumerate() {
+            if registry.mode == RegistryMode::Proxy {
+                continue;
+            }
+            if registry.signing.as_ref().is_some_and(|s| s.required) {
+                continue;
+            }
+            let Some(rule_index) = registry
+                .rules
+                .iter()
+                .position(|r| matches!(r, RuleConfig::RequireSignedRelease(_)))
+            else {
+                continue;
+            };
+            out.push(ConfigWarning::new(
+                warnings::REQUIRE_SIGNED_RELEASE_UNSIGNED_PUBLISHES,
+                format!("registries[{index}].rules[{rule_index}]"),
+                format!(
+                    "registry '{}' is in {:?} mode with a require_signed_release rule, but \
+                     [registries.signing] does not set required = true. A locally published \
+                     artifact with no X-Artifact-Signature is recorded as unsigned, and this rule \
+                     denies that outright — deny_missing_signature does not apply, it governs \
+                     only artifacts whose signature state is unknown. Every publish that omits \
+                     the header will therefore succeed and then fail to download, with the 403 \
+                     landing on the consumer. Set signing.required = true so the refusal happens \
+                     at publish time instead.",
+                    registry.name, registry.mode
+                ),
+            ));
+        }
+    }
+
+    /// RFC 0012 §7: the two states where signing is configured and achieves
+    /// nothing. Neither is an error — both are legal, and both are almost
+    /// always a migration that stopped halfway.
+    fn signed_url_warnings(&self, out: &mut Vec<ConfigWarning>) {
+        let any_signed = self.registries.iter().any(|r| r.signed_downloads);
+
+        if self.server.signed_urls.is_some() && !any_signed {
+            out.push(ConfigWarning::new(
+                warnings::SIGNED_URLS_UNUSED,
+                "server.signed_urls",
+                "a signing secret is configured but no registry sets signed_downloads = true, \
+                 so nothing is signed. Set it on the registry whose downloads arrive without \
+                 credentials — a Terraform mirror is the case this exists for.",
+            ));
+        }
+
+        for (i, reg) in self.registries.iter().enumerate() {
+            if !reg.signed_downloads || reg.rbac.anonymous.is_empty() {
+                continue;
+            }
+            out.push(ConfigWarning::new(
+                warnings::SIGNED_URLS_ANONYMOUS_STILL_GRANTED,
+                format!("registries[{i}].rbac.anonymous"),
+                format!(
+                    "registry '{}' signs its download URLs and still grants anonymous {:?}. \
+                     Signing exists so that grant can be removed; while it stands, every read \
+                     on this registry is open to everybody and the signatures close nothing. \
+                     Empty the anonymous grant to complete the migration.",
+                    reg.name, reg.rbac.anonymous
+                ),
+            ));
+        }
     }
 
     /// Prose search enabled over a store nothing writes to.
@@ -988,6 +1077,84 @@ impl AppConfig {
         Ok(())
     }
 
+    /// Fail-fast checks for signed download URLs.
+    ///
+    /// RFC 0012 §4.1. Every one of these is an error rather than a warning for
+    /// the same reason: a registry that believes it is closed and is not, or
+    /// one that believes downloads are signed and serves nothing, is a state an
+    /// operator will discover from a failed install rather than from the file.
+    fn validate_signed_urls(&self) -> Result<()> {
+        let signed_registries: Vec<&str> = self
+            .registries
+            .iter()
+            .filter(|r| r.signed_downloads)
+            .map(|r| r.name.as_str())
+            .collect();
+
+        let Some(cfg) = self.server.signed_urls.as_ref() else {
+            if !signed_registries.is_empty() {
+                bail!(
+                    "registries {:?} set signed_downloads = true but [server.signed_urls] is \
+                     absent; add a secret, or the registry cannot serve the downloads it is \
+                     closing off",
+                    signed_registries
+                );
+            }
+            return Ok(());
+        };
+
+        // Length is measured in bytes, not characters: the secret is HMAC key
+        // material, and a 32-character string of multi-byte characters is fine
+        // while a 20-character ASCII one is not.
+        let secret = cfg.secret.trim();
+        if secret.is_empty() {
+            bail!(
+                "[server.signed_urls].secret is empty — if it interpolates ${{VAR}}, the variable \
+                 is unset in this environment"
+            );
+        }
+        if secret.len() < batlehub_core::services::SIGNED_URL_MIN_SECRET_BYTES {
+            bail!(
+                "[server.signed_urls].secret is {} bytes; {} is the minimum for an HMAC-SHA256 \
+                 signing key",
+                secret.len(),
+                batlehub_core::services::SIGNED_URL_MIN_SECRET_BYTES
+            );
+        }
+        if cfg.ttl_seconds == 0 {
+            bail!("[server.signed_urls].ttl_seconds is 0; every minted URL would be born expired");
+        }
+        if cfg.ttl_seconds > batlehub_core::services::SIGNED_URL_MAX_TTL_SECONDS {
+            bail!(
+                "[server.signed_urls].ttl_seconds is {}; the ceiling is {} so a misconfiguration \
+                 cannot mint a month-long bearer credential",
+                cfg.ttl_seconds,
+                batlehub_core::services::SIGNED_URL_MAX_TTL_SECONDS
+            );
+        }
+        // Enumerate the *configured* array, not `active_previous_secrets()`,
+        // and skip empties inside the loop. The active list has already dropped
+        // them, so its indices no longer line up with the file the operator is
+        // about to go and edit: `["${UNSET}", "tooshort"]` reported
+        // `previous_secrets[0]`, which is the entry that is fine.
+        for (i, prev) in cfg.previous_secrets.iter().enumerate() {
+            let prev = prev.trim();
+            if prev.is_empty() {
+                continue;
+            }
+            if prev.len() < batlehub_core::services::SIGNED_URL_MIN_SECRET_BYTES {
+                bail!(
+                    "[server.signed_urls].previous_secrets[{i}] is {} bytes; {} is the minimum. \
+                     An entry that interpolates to empty is ignored, but a short one is a \
+                     mistake rather than a rotation in progress",
+                    prev.len(),
+                    batlehub_core::services::SIGNED_URL_MIN_SECRET_BYTES
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Fail-fast checks for host-based routing (RFC 0001 §4.3).
     ///
     /// Every condition here is one where the deployment would come up looking
@@ -1133,6 +1300,7 @@ impl AppConfig {
         self.validate_auth_names()?;
         self.validate_actions_oidc_audience()?;
         self.validate_host_routing()?;
+        self.validate_signed_urls()?;
 
         // A page size of zero is a list that can never answer, and the failure
         // would land on a page rather than at startup. The ceiling is the same

@@ -11,21 +11,31 @@ pub(super) fn extract_maven_manifest(data: &Bytes) -> ExtractedManifest {
         return ExtractedManifest::default();
     };
 
-    for i in 0..archive.len() {
-        let Ok(mut file) = archive.by_index(i) else {
-            continue;
-        };
-        let name = file.name().to_owned();
-        if name.ends_with("pom.xml") {
-            let mut content = String::new();
-            if file.read_to_string(&mut content).is_err() {
-                tracing::warn!("sbom: failed to parse maven manifest, treating as no dependencies");
-                return ExtractedManifest::default();
-            }
-            return parse_maven_pom(&content);
-        }
+    // `META-INF/maven/{g}/{a}/pom.xml`, and only if there is exactly one.
+    // `ends_with("pom.xml")` matched `a/decoypom.xml` — a file not even named
+    // `pom.xml` — and took whichever came first. An uber/shaded jar legitimately
+    // matches several and now reports unknown rather than some bundled
+    // dependency's licence as the artifact's. See `anchor`.
+    let matches: Vec<usize> = (0..archive.len())
+        .filter(|i| {
+            archive
+                .by_index(*i)
+                .is_ok_and(|f| super::anchor::is_maven_manifest(f.name()))
+        })
+        .collect();
+    let Some(index) = super::anchor::sole(matches) else {
+        return ExtractedManifest::default();
+    };
+
+    let Ok(mut file) = archive.by_index(index) else {
+        return ExtractedManifest::default();
+    };
+    let mut content = String::new();
+    if file.read_to_string(&mut content).is_err() {
+        tracing::warn!("sbom: failed to parse maven manifest, treating as no dependencies");
+        return ExtractedManifest::default();
     }
-    ExtractedManifest::default()
+    parse_maven_pom(&content)
 }
 
 fn decode_xml_text(e: &quick_xml::events::BytesText) -> String {
@@ -178,6 +188,53 @@ fn parse_maven_pom(content: &str) -> ExtractedManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sbom::extractor::readme::fixtures::zipped;
+
+    const REAL_POM: &[u8] =
+        br#"<project><licenses><license><name>GPL-3.0-only</name></license></licenses></project>"#;
+    const DECOY_POM: &[u8] =
+        br#"<project><licenses><license><name>MIT</name></license></licenses></project>"#;
+
+    /// `ends_with("pom.xml")` matched a file not even named `pom.xml`, and took
+    /// whichever came first in the zip.
+    #[test]
+    fn a_file_merely_ending_in_pom_xml_is_not_the_projects_pom() {
+        let data = zipped(&[
+            ("a/decoypom.xml", DECOY_POM),
+            ("META-INF/maven/com.example/app/pom.xml", REAL_POM),
+        ]);
+        assert_eq!(
+            extract_maven_manifest(&data).license.as_deref(),
+            Some("GPL-3.0-only")
+        );
+    }
+
+    /// A pom outside `META-INF/maven/{g}/{a}/` is not this jar's declaration,
+    /// wherever it sits in the archive.
+    #[test]
+    fn a_pom_outside_the_meta_inf_location_is_not_the_projects_pom() {
+        let data = zipped(&[
+            ("a/pom.xml", DECOY_POM),
+            ("META-INF/maven/com.example/app/pom.xml", REAL_POM),
+        ]);
+        assert_eq!(
+            extract_maven_manifest(&data).license.as_deref(),
+            Some("GPL-3.0-only")
+        );
+    }
+
+    /// An uber/shaded jar carries one canonical pom per bundled dependency and
+    /// nothing says which is its own. Reporting unknown is the honest answer;
+    /// what this did before was report the first bundled dependency's licence as
+    /// the artifact's.
+    #[test]
+    fn several_canonical_poms_are_ambiguous_not_first_wins() {
+        let data = zipped(&[
+            ("META-INF/maven/com.other/dep/pom.xml", DECOY_POM),
+            ("META-INF/maven/com.example/app/pom.xml", REAL_POM),
+        ]);
+        assert_eq!(extract_maven_manifest(&data), ExtractedManifest::default());
+    }
 
     fn pom(deps_xml: &str) -> String {
         format!(

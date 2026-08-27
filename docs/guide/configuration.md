@@ -111,6 +111,7 @@ port = 8080             # default
 | `cors_allowed_origins` | string[] | *absent* → same-origin only | Origins allowed to read cross-origin responses. `["*"]` opts back in to any origin. See [CORS](#cors) |
 | `cli_binary_path` | string | — | Path to `batlehub-cli`, served at `GET /api/v1/cli/download` |
 | `trusted_proxies` | string[] | *absent* | CIDR ranges (or bare IPs) of reverse proxies whose `X-Forwarded-*` headers are believed |
+| `signed_urls` | table | *absent* | Signing material for download URLs. See [`[server.signed_urls]`](#server-signed-urls) |
 
 #### CORS
 
@@ -187,6 +188,64 @@ advertise. The startup error contains the exact TOML to paste.
 > rather than refused at startup — that key predates the validator and used to
 > discard such entries silently, so rejecting one now would break a config that
 > never changed. The valid entries around it still apply.
+
+#### `[server.signed_urls]` {#server-signed-urls}
+
+Signing material for **signed download URLs**: a way to keep a registry closed
+to anonymous callers even when the client fetches the artifact without
+credentials. Terraform is the case this exists for — it authenticates the two
+JSON documents of a provider install and then fetches the archive, its
+`SHA256SUMS` and the `.sig` with no `Authorization` header and no mechanism to
+send one.
+
+Absent means the feature is unavailable. It is *global* rather than per-registry
+because the key is a property of the instance; the switch that uses it is
+[`signed_downloads`](#registry-signed-downloads) on each registry.
+
+```toml
+[server.signed_urls]
+secret           = "${BATLEHUB_URL_SIGNING_SECRET}"
+ttl_seconds      = 300
+previous_secrets = ["${BATLEHUB_URL_SIGNING_SECRET_OLD}"]
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `secret` | string | *required* | HMAC-SHA256 signing key, **32 bytes minimum**. Interpolate it from the environment (see [Sensitive values](#env-inline)) — a signing key does not belong in a committed file |
+| `ttl_seconds` | u64 | `300` | Lifetime of a minted URL. Hard-capped at `3600`; Terraform follows one within milliseconds, so the margin is for a slow runner rather than a human |
+| `previous_secrets` | string[] | `[]` | Verified against but never minted with, so a secret can be rotated without a flag day. An entry that interpolates to empty is ignored — but the variable must still be **set** (to `""` is fine): `${VAR}` expansion runs before parsing and refuses an unset variable, so leaving this line in place after retiring the old secret fails the whole config load. Remove the line, or export the variable empty |
+
+**Startup errors.** Each of these refuses to boot rather than degrading, because
+every one of them produces a registry whose operator believes it is protected:
+
+| Condition | Why it is fatal |
+|---|---|
+| A registry sets `signed_downloads = true` and this block is absent | The registry cannot serve the downloads it is closing off |
+| `secret` is empty | Usually a `${VAR}` that is unset in this environment |
+| `secret` is under 32 bytes | Too short for an HMAC-SHA256 key |
+| `ttl_seconds` is `0` | Every minted URL would be born expired |
+| `ttl_seconds` is above `3600` | A misconfiguration must not mint a month-long credential |
+| An entry of `previous_secrets` is under 32 bytes | A short entry is a mistake, not a rotation in progress |
+
+**Warnings** (non-fatal, served from `GET /api/v1/admin/config/warnings`):
+
+| Code | Raised when |
+|---|---|
+| `signed-urls.unused` | A secret is configured and no registry sets `signed_downloads = true`, so nothing is signed |
+| `signed-urls.anonymous-still-granted` | A signing registry still grants anonymous reads — legal, and usually a migration that stopped halfway, since signing exists so that grant can be removed |
+
+::: warning A minted URL is a bearer capability, and it is in your logs
+Until it expires, whoever holds the URL can fetch that one file as the user it
+was minted for. BatleHub records the full request target — query string included
+— in the `http.target` field of its request span at `INFO`, so log shipping,
+OTLP export and any TLS-terminating proxy in front of BatleHub all capture it.
+
+Bounded by the TTL, by the single coordinate, and by granting no permission the
+signed-for user did not already have. If that is not enough for your estate:
+lower `ttl_seconds`, and drop or rewrite `http.target` in your log pipeline. The
+audit trail is unaffected — `access_events` records the package coordinate, never
+the URL.
+:::
 
 ---
 
@@ -701,6 +760,7 @@ deny_missing_timestamp = false   # set true to block packages with no timestamp
 | `vuln_db_url` | string | no | **goproxy only.** Upstream URL for the Go Vulnerability Database. Default: `https://vuln.go.dev`. Set to `""` to disable the `/v1/` endpoints. See [Vulnerability Proxy](/use/vulnerability-proxy#_1-go-—-govulncheck-go-vulnerability-database). |
 | `sumdb_url` | string | no | **goproxy only.** Upstream URL for the Go checksum database. Default: `https://sum.golang.org`. Set to `""` to disable `/sumdb/{path}` — do that for a registry serving only private modules, where a lookup would leak private module paths to a public log. |
 | `upstream_auth` | table | no | Credentials sent on every upstream request. See [upstream auth](#upstream_auth). |
+| `signed_downloads` | bool | no | `false`. Mint and accept signed download URLs for this registry, so it can keep `anonymous = []` even though the client fetches artifacts without credentials. Requires [`[server.signed_urls]`](#server-signed-urls) — setting it without one is a startup error. See [signed downloads](#registry-signed-downloads). |
 | `tls` | table | no | TLS settings for upstream connections. See [upstream TLS](#upstream_tls). |
 | `proxy` | table | no | HTTP/SOCKS proxy for upstream connections. See [upstream proxy](#upstream_proxy). |
 
@@ -1307,6 +1367,8 @@ BatleHub stores physical artifact bytes at a content-addressed key (`blob/{sha25
 | `deny_missing_signature` | bool | `false` | When `true`, deny releases from registries that report no signature signal at all, instead of skipping the check and allowing the download. |
 
 > This checks `PackageMetadata.is_signed`, a best-effort signal populated per registry adapter — not full cryptographic signature verification. GitHub, Forgejo, GitLab, OpenVSX, and VS Code Marketplace populate it (presence of a `.asc`/`.sig` release asset or an extension signature blob); registries with no signing concept in their ecosystem (npm, PyPI, crates.io, Maven, RubyGems, Conda, Composer, Go, Terraform, NuGet, deb/rpm/pacman) report `None` and are allowed through unless `deny_missing_signature = true`.
+>
+> **On a `local` or `hybrid` registry, pair this with `[registries.signing] required = true`.** The paragraph above describes *proxied* artifacts. A **locally published** version is different: it is recorded as unsigned — not unknown — whenever the publish request carried no `X-Artifact-Signature` header, and this rule denies unsigned outright. `deny_missing_signature` does not soften that; it governs only the unknown case. So enabling this rule to gate the proxied half of a hybrid registry also makes every unsigned local publish fail **at download time**, with the `403` reaching the consumer rather than the publisher who could have fixed it. `signing.required = true` refuses the same artifact at the publish request instead. Configuring one without the other raises `require-signed-release.unsigned-publishes` on the **Config Reload** admin page and at `GET /api/v1/admin/config/warnings`.
 
 **`[[registries.rules]]` — Deny latest:**
 
@@ -1421,6 +1483,50 @@ bypass_roles = ["admin"]
 > - **OpenVSX**, **VS Code Marketplace** — the publisher segment of the extension id (`"publisher.extension"` → `"publisher"`).
 > - **Not yet supported: Cargo** (crate ownership isn't in the sparse index and would need a separate crates.io API call) and any other registry type. Configuring this rule on an unsupported registry **denies every request** — this is a fail-closed supply-chain gate, not a fail-open one.
 
+#### `signed_downloads` {#registry-signed-downloads}
+
+Some clients authenticate the *documents* of an install and then fetch the
+*artifact* named by one with no credentials, because their protocol has no way
+to send any. Terraform is the measured case: against 1.8.5, every protocol
+document is authenticated and every artifact fetch is not — the provider
+archive, its `SHA256SUMS` and the detached signature over that, on any host,
+including the one it authenticated a request earlier.
+
+Without help the only lever is `anonymous = ["releases:read", "source:read"]`,
+which is per *registry*: opening the last step of one provider install opens
+every version listing on it, and in hybrid mode everything published locally.
+
+`signed_downloads = true` mints a short-lived, single-coordinate signature into
+the document the client *did* authenticate, and accepts it on the fetches that
+carry no header. The registry can then set `anonymous = []`.
+
+```toml
+[server.signed_urls]
+secret = "${BATLEHUB_URL_SIGNING_SECRET}"
+
+[[registries]]
+type             = "terraform"
+name             = "internal-tf"
+signed_downloads = true
+
+[registries.rbac]
+anonymous = []
+user      = ["releases:read", "source:read"]
+```
+
+The signature **authenticates a request and authorises nothing**. It stands in
+for the `Authorization` header and changes nothing else: the same rule chain,
+block list, release-age gate, licence gate, visibility check, quota and audit
+run against the identity it carries. A version blocked after a URL was minted
+stays blocked, because the block is evaluated at redemption rather than at
+minting.
+
+Currently implemented for `terraform`. Setting it on another registry type is
+accepted and does nothing, since no other adapter has a route that mints.
+
+See [`[server.signed_urls]`](#server-signed-urls) for the key, its rotation, and
+the note about the token appearing in logs.
+
 #### `[registries.integrity]` {#integrity}
 
 Per-registry artifact integrity verification. On the proxy fetch-and-cache path, buffered upstream bytes are hashed and compared against the checksum advertised in the registry metadata (Cargo SHA-256, npm SRI/`shasum`, PyPI SHA-256). Registries that advertise no checksum (NuGet, Maven, GitHub, Go, …) fall through to the "missing" path. Does **not** apply to `firewall_only` registries, which stream straight through without buffering.
@@ -1444,7 +1550,7 @@ verify_on_serve = false   # re-hash stored bytes on every serve, not just on fir
 
 #### `[registries.signing]` {#signing}
 
-Per-registry artifact signing. At publish time, a client supplies a detached signature via the `X-Artifact-Signature` (+ `X-Signature-Type`) headers, stored alongside the artifact. The `required`/`allowed_types` fields gate signature **presence and type** at publish; `verify_on_download`/`trusted_keys` re-check a stored `ed25519` signature on **download**.
+Per-registry artifact signing. At publish time, a client supplies a detached signature via the `X-Artifact-Signature` and `X-Signature-Type` headers, stored alongside the artifact. **The two headers go together**: either one without the other is rejected with `400`, because a signature that names no algorithm can never be verified and a type that names no signature describes nothing. The `required`/`allowed_types` fields gate signature **presence and type** at publish; `verify_on_download`/`trusted_keys` re-check a stored `ed25519` signature on **download**.
 
 ```toml
 [registries.signing]
@@ -1456,9 +1562,9 @@ trusted_keys = ["<hex pubkey>"]  # hex-encoded 32-byte Ed25519 public keys trust
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `required` | bool | `false` | Reject publish requests that do not include an `X-Artifact-Signature` header. |
-| `allowed_types` | string[] | `[]` | Accepted signature types (e.g. `["pgp", "ed25519"]`). When empty, any type (or none) is accepted. |
-| `verify_on_download` | bool | `false` | Verify a stored `ed25519` detached signature against `trusted_keys` on every download (local-registry reads). A stored signature that fails to verify — or was signed by an untrusted key — fails the download with `502`. Signatures of other types and artifacts with no stored signature are not verified here (presence is governed by `required` at publish time). |
+| `required` | bool | `false` | Reject publish requests that do not include an `X-Artifact-Signature` header. A signature is always a pair, so a publish carrying one of the two headers is refused whatever this is set to. |
+| `allowed_types` | string[] | `[]` | Accepted signature types (e.g. `["pgp", "ed25519"]`). When empty, any type is accepted. An *unsigned* publish is governed by `required` alone — this list never makes a signature mandatory. |
+| `verify_on_download` | bool | `false` | Verify a stored `ed25519` detached signature against `trusted_keys` on every download (local-registry reads). A stored signature that fails to verify — or was signed by an untrusted key, or is of a type this cannot verify, or names **no** type at all — fails the download with `502`: with this on, an artifact that carries a signature and is not verifiable is refused rather than served. An artifact with no stored signature is not verified here; its presence is governed by `required` at publish time. |
 | `trusted_keys` | string[] | `[]` | Hex-encoded 32-byte Ed25519 public keys trusted to sign artifacts in this registry. A download verifies against each in turn; any match passes. |
 
 > **Why Ed25519 only?** RSA-based crypto (the `rsa` crate, and therefore PGP / x509 / the default Sigstore paths) is hard-banned from the dependency tree by `deny.toml` (RUSTSEC-2023-0071). Ed25519 detached-signature verification keeps the tree RSA-free; Sigstore / npm provenance verification is left as a future item for that reason.

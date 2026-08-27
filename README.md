@@ -1,5 +1,7 @@
 # BatleHub - Proxy Cache
 
+claude --resume d0026b84-fb1e-4be0-8067-1fbcf2ee41ac
+
 A self-hosted smart proxy and cache for package registries. It sits between your build tools and the internet, caches artifacts after the first download, and enforces access-control rules before any package reaches a developer or CI pipeline.
 
 ## Supported registries

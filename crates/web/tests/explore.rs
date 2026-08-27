@@ -91,30 +91,21 @@ async fn make_explore_app_full(
         .map(|n| (n.to_string(), Arc::new(rbac_policy(repo_dyn.clone()))))
         .collect();
 
-    let local_svc = make_local_svc(storage.clone());
-    // The handler reads the page size off `local_svc.hot`, which is the same
-    // lock as the proxy's in production (`server/src/main.rs` clones one `Arc`)
-    // and a second, independent one in this fixture. Set both, or the test would
-    // be configuring a `HotConfig` nothing reads.
-    {
-        let mut hot = local_svc.hot.write().await;
-        if let Some(per_page) = versions_per_page {
-            hot.versions_per_page = per_page;
-        }
-        if let Some(per_page) = packages_per_page {
-            hot.packages_per_page = per_page;
-        }
-    }
+    // One lock for both services, as `server/src/main.rs` wires it. This fixture
+    // used to build two and write the page size into both by hand; it no longer
+    // has to, and a policy set here is now the one the local read path consults.
+    let hot = new_hot_lock(HotConfig {
+        registries,
+        policies,
+        versions_per_page: versions_per_page
+            .unwrap_or(batlehub_core::services::hot_config::DEFAULT_VERSIONS_PER_PAGE),
+        packages_per_page: packages_per_page
+            .unwrap_or(batlehub_core::services::hot_config::DEFAULT_PACKAGES_PER_PAGE),
+        ..Default::default()
+    });
+    let local_svc = make_local_svc(hot.clone(), storage.clone());
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            versions_per_page: versions_per_page
-                .unwrap_or(batlehub_core::services::hot_config::DEFAULT_VERSIONS_PER_PAGE),
-            packages_per_page: packages_per_page
-                .unwrap_or(batlehub_core::services::hot_config::DEFAULT_PACKAGES_PER_PAGE),
-            ..Default::default()
-        }),
+        hot: hot.clone(),
         storage: storage.clone(),
         cache,
         repo: repo_dyn.clone(),

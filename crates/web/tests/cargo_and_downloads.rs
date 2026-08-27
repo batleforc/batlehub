@@ -47,13 +47,14 @@ async fn make_app_with_cargo_index(
     let policies: HashMap<String, Arc<RegistryPolicy>> =
         [("cargo".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
 
-    let local_svc = make_local_svc(storage.clone());
+    let hot = new_hot_lock(HotConfig {
+        registries,
+        policies,
+        ..Default::default()
+    });
+    let local_svc = make_local_svc(hot.clone(), storage.clone());
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
+        hot: hot.clone(),
         storage,
         cache,
         repo: repo_dyn.clone(),

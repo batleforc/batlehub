@@ -270,13 +270,14 @@ async fn make_unavailable_npm_app(
     )]
     .into();
 
-    let local_svc = make_local_svc(storage.clone());
+    let hot = new_hot_lock(HotConfig {
+        registries,
+        policies,
+        ..Default::default()
+    });
+    let local_svc = make_local_svc(hot.clone(), storage.clone());
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
+        hot: hot.clone(),
         storage,
         cache: cache_dyn,
         repo: repo_dyn.clone(),

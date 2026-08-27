@@ -1,7 +1,8 @@
 use super::{
-    collect_payload, delete, extract_signature_headers, post, put, require_local_mode,
-    require_registry_type, terraform_provider_binary_storage_key, terraform_set_yanked, web,
-    AppError, Arc, AuthIdentity, Digest, HttpRequest, HttpResponse, LocalRegistryService,
+    collect_payload, delete, extract_signature_headers, off_origin_checksum_urls, post, put,
+    registry_public_base, require_local_mode, require_registry_type,
+    terraform_provider_binary_storage_key, terraform_set_yanked, web, AppError, Arc,
+    ArtifactSignature, AuthIdentity, Digest, HttpRequest, HttpResponse, LocalRegistryService,
     NotificationService, PublishPolicyRequest, PublishRequest, RegistryMap, RegistryModeMap,
     Responder, Sha256, StorageMeta, TerraformYankRequest,
 };
@@ -23,6 +24,7 @@ use crate::handlers::schemas::{MessageResponse, OkResponse};
     ),
     responses(
         (status = 201, description = "Provider version manifest stored", body = MessageResponse),
+        (status = 400, description = "Malformed signature headers"),
         (status = 401, description = "Authentication required"),
         (status = 403, description = "Quota exceeded or ownership denied"),
         (status = 404, description = "Registry not found or not in local/hybrid mode"),
@@ -66,9 +68,36 @@ pub async fn terraform_provider_upload(
     }
 
     let name = format!("providers/{namespace}/{ptype}");
-    let (signature_bytes, signature_type) = extract_signature_headers(&req);
+    let (signature_bytes, signature_type) =
+        ArtifactSignature::split(extract_signature_headers(&req)?);
 
-    super::super::super::common::publish_and_respond(
+    // A manifest may name checksum URLs on another host, and today that is the
+    // only way a local-mode install verifies anything — BatleHub has no key it
+    // could put in `signing_keys`, and Terraform refuses a provider whose
+    // checksum list it cannot get (measured, RFC 0012 §7.1). So this is told to
+    // the publisher rather than refused: that host will see every
+    // `terraform init` for this provider, and an air-gapped install will reach
+    // it. The URLs are never signed, whatever else happens to them.
+    let off_origin = off_origin_checksum_urls(&manifest, &registry_public_base(&req, &registry));
+    let message = if off_origin.is_empty() {
+        MessageResponse::new("provider version published")
+    } else {
+        MessageResponse::new(format!(
+            "provider version published — note: {} points at another host, so `terraform init` \
+             fetches it from there rather than from this registry. It is never given a signed \
+             URL, and an air-gapped install will reach that host.",
+            off_origin.join(", ")
+        ))
+    };
+
+    // Kept for the log line below, which must not fire until the publish has
+    // actually landed: a 409, a 422 or a quota refusal would otherwise leave a
+    // WARN naming a version this registry does not hold, and an operator
+    // grepping for off-origin checksums would audit manifests that do not exist.
+    let logged = (!off_origin.is_empty())
+        .then(|| (registry.clone(), name.clone(), version.clone(), off_origin));
+
+    let resp = super::super::super::common::publish_and_respond(
         &local_svc,
         &notification_svc,
         PublishRequest {
@@ -84,9 +113,20 @@ pub async fn terraform_provider_upload(
             signature_type,
         },
         actix_web::http::StatusCode::CREATED,
-        MessageResponse::new("provider version published"),
+        message,
     )
-    .await
+    .await?;
+
+    if let Some((registry, name, version, urls)) = logged {
+        tracing::warn!(
+            registry = %registry,
+            package = %name,
+            version = %version,
+            urls = ?urls,
+            "published manifest names checksum URLs on another host"
+        );
+    }
+    Ok(resp)
 }
 
 /// Upload a platform binary for a locally-published Terraform provider.
@@ -104,6 +144,7 @@ pub async fn terraform_provider_upload(
     ),
     responses(
         (status = 200, description = "Binary stored", body = OkResponse),
+        (status = 400, description = "Malformed signature headers"),
         (status = 401, description = "Authentication required"),
         (status = 404, description = "Registry not found or not in local/hybrid mode"),
     ),

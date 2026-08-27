@@ -1,7 +1,7 @@
 use batlehub_core::ports::{ExtractedManifest, ExtractedReadme, SbomDependency};
 use bytes::Bytes;
 
-use super::readme;
+use super::{anchor, readme};
 use batlehub_core::services::readme::detect;
 
 pub(super) fn extract_pypi_manifest(data: &Bytes) -> ExtractedManifest {
@@ -21,23 +21,28 @@ fn extract_pypi_wheel(data: &Bytes) -> Option<ExtractedManifest> {
         return None;
     };
 
-    for i in 0..archive.len() {
-        let Ok(mut file) = archive.by_index(i) else {
-            continue;
-        };
-        let name = file.name().to_owned();
-        if name.ends_with(".dist-info/METADATA") {
-            let mut content = String::new();
-            if file.read_to_string(&mut content).is_err() {
-                tracing::warn!(
-                    "sbom: failed to parse pypi wheel manifest, treating as no dependencies"
-                );
-                return None;
-            }
-            return Some(parse_pep_metadata(&content));
-        }
+    // The single `{dist}-{version}.dist-info/METADATA` PEP 427 allows a wheel.
+    // `ends_with(".dist-info/METADATA")` matched one at any depth and took the
+    // first, so a planted `evil.dist-info/METADATA` decided the answer. See
+    // `anchor`.
+    let matches: Vec<usize> = (0..archive.len())
+        .filter(|i| {
+            archive
+                .by_index(*i)
+                .is_ok_and(|f| anchor::is_wheel_metadata(f.name()))
+        })
+        .collect();
+    let index = anchor::sole(matches)?;
+
+    let Ok(mut file) = archive.by_index(index) else {
+        return None;
+    };
+    let mut content = String::new();
+    if file.read_to_string(&mut content).is_err() {
+        tracing::warn!("sbom: failed to parse pypi wheel manifest, treating as no dependencies");
+        return None;
     }
-    None
+    Some(parse_pep_metadata(&content))
 }
 
 fn extract_pypi_sdist(data: &Bytes) -> Option<ExtractedManifest> {
@@ -53,19 +58,31 @@ fn extract_pypi_sdist(data: &Bytes) -> Option<ExtractedManifest> {
         return None;
     };
 
+    // `{name}-{version}/PKG-INFO` at the wrapper directory's depth, with
+    // `METADATA` as the fallback spelling. A bare `PKG-INFO`/`METADATA`
+    // filename matched at *any* depth, so a vendored — or planted — copy won on
+    // tar order. See `anchor`.
+    let mut pkg_info: Vec<String> = Vec::new();
+    let mut alias: Vec<String> = Vec::new();
     for entry in entries.flatten() {
         let Ok(path) = entry.path() else { continue };
-        let path = path.into_owned();
-        let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if fname == "PKG-INFO" || fname == "METADATA" {
-            let mut reader = entry;
-            let mut content = String::new();
-            if reader.read_to_string(&mut content).is_ok() {
-                return Some(parse_pep_metadata(&content));
-            }
+        let path = path.to_string_lossy().into_owned();
+        let target = if anchor::is_sdist_pkg_info(&path) {
+            &mut pkg_info
+        } else if anchor::is_sdist_metadata_alias(&path) {
+            &mut alias
+        } else {
+            continue;
+        };
+        let mut reader = entry;
+        let mut content = String::new();
+        if reader.read_to_string(&mut content).is_ok() {
+            target.push(content);
         }
     }
-    None
+    anchor::sole(pkg_info)
+        .or_else(|| anchor::sole(alias))
+        .map(|content| parse_pep_metadata(&content))
 }
 
 fn parse_pep_metadata(content: &str) -> ExtractedManifest {
@@ -257,6 +274,63 @@ mod tests {
     }
 
     use super::*;
+
+    const REAL_META: &[u8] = b"Name: demo\nLicense-Expression: GPL-3.0-only\n";
+    const DECOY_META: &[u8] = b"Name: decoy\nLicense-Expression: MIT\n";
+
+    /// A wheel has exactly one `.dist-info`. `ends_with(".dist-info/METADATA")`
+    /// accepted one nested anywhere and zip order made it win.
+    #[test]
+    fn a_nested_dist_info_is_not_the_wheels_own() {
+        let data = zipped(&[
+            ("vendor/decoy.dist-info/METADATA", DECOY_META),
+            ("demo-1.0.0.dist-info/METADATA", REAL_META),
+        ]);
+        assert_eq!(
+            extract_pypi_manifest(&data).license.as_deref(),
+            Some("GPL-3.0-only")
+        );
+    }
+
+    /// Two at the wheel's own depth is malformed, so the answer is unknown
+    /// rather than whichever was written first.
+    #[test]
+    fn two_dist_info_directories_are_ambiguous_not_first_wins() {
+        let data = zipped(&[
+            ("aaa.dist-info/METADATA", DECOY_META),
+            ("demo-1.0.0.dist-info/METADATA", REAL_META),
+        ]);
+        assert_eq!(extract_pypi_manifest(&data), ExtractedManifest::default());
+    }
+
+    /// The sdist half of the same defect: a bare `PKG-INFO` filename matched at
+    /// any depth, so a vendored copy won on tar order.
+    #[test]
+    fn a_nested_pkg_info_is_not_the_sdists_own() {
+        let data = targz(&[
+            ("demo-1.0.0/vendor/dep/PKG-INFO", DECOY_META),
+            ("demo-1.0.0/PKG-INFO", REAL_META),
+        ]);
+        assert_eq!(
+            extract_pypi_manifest(&data).license.as_deref(),
+            Some("GPL-3.0-only")
+        );
+    }
+
+    /// `PKG-INFO` is unambiguously the one to read, so an sdist carrying the
+    /// `METADATA` spelling beside it is not ambiguous — the fallback only
+    /// applies when there is no `PKG-INFO`.
+    #[test]
+    fn pkg_info_wins_over_the_metadata_spelling_beside_it() {
+        let data = targz(&[
+            ("demo-1.0.0/METADATA", DECOY_META),
+            ("demo-1.0.0/PKG-INFO", REAL_META),
+        ]);
+        assert_eq!(
+            extract_pypi_manifest(&data).license.as_deref(),
+            Some("GPL-3.0-only")
+        );
+    }
 
     #[test]
     fn parse_pep_metadata_basic() {

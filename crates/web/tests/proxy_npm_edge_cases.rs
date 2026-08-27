@@ -140,13 +140,14 @@ async fn audit_quick_forwards_to_upstream_and_returns_response() {
     .into();
     let policies: HashMap<String, Arc<batlehub_core::services::RegistryPolicy>> =
         [("npm".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
-    let local_svc = make_local_svc(storage.clone());
+    let hot = new_hot_lock(HotConfig {
+        registries,
+        policies,
+        ..Default::default()
+    });
+    let local_svc = make_local_svc(hot.clone(), storage.clone());
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
+        hot: hot.clone(),
         storage,
         cache,
         repo: repo_dyn.clone(),

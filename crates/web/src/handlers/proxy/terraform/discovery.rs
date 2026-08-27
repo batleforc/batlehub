@@ -28,6 +28,7 @@
 //! where `batlehub.example.com/proxy/internal-tf/myorg/mycloud` is five and is
 //! rejected before a request is made.
 
+use super::shared::{sign_artifact_url, signer_for};
 use super::{get, require_registry_type, web, AppError, Arc, AuthIdentity, HttpRequest, Responder};
 use crate::handlers::schemas::ProtocolDocument;
 use crate::middleware::host_routing::host_routed_registry;
@@ -206,6 +207,10 @@ pub async fn terraform_mirror_version(
     require_registry_type(&registry, "terraform", &map)?;
     require_matching_origin(&registry, &hostname, &upstream_map)?;
 
+    // Kept because `mirror_versions` consumes the extractor, and a signed URL
+    // has to carry the identity the rule chain just approved.
+    let caller = identity.0.clone();
+
     // The version list is filtered, so asking it whether this version survives
     // is how a blocked version is hidden from the mirror as well: no separate
     // filter, and no way for the two documents to disagree.
@@ -216,24 +221,49 @@ pub async fn terraform_mirror_version(
         )));
     }
 
+    // RFC 0012 §5: this is a legitimate minting site precisely because
+    // `mirror_versions` above has already run the rule chain for this provider
+    // as this caller, and the version has survived the filtered list. The
+    // signature below records that verdict rather than creating one.
+    let signer = signer_for(&svc, &registry).await;
+    let pkg_name = format!("providers/{namespace}/{ptype}");
+
     // Relative to *this* document — `{version}.json` sits beside the platform
     // archives in the mirror's namespace, so `../` walks back to the provider
-    // root that the registry-protocol artifact route hangs off.
+    // root that the registry-protocol artifact route hangs off. A query string
+    // rides along unharmed: a relative reference resolves the path and keeps
+    // the query it was written with (RFC 0009 §12.3, RFC 0012 §4.3).
     let archives: serde_json::Map<String, serde_json::Value> = MIRROR_PLATFORMS
         .iter()
         .map(|(os, arch)| {
-            (
-                format!("{os}_{arch}"),
-                serde_json::json!({
-                    "url": format!("../../../v1/providers/{namespace}/{ptype}/{version}/artifact/{os}/{arch}"),
-                }),
-            )
+            let url =
+                format!("../../../v1/providers/{namespace}/{ptype}/{version}/artifact/{os}/{arch}");
+            let url = match signer.as_ref() {
+                Some(signer) => sign_artifact_url(
+                    signer,
+                    &url,
+                    &registry,
+                    &pkg_name,
+                    &version,
+                    &format!("{os}/{arch}"),
+                    &caller,
+                ),
+                None => url,
+            };
+            (format!("{os}_{arch}"), serde_json::json!({ "url": url }))
         })
         .collect();
 
-    Ok(HttpResponse::Ok()
-        .content_type("application/json")
-        .json(serde_json::json!({ "archives": archives })))
+    // Every URL above carries `bh_sig` when the registry signs, and `bh_sig`
+    // encodes *this* caller's id, role and groups — so the document stops being
+    // the same for everyone the moment signing is on. Nothing here sets a
+    // validator or an expiry, which is exactly the shape a shared cache is
+    // allowed to guess a freshness lifetime for (RFC 9111 §4.2.2); without this
+    // it could hand one user's capability to the next.
+    let mut resp = HttpResponse::Ok();
+    resp.content_type("application/json");
+    super::mark_uncacheable_if_signed(&mut resp, signer.is_some());
+    Ok(resp.json(serde_json::json!({ "archives": archives })))
 }
 
 /// The platforms a mirror advertises.

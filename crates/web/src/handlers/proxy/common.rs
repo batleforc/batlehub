@@ -61,22 +61,103 @@ pub fn registry_public_base(req: &HttpRequest, registry: &str) -> String {
     format!("{scheme}://{host}/proxy/{registry}")
 }
 
-/// Decode `X-Artifact-Signature` (base64) and `X-Signature-Type` headers from a request.
+/// A publisher-supplied artifact signature: the bytes **and** the type that says
+/// how to verify them.
 ///
-/// Returns `(signature_bytes, signature_type)`. Either or both may be `None`.
-pub fn extract_signature_headers(req: &HttpRequest) -> (Option<Vec<u8>>, Option<String>) {
+/// One value rather than two `Option`s, because either half alone is a state
+/// nothing downstream can act on. `X-Artifact-Signature` and `X-Signature-Type`
+/// are independent headers, so "bytes with no type" was reachable, satisfied
+/// `signing.required`, skipped the `allowed_types` allow-list because there was
+/// no type to check, and then read as *absent* on the download path — an
+/// artifact stored as signed whose signature was never verified against
+/// `trusted_keys` at any point in its life (survey finding 13).
+pub struct ArtifactSignature {
+    pub bytes: Vec<u8>,
+    pub signature_type: String,
+}
+
+impl ArtifactSignature {
+    /// Back to the two columns the stored row has.
+    ///
+    /// The single place the coherent pair becomes a pair of `Option`s, so
+    /// "bytes without type" exists only on the far side of persistence — where
+    /// [`LocalRegistryService::get_artifact`] meets rows written before this
+    /// check existed, and refuses to serve them unverified.
+    pub fn split(sig: Option<Self>) -> (Option<Vec<u8>>, Option<String>) {
+        match sig {
+            Some(s) => (Some(s.bytes), Some(s.signature_type)),
+            None => (None, None),
+        }
+    }
+}
+
+/// Decode `X-Artifact-Signature` (base64) and `X-Signature-Type` from a request.
+///
+/// `Ok(None)` when neither header is present. **Either header alone is a `400`**,
+/// as is an `X-Artifact-Signature` that is not valid base64 — which previously
+/// decoded to `None` and so was indistinguishable from sending no signature at
+/// all, letting a malformed signature pass as an absent one under a policy that
+/// merely required *a* signature.
+///
+/// A header whose bytes are not readable as a string is a `400` for the same
+/// reason, and not `None`: base64 and a signature-type name are both ASCII, so
+/// an unreadable value is a malformed signature, and `to_str().ok()` would
+/// otherwise put it straight back in the "absent" bucket this exists to empty.
+///
+/// An **empty** value of either header is a `400` too, and for the third face of
+/// the same defect: `""` is valid base64 for zero bytes, so `X-Artifact-Signature:`
+/// with a permitted type decoded to `Some(vec![])` — present enough to satisfy
+/// `signing.required` and to make the stored row read as signed, while carrying
+/// nothing any key could ever verify.
+pub fn extract_signature_headers(req: &HttpRequest) -> Result<Option<ArtifactSignature>, AppError> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
-    let sig_bytes = req
-        .headers()
-        .get("X-Artifact-Signature")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| STANDARD.decode(s.trim()).ok());
-    let sig_type = req
-        .headers()
-        .get("X-Signature-Type")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned);
-    (sig_bytes, sig_type)
+    fn header_str<'r>(req: &'r HttpRequest, name: &str) -> Result<Option<&'r str>, AppError> {
+        req.headers()
+            .get(name)
+            .map(|v| {
+                v.to_str().map_err(|_| {
+                    AppError::bad_request(format!("{name} is not a readable header value"))
+                })
+            })
+            .transpose()
+    }
+    let raw_sig = header_str(req, "X-Artifact-Signature")?.map(str::trim);
+    let sig_type = header_str(req, "X-Signature-Type")?.map(|s| s.trim().to_owned());
+
+    match (raw_sig, sig_type) {
+        (None, None) => Ok(None),
+        (Some(raw), Some(signature_type)) => {
+            let bytes = STANDARD.decode(raw).map_err(|e| {
+                AppError::bad_request(format!("X-Artifact-Signature is not valid base64: {e}"))
+            })?;
+            if bytes.is_empty() {
+                return Err(AppError::bad_request(
+                    "X-Artifact-Signature decoded to zero bytes; an empty signature can never be \
+                     verified"
+                        .to_owned(),
+                ));
+            }
+            if signature_type.is_empty() {
+                return Err(AppError::bad_request(
+                    "X-Signature-Type is empty; a signature that names no algorithm can never be \
+                     verified"
+                        .to_owned(),
+                ));
+            }
+            Ok(Some(ArtifactSignature {
+                bytes,
+                signature_type,
+            }))
+        }
+        (Some(_), None) => Err(AppError::bad_request(
+            "X-Artifact-Signature was sent without X-Signature-Type; a signature that names no \
+             algorithm can never be verified"
+                .to_owned(),
+        )),
+        (None, Some(ty)) => Err(AppError::bad_request(format!(
+            "X-Signature-Type '{ty}' was sent without X-Artifact-Signature"
+        ))),
+    }
 }
 
 /// Append `X-Artifact-Signature` (base64) and `X-Signature-Type` headers to a response
@@ -400,20 +481,12 @@ pub async fn serve_local_or_proxy_artifact(
     let mode = mode_map.get(registry);
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        // Enforce the registry's RBAC (`[registries.rbac]`) before serving from
-        // local storage. `get_artifact` only checks per-package Visibility and
-        // pre-release gating — it never runs the registry rule chain, which is
-        // only evaluated on the proxy fall-through. Without this, a local hit
-        // would bypass a registry that denies e.g. anonymous `releases:read`
-        // while its packages keep the default Public visibility. Mirrors the
-        // deb/rpm `repo_get` guard so local and proxy reads stay consistent.
-        svc.authorize_read(
-            &PackageId::new(registry, name, version),
-            &identity.0,
-            opts.resource_type,
-        )
-        .await
-        .map_err(AppError::from)?;
+        // No `authorize_read` here any more: `get_artifact` runs the registry's
+        // rule chain itself, against the `resource_type` passed to it, so a
+        // local hit is gated by construction rather than by every handler
+        // remembering to ask first. This helper used to be the compensation for
+        // that — and the eight handlers that did not use it are survey findings
+        // 4 to 10.
         if opts.check_prerelease {
             local_svc
                 .check_prerelease_access(registry, version, &identity)
@@ -421,7 +494,7 @@ pub async fn serve_local_or_proxy_artifact(
                 .map_err(AppError::from)?;
         }
         match local_svc
-            .get_artifact(registry, name, version, &identity)
+            .get_artifact(registry, name, version, opts.resource_type, &identity)
             .await
         {
             Ok(bytes) => {

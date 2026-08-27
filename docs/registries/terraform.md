@@ -50,11 +50,26 @@ outright — *"the mirror must be at an https: URL"* — so a local instance on
 
 **Terraform does not authenticate the provider download.** It sends the token
 from your `credentials` block to the mirror's `index.json` and `{version}.json`,
-and then fetches the provider archive **without credentials**. So a mirror
-registry needs `anonymous = ["releases:read", "source:read"]` under
-`[registries.rbac]`, or an authenticating ingress in front of it — the same
-constraint the [VS Code gallery](/registries/vscode-marketplace) has, for the
-same reason.
+and then fetches the provider archive **without credentials**. The same is true
+of the registry protocol, and of the `SHA256SUMS` and `.sig` it fetches
+alongside the archive: measured against Terraform 1.8.5, every protocol document
+is authenticated and every artifact fetch is not — including on the host it
+authenticated one request earlier.
+
+You have two ways to live with that, and the second is new:
+
+- **Open the registry** — `anonymous = ["releases:read", "source:read"]` under
+  `[registries.rbac]`, or an authenticating ingress in front of it. This is the
+  blunt option: the grant is per *registry*, so opening the last step of one
+  provider install opens every version listing and, in hybrid mode, everything
+  published locally.
+- **Sign the downloads** — [`signed_downloads = true`](#signed-downloads),
+  which lets you keep `anonymous = []`. BatleHub puts a short-lived,
+  single-coordinate signature inside the document Terraform *did* authenticate,
+  and accepts it on the fetches that carry no header.
+
+The [VS Code gallery](/registries/vscode-marketplace) has the same constraint
+for the same reason, and does not yet have the second option.
 :::
 
 ### Registry protocol — requires host routing
@@ -143,6 +158,90 @@ admin     = ["*"]
 ```
 
 For hybrid mode add `upstreams = ["https://registry.terraform.io"]`.
+
+### Closing the registry with signed downloads {#signed-downloads}
+
+Terraform fetches the provider archive, its `SHA256SUMS` and the detached
+signature over that **with no `Authorization` header**, and has no mechanism to
+send one. Without help, the only way to make an install work is to grant
+anonymous reads across the whole registry.
+
+`signed_downloads` removes that trade. BatleHub mints a signature into the
+document Terraform *did* authenticate, and accepts it on the three fetches that
+carry no header:
+
+```toml
+[server.signed_urls]
+# 32 bytes minimum. Interpolated from the environment like every other
+# credential in this file — see "Sensitive values" in the configuration guide.
+secret      = "${BATLEHUB_URL_SIGNING_SECRET}"
+ttl_seconds = 300                # default; hard-capped at 3600
+
+[[registries]]
+type             = "terraform"
+name             = "internal-tf"
+signed_downloads = true
+
+[registries.rbac]
+anonymous = []                   # now possible
+user      = ["releases:read", "source:read"]
+```
+
+What the signature is, precisely: a five-minute capability for **one registry,
+one package, one version, one platform, one method**. It carries the identity
+that fetched the document, and verification hands that identity to the same rule
+chain, quota and audit as any other download. It authenticates a request; it
+authorises nothing. A version blocked after the URL was minted stays blocked,
+because the block is evaluated when the URL is redeemed.
+
+Three consequences worth knowing before you turn it on:
+
+- **`GET /api/v1/audit` names the user** for provider downloads, where it
+  previously recorded no actor at all — with `anonymous` granted, the rule chain
+  was evaluating *anonymous*, so group grants never applied and quota was
+  charged to nobody.
+- **The token can reach your logs — but not BatleHub's own.** BatleHub's request
+  span sets `http.target` from the request's *path only*, deliberately (see the
+  note below). Anything else on the path that logs a full URL still sees the
+  signature for its lifetime.
+- **`signed_downloads = true` with no `[server.signed_urls].secret` is a startup
+  error**, not a warning. A registry that believes it is closed and is not is
+  exactly the failure this feature exists to prevent.
+
+::: warning The signature can reach logs that are not BatleHub's
+A minted URL is a bearer capability until it expires, so anything that records a
+full request URL records the token. `tracing-actix-web`'s own span builder sets
+`http.target` from the request's path *and query*, which is why BatleHub does not
+use it: `BatleHubSpanBuilder` (`server/src/server_factory.rs`) is a field-for-field
+re-implementation whose one deviation is `http.target = uri.path()`, and a test
+asserts the span target never carries a query string.
+
+That covers this server and nothing else. A reverse proxy terminating TLS in
+front of BatleHub, a CDN, or Terraform's own `TF_LOG=DEBUG` output will each
+capture the whole URL. What that is worth to whoever reads those logs is bounded
+— five minutes by default, one file, and no permission the signed-for user did
+not already have. If that is still more than you want, the levers are: lower
+`ttl_seconds`, and check the access-log configuration of whatever sits in front.
+The audit trail itself is clean: `access_events` records the package coordinate,
+never the URL.
+:::
+
+**Rotating the secret** needs no restart and no flag day. Put the new secret in
+`secret`, move the old one to `previous_secrets`, and reload: URLs minted under
+either verify, and only the current one mints. Drop the old entry once the
+longest `ttl_seconds` has passed.
+
+```toml
+[server.signed_urls]
+secret           = "${BATLEHUB_URL_SIGNING_SECRET}"
+previous_secrets = ["${BATLEHUB_URL_SIGNING_SECRET_OLD}"]
+```
+
+An entry that interpolates to empty is ignored, so the `previous_secrets` line
+can stay in the file between rotations — but the variable must still be *set*.
+`${VAR}` expansion runs before the config is parsed and refuses an unset
+variable, so once the old secret is retired either remove the line or keep
+`BATLEHUB_URL_SIGNING_SECRET_OLD=""` exported.
 
 ### Publishing modules
 

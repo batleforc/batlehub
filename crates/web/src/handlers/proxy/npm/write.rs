@@ -12,6 +12,7 @@ use batlehub_core::{
 
 use crate::handlers::proxy::common::{
     collect_payload, dispatch_notification, extract_signature_headers, require_local_mode,
+    ArtifactSignature,
 };
 use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
@@ -108,7 +109,8 @@ pub async fn npm_publish(
         }
     }
 
-    let (signature_bytes, signature_type) = extract_signature_headers(&req);
+    let (signature_bytes, signature_type) =
+        ArtifactSignature::split(extract_signature_headers(&req)?);
     let actor = identity.0.user_id.clone().unwrap_or_default();
 
     let quota = local_svc

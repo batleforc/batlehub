@@ -31,8 +31,6 @@ async fn make_rubygems_proxy_app() -> impl actix_web::dev::Service<
     let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let local_svc = make_local_svc(storage.clone());
-
     let registries: HashMap<String, Arc<dyn RegistryClient>> = [(
         "gems".to_owned(),
         FixedRegistry::new("rubygems") as Arc<dyn RegistryClient>,
@@ -41,12 +39,15 @@ async fn make_rubygems_proxy_app() -> impl actix_web::dev::Service<
     let policies: HashMap<String, Arc<RegistryPolicy>> =
         [("gems".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
 
+    let hot = new_hot_lock(HotConfig {
+        registries,
+        policies,
+        ..Default::default()
+    });
+    let local_svc = make_local_svc(hot.clone(), storage.clone());
+
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
+        hot: hot.clone(),
         storage,
         cache,
         repo: repo_dyn.clone(),

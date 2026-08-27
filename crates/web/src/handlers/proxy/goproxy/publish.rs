@@ -7,7 +7,7 @@ use batlehub_core::services::{LocalRegistryService, PublishRequest};
 
 use crate::handlers::proxy::common::{
     collect_payload, extract_signature_headers, publish_and_respond, require_local_mode,
-    require_registry_type,
+    require_registry_type, ArtifactSignature,
 };
 use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
@@ -81,7 +81,8 @@ pub async fn goproxy_publish(
         "go_mod": go_mod
     });
 
-    let (signature_bytes, signature_type) = extract_signature_headers(&req);
+    let (signature_bytes, signature_type) =
+        ArtifactSignature::split(extract_signature_headers(&req)?);
 
     publish_and_respond(
         &local_svc,

@@ -72,6 +72,18 @@ pub const SUBDOMAIN_INVALID_DNS_LABEL: &str = "subdomain.invalid-dns-label";
 /// only happens when someone wrote it down, which is the point of the warning.
 pub const CORS_ANY_ORIGIN: &str = "cors.any-origin";
 
+/// A registry has `signed_downloads = true` *and* still grants the anonymous
+/// read that signing exists to remove. Legal — belt and braces — but almost
+/// certainly a migration someone stopped halfway: the signed URLs are minted
+/// and verified, and the registry is open to everyone anyway, so nothing is
+/// actually closed (RFC 0012 §7).
+pub const SIGNED_URLS_ANONYMOUS_STILL_GRANTED: &str = "signed-urls.anonymous-still-granted";
+
+/// `[server.signed_urls]` is configured and no registry sets
+/// `signed_downloads = true`, so the secret signs nothing. Harmless, and worth
+/// saying: it is the shape of a feature enabled on the wrong side.
+pub const SIGNED_URLS_UNUSED: &str = "signed-urls.unused";
+
 /// A `license_gate` rule is configured on a registry whose type has no manifest
 /// parser, so the licence of every version is permanently unknown and the gate
 /// can never observe what it claims to govern.
@@ -93,6 +105,25 @@ pub const LICENSE_GATE_NO_EXTRACTOR: &str = "license-gate.no-extractor";
 /// for that registry type is. Found by running the thing rather than reading
 /// it: the parser worked, the rule was loaded, and no licence was ever stored.
 pub const LICENSE_GATE_SBOM_DISABLED: &str = "license-gate.sbom-disabled";
+
+/// `require_signed_release` is configured on a registry that also *publishes*,
+/// while `[registries.signing] required` is not set.
+///
+/// The rule reads `PackageMetadata::is_signed`. For a proxied artifact the
+/// adapter fills that in (a `.asc` asset on GitHub, a signature blob in an
+/// OpenVSX extension), and a type with no such signal leaves it `None`, which
+/// the rule skips by default. A **locally published** row is different: it
+/// reports `Some(false)` whenever it carries no signature bytes, and
+/// `RequireSignedReleaseRule` denies `Some(false)` outright —
+/// `deny_missing_signature` governs only the `None` case.
+///
+/// So on a hybrid registry, enabling this rule to gate the *proxied* half also
+/// makes every locally published artifact `403 this release is not signed`, at
+/// **download** time, for the consumer rather than the publisher. Pairing it
+/// with `signing.required = true` moves that refusal to the publish request,
+/// where the person who can act on it is the one who sees it.
+pub const REQUIRE_SIGNED_RELEASE_UNSIGNED_PUBLISHES: &str =
+    "require-signed-release.unsigned-publishes";
 
 /// A `[registries.readme]` block written down on a registry type that has no
 /// README to give — `maven`, the source-hosting kinds, the path-addressed kinds.

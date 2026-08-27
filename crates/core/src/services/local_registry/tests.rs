@@ -6,6 +6,7 @@ use bytes::Bytes;
 use chrono::Utc;
 
 use super::*;
+use crate::rules::resource_type::RELEASES_READ;
 use crate::{
     entities::{Identity, Role},
     error::CoreError,
@@ -506,6 +507,107 @@ async fn get_pypi_simple_page_not_found_when_no_versions() {
         .await
         .unwrap_err();
     assert!(matches!(err, CoreError::NotFound(_)));
+}
+
+/// The Simple index is `text/html` on the console's own origin, and every value
+/// it interpolates came from a publisher. A filename read back from
+/// `index_metadata` must not be able to close the `href`, close the anchor, or
+/// open a tag of its own — `pip` follows absolute `href`s out of this page, so an
+/// injected second anchor substitutes the artifact source for every install.
+#[tokio::test]
+async fn pypi_simple_page_escapes_a_hostile_filename() {
+    let backend = InMemBackend::arc();
+    let mut hostile = pkg("pypi", "evil", "1.0.0");
+    hostile.index_metadata = serde_json::json!({
+        "filename": "evil-1.0.tar.gz\"></a><a href=https://attacker.tld/backdoor.whl>backdoor<a x=\"",
+        "sha256": "<img src=x onerror=alert(1)>",
+    });
+    backend.seed(hostile);
+
+    let html = svc(backend, None)
+        .get_pypi_simple_page("pypi", "evil", "http://localhost", &anon())
+        .await
+        .unwrap();
+
+    // The payload survives only as inert text and as percent-encoded bytes
+    // inside this server's own path, so assert on structure: one anchor, closed
+    // once, pointing here. Two of either is the vulnerability.
+    assert_eq!(html.matches("<a ").count(), 1, "{html}");
+    assert_eq!(html.matches("</a>").count(), 1, "{html}");
+    assert_eq!(
+        html.matches("<a href=\"http://localhost/packages/").count(),
+        1,
+        "{html}"
+    );
+    assert!(
+        !html.contains("<img") && !html.contains("<a href=https"),
+        "a value opened a tag of its own: {html}"
+    );
+    // The hash reaches the fragment, so it is the percent-encode — not the
+    // entity-escape — that neutralises it there.
+    assert!(html.contains("#sha256=%3Cimg"), "{html}");
+}
+
+/// The same primitive through the package name, which reaches `<title>` and
+/// `<h1>` and is only normalised on the way (lowercase and `-_.` collapse — it
+/// removes nothing).
+#[tokio::test]
+async fn pypi_simple_page_escapes_a_hostile_package_name() {
+    let backend = InMemBackend::arc();
+    let name = "evil<script>alert(1)</script>";
+    backend.seed(pkg("pypi", name, "1.0.0"));
+
+    let html = svc(backend, None)
+        .get_pypi_simple_page("pypi", name, "http://localhost", &anon())
+        .await
+        .unwrap();
+
+    assert!(!html.contains("<script>"), "{html}");
+    assert!(html.contains("&lt;script&gt;"), "{html}");
+}
+
+/// A `Host`-derived base is attacker-controlled in plenty of deployments.
+#[tokio::test]
+async fn pypi_simple_page_escapes_the_base_url() {
+    let backend = InMemBackend::arc();
+    backend.seed(pkg("pypi", "requests", "2.28.0"));
+
+    let html = svc(backend, None)
+        .get_pypi_simple_page(
+            "pypi",
+            "requests",
+            "http://evil\"><script>alert(1)</script>",
+            &anon(),
+        )
+        .await
+        .unwrap();
+
+    assert!(!html.contains("<script>"), "{html}");
+}
+
+/// The escaping must not cost the page its job: an ordinary filename still
+/// renders as a plain anchor `pip` can resolve.
+#[tokio::test]
+async fn pypi_simple_page_keeps_an_ordinary_link_intact() {
+    let backend = InMemBackend::arc();
+    let mut p = pkg("pypi", "requests", "2.28.0");
+    p.index_metadata = serde_json::json!({
+        "filename": "requests-2.28.0-py3-none-any.whl",
+        "sha256": "deadbeef",
+    });
+    backend.seed(p);
+
+    let html = svc(backend, None)
+        .get_pypi_simple_page("pypi", "requests", "http://localhost/proxy/pypi/", &anon())
+        .await
+        .unwrap();
+
+    assert!(
+        html.contains(
+            "<a href=\"http://localhost/proxy/pypi/packages/requests-2.28.0-py3-none-any.whl#sha256=deadbeef\">requests-2.28.0-py3-none-any.whl</a>"
+        ),
+        "{html}"
+    );
 }
 
 #[tokio::test]
@@ -1518,7 +1620,7 @@ async fn get_artifact_reverify_passes_when_bytes_match() {
 
     let s = download_svc(backend, storage, Some(reverify_policy(true)), None);
     let out = s
-        .get_artifact("npm", "pkg", "1.0.0", &user())
+        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
         .await
         .unwrap();
     assert_eq!(out.as_ref(), body);
@@ -1543,7 +1645,7 @@ async fn get_artifact_reverify_detects_corruption() {
 
     let s = download_svc(backend, storage, Some(reverify_policy(true)), None);
     let err = s
-        .get_artifact("npm", "pkg", "1.0.0", &user())
+        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
         .await
         .unwrap_err();
     assert!(
@@ -1569,7 +1671,10 @@ async fn get_artifact_reverify_off_serves_corrupted_bytes() {
     );
 
     let s = download_svc(backend, storage, Some(reverify_policy(false)), None);
-    assert!(s.get_artifact("npm", "pkg", "1.0.0", &user()).await.is_ok());
+    assert!(s
+        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+        .await
+        .is_ok());
 }
 
 #[tokio::test]
@@ -1587,7 +1692,7 @@ async fn get_artifact_reverify_fails_closed_when_metadata_row_missing() {
 
     let s = download_svc(backend, storage, Some(reverify_policy(true)), None);
     let err = s
-        .get_artifact("npm", "pkg", "1.0.0", &user())
+        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
         .await
         .unwrap_err();
     assert!(
@@ -1623,7 +1728,10 @@ async fn get_artifact_verifies_ed25519_signature() {
         ..Default::default()
     };
     let s = download_svc(backend, storage, None, Some(signing));
-    assert!(s.get_artifact("npm", "pkg", "1.0.0", &user()).await.is_ok());
+    assert!(s
+        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+        .await
+        .is_ok());
 }
 
 #[tokio::test]
@@ -1658,13 +1766,418 @@ async fn get_artifact_rejects_signature_from_untrusted_key() {
     };
     let s = download_svc(backend, storage, None, Some(signing));
     let err = s
-        .get_artifact("npm", "pkg", "1.0.0", &user())
+        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
         .await
         .unwrap_err();
     assert!(
         matches!(err, CoreError::IntegrityFailure(_)),
         "signature from an untrusted key must be rejected, got {err:?}"
     );
+}
+
+/// Survey finding 13, download half. A row carrying signature bytes with **no
+/// type** used to take the same branch as "no signature at all": counted as
+/// `outcome="skipped"` and served unverified, so omitting the header was
+/// strictly weaker than sending a bogus one — `X-Signature-Type: pgp` was
+/// refused by the branch directly below.
+///
+/// The publish edge no longer accepts that pair, so this is the rows written
+/// before it did. There is no way to reach them except through here.
+#[tokio::test]
+async fn get_artifact_refuses_stored_signature_bytes_with_no_type() {
+    let body: &[u8] = b"signed-artifact";
+    let backend = InMemBackend::arc();
+    seed_version(
+        &backend,
+        &crate::services::integrity::sha256_hex(body),
+        Some(vec![0xAA; 64]),
+        None, // bytes, but no type
+    );
+    let storage = MemStore::arc();
+    storage.put(
+        &artifact_storage_key("npm", "pkg", "1.0.0"),
+        Bytes::from_static(body),
+    );
+
+    let signing = SigningConfig {
+        verify_on_download: true,
+        trusted_keys: vec![hex::encode([1u8; 32])],
+        ..Default::default()
+    };
+    let s = download_svc(backend, storage, None, Some(signing));
+    let err = s
+        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, CoreError::IntegrityFailure(_)),
+        "a signature that names no type cannot be verified and must not be served, got {err:?}"
+    );
+}
+
+/// The other half of the same `match`, and the reason it is a `match` and not a
+/// blanket refusal: an artifact with **no signature at all** is governed by
+/// publish-time `signing.required`, and `verify_on_download` must not
+/// retroactively refuse everything published before signing was turned on.
+#[tokio::test]
+async fn get_artifact_still_serves_an_unsigned_artifact_under_verify_on_download() {
+    let body: &[u8] = b"unsigned-artifact";
+    let backend = InMemBackend::arc();
+    seed_version(
+        &backend,
+        &crate::services::integrity::sha256_hex(body),
+        None,
+        None,
+    );
+    let storage = MemStore::arc();
+    storage.put(
+        &artifact_storage_key("npm", "pkg", "1.0.0"),
+        Bytes::from_static(body),
+    );
+
+    let signing = SigningConfig {
+        verify_on_download: true,
+        trusted_keys: vec![hex::encode([1u8; 32])],
+        ..Default::default()
+    };
+    let s = download_svc(backend, storage, None, Some(signing));
+    assert!(s
+        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+        .await
+        .is_ok());
+}
+
+/// The gate rules judge a **concrete version**, and for a local read this
+/// service holds that version's real metadata — `published_at`, whether it is
+/// signed, its checksum. Handing the chain a synthetic coordinate with all three
+/// `None` does not gate the download, it refuses it: `require_signed_release`
+/// with `deny_missing_signature` and `release_age` with `deny_missing_timestamp`
+/// both deny on absent metadata, so a Local-mode registry with either turned on
+/// would answer `403` to every artifact it holds — including the properly signed
+/// ones the operator turned the gate on to require.
+#[tokio::test]
+async fn get_artifact_judges_the_chain_against_the_versions_real_metadata() {
+    use crate::rules::{ReleaseAgeGateRule, RequireSignedReleaseRule};
+
+    for (label, rule) in [
+        (
+            "require_signed_release",
+            Box::new(RequireSignedReleaseRule::new(vec![]).with_deny_missing_signature(true))
+                as Box<dyn crate::rules::Rule>,
+        ),
+        (
+            "release_age deny_missing_timestamp",
+            Box::new(
+                ReleaseAgeGateRule::new(std::time::Duration::from_secs(0), vec![])
+                    .with_deny_missing_timestamp(true),
+            ) as Box<dyn crate::rules::Rule>,
+        ),
+    ] {
+        let body: &[u8] = b"signed-artifact";
+        let backend = InMemBackend::arc();
+        seed_version(
+            &backend,
+            &crate::services::integrity::sha256_hex(body),
+            Some(vec![0xAA; 64]),
+            Some("ed25519".into()),
+        );
+        let storage = MemStore::arc();
+        storage.put(
+            &artifact_storage_key("npm", "pkg", "1.0.0"),
+            Bytes::from_static(body),
+        );
+        let s = download_svc(backend, storage, None, None);
+        s.hot.write().await.policies.insert(
+            "npm".to_owned(),
+            Arc::new(crate::services::RegistryPolicy {
+                metadata_ttl: None,
+                firewall_only: false,
+                serve_stale_metadata: false,
+                artifact_ttl: None,
+                rules: vec![rule],
+            }),
+        );
+
+        assert!(
+            s.get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+                .await
+                .is_ok(),
+            "{label} refused a version whose stored row satisfies it"
+        );
+    }
+}
+
+/// A coordinate this instance has **no row for** must not be refused by rules
+/// that judge a version.
+///
+/// This is what a Hybrid registry asks on every proxied artifact: not published
+/// here, so no `published_at` and no signature to report. Judged against
+/// `synthetic_metadata` the deny-missing gates refuse it, and the handler
+/// surfaces `AccessDenied` instead of the `NotFound` that would have fallen
+/// through to the upstream — so a gated Hybrid registry would answer `403` to
+/// everything it proxies. RBAC still runs; only the version-judging rules defer.
+#[tokio::test]
+async fn get_artifact_defers_the_version_gates_for_a_coordinate_it_has_no_row_for() {
+    use crate::rules::RequireSignedReleaseRule;
+
+    // Nothing seeded: no row, and no bytes either — exactly the hybrid miss.
+    let s = download_svc(InMemBackend::arc(), MemStore::arc(), None, None);
+    s.hot.write().await.policies.insert(
+        "npm".to_owned(),
+        Arc::new(crate::services::RegistryPolicy {
+            metadata_ttl: None,
+            firewall_only: false,
+            serve_stale_metadata: false,
+            artifact_ttl: None,
+            rules: vec![Box::new(
+                RequireSignedReleaseRule::new(vec![]).with_deny_missing_signature(true),
+            )],
+        }),
+    );
+
+    let err = s
+        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, CoreError::NotFound(_)),
+        "a coordinate with no local row must report NotFound — the hybrid \
+         fall-through keys on it — not a gate refusal: {err:?}"
+    );
+}
+
+/// The other half of that split, and the reason it is not simply "rbac only":
+/// an operator blocking a version this instance never published must still see
+/// it refused — and refused with `AccessDenied`, because `NotFound` is what a
+/// Hybrid fall-through reads as "ask the upstream for it".
+#[tokio::test]
+async fn get_artifact_still_applies_the_block_list_when_it_has_no_row() {
+    /// [`SpyRepo`] with one coordinate reported blocked — the shape
+    /// `BlockListRule` reads.
+    struct BlockingRepo;
+
+    #[async_trait]
+    impl crate::ports::PackageRepository for BlockingRepo {
+        async fn record_access(&self, _event: AccessEvent) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn get_status(
+            &self,
+            pkg: &PackageId,
+        ) -> Result<crate::entities::PackageStatus, CoreError> {
+            Ok(if pkg.version == "1.0.0" {
+                crate::entities::PackageStatus::Blocked {
+                    reason: "recalled upstream".to_owned(),
+                    blocked_by: "admin".to_owned(),
+                    blocked_at: Utc::now(),
+                }
+            } else {
+                crate::entities::PackageStatus::Available
+            })
+        }
+        async fn set_status(
+            &self,
+            _pkg: &PackageId,
+            _status: crate::entities::PackageStatus,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn list_packages(
+            &self,
+            _filter: crate::entities::PackageFilter,
+        ) -> Result<Vec<crate::entities::PackageSummary>, CoreError> {
+            Ok(vec![])
+        }
+        async fn count_packages(
+            &self,
+            _filter: crate::entities::PackageFilter,
+        ) -> Result<u64, CoreError> {
+            Ok(0)
+        }
+        async fn list_events(
+            &self,
+            _filter: crate::entities::EventFilter,
+        ) -> Result<Vec<AccessEvent>, CoreError> {
+            Ok(vec![])
+        }
+        async fn count_events(
+            &self,
+            _filter: crate::entities::EventFilter,
+        ) -> Result<u64, CoreError> {
+            Ok(0)
+        }
+        async fn delete_package(&self, _pkg: &PackageId) -> Result<bool, CoreError> {
+            Ok(false)
+        }
+    }
+
+    let s = download_svc(InMemBackend::arc(), MemStore::arc(), None, None);
+    s.hot.write().await.policies.insert(
+        "npm".to_owned(),
+        Arc::new(crate::services::RegistryPolicy {
+            metadata_ttl: None,
+            firewall_only: false,
+            serve_stale_metadata: false,
+            artifact_ttl: None,
+            rules: vec![Box::new(crate::rules::BlockListRule::new(Arc::new(
+                BlockingRepo,
+            )))],
+        }),
+    );
+
+    let err = s
+        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, CoreError::AccessDenied(_)),
+        "a blocked version must be refused even with no local row, and not \
+         downgraded to NotFound: {err:?}"
+    );
+}
+
+/// …and RBAC is not what defers. A caller the registry refuses is refused for a
+/// coordinate it holds no row for, or the survey's finding comes back through
+/// the door marked "not published here".
+#[tokio::test]
+async fn get_artifact_still_applies_rbac_when_it_has_no_row() {
+    use crate::rules::RbacRule;
+
+    let s = download_svc(InMemBackend::arc(), MemStore::arc(), None, None);
+    s.hot.write().await.policies.insert(
+        "npm".to_owned(),
+        Arc::new(crate::services::RegistryPolicy {
+            metadata_ttl: None,
+            firewall_only: false,
+            serve_stale_metadata: false,
+            artifact_ttl: None,
+            rules: vec![Box::new(RbacRule::new(HashMap::from([
+                (Role::Anonymous, vec![]),
+                (Role::User, vec![]),
+                (Role::Admin, vec!["*".to_owned()]),
+            ])))],
+        }),
+    );
+
+    let err = s
+        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, CoreError::AccessDenied(_)),
+        "RBAC must still refuse, got {err:?}"
+    );
+}
+
+/// …and the gate still bites. The fix is to tell the chain the truth, not to
+/// stop asking it.
+#[tokio::test]
+async fn get_artifact_still_refuses_an_unsigned_version_under_require_signed_release() {
+    use crate::rules::RequireSignedReleaseRule;
+
+    let body: &[u8] = b"unsigned-artifact";
+    let backend = InMemBackend::arc();
+    seed_version(
+        &backend,
+        &crate::services::integrity::sha256_hex(body),
+        None,
+        None,
+    );
+    let storage = MemStore::arc();
+    storage.put(
+        &artifact_storage_key("npm", "pkg", "1.0.0"),
+        Bytes::from_static(body),
+    );
+    let s = download_svc(backend, storage, None, None);
+    s.hot.write().await.policies.insert(
+        "npm".to_owned(),
+        Arc::new(crate::services::RegistryPolicy {
+            metadata_ttl: None,
+            firewall_only: false,
+            serve_stale_metadata: false,
+            artifact_ttl: None,
+            rules: vec![Box::new(
+                RequireSignedReleaseRule::new(vec![]).with_deny_missing_signature(true),
+            )],
+        }),
+    );
+
+    let err = s
+        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, CoreError::AccessDenied(_)),
+        "an unsigned version must still be refused, got {err:?}"
+    );
+}
+
+// ── publish-time signing policy (survey finding 13, publish half) ─────────────
+
+/// Bytes with no type satisfied `required` (bytes are present) and skipped the
+/// `allowed_types` allow-list (there is no type to check), so the strongest
+/// posture an operator can configure accepted a signature nothing would ever
+/// verify.
+#[tokio::test]
+async fn publish_rejects_signature_bytes_with_no_type() {
+    for allowed in [vec![], vec!["ed25519".to_owned()]] {
+        let s = svc(InMemBackend::arc(), None);
+        s.hot.write().await.signing.insert(
+            "npm".into(),
+            SigningConfig {
+                required: true,
+                allowed_types: allowed.clone(),
+                ..Default::default()
+            },
+        );
+        let mut req = publish_req("npm", "pkg", "1.0.0", user());
+        req.signature_bytes = Some(vec![1, 2, 3]);
+        req.signature_type = None;
+        let err = s.publish(req).await.unwrap_err();
+        assert!(
+            matches!(err, CoreError::AccessDenied(_)),
+            "signature bytes with no type must be denied (allowed_types = {allowed:?}), got {err:?}"
+        );
+    }
+}
+
+/// The pair is incoherent in both directions, and a type with no bytes was
+/// silently accepted and stored.
+#[tokio::test]
+async fn publish_rejects_signature_type_with_no_bytes() {
+    let s = svc(InMemBackend::arc(), None);
+    s.hot.write().await.signing.insert(
+        "npm".into(),
+        SigningConfig {
+            required: false,
+            allowed_types: vec!["ed25519".into()],
+            ..Default::default()
+        },
+    );
+    let mut req = publish_req("npm", "pkg", "1.0.0", user());
+    req.signature_type = Some("ed25519".into());
+    let err = s.publish(req).await.unwrap_err();
+    assert!(
+        matches!(err, CoreError::AccessDenied(_)),
+        "a signature type with no signature must be denied, got {err:?}"
+    );
+}
+
+/// The pair check must not turn `allowed_types` into "a signature is required":
+/// an unsigned publish is still governed by `required` alone.
+#[tokio::test]
+async fn publish_allows_an_unsigned_artifact_when_a_type_list_exists_but_signing_is_optional() {
+    let s = svc(InMemBackend::arc(), None);
+    s.hot.write().await.signing.insert(
+        "npm".into(),
+        SigningConfig {
+            required: false,
+            allowed_types: vec!["ed25519".into()],
+            ..Default::default()
+        },
+    );
+    let req = publish_req("npm", "pkg", "1.0.0", user());
+    assert!(s.publish(req).await.is_ok());
 }
 
 // ── ownership enforcement ─────────────────────────────────────────────────
@@ -2033,7 +2546,7 @@ async fn get_artifact_records_allowed_download_when_access_log_configured() {
 
     let spy = SpyRepo::new();
     let s = download_svc_with_access_log(backend, storage, None, None, Some(spy.clone()));
-    s.get_artifact("npm", "pkg", "1.0.0", &user())
+    s.get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
         .await
         .unwrap();
 
@@ -2070,7 +2583,7 @@ async fn get_artifact_records_denied_download_when_visibility_check_fails() {
 
     // Anonymous identity can't see an `Internal` package.
     let err = s
-        .get_artifact("npm", "pkg", "1.0.0", &anon())
+        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &anon())
         .await
         .unwrap_err();
     assert!(matches!(err, CoreError::AccessDenied(_)));
@@ -2103,7 +2616,7 @@ async fn get_artifact_is_a_noop_for_audit_when_access_log_is_none() {
 
     let s = download_svc(backend, storage, None, None);
     let out = s
-        .get_artifact("npm", "pkg", "1.0.0", &user())
+        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
         .await
         .unwrap();
     assert_eq!(out.as_ref(), body);

@@ -10,7 +10,8 @@ use batlehub_core::ports::{
 };
 use batlehub_core::services::{
     FeatureFlags, HotConfig, HotReadmeConfig, HotSbomConfig, HotUpstreamDetailConfig,
-    IntegrityPolicy, RemoteImagePolicy, SigningConfig as CoreSigningConfig, VersioningPolicy,
+    IntegrityPolicy, RemoteImagePolicy, SignedUrlService, SigningConfig as CoreSigningConfig,
+    VersioningPolicy,
 };
 
 use crate::builders::parse_role;
@@ -327,6 +328,12 @@ pub(super) fn build_hot_bundle(
         integrity: build_integrity_map(&cfg.registries),
         beta_channel: build_beta_channel_map(Arc::clone(beta_channel_store), &cfg.registries),
         resolution: reg_resolution,
+        signed_downloads: cfg
+            .registries
+            .iter()
+            .map(|r| (r.name.clone(), r.signed_downloads))
+            .collect(),
+        signed_url: build_signed_url_service(cfg),
         max_artifact_size_bytes: cfg.limits.max_artifact_size_bytes,
         versions_per_page: cfg.limits.versions_per_page,
         packages_per_page: cfg.limits.packages_per_page,
@@ -341,6 +348,28 @@ pub(super) fn build_hot_bundle(
         build_vuln_db_map(&cfg.registries),
         build_sumdb_map(&cfg.registries),
     ))
+}
+
+/// The instance signer for RFC 0012 download URLs, when one is configured.
+///
+/// Built here rather than once at startup so a config reload rotates the secret
+/// without a restart — which is the whole point of `previous_secrets`, and it
+/// would be a strange rotation story if adding the new key needed a bounce.
+///
+/// `AppConfig::validate()` has already rejected a secret that is absent, empty,
+/// short, or paired with a registry that signs; anything reaching here is
+/// well-formed, so there is no error to return.
+fn build_signed_url_service(cfg: &AppConfig) -> Option<Arc<SignedUrlService>> {
+    let block = cfg.server.signed_urls.as_ref()?;
+    Some(Arc::new(SignedUrlService::new(
+        block.secret.trim().as_bytes().to_vec(),
+        block
+            .active_previous_secrets()
+            .into_iter()
+            .map(|s| s.into_bytes())
+            .collect(),
+        block.ttl_seconds,
+    )))
 }
 
 pub(super) fn build_access_config(config: &AppConfig) -> AccessConfig {

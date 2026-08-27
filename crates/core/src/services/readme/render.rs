@@ -156,16 +156,7 @@ fn proxy_prefix(opts: &RenderOptions) -> Option<String> {
 fn preformatted(source: &str) -> String {
     let mut out = String::with_capacity(source.len() + 16);
     out.push_str("<pre>");
-    for ch in source.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(ch),
-        }
-    }
+    crate::services::escaping::push_escaped_html(&mut out, source);
     out.push_str("</pre>");
     out
 }
@@ -627,21 +618,16 @@ pub(super) fn url_host(url: &str) -> Option<String> {
 /// the package. The sanitiser would catch it either way — this markup goes
 /// through the same pass as the author's own — but building an injection and
 /// relying on the next stage to remove it is not a thing to write on purpose.
+///
+/// `escape_html` also covers `'`, and not for symmetry: `decode_basic_entities`
+/// turns `&apos;`/`&#39;` into a real apostrophe, so an `alt` written as
+/// `&apos; onmouseover=x &apos;` came back out raw and closed the enclosing
+/// single-quoted attribute when this chip was emitted inside one. Ammonia drops
+/// the injected handler afterwards — but building an injection and relying on
+/// the next stage to remove it is exactly what the paragraph above says this
+/// does not do.
 fn chip(alt: &str, host: Option<&str>) -> String {
-    let escape = |s: &str| {
-        s.replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;")
-            .replace('"', "&quot;")
-            // `'` too, and not for symmetry: `decode_basic_entities` turns
-            // `&apos;`/`&#39;` into a real apostrophe, so an `alt` written as
-            // `&apos; onmouseover=x &apos;` came back out raw and closed the
-            // enclosing single-quoted attribute when this chip was emitted
-            // inside one. Ammonia drops the injected handler afterwards — but
-            // building an injection and relying on the next stage to remove it
-            // is exactly what the comment above says this does not do.
-            .replace('\'', "&#39;")
-    };
+    let escape = crate::services::escaping::escape_html;
     let label = if alt.trim().is_empty() {
         "image".to_owned()
     } else {

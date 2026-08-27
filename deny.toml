@@ -153,7 +153,6 @@ skip = [
     { name = "hmac", version = "0.12" },
     { name = "const-oid", version = "0.9" },
     { name = "http-body", version = "0.4" },
-    { name = "lru", version = "0.16" },
 ]
 # Wildcards left as "allow": the workspace crates depend on each other via
 # versionless `{ path = … }`, which cargo-deny counts as wildcards for public
@@ -176,6 +175,13 @@ deny = [
     # Cargo.toml). This entry is what stops a future `default-features = true`
     # from quietly reintroducing the advisory.
     { name = "h2", version = "<0.4" },
+    # RUSTSEC-2026-0253 (`LruCache::pop()` is not panic-safe: a panicking key
+    # `Drop` skips `detach()` and leaves dangling pointers for the next
+    # eviction to write through) — patched in lru 0.18.2. The only thing that
+    # ever wanted the 0.16 line was `aws-sdk-s3`, which moved to `^0.18.2` in
+    # 1.144.0; `ratatui` was already on 0.18. This entry is what stops a
+    # downgrade of either from quietly reintroducing the advisory.
+    { name = "lru", version = "<0.18.2" },
 ]
 
 # ── Licenses ──────────────────────────────────────────────────────────────────

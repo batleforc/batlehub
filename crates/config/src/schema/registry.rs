@@ -108,6 +108,22 @@ pub struct RegistryConfig {
     /// from upstream with nothing written to storage.
     #[serde(default)]
     pub firewall_only: bool,
+    /// Mint signed, expiring, single-coordinate download URLs in the protocol
+    /// documents of this registry, and accept them on the artifact routes that
+    /// the client fetches without an `Authorization` header (RFC 0012).
+    ///
+    /// Terraform is the case this exists for: it authenticates the two JSON
+    /// documents of a provider install and then fetches the archive, its
+    /// `SHA256SUMS` and the `.sig` with no credential — measured, not read
+    /// (RFC 0012 §11). Without this, such a registry needs
+    /// `anonymous = ["releases:read", "source:read"]`, which opens *every* read
+    /// on it rather than the one step that needs opening.
+    ///
+    /// Requires `[server.signed_urls].secret`; setting it without one is a
+    /// startup error, because a registry that believes it is closed and is not
+    /// is the failure this feature exists to prevent.
+    #[serde(default)]
+    pub signed_downloads: bool,
     /// Credentials to send on every upstream request for this registry.
     #[serde(default)]
     pub upstream_auth: Option<UpstreamAuthConfig>,

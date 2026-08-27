@@ -10,7 +10,7 @@ use batlehub_core::services::{LocalRegistryService, PublishRequest};
 
 use crate::handlers::proxy::common::{
     extract_signature_headers, publish_and_respond, require_local_mode, require_registry_type,
-    MAX_UPLOAD_BYTES,
+    ArtifactSignature, MAX_UPLOAD_BYTES,
 };
 use crate::handlers::schemas::MessageResponse;
 use crate::{
@@ -30,6 +30,7 @@ use crate::{
     params(("registry" = String, Path, description = "Registry name")),
     responses(
         (status = 200, description = "File uploaded", body = MessageResponse),
+        (status = 400, description = "Malformed multipart, or an unacceptable distribution filename"),
         (status = 403, description = "Access denied or quota exceeded"),
         (status = 409, description = "Version already published"),
         (status = 422, description = "Invalid payload"),
@@ -113,7 +114,15 @@ pub async fn pypi_publish(
         version.ok_or_else(|| AppError::bad_request("missing 'version' field".to_owned()))?;
     let content =
         content.ok_or_else(|| AppError::bad_request("missing 'content' field".to_owned()))?;
+    // The filename arrives verbatim from the `content` part's
+    // `Content-Disposition`, and `enforce_publish_policy` validates only `name`
+    // and `version` — so this is the only thing standing between a hostile
+    // `filename` and `index_metadata`, which the Simple index reads back. The
+    // synthesised fallback is validated too: it is built from `name`, and a
+    // name is only checked for path-safety, not for a distribution's character
+    // set.
     let filename = filename.unwrap_or_else(|| format!("{name}-{version}.tar.gz"));
+    super::validate_distribution_filename(&filename).map_err(AppError::bad_request)?;
 
     let computed_checksum = hex::encode(Sha256::digest(&content));
 
@@ -130,7 +139,8 @@ pub async fn pypi_publish(
         "sha256": computed_checksum,
     });
 
-    let (signature_bytes, signature_type) = extract_signature_headers(&req);
+    let (signature_bytes, signature_type) =
+        ArtifactSignature::split(extract_signature_headers(&req)?);
 
     publish_and_respond(
         &local_svc,

@@ -38,6 +38,7 @@ const ctx: SnippetContext = {
   netrcLogin: "<user>",
   identity: null,
   selectedNames: {},
+  signedDownloads: false,
 };
 
 /**

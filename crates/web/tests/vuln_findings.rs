@@ -64,14 +64,15 @@ async fn make_vuln_app(
     ]
     .into();
 
-    let local_svc = make_local_svc(storage.clone());
+    let hot = new_hot_lock(HotConfig {
+        registries,
+        policies,
+        feature_flags,
+        ..Default::default()
+    });
+    let local_svc = make_local_svc(hot.clone(), storage.clone());
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            feature_flags,
-            ..Default::default()
-        }),
+        hot: hot.clone(),
         storage: storage.clone(),
         cache,
         repo: repo_dyn.clone(),

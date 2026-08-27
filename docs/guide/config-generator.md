@@ -5,7 +5,7 @@ pageClass: page-config-gen
 
 # Config Generator
 
-Fill in the form below to generate a `config.toml` for your BatleHub instance. The preview on the right updates live as you type.
+Fill in the form below to generate a `config.toml` for your BatleHub instance. The preview updates live as you type — beside the form when the window is wide enough, below it otherwise.
 
 When you're done, click **Download** to save the file, or **Copy** to paste it into your editor.
 

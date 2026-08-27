@@ -150,6 +150,7 @@ describe("RichText", () => {
       netrcLogin: "user",
       identity: null,
       selectedNames: {},
+      signedDownloads: false,
     }));
 
     const markup = new Set(

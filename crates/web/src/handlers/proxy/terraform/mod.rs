@@ -14,9 +14,9 @@ use batlehub_core::{
 };
 
 use super::common::{
-    append_signature_headers, collect_payload, collect_storage_stream, dispatch_notification,
-    extract_signature_headers, proxy_document, proxy_stream, registry_public_base,
-    require_local_mode, require_registry_type,
+    append_signature_headers, collect_payload, dispatch_notification, extract_signature_headers,
+    proxy_document, proxy_stream, registry_public_base, require_local_mode, require_registry_type,
+    ArtifactSignature,
 };
 use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
@@ -42,5 +42,9 @@ pub use providers::{
     terraform_provider_artifact, terraform_provider_binary_upload, terraform_provider_download,
     terraform_provider_shasums, terraform_provider_shasums_sig, terraform_provider_unyank,
     terraform_provider_upload, terraform_provider_versions, terraform_provider_yank,
+};
+use shared::{
+    identity_for_artifact, mark_uncacheable_if_signed, off_origin_checksum_urls,
+    sign_download_document, DownloadCoords,
 };
 pub(super) use shared::{terraform_set_yanked, terraform_versions_response, TerraformYankRequest};

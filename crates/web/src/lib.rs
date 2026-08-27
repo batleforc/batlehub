@@ -454,7 +454,6 @@ pub use handlers::front_office::cli_download::CliBinaryPath;
 pub use handlers::healthz::{healthz, livez};
 pub use handlers::metrics::prometheus_metrics;
 pub use handlers::proxy::cargo::CargoIndexProxy;
-pub use middleware::security_headers;
 pub use middleware::AuthMiddlewareFactory;
 pub use middleware::HostRoutingMiddlewareFactory;
 pub use middleware::IpBlockMiddlewareFactory;
@@ -463,6 +462,9 @@ pub use middleware::ProxyTrust;
 pub use middleware::RateLimitMiddlewareFactory;
 pub use middleware::RateLimitService;
 pub use middleware::UserBlockMiddlewareFactory;
+pub use middleware::{
+    protocol_document_csp, security_headers, API_DOCS_CSP, PROTOCOL_DOCUMENT_CSP,
+};
 pub use spa::{configure_spa, narrow_csp, SpaDir};
 
 #[derive(OpenApi)]
@@ -1065,9 +1067,267 @@ pub fn openapi_spec() -> utoipa::openapi::OpenApi {
     openapi
 }
 
+/// Where the self-hosted Scalar bundle lives, relative to this origin.
+///
+/// Written there by `ui/build/copy-scalar.mjs` from the `@scalar/api-reference`
+/// devDependency, and served by the console's static-file mount. Under
+/// `assets/`, which [`crate::spa`] treats as build-owned: a missing file stays a
+/// `404` rather than falling through to `index.html`, which is what lets
+/// [`scalar_bundle_present`] detect its absence rather than the browser
+/// receiving HTML where a `.js` was expected.
+///
+/// # Why this is not a CDN URL any more
+///
+/// `utoipa-scalar`'s stock template requests
+/// `https://cdn.jsdelivr.net/npm/@scalar/api-reference` — **no version, no
+/// integrity** — so every future release of a third-party package executed
+/// automatically on the origin the console keeps its bearer *and refresh* tokens
+/// on. Pinning the URL with an SRI hash closed the integrity half. Self-hosting
+/// closes the rest:
+///
+/// - a private registry is frequently run with **no egress at all**, and
+///   `/scalar` was a blank page in every such deployment;
+/// - every load leaked the operator's IP and referrer to a third party;
+/// - the page no longer depends on a CDN's uptime for this server's own docs;
+/// - `script-src` drops to `'self'` — no third-party script origin remains, and
+///   the SRI hash is unnecessary because same-origin needs no vouching;
+/// - the bundle's supply chain (25 direct dependencies, ~190 transitive) is now
+///   declared in `ui/pnpm-lock.yaml`, so `pnpm audit`, postmortem and the SBOM
+///   cover it. That code was always shipped to the browser; it was simply not
+///   declared anywhere a scanner could see.
+pub const SCALAR_BUNDLE_PATH: &str = "assets/scalar/standalone.js";
+
+/// Whether the built bundle is present under `static_dir`.
+///
+/// `static_dir` is optional, and a deployment that serves the API without the
+/// console has no bundle to load. Rather than fall back to the CDN — which would
+/// silently reinstate everything above, on exactly the air-gapped deployments
+/// least able to reach it — `/scalar` degrades honestly. See
+/// [`scalar_unavailable_html`].
+pub fn scalar_bundle_present(static_dir: Option<&std::path::Path>) -> bool {
+    static_dir.is_some_and(|dir| dir.join(SCALAR_BUNDLE_PATH).is_file())
+}
+
+/// The `/scalar` document.
+///
+/// The `$spec` placeholder is substituted by `Scalar::to_html`. The block
+/// holding it is `type="application/json"`, so it is data the bundle reads, not
+/// script the browser executes — which is why the CSP on this route needs no
+/// `'unsafe-inline'` for scripts.
+///
+/// # `data-configuration`
+///
+/// The bundle reads `#api-reference[data-configuration]` as JSON. Rendering this
+/// page in a real browser showed it reaching **three** third-party origins, not
+/// the one the script tag named, so two of them are turned off here:
+///
+/// - `withDefaultFonts: false` — the default theme `@font-face`s fourteen
+///   `.woff2` files from `fonts.scalar.com`. A font carries no integrity
+///   attribute, so that origin could never have been pinned the way the bundle
+///   was; it is dropped instead and the system font stack renders the page.
+/// - `proxyUrl: ""` — "Test Request" otherwise routes through
+///   `proxy.scalar.com`, which would send an operator's request — URL, headers,
+///   and any token pasted into the explorer — through a third party. Empty means
+///   the browser calls the API directly, which is same-origin here: this page
+///   documents the server serving it.
+///
+/// The third origin, `api.scalar.com/vector/registry/*`, is **not** fixable
+/// here or by self-hosting: those URLs are hardcoded in the bundle and ignore
+/// the `apiBaseUrl` setting that looks like it should govern them (tried, no
+/// effect). They are stopped one level out, by `connect-src 'self'` in
+/// [`API_DOCS_CSP`] — which is why that directive is not the `*` an API explorer
+/// superficially wants.
+fn scalar_html() -> String {
+    format!(
+        r#"<!doctype html>
+<html>
+<head>
+    <title>BatleHub API</title>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+</head>
+<body>
+<script id="api-reference"
+        type="application/json"
+        data-configuration='{{"withDefaultFonts":false,"proxyUrl":""}}'>
+    $spec
+</script>
+<script src="/{SCALAR_BUNDLE_PATH}"></script>
+</body>
+</html>
+"#
+    )
+}
+
+/// The `/scalar` document when the bundle is not on disk.
+///
+/// Honest degradation, chosen over a CDN fallback: falling back would reinstate
+/// the third-party script exactly where it is least wanted, and would do it
+/// silently — the page would look fine to anyone with egress and fail for
+/// everyone else, which is how the original problem stayed unnoticed.
+///
+/// The spec is still embedded, in the same `type="application/json"` block the
+/// working page uses, so `curl <this url>` remains a way to get the OpenAPI
+/// document out of a server with no console assets. The page says so.
+///
+/// No script and no external reference of any kind, so it renders identically
+/// under [`API_DOCS_CSP`].
+fn scalar_unavailable_html() -> String {
+    format!(
+        r#"<!doctype html>
+<html>
+<head>
+    <title>BatleHub API</title>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+</head>
+<body>
+<h1>API reference unavailable</h1>
+<p>
+    The interactive reference is served from this origin rather than a CDN, and
+    its bundle is part of the console's build output. This server is running
+    without it &mdash; either <code>[server] static_dir</code> is not configured,
+    or the directory it points at does not contain
+    <code>{SCALAR_BUNDLE_PATH}</code>.
+</p>
+<p>
+    Build the console (<code>pnpm --dir ui install &amp;&amp; pnpm --dir ui run
+    build</code>) and point <code>static_dir</code> at <code>ui/dist</code>.
+</p>
+<p>
+    The OpenAPI document itself is unaffected: it is embedded in this page, so
+    <code>curl</code> on this URL still yields it, and
+    <code>batlehub dump-spec</code> writes it to a file.
+</p>
+<script id="api-reference" type="application/json">
+    $spec
+</script>
+</body>
+</html>
+"#
+    )
+}
+
 /// Return a Scalar API docs service using the provided OpenAPI spec.
-pub fn scalar(openapi: utoipa::openapi::OpenApi) -> Scalar<utoipa::openapi::OpenApi> {
-    Scalar::with_url("/scalar", openapi)
+///
+/// `static_dir` is the configured console directory, if any; it decides which of
+/// the two templates is served. See [`SCALAR_BUNDLE_PATH`] for why the bundle is
+/// local, and [`scalar_unavailable_html`] for why there is no CDN fallback. The
+/// route's `Content-Security-Policy` is applied by
+/// [`middleware::protocol_document_csp`], which sends [`API_DOCS_CSP`] on this
+/// prefix.
+pub fn scalar(
+    openapi: utoipa::openapi::OpenApi,
+    static_dir: Option<&std::path::Path>,
+) -> Scalar<utoipa::openapi::OpenApi> {
+    let html = if scalar_bundle_present(static_dir) {
+        scalar_html()
+    } else {
+        scalar_unavailable_html()
+    };
+    Scalar::with_url("/scalar", openapi).custom_html(html)
+}
+
+#[cfg(test)]
+mod scalar_tests {
+    use super::*;
+
+    /// The finding this replaces: an unpinned, unchecked third-party script on
+    /// the origin that holds the console's tokens. Now there is no third-party
+    /// script at all.
+    #[test]
+    fn the_reference_loads_nothing_from_a_third_party() {
+        for html in [scalar_html(), scalar_unavailable_html()] {
+            assert!(
+                !html.contains("//"),
+                "no protocol-relative or absolute external URL may appear: {html}"
+            );
+            assert!(!html.contains("cdn.jsdelivr.net"));
+            assert!(!html.contains("scalar.com"));
+            assert!(!html.contains("http:") && !html.contains("https:"));
+        }
+    }
+
+    /// The bundle is same-origin, so it needs no `integrity`/`crossorigin` — and
+    /// must not silently regain an absolute `src`.
+    #[test]
+    fn the_bundle_is_referenced_by_a_root_relative_path() {
+        let html = scalar_html();
+        assert!(html.contains(&format!(r#"<script src="/{SCALAR_BUNDLE_PATH}">"#)));
+        assert!(!html.contains("integrity="));
+        assert!(!html.contains("crossorigin="));
+    }
+
+    /// `withDefaultFonts` and `proxyUrl` are what stop `fonts.scalar.com` and
+    /// `proxy.scalar.com`; both were confirmed in a browser.
+    #[test]
+    fn the_reference_turns_off_the_two_configurable_third_party_calls() {
+        let html = scalar_html();
+        assert!(html.contains(r#""withDefaultFonts":false"#));
+        assert!(html.contains(r#""proxyUrl":"""#));
+    }
+
+    /// `Scalar::to_html` substitutes `$spec`; losing the placeholder would serve
+    /// an empty reference that still looks fine. Both templates carry it — the
+    /// degraded one deliberately, so `curl` still yields the document.
+    #[test]
+    fn both_templates_keep_the_spec_placeholder() {
+        assert!(scalar_html().contains("$spec"));
+        assert!(scalar_unavailable_html().contains("$spec"));
+    }
+
+    /// The degraded page must not be a blank or misleading success — it has to
+    /// say what is missing and how to fix it.
+    #[test]
+    fn the_degraded_page_explains_itself() {
+        let html = scalar_unavailable_html();
+        assert!(html.contains("static_dir"));
+        assert!(html.contains(SCALAR_BUNDLE_PATH));
+        assert!(
+            !html.contains("<script src="),
+            "the degraded page must load no script at all"
+        );
+    }
+
+    /// Absence must be detected, not assumed: an unconfigured `static_dir`, a
+    /// directory without the bundle, and a directory with it are three different
+    /// answers.
+    #[test]
+    fn bundle_presence_follows_the_file_not_the_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        assert!(
+            !scalar_bundle_present(None),
+            "no static_dir means no bundle"
+        );
+        assert!(
+            !scalar_bundle_present(Some(dir.path())),
+            "a static_dir without the bundle is not a bundle"
+        );
+
+        let bundle = dir.path().join(SCALAR_BUNDLE_PATH);
+        std::fs::create_dir_all(bundle.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&bundle, b"/* bundle */").expect("write");
+        assert!(scalar_bundle_present(Some(dir.path())));
+    }
+
+    /// A directory at the bundle's path is not a bundle, and `is_file` is what
+    /// makes that true — `exists()` would have been satisfied by it.
+    #[test]
+    fn a_directory_at_the_bundle_path_is_not_a_bundle() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(SCALAR_BUNDLE_PATH)).expect("mkdir");
+        assert!(!scalar_bundle_present(Some(dir.path())));
+    }
+
+    /// The service picks its template from the same predicate.
+    #[test]
+    fn the_service_serves_the_degraded_page_without_a_bundle() {
+        let spec = openapi_spec();
+        let rendered = scalar(spec, None).to_html();
+        assert!(rendered.contains("API reference unavailable"));
+        assert!(!rendered.contains("<script src="));
+    }
 }
 
 /// Configure all application routes on a `UtoipaApp`.

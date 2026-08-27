@@ -311,16 +311,18 @@ pub(super) async fn vsix_bytes(
     let pkg = PackageId::new(registry, extension_id, version);
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        // The registry rule chain, which the local read would otherwise skip.
-        svc.authorize_read(
-            &pkg,
-            &identity.0,
-            batlehub_core::rules::resource_type::SOURCE_READ,
-        )
-        .await
-        .map_err(AppError::from)?;
+        // `source:read`: a VSIX is the extension's source archive, and this is
+        // the route the rule-chain gap was first found and fixed on. The chain
+        // now runs inside `get_artifact` for every ecosystem, against the
+        // resource type named here.
         match local_svc
-            .get_artifact(registry, extension_id, version, &identity.0)
+            .get_artifact(
+                registry,
+                extension_id,
+                version,
+                batlehub_core::rules::resource_type::SOURCE_READ,
+                &identity.0,
+            )
             .await
         {
             Ok(bytes) => return Ok(bytes),

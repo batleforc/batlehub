@@ -98,7 +98,7 @@ impl LocalRegistryService {
         base_url: &str,
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
-        self.check_visibility(registry, name, identity).await?;
+        self.check_read_access(registry, name, identity).await?;
         self.check_prerelease_access(registry, version, identity)
             .await?;
         let versions = self.backend.get_versions(registry, name).await?;
@@ -126,34 +126,175 @@ impl LocalRegistryService {
         Ok(meta)
     }
 
+    /// The gate every local artifact read passes, without reading anything.
+    ///
+    /// Three checks, in the order a refusal is cheapest: the registry's rule
+    /// chain, the package's visibility, then the pre-release gate. A denial of
+    /// any of them is recorded as a denied download, so a local refusal appears
+    /// in the audit trail exactly as the proxy path's does.
+    ///
+    /// Handlers that build their own storage key — Maven's multi-file artifacts,
+    /// the Terraform provider binary — call this and then read the key. Handlers
+    /// that want the plain `{registry}/{name}/{version}` artifact call
+    /// [`Self::get_artifact`], which is this plus the read.
+    ///
+    /// Returns the version row it judged, so the caller's own use of it — the
+    /// re-serve checksum, the download-signature check — does not query for it a
+    /// second time. `None` means storage may hold bytes this instance has no
+    /// metadata for, which the gates treat as "unknown" and a `verify_*` policy
+    /// treats as a refusal.
+    pub async fn authorize_artifact_read(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        resource_type: &str,
+        identity: &Identity,
+    ) -> Result<Option<PublishedPackage>, CoreError> {
+        super::validate_coordinate(name, version, None)?;
+        match self
+            .read_gates(registry, name, version, resource_type, identity)
+            .await
+        {
+            Ok(row) => Ok(row),
+            Err(e) => {
+                self.record_download(registry, name, version, None, identity, Some(e.to_string()))
+                    .await;
+                Err(e)
+            }
+        }
+    }
+
+    /// The three gates [`Self::authorize_artifact_read`] applies, in the order a
+    /// refusal is cheapest — and short-circuiting, which is the point of it
+    /// being its own function: an array of already-awaited `Result`s runs every
+    /// check before the loop can look at the first one, so a caller the rule
+    /// chain has already refused would still pay for a visibility lookup and a
+    /// pre-release check.
+    async fn read_gates(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        resource_type: &str,
+        identity: &Identity,
+    ) -> Result<Option<PublishedPackage>, CoreError> {
+        // The version's own row, because the chain is about to judge it. The
+        // gate rules read `published_at` and `is_signed`, and this service holds
+        // both — `synthetic_metadata`'s `None`s would make
+        // `require_signed_release` and `release_age.deny_missing_timestamp`
+        // refuse every artifact in the registry rather than gate any of it. The
+        // proxy path resolves upstream metadata before evaluating for the same
+        // reason; this is the local half of that.
+        //
+        // Errors are not swallowed: a repository that cannot answer must not
+        // become "unknown metadata" and then, depending on the policy, "allow".
+        let row = self
+            .backend
+            .get_versions(registry, name)
+            .await?
+            .into_iter()
+            .find(|p| p.version == version);
+        let pkg_id = PackageId::new(registry, name, version);
+        // The registry rule chain — RBAC, block list, release-age, licence and
+        // signature gates. It runs here rather than being left to each handler
+        // because for a *local* read there is no proxy fall-through to run it
+        // later, and eight handlers were found serving bytes without it (the
+        // 2026-08-26 survey, findings 4-10). `resource_type` is the caller's:
+        // a Go module zip is `source:read` where its `.info` is
+        // `releases:read`, and the proxy fall-through distinguishes them the
+        // same way.
+        match &row {
+            Some(pkg) => {
+                let metadata = crate::entities::PackageMetadata {
+                    id: pkg_id,
+                    published_at: Some(pkg.published_at),
+                    download_url: None,
+                    checksum: Some(pkg.checksum.clone()),
+                    // The stored signature, as the download-time verification
+                    // reads it: bytes present means this version was published
+                    // signed. *Non-empty* bytes — `""` is valid base64, so rows
+                    // written before the publish edge rejected an empty
+                    // signature hold `Some(vec![])`, and reporting those as
+                    // signed hands `require_signed_release` a `true` no key ever
+                    // backed.
+                    is_signed: Some(
+                        pkg.signature_bytes
+                            .as_deref()
+                            .is_some_and(|b| !b.is_empty()),
+                    ),
+                    extra: serde_json::Value::Null,
+                    cache_control: None,
+                };
+                crate::services::registry_authz::authorize_read_against(
+                    &self.hot,
+                    &metadata,
+                    identity,
+                    resource_type,
+                )
+                .await?;
+            }
+            // **No row: the chain runs, minus the two rules that would be
+            // judging a version this instance does not have.**
+            //
+            // A Hybrid registry reaches here for everything it proxies. Judged
+            // against `synthetic_metadata`, `release_age.deny_missing_timestamp`
+            // and `require_signed_release.deny_missing_signature` read absent as
+            // deny — so a registry with either configured would answer `403` to
+            // every proxied artifact instead of falling through to the upstream,
+            // which resolves the real metadata and runs the same chain on it.
+            //
+            // Everything else still judges: RBAC, and — the reason this is not
+            // simply "rbac only" — `block_list`. An operator blocking a version
+            // this instance never published must still see it refused, and
+            // refused with `AccessDenied`: `NotFound` is what a Hybrid
+            // fall-through reads as "ask upstream". `authorize_unheld_read` owns
+            // that split.
+            //
+            // In Local mode there is no fall-through, and the read that follows
+            // finds nothing and answers `404`. Bytes sitting in storage with no
+            // row is a store inconsistency, not a publish; `verify_on_serve` and
+            // `verify_on_download` both fail closed on it a few lines below.
+            None => {
+                crate::services::registry_authz::authorize_unheld_read(
+                    &self.hot,
+                    &pkg_id,
+                    identity,
+                    resource_type,
+                )
+                .await?;
+            }
+        }
+        self.check_visibility(registry, name, identity).await?;
+        // Defense in depth: gate pre-release/beta access on the artifact bytes
+        // themselves, not just on the metadata endpoints. Most download handlers
+        // call `check_prerelease_access` before this, but at least the conda
+        // handler reaches here directly — enforcing it for every current and
+        // future caller closes that fail-open gap. The check is idempotent, so
+        // callers that already gate keep working unchanged.
+        self.check_prerelease_access(registry, version, identity)
+            .await?;
+        Ok(row)
+    }
+
     /// Retrieve the raw artifact bytes for download.
+    ///
+    /// `resource_type` is the permission the read needs — normally
+    /// [`crate::rules::resource_type::RELEASES_READ`], `SOURCE_READ` for the
+    /// paths that serve source archives. It is a parameter rather than a
+    /// constant so that every call site has to name what it is serving, which
+    /// is the same question the proxy fall-through answers for the same route.
     pub async fn get_artifact(
         &self,
         registry: &str,
         name: &str,
         version: &str,
+        resource_type: &str,
         identity: &Identity,
     ) -> Result<Bytes, CoreError> {
-        super::validate_coordinate(name, version, None)?;
-        if let Err(e) = self.check_visibility(registry, name, identity).await {
-            self.record_download(registry, name, version, identity, Some(e.to_string()))
-                .await;
-            return Err(e);
-        }
-        // Defense in depth: gate pre-release/beta access on the artifact bytes
-        // themselves, not just on the metadata endpoints. Most download handlers
-        // call `check_prerelease_access` before this, but at least the conda
-        // handler reaches `get_artifact` directly — enforcing it here closes that
-        // fail-open gap for every current and future caller. The check is
-        // idempotent, so callers that already gate keep working unchanged.
-        if let Err(e) = self
-            .check_prerelease_access(registry, version, identity)
-            .await
-        {
-            self.record_download(registry, name, version, identity, Some(e.to_string()))
-                .await;
-            return Err(e);
-        }
+        let row = self
+            .authorize_artifact_read(registry, name, version, resource_type, identity)
+            .await?;
         let key = artifact_storage_key(registry, name, version);
         let artifact = self.storage.retrieve(&key).await?.ok_or_else(|| {
             CoreError::NotFound(format!(
@@ -179,22 +320,19 @@ impl LocalRegistryService {
 
         let verify_checksum = integrity.enabled && integrity.verify_on_serve;
         if verify_checksum || signing.verify_on_download {
-            // Both checks need the stored per-version metadata (checksum + signature).
-            // These are opt-in guarantees that every served byte is verified, so we
-            // fail closed: a metadata-lookup error propagates, and a missing row for
-            // bytes that exist in storage is an inconsistency we refuse to serve
-            // unverified rather than silently skipping the check.
-            let meta = self
-                .backend
-                .get_versions(registry, name)
-                .await?
-                .into_iter()
-                .find(|p| p.version == version)
-                .ok_or_else(|| {
-                    CoreError::IntegrityFailure(format!(
-                        "cannot verify {registry}/{name}@{version}: no published metadata found for stored artifact"
-                    ))
-                })?;
+            // Both checks need the stored per-version metadata (checksum +
+            // signature) — the same row the gate above already judged, so it is
+            // reused rather than queried a second time. These are opt-in
+            // guarantees that every served byte is verified, so we fail closed:
+            // a missing row for bytes that exist in storage is an inconsistency
+            // we refuse to serve unverified rather than silently skipping the
+            // check. (A lookup *error* never reaches here: `read_gates`
+            // propagates it.)
+            let meta = row.ok_or_else(|| {
+                CoreError::IntegrityFailure(format!(
+                    "cannot verify {registry}/{name}@{version}: no published metadata found for stored artifact"
+                ))
+            })?;
             if verify_checksum {
                 self.reverify_checksum_on_serve(registry, name, version, &meta.checksum, &bytes)?;
             }
@@ -211,9 +349,74 @@ impl LocalRegistryService {
             }
         }
 
-        self.record_download(registry, name, version, identity, None)
+        self.record_download(registry, name, version, None, identity, None)
             .await;
         Ok(bytes)
+    }
+
+    /// [`Self::get_artifact`] for a coordinate whose bytes do **not** live at
+    /// `{registry}/{name}/{version}`.
+    ///
+    /// Maven publishes several files per version (`maven_artifact_storage_key`)
+    /// and a Terraform provider one archive per platform
+    /// (`terraform_provider_binary_storage_key`), so those handlers compute the
+    /// key themselves. Before this existed they also read `storage` themselves,
+    /// which is how both ended up serving bytes with no visibility check at all
+    /// (survey findings 6 and 7) — the storage handle is public and reading it
+    /// directly skips every gate. Going through here instead means the gate is
+    /// not something the handler has to remember.
+    ///
+    /// `Ok(None)` for a key that is not present, so a Hybrid caller can fall
+    /// through to the upstream; the gate has already run at that point, which is
+    /// deliberate — whether a package exists locally is not a reason to skip
+    /// authorizing the caller.
+    ///
+    /// The re-serve checksum and signature verification `get_artifact` performs
+    /// are **not** applied: both compare against the version's single recorded
+    /// `checksum`, which describes the primary artifact and not a sibling file.
+    ///
+    /// The coordinate arrives as a whole [`PackageId`] rather than three strings
+    /// because its `artifact` field is load-bearing here: it is the file's own
+    /// name within the version — `secret-lib-1.2.3.jar`, `…jar.sha1`,
+    /// `acme.crypto.2.1.0.nupkg` — and it decides both the coordinate the audit
+    /// trail records (the proxy path has always carried it, via `with_artifact`)
+    /// and whether this read counts as a download at all, per
+    /// [`PackageId::is_verification_sidecar`]. Leaving `artifact` unset records a
+    /// plain download, which is right for a version that is a single file.
+    pub async fn get_artifact_at_key(
+        &self,
+        pkg: &PackageId,
+        key: &str,
+        resource_type: &str,
+        identity: &Identity,
+    ) -> Result<Option<Bytes>, CoreError> {
+        self.authorize_artifact_read(
+            &pkg.registry,
+            &pkg.name,
+            &pkg.version,
+            resource_type,
+            identity,
+        )
+        .await?;
+        let Some(stored) = self.storage.retrieve(key).await? else {
+            return Ok(None);
+        };
+        let mut buf = Vec::new();
+        let mut stream = stored.stream;
+        while let Some(chunk) = stream.next().await {
+            buf.extend_from_slice(&chunk?);
+        }
+        let bytes = Bytes::from(buf);
+        self.record_download(
+            &pkg.registry,
+            &pkg.name,
+            &pkg.version,
+            pkg.artifact.as_deref(),
+            identity,
+            None,
+        )
+        .await;
+        Ok(Some(bytes))
     }
 
     /// Record a download attempt through `package_repo`, when configured.
@@ -227,13 +430,22 @@ impl LocalRegistryService {
         registry: &str,
         name: &str,
         version: &str,
+        artifact: Option<&str>,
         identity: &Identity,
         denial_reason: Option<String>,
     ) {
         let Some(repo) = self.package_repo.as_ref() else {
             return;
         };
-        let pkg = PackageId::new(registry, name, version);
+        // The artifact name is what lets a multi-file version be told apart
+        // here, and the proxy path has always carried it (`with_artifact` in the
+        // Maven and NuGet handlers). Without it every file of a version
+        // collapsed onto one coordinate, and `allowed_read` could not see that a
+        // `.sha1` is not a download.
+        let mut pkg = PackageId::new(registry, name, version);
+        if let Some(artifact) = artifact {
+            pkg = pkg.with_artifact(artifact);
+        }
         let event = match denial_reason {
             Some(reason) => AccessEvent::denied_download(
                 pkg,
@@ -241,9 +453,7 @@ impl LocalRegistryService {
                 identity.role.clone(),
                 reason,
             ),
-            None => {
-                AccessEvent::allowed_download(pkg, identity.user_id.clone(), identity.role.clone())
-            }
+            None => AccessEvent::allowed_read(pkg, identity.user_id.clone(), identity.role.clone()),
         };
         if let Err(e) = repo.record_access(event).await {
             tracing::warn!(error = %e, "audit log write failed for local registry download");
@@ -311,9 +521,35 @@ impl LocalRegistryService {
         bytes: &Bytes,
     ) -> Result<(), CoreError> {
         use crate::services::signature::{verify_ed25519, ED25519_SIG_TYPE};
-        let (Some(sig), Some(ty)) = (sig_bytes, sig_type) else {
-            metrics::counter!("batlehub_signature_checks_total", "registry" => registry.to_owned(), "outcome" => "skipped").increment(1);
-            return Ok(());
+        let (sig, ty) = match (sig_bytes, sig_type) {
+            (Some(sig), Some(ty)) => (sig, ty),
+            // No signature at all. Whether an unsigned artifact may exist here is
+            // publish-time `signing.required`'s question, and it has already been
+            // answered — so this is a skip, not a refusal.
+            (None, _) => {
+                metrics::counter!("batlehub_signature_checks_total", "registry" => registry.to_owned(), "outcome" => "skipped").increment(1);
+                return Ok(());
+            }
+            // Bytes with no type. This used to take the same branch as "no
+            // signature", which made supplying *no* type strictly weaker than
+            // supplying a bogus one: `X-Signature-Type: pgp` was refused below,
+            // and omitting the header entirely served the artifact unverified
+            // (survey finding 13). The publish edge no longer accepts the pair,
+            // but rows stored before it did still exist, and this is where they
+            // are met.
+            (Some(_), None) => {
+                metrics::counter!("batlehub_signature_checks_total", "registry" => registry.to_owned(), "outcome" => "mismatch").increment(1);
+                tracing::warn!(
+                    registry,
+                    name,
+                    version,
+                    "refusing to serve: artifact carries signature bytes with no signature type while verify_on_download is enabled"
+                );
+                return Err(CoreError::IntegrityFailure(format!(
+                    "cannot verify {registry}/{name}@{version}: the stored signature names no \
+                     type; refusing to serve unverified"
+                )));
+            }
         };
         if !ty.eq_ignore_ascii_case(ED25519_SIG_TYPE) {
             // Only Ed25519 is verifiable here (rsa/PGP are banned). We reach this
@@ -405,6 +641,111 @@ impl LocalRegistryService {
                 check_team_visibility(&**ns_port, registry, package, identity).await
             }
         }
+    }
+
+    /// Locally published packages matching `query`, as search hits the caller is
+    /// allowed to know exist.
+    ///
+    /// The web layer used to build this itself from `list_package_names` — a
+    /// bare `SELECT DISTINCT name FROM local_packages`, with no visibility
+    /// check, no `unlisted` filter and no identity filter — so a search returned
+    /// every private package name in the registry to anyone who asked, including
+    /// callers the same registry answers `403` to on the package itself (survey
+    /// finding 11).
+    ///
+    /// It goes through [`Self::load_visible_versions`] per name instead: the same
+    /// funnel every other local listing uses, so a name is included only if this
+    /// caller could have listed that package directly. A name whose versions are
+    /// all unlisted, all blocked, or invisible to this identity simply has
+    /// nothing to report and is skipped — a search reports what the caller may
+    /// see, and reports it the same way the listing endpoints do.
+    ///
+    /// `AccessDenied` is a skip rather than an error for the same reason
+    /// `get_jetbrains_plugins` skips: a listing that refuses wholesale because
+    /// one of its candidates is private tells the caller that a private package
+    /// exists, which is the disclosure being closed.
+    pub async fn search_local(
+        &self,
+        registry: &str,
+        query: &str,
+        limit: usize,
+        identity: &Identity,
+    ) -> crate::services::search::LocalSearch {
+        let names = self
+            .backend
+            .list_package_names(registry)
+            .await
+            .unwrap_or_default();
+        // Every published name, unfiltered — never returned to a client, only
+        // used by `ProxyService::search` to recognise which of its *held*
+        // packages are locally published and therefore governed by the hits
+        // below rather than by the proxy's access log. See `LocalSearch`.
+        let all_names: std::collections::HashSet<String> = names.iter().cloned().collect();
+
+        let q = query.to_lowercase();
+        let mut out = Vec::new();
+        for name in names {
+            if !q.is_empty() && !name.to_lowercase().contains(&q) {
+                continue;
+            }
+            let Ok(versions) = self.load_visible_versions(registry, &name, identity).await else {
+                continue;
+            };
+            // The newest visible version, so a hit names something this caller
+            // can actually install rather than an empty string — which is what
+            // the NuGet local branch used to emit, and what made its
+            // `versions[]` unusable.
+            let Some(version) = versions.last().map(|p| p.version.clone()) else {
+                continue;
+            };
+            out.push(crate::services::search::SearchHit {
+                name,
+                version,
+                description: None,
+            });
+            if out.len() >= limit {
+                break;
+            }
+        }
+        crate::services::search::LocalSearch {
+            hits: out,
+            all_names,
+        }
+    }
+
+    /// The gate every local **document** read passes: the registry's rule chain
+    /// first, then the package's own visibility.
+    ///
+    /// The two halves fail independently, and the survey found both halves
+    /// missing in different places — the rule chain on conda, jetbrains, pypi,
+    /// goproxy and the terraform listings; visibility on maven, nuget and the
+    /// terraform provider binary. Pairing them in one method is what stops the
+    /// next reader from adding one and believing they added both.
+    ///
+    /// Only the identity-keyed `rbac` rule runs, not the full chain: this
+    /// authorises a *listing*, and the gate rules judge a concrete version that
+    /// a listing does not name — see
+    /// [`crate::services::registry_authz::authorize_listing`]. The full chain
+    /// still runs on the download that follows, in
+    /// [`Self::authorize_artifact_read`].
+    ///
+    /// `check_visibility` stays separately public because the console's explore
+    /// endpoints call it on their own authorization path, where the registry's
+    /// *client-facing* RBAC is not the gate that governs.
+    pub(super) async fn check_read_access(
+        &self,
+        registry: &str,
+        name: &str,
+        identity: &Identity,
+    ) -> Result<(), CoreError> {
+        crate::services::registry_authz::authorize_listing(
+            &self.hot,
+            &PackageId::new(registry, name, "latest"),
+            identity,
+            crate::rules::resource_type::RELEASES_READ,
+        )
+        .await?;
+        self.check_visibility(registry, name, identity).await
     }
 
     // ── Beta channel helpers ──────────────────────────────────────────────────
@@ -510,7 +851,7 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<Vec<PublishedPackage>, CoreError> {
-        self.check_visibility(registry, name, identity).await?;
+        self.check_read_access(registry, name, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
         let versions = Self::filter_unlisted(versions);
         let versions = self.filter_blocked(registry, name, versions).await;
