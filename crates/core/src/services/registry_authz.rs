@@ -156,6 +156,12 @@ pub async fn authorize_unheld_read(
         return Ok(());
     };
     let metadata = synthetic_metadata(package_id);
+    // `.resolve(identity)` on every verdict, exactly as `evaluate_rules` does.
+    // A gate with a non-empty `bypass_roles` does not answer `Deny`; it answers
+    // `RequireRole { minimum }` and leaves the comparison against the caller to
+    // `resolve`. Matching on `Deny` alone therefore reads "admins may bypass
+    // this" as "nobody is gated by this", and `version_gate`, `deny_latest` and
+    // `trusted_publisher` all become no-ops on this path.
     for rule in policy
         .rules
         .iter()
@@ -168,7 +174,7 @@ pub async fn authorize_unheld_read(
             cache_entry: None,
             requested_version: Some(&package_id.version),
         };
-        if let RuleDecision::Deny { reason } = rule.evaluate(&ctx).await {
+        if let RuleDecision::Deny { reason } = rule.evaluate(&ctx).await.resolve(identity) {
             return Err(CoreError::AccessDenied(reason));
         }
     }
@@ -206,6 +212,9 @@ pub async fn authorize_listing(
         return Ok(());
     };
     let metadata = synthetic_metadata(package_id);
+    // `.resolve(identity)` for the same reason as `authorize_unheld_read`:
+    // `rbac` never answers `RequireRole` today, but this filter is the kind that
+    // widens, and a dropped `RequireRole` is a silent allow.
     for rule in policy.rules.iter().filter(|r| r.name() == "rbac") {
         let ctx = RuleContext {
             identity,
@@ -214,9 +223,87 @@ pub async fn authorize_listing(
             cache_entry: None,
             requested_version: None,
         };
-        if let RuleDecision::Deny { reason } = rule.evaluate(&ctx).await {
+        if let RuleDecision::Deny { reason } = rule.evaluate(&ctx).await.resolve(identity) {
             return Err(CoreError::AccessDenied(reason));
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entities::Role;
+    use crate::rules::{resource_type, Rule, VersionGateRule};
+    use crate::services::hot_config::HotConfig;
+    use tokio::sync::RwLock;
+
+    fn hot_with(rules: Vec<Box<dyn Rule>>) -> HotConfigLock {
+        let mut hot = HotConfig::default();
+        hot.policies.insert(
+            "reg".to_owned(),
+            Arc::new(RegistryPolicy {
+                metadata_ttl: None,
+                rules,
+                firewall_only: false,
+                serve_stale_metadata: false,
+                artifact_ttl: None,
+            }),
+        );
+        Arc::new(RwLock::new(hot))
+    }
+
+    fn blocking_gate() -> HotConfigLock {
+        hot_with(vec![Box::new(VersionGateRule::new(
+            &[],
+            &["1.2.3".to_owned()],
+            vec![Role::Admin],
+        ))])
+    }
+
+    /// A gate with a non-empty `bypass_roles` answers `RequireRole`, not `Deny`.
+    /// Matching on `Deny` alone let the blocked version through to *everyone* —
+    /// the rule became a no-op the moment an operator named a bypass role.
+    #[tokio::test]
+    async fn a_gate_with_bypass_roles_still_refuses_a_caller_who_lacks_them() {
+        let pkg = PackageId::new("reg", "pkg", "1.2.3");
+        let err = authorize_unheld_read(
+            &blocking_gate(),
+            &pkg,
+            &Identity::anonymous(),
+            resource_type::RELEASES_READ,
+        )
+        .await
+        .expect_err("a blocked version must not be readable by an anonymous caller");
+        assert!(matches!(err, CoreError::AccessDenied(_)), "{err:?}");
+    }
+
+    /// …and the role the operator named does still bypass it.
+    #[tokio::test]
+    async fn a_caller_holding_a_bypass_role_is_allowed() {
+        let pkg = PackageId::new("reg", "pkg", "1.2.3");
+        let admin = Identity {
+            user_id: Some("root".to_owned()),
+            role: Role::Admin,
+            auth_provider: None,
+            groups: vec![],
+        };
+        authorize_unheld_read(&blocking_gate(), &pkg, &admin, resource_type::RELEASES_READ)
+            .await
+            .expect("a bypass role must still bypass");
+    }
+
+    /// The gate is a gate, not a wall: an unblocked coordinate is unaffected.
+    #[tokio::test]
+    async fn an_ungated_version_is_allowed() {
+        let pkg = PackageId::new("reg", "pkg", "1.2.4");
+        authorize_unheld_read(
+            &blocking_gate(),
+            &pkg,
+            &Identity::anonymous(),
+            resource_type::RELEASES_READ,
+        )
+        .await
+        .expect("only the blocked version is gated");
+    }
 }

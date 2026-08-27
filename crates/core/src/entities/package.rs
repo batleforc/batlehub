@@ -58,6 +58,14 @@ impl PackageId {
     /// here: a `pom`-packaged Maven module is nothing but its POM, so treating
     /// it as metadata would make such a module permanently show zero downloads.
     ///
+    /// One exact name is admitted alongside the suffixes, and only because the
+    /// suffix rule cannot reach it: Terraform's checksum manifest is addressed as
+    /// the bare artifact `shasums` (`SHA256SUMS`), while the detached signature
+    /// beside it is `shasums.sig` and already matches `.sig`. Leaving it out
+    /// counted one `terraform init` as two downloads and let the two halves of
+    /// the same verification step disagree — which is the defect this predicate
+    /// exists to remove, not an exception to it.
+    ///
     /// [`AccessAction::ViewMetadata`]: crate::entities::AccessAction::ViewMetadata
     pub fn is_verification_sidecar(&self) -> bool {
         const SIDECAR_SUFFIXES: &[&str] = &[
@@ -69,9 +77,11 @@ impl PackageId {
             ".sig",
             ".sigstore",
         ];
+        const SIDECAR_NAMES: &[&str] = &["shasums"];
         self.artifact.as_deref().is_some_and(|artifact| {
             let lower = artifact.to_ascii_lowercase();
-            SIDECAR_SUFFIXES.iter().any(|s| lower.ends_with(s))
+            SIDECAR_NAMES.contains(&lower.as_str())
+                || SIDECAR_SUFFIXES.iter().any(|s| lower.ends_with(s))
         })
     }
 
@@ -239,6 +249,21 @@ mod tests {
         ] {
             assert!(maven(artifact).is_verification_sidecar(), "{artifact}");
         }
+    }
+
+    /// Terraform's two verification files must agree: `shasums.sig` matched the
+    /// `.sig` suffix while `shasums` — the `SHA256SUMS` manifest, addressed as a
+    /// bare artifact name — did not, so one `terraform init` counted twice.
+    #[test]
+    fn the_terraform_checksum_manifest_and_its_signature_are_both_sidecars() {
+        let tf = |artifact: &str| {
+            PackageId::new("tf", "providers/acme/vault", "1.2.3").with_artifact(artifact)
+        };
+        assert!(tf("shasums").is_verification_sidecar());
+        assert!(tf("SHASUMS").is_verification_sidecar());
+        assert!(tf("shasums.sig").is_verification_sidecar());
+        // The archive itself still counts as a download.
+        assert!(!tf("linux/amd64").is_verification_sidecar());
     }
 
     /// The bytes a client actually installs are not sidecars, whatever their

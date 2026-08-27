@@ -5,6 +5,7 @@ use super::{
 };
 use actix_web::HttpRequest;
 use batlehub_core::entities::Identity;
+use batlehub_core::ports::UserBlockRepository;
 use batlehub_core::services::{SignedUrlCoordinate, SignedUrlService, SIGNED_URL_QUERY_PARAM};
 
 use crate::handlers::schemas::MessageResponse;
@@ -264,6 +265,18 @@ fn signed_url_token(req: &HttpRequest) -> Option<String> {
 ///   header. Falling back would answer an expired URL with whatever the
 ///   anonymous grant allows, which is the wrong error for the operator and, on
 ///   a closed registry, the wrong error for the client.
+///
+/// ## Why the user block is re-checked here
+///
+/// [`UserBlockMiddleware`](crate::middleware::UserBlockMiddlewareFactory) runs
+/// before routing, against the identity `AuthMiddleware` recovered from the
+/// *headers* — which on one of these requests is `Identity::anonymous()`,
+/// because the whole point is that Terraform sends no header. So the middleware
+/// waves the request through and the handler then adopts a named user out of the
+/// token. Without this, blocking a user left every URL minted for them
+/// redeemable for the rest of their TTL, and §6.6's claim that a recovered
+/// identity meets the same controls as a header one would be false for the one
+/// control that exists to cut a compromised account off immediately.
 pub async fn identity_for_artifact(
     svc: &ProxyService,
     req: &HttpRequest,
@@ -280,7 +293,7 @@ pub async fn identity_for_artifact(
         return Ok(header_identity.0);
     };
 
-    signer.verify(&token, &coord).map_err(|e| {
+    let identity = signer.verify(&token, &coord).map_err(|e| {
         tracing::debug!(
             registry = coord.registry,
             package = coord.package,
@@ -289,7 +302,43 @@ pub async fn identity_for_artifact(
             "signed URL rejected"
         );
         AppError::forbidden(e.to_string()).coded(e.code())
-    })
+    })?;
+
+    reject_blocked_user(req, &identity).await?;
+    Ok(identity)
+}
+
+/// Refuse a recovered identity whose user is blocked.
+///
+/// Read out of app data rather than taken as an extractor so the three artifact
+/// handlers keep their signatures: a deployment without the repository (the
+/// in-process test apps, a server built without governance) simply has no
+/// block list, which is the same answer the middleware gives there.
+///
+/// A repository error is a refusal, not a pass. The middleware fails closed on
+/// the same question, and a signed URL is a bearer credential whose only
+/// revocation channel this is.
+async fn reject_blocked_user(req: &HttpRequest, identity: &Identity) -> Result<(), AppError> {
+    let Some(user_id) = identity.user_id.as_deref() else {
+        return Ok(());
+    };
+    let Some(repo) = req.app_data::<web::Data<Arc<dyn UserBlockRepository>>>() else {
+        return Ok(());
+    };
+    match repo.is_blocked(user_id).await {
+        Ok(false) => Ok(()),
+        Ok(true) => Err(AppError::forbidden(format!(
+            "user '{user_id}' is blocked; the signed URL minted for them is no longer redeemable"
+        ))
+        .coded("user.blocked")),
+        Err(e) => {
+            tracing::warn!(error = %e, user_id, "user-block lookup failed for a signed URL");
+            Err(AppError::forbidden(
+                "cannot verify the block status of the user this URL was minted for".to_owned(),
+            )
+            .coded("user.blocked"))
+        }
+    }
 }
 
 /// The data describing a single Terraform yank/unyank request — everything

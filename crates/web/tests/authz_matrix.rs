@@ -46,7 +46,11 @@
 //!
 //! Two steps, and the second is enforced.
 //!
-//! 1. Add rows to [`matrix`] — one per read route, with both axes.
+//! 1. Add rows to [`matrix`] — one per read route, with both axes. A row is
+//!    `Row::new(kind, uri)`, which expects both gates to refuse and seeds
+//!    `pkg` / `9.8.7`; chain `.pkg()`, `.coord()`, `.meta()`, `.vis()` or
+//!    `.no_control()` for whatever is *not* true of your route, and nothing
+//!    else. What is written beside a row is what is unusual about it.
 //! 2. Add every one of the new routes to [`ROUTE_INVENTORY`], classified.
 //!
 //! Step 2 is not optional and not a convention: `the_route_inventory_matches_the_router`
@@ -226,506 +230,303 @@ where
     (leaked, status)
 }
 
+impl Row {
+    /// A row with the defaults every route shares: both axes expect the gate to
+    /// refuse, no extra index metadata, the coordinate `pkg` / `9.8.7`, and the
+    /// positive control on. Only a row's *exceptions* are spelled out at the
+    /// call site, so what is unusual about a route is the only thing written
+    /// next to it.
+    fn new(kind: &'static str, uri: &'static str) -> Self {
+        Row {
+            kind,
+            uri,
+            expect: Expect::Denied,
+            expect_vis: Expect::Denied,
+            meta: no_meta,
+            name: "pkg",
+            version: "9.8.7",
+            control: true,
+        }
+    }
+
+    /// Override **axis A**, the registry rule chain.
+    ///
+    /// No row uses it today — every route is expected to refuse — and it is kept
+    /// for the same reason as [`Expect::KnownGap`], which is the only thing it
+    /// would carry: the next finding wants to be pinnable on the day it is
+    /// found, not after a debate about how to keep the suite green.
+    #[allow(dead_code)]
+    fn chain(mut self, expect: Expect) -> Self {
+        self.expect = expect;
+        self
+    }
+
+    /// Override **axis B**, per-package visibility.
+    fn vis(mut self, expect_vis: Expect) -> Self {
+        self.expect_vis = expect_vis;
+        self
+    }
+
+    /// Extra index metadata this ecosystem's read path needs to find the package.
+    fn meta(mut self, meta: fn() -> serde_json::Value) -> Self {
+        self.meta = meta;
+        self
+    }
+
+    /// Seed under a different package name. The version stays `9.8.7`.
+    fn pkg(mut self, name: &'static str) -> Self {
+        self.name = name;
+        self
+    }
+
+    /// Seed under a different name *and* version.
+    fn coord(mut self, name: &'static str, version: &'static str) -> Self {
+        self.name = name;
+        self.version = version;
+        self
+    }
+
+    /// Skip the positive control: this route legitimately 404s even for a
+    /// permitted caller in the minimal fixture. Every use says why.
+    fn no_control(mut self) -> Self {
+        self.control = false;
+        self
+    }
+}
+
+/// The cargo sparse-index line, which both cargo rows read.
+fn cargo_index_meta() -> serde_json::Value {
+    json!({"name": "pkg", "vers": "9.8.7", "deps": [], "cksum": "", "features": {}, "yanked": false})
+}
+
+/// Terraform provider coordinates, plus the one platform the download row asks for.
+fn terraform_provider_meta() -> serde_json::Value {
+    json!({"kind": "provider", "namespace": "acme", "type": "vault", "platforms": [{"os": "linux", "arch": "amd64"}]})
+}
+
+/// Terraform module coordinates.
+fn terraform_module_meta() -> serde_json::Value {
+    json!({"kind": "module", "namespace": "acme", "name": "vpc", "provider": "aws"})
+}
+
+/// The sdist filename the PyPI read paths key on.
+fn pypi_meta() -> serde_json::Value {
+    json!({"filename": "pkg-9.8.7.tar.gz"})
+}
+
+/// The conda package filename and the subdir channel holding it.
+fn conda_meta() -> serde_json::Value {
+    json!({"filename": "pkg-9.8.7-py311_0.conda", "subdir": "linux-64"})
+}
+
+/// A marketplace extension's identity, for the openvsx and VS Code rows.
+fn extension_meta() -> serde_json::Value {
+    json!({"id": "acme.ext", "version": "9.8.7"})
+}
+
+/// A JetBrains plugin's identity.
+fn plugin_meta() -> serde_json::Value {
+    json!({"id": "org.acme.plugin", "version": "9.8.7"})
+}
+
+/// `get_go_version_list` reads each version from `index_metadata["Version"]`, so
+/// with `no_meta` the list came back *empty for everyone* — including the
+/// permitted caller, which is what the broken positive control was reporting. A
+/// row whose control cannot see the package asserts nothing about the caller who
+/// should not.
+fn go_list_meta() -> serde_json::Value {
+    json!({"Version": "v9.8.7"})
+}
+
 fn matrix() -> Vec<Row> {
     vec![
         // ── cargo ────────────────────────────────────────────────────────────
-        Row {
-            kind: "cargo",
-            uri: "/proxy/reg/pkg/9.8.7/download",
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: || json!({"name": "pkg", "vers": "9.8.7", "deps": [], "cksum": "", "features": {}, "yanked": false}),
-            name: "pkg",
-            version: "9.8.7",
-            control: true,
-        },
+        Row::new("cargo", "/proxy/reg/pkg/9.8.7/download").meta(cargo_index_meta),
         // ── npm ──────────────────────────────────────────────────────────────
-        Row {
-            kind: "npm",
-            uri: "/proxy/reg/pkg/9.8.7/tarball",
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: no_meta,
-            name: "pkg",
-            version: "9.8.7",
-            control: true,
-        },
-        Row {
-            kind: "npm",
-            uri: "/proxy/reg/pkg",
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: no_meta,
-            name: "pkg",
-            version: "9.8.7",
-            control: true,
-        },
+        Row::new("npm", "/proxy/reg/pkg/9.8.7/tarball"),
+        Row::new("npm", "/proxy/reg/pkg"),
         // ── nuget ────────────────────────────────────────────────────────────
-        Row {
-            kind: "nuget",
-            uri: "/proxy/reg/nuget/v3/flat/pkg/index.json",
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: no_meta,
-            name: "pkg",
-            version: "9.8.7",
-            control: true,
-        },
-        Row {
-            kind: "nuget",
-            uri: "/proxy/reg/nuget/v3/flat/pkg/9.8.7/pkg.9.8.7.nupkg",
-            expect: Expect::Denied,
-            // Was survey finding 6, and the row that calibrated axis B: the
-            // download read `local_svc.storage` directly while the sibling flat
-            // *index* checked visibility. It goes through `get_artifact_at_key`
-            // now, which gates before it reads.
-            expect_vis: Expect::Denied,
-            meta: no_meta,
-            name: "pkg",
-            version: "9.8.7",
-            control: true,
-        },
+        Row::new("nuget", "/proxy/reg/nuget/v3/flat/pkg/index.json"),
+        // Axis B here was survey finding 6, and the row that calibrated the axis:
+        // the download read `local_svc.storage` directly while the sibling flat
+        // *index* checked visibility. It goes through `get_artifact_at_key` now,
+        // which gates before it reads.
+        Row::new(
+            "nuget",
+            "/proxy/reg/nuget/v3/flat/pkg/9.8.7/pkg.9.8.7.nupkg",
+        ),
         // ── pypi ─────────────────────────────────────────────────────────────
-        Row {
-            kind: "pypi",
-            uri: "/proxy/reg/simple/pkg/",
-            expect: Expect::Denied, // was survey finding 9
-            expect_vis: Expect::Denied,
-            meta: || json!({"filename": "pkg-9.8.7.tar.gz"}),
-            name: "pkg",
-            version: "9.8.7",
-            control: true,
-        },
+        Row::new("pypi", "/proxy/reg/simple/pkg/").meta(pypi_meta), // was survey finding 9
         // ── conda ────────────────────────────────────────────────────────────
-        Row {
-            kind: "conda",
-            uri: "/proxy/reg/linux-64/pkg-9.8.7-py311_0.conda",
-            expect: Expect::Denied, // was survey finding 4
-            expect_vis: Expect::Denied,
-            meta: || json!({"filename": "pkg-9.8.7-py311_0.conda", "subdir": "linux-64"}),
-            name: "pkg",
-            version: "9.8.7",
-            control: true,
-        },
+        Row::new("conda", "/proxy/reg/linux-64/pkg-9.8.7-py311_0.conda").meta(conda_meta), // was survey finding 4
         // ── goproxy ──────────────────────────────────────────────────────────
-        Row {
-            kind: "goproxy",
-            uri: "/proxy/reg/example.com/m@v/v9.8.7.zip",
-            // Was survey finding 10. `source:read` here, not `releases:read`:
-            // a module zip is the source, and the proxy fall-through says so too.
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: no_meta,
-            name: "example.com/m",
-            version: "v9.8.7",
-            control: true,
-        },
-        Row {
-            kind: "goproxy",
-            uri: "/proxy/reg/example.com/m@v/list",
-            expect: Expect::Denied, // was survey finding 10
-            expect_vis: Expect::Denied,
-            // `get_go_version_list` reads each version from
-            // `index_metadata["Version"]`, so with `no_meta` the list came back
-            // *empty for everyone* — including the permitted caller, which is
-            // what the broken positive control was reporting. A row whose
-            // control cannot see the package asserts nothing about the caller
-            // who should not.
-            meta: || json!({"Version": "v9.8.7"}),
-            name: "example.com/m",
-            version: "v9.8.7",
-            control: true,
-        },
+        // Was survey finding 10. `source:read` here, not `releases:read`: a
+        // module zip is the source, and the proxy fall-through says so too.
+        Row::new("goproxy", "/proxy/reg/example.com/m@v/v9.8.7.zip")
+            .coord("example.com/m", "v9.8.7"),
+        // Was survey finding 10.
+        Row::new("goproxy", "/proxy/reg/example.com/m@v/list")
+            .coord("example.com/m", "v9.8.7")
+            .meta(go_list_meta),
         // ── rubygems — no finding names it; that is why it is here ───────────
-        Row {
-            kind: "rubygems",
-            uri: "/proxy/reg/gems/pkg-9.8.7.gem",
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: no_meta,
-            name: "pkg",
-            version: "9.8.7",
-            control: true,
-        },
-        Row {
-            kind: "rubygems",
-            uri: "/proxy/reg/api/v1/versions/pkg.json",
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: no_meta,
-            name: "pkg",
-            version: "9.8.7",
-            control: true,
-        },
-        Row {
-            kind: "rubygems",
-            uri: "/proxy/reg/info/pkg",
-            expect: Expect::Denied, // was survey finding 16, found by this matrix
-            expect_vis: Expect::Denied,
-            meta: no_meta,
-            name: "pkg",
-            version: "9.8.7",
-            control: true,
-        },
-        Row {
-            kind: "rubygems",
-            uri: "/proxy/reg/versions",
-            // Was survey finding 16. Answers `200` with an *empty* document
-            // rather than `403`: it is built by asking each package in turn, and
-            // a caller the chain denies is denied every one of them. An empty
-            // index discloses nothing, which is what this axis measures.
-            expect: Expect::Denied,
-            expect_vis: WHOLE_REGISTRY,
-            meta: no_meta,
-            name: "pkg",
-            version: "9.8.7",
-            control: true,
-        },
-        Row {
-            kind: "rubygems",
-            uri: "/proxy/reg/names",
-            // Same `serve_compact` branch, same empty-document answer. `/names`
-            // stays deliberately unfiltered for *blocking* — a gem with one
-            // blocked version still exists — which was always a separate
-            // question from whether an RBAC-denied caller may read it at all.
-            expect: Expect::Denied,
-            expect_vis: WHOLE_REGISTRY,
-            meta: no_meta,
-            name: "pkg",
-            version: "9.8.7",
-            control: true,
-        },
-        Row {
-            kind: "rubygems",
-            uri: "/proxy/reg/quick/Marshal.4.8/pkg-9.8.7.gemspec.rz",
-            expect: Expect::Denied,
-            expect_vis: Expect::NotChecked(
-                "gem_gemspec has no local branch — it always goes through proxy_stream, so it \
+        Row::new("rubygems", "/proxy/reg/gems/pkg-9.8.7.gem"),
+        Row::new("rubygems", "/proxy/reg/api/v1/versions/pkg.json"),
+        // Was survey finding 16, found by this matrix.
+        Row::new("rubygems", "/proxy/reg/info/pkg"),
+        // Was survey finding 16. Answers `200` with an *empty* document rather
+        // than `403`: it is built by asking each package in turn, and a caller
+        // the chain denies is denied every one of them. An empty index discloses
+        // nothing, which is what this axis measures.
+        Row::new("rubygems", "/proxy/reg/versions").vis(WHOLE_REGISTRY),
+        // Same `serve_compact` branch, same empty-document answer. `/names` stays
+        // deliberately unfiltered for *blocking* — a gem with one blocked version
+        // still exists — which was always a separate question from whether an
+        // RBAC-denied caller may read it at all.
+        Row::new("rubygems", "/proxy/reg/names").vis(WHOLE_REGISTRY),
+        Row::new(
+            "rubygems",
+            "/proxy/reg/quick/Marshal.4.8/pkg-9.8.7.gemspec.rz",
+        )
+        .vis(Expect::NotChecked(
+            "gem_gemspec has no local branch — it always goes through proxy_stream, so it \
                  never reads the local package whose visibility this axis sets",
-            ),
-            meta: no_meta,
-            name: "pkg",
-            version: "9.8.7",
-            control: false, // needs a stored gemspec, not the flat fixture
-        },
-        Row {
-            kind: "rubygems",
-            uri: "/proxy/reg/api/v1/gems/pkg.json",
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: no_meta,
-            name: "pkg",
-            version: "9.8.7",
-            control: true,
-        },
+        ))
+        .no_control(), // needs a stored gemspec, not the flat fixture
+        Row::new("rubygems", "/proxy/reg/api/v1/gems/pkg.json"),
         // ── composer ─────────────────────────────────────────────────────────
-        Row {
-            kind: "composer",
-            uri: "/proxy/reg/p2/vendor/pkg.json",
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: no_meta,
-            name: "vendor/pkg",
-            version: "9.8.7",
-            control: true,
-        },
-        Row {
-            kind: "composer",
-            uri: "/proxy/reg/dist/vendor/pkg/9.8.7",
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: no_meta,
-            name: "vendor/pkg",
-            version: "9.8.7",
-            control: true,
-        },
+        Row::new("composer", "/proxy/reg/p2/vendor/pkg.json").pkg("vendor/pkg"),
+        Row::new("composer", "/proxy/reg/dist/vendor/pkg/9.8.7").pkg("vendor/pkg"),
         // ── maven ────────────────────────────────────────────────────────────
-        Row {
-            kind: "maven",
-            uri: "/proxy/reg/maven2/com/acme/pkg/9.8.7/pkg-9.8.7.jar",
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: no_meta,
-            name: "com.acme:pkg",
-            version: "9.8.7",
-            control: false, // needs a maven multi-file artifact key, not the flat one
-        },
+        Row::new(
+            "maven",
+            "/proxy/reg/maven2/com/acme/pkg/9.8.7/pkg-9.8.7.jar",
+        )
+        .pkg("com.acme:pkg")
+        .no_control(), // needs a maven multi-file artifact key, not the flat one
         // ── terraform ────────────────────────────────────────────────────────
-        Row {
-            kind: "terraform",
-            uri: "/proxy/reg/v1/providers/acme/vault/versions",
-            expect: Expect::Denied, // was survey finding 8
-            expect_vis: Expect::Denied,
-            meta: || json!({"kind": "provider", "namespace": "acme", "type": "vault", "platforms": [{"os": "linux", "arch": "amd64"}]}),
-            name: "providers/acme/vault",
-            version: "9.8.7",
-            control: true,
-        },
+        // Was survey finding 8.
+        Row::new("terraform", "/proxy/reg/v1/providers/acme/vault/versions")
+            .pkg("providers/acme/vault")
+            .meta(terraform_provider_meta),
         // ── jetbrains marketplace ────────────────────────────────────────────
-        Row {
-            kind: "jetbrains-marketplace",
-            uri: "/proxy/reg/pluginManager?action=download&id=org.acme.plugin",
-            expect: Expect::Denied, // was survey finding 5
-            expect_vis: Expect::Denied,
-            meta: || json!({"id": "org.acme.plugin", "version": "9.8.7"}),
-            name: "org.acme.plugin",
-            version: "9.8.7",
-            control: true,
-        },
+        // Was survey finding 5.
+        Row::new(
+            "jetbrains-marketplace",
+            "/proxy/reg/pluginManager?action=download&id=org.acme.plugin",
+        )
+        .pkg("org.acme.plugin")
+        .meta(plugin_meta),
         // ── openvsx — the route this class was first found and fixed on ──────
-        Row {
-            kind: "openvsx",
-            uri: "/proxy/reg/acme.ext/9.8.7/vsix",
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: || json!({"id": "acme.ext", "version": "9.8.7"}),
-            name: "acme.ext",
-            version: "9.8.7",
-            control: true,
-        },
+        Row::new("openvsx", "/proxy/reg/acme.ext/9.8.7/vsix")
+            .pkg("acme.ext")
+            .meta(extension_meta),
         // ── further rows, added after the first pass found rubygems ──────────
-        Row {
-            kind: "npm",
-            uri: "/proxy/reg/-/package/pkg/dist-tags",
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: no_meta,
-            name: "pkg",
-            version: "9.8.7",
-            control: true,
-        },
-        Row {
-            kind: "npm",
-            uri: "/proxy/reg/pkg/9.8.7",
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: no_meta,
-            name: "pkg",
-            version: "9.8.7",
-            control: true,
-        },
-        Row {
-            kind: "pypi",
-            uri: "/proxy/reg/pypi/pkg/json",
-            expect: Expect::Denied,
-            expect_vis: Expect::NotChecked(
+        Row::new("npm", "/proxy/reg/-/package/pkg/dist-tags"),
+        Row::new("npm", "/proxy/reg/pkg/9.8.7"),
+        Row::new("pypi", "/proxy/reg/pypi/pkg/json")
+            .meta(pypi_meta)
+            .vis(Expect::NotChecked(
                 "pypi_json renders from ProxyService::version_document with no local branch, so \
                  it never reads the local package whose visibility this axis sets",
-            ),
-            meta: || json!({"filename": "pkg-9.8.7.tar.gz"}),
-            name: "pkg",
-            version: "9.8.7",
-            control: true,
-        },
-        Row {
-            kind: "pypi",
-            uri: "/proxy/reg/packages/pkg-9.8.7.tar.gz",
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: || json!({"filename": "pkg-9.8.7.tar.gz"}),
-            name: "pkg",
-            version: "9.8.7",
-            control: true,
-        },
-        Row {
-            kind: "nuget",
-            uri: "/proxy/reg/nuget/v3/registration5/pkg/index.json",
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: no_meta,
-            name: "pkg",
-            version: "9.8.7",
-            control: true,
-        },
-        Row {
-            kind: "cargo",
-            uri: "/proxy/reg/registry/pk/g/pkg",
-            // Was survey finding 15, found by this matrix: the cargo *sparse
-            // index*, the read path of every `cargo build`. `serve_local_index`
-            // called `get_index` with no chain while `proxy_upstream_index`
-            // directly below it carried a comment recording that this exact gap
-            // — "a private cargo registry's crate names and versions were
-            // readable by anyone who could reach the port" — was why the proxy
-            // path moved onto `ProxyService`. Closed there, left open here.
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: || json!({"name": "pkg", "vers": "9.8.7", "deps": [], "cksum": "", "features": {}, "yanked": false}),
-            name: "pkg",
-            version: "9.8.7",
-            control: true,
-        },
-        Row {
-            kind: "goproxy",
-            uri: "/proxy/reg/example.com/m@latest",
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: no_meta,
-            name: "example.com/m",
-            version: "v9.8.7",
-            control: true,
-        },
-        Row {
-            kind: "terraform",
-            uri: "/proxy/reg/v1/providers/acme/vault/9.8.7/download/linux/amd64",
-            expect: Expect::Denied, // was survey finding 8
-            expect_vis: Expect::Denied,
-            meta: || json!({"kind": "provider", "namespace": "acme", "type": "vault", "platforms": [{"os": "linux", "arch": "amd64"}]}),
-            name: "providers/acme/vault",
-            version: "9.8.7",
-            control: true,
-        },
+            )),
+        Row::new("pypi", "/proxy/reg/packages/pkg-9.8.7.tar.gz").meta(pypi_meta),
+        Row::new("nuget", "/proxy/reg/nuget/v3/registration5/pkg/index.json"),
+        // Was survey finding 15, found by this matrix: the cargo *sparse index*,
+        // the read path of every `cargo build`. `serve_local_index` called
+        // `get_index` with no chain while `proxy_upstream_index` directly below
+        // it carried a comment recording that this exact gap — "a private cargo
+        // registry's crate names and versions were readable by anyone who could
+        // reach the port" — was why the proxy path moved onto `ProxyService`.
+        // Closed there, left open here.
+        Row::new("cargo", "/proxy/reg/registry/pk/g/pkg").meta(cargo_index_meta),
+        Row::new("goproxy", "/proxy/reg/example.com/m@latest").coord("example.com/m", "v9.8.7"),
+        // Was survey finding 8.
+        Row::new(
+            "terraform",
+            "/proxy/reg/v1/providers/acme/vault/9.8.7/download/linux/amd64",
+        )
+        .pkg("providers/acme/vault")
+        .meta(terraform_provider_meta),
         // ── ecosystems no survey finding names: deb/rpm/pacman, generic, vsx ──
         //
         // The completeness critic's judgement was that these are "far more
         // likely to be *unexamined* than *correct*", which is the whole reason
         // the matrix exists rather than a list of the handlers already known bad.
-        Row {
-            kind: "deb",
-            uri: "/proxy/reg/deb/dists/stable/Release",
-            expect: Expect::Denied,
-            expect_vis: WHOLE_REGISTRY,
-            meta: no_meta,
-            name: "pkg",
-            version: "9.8.7",
-            control: false, // repo metadata is generated, not the flat fixture
-        },
-        Row {
-            kind: "rpm",
-            uri: "/proxy/reg/rpm/repodata/repomd.xml",
-            expect: Expect::Denied,
-            expect_vis: WHOLE_REGISTRY,
-            meta: no_meta,
-            name: "pkg",
-            version: "9.8.7",
-            control: false,
-        },
-        Row {
-            kind: "pacman",
-            uri: "/proxy/reg/pacman/reg.db",
-            expect: Expect::Denied,
-            expect_vis: WHOLE_REGISTRY,
-            meta: no_meta,
-            name: "pkg",
-            version: "9.8.7",
-            control: false,
-        },
-        Row {
-            kind: "generic",
-            uri: "/proxy/reg/generic/pkg/9.8.7/file.bin",
-            expect: Expect::Denied,
-            // Not a finding, and worth stating so nobody re-raises it: `generic`
-            // is a path mirror with no local branch at all. Its coordinate is the
-            // synthetic `repo/_` with the whole request path as the artifact, so
-            // it never reads the local package this axis marks Internal — the
-            // `200` is the upstream's file, and the fixture's URL merely contains
-            // the string `pkg`.
-            expect_vis: Expect::NotChecked(
+        Row::new("deb", "/proxy/reg/deb/dists/stable/Release")
+            .vis(WHOLE_REGISTRY)
+            .no_control(), // repo metadata is generated, not the flat fixture
+        Row::new("rpm", "/proxy/reg/rpm/repodata/repomd.xml")
+            .vis(WHOLE_REGISTRY)
+            .no_control(),
+        Row::new("pacman", "/proxy/reg/pacman/reg.db")
+            .vis(WHOLE_REGISTRY)
+            .no_control(),
+        // Axis B is not a finding, and worth stating so nobody re-raises it:
+        // `generic` is a path mirror with no local branch at all. Its coordinate
+        // is the synthetic `repo/_` with the whole request path as the artifact,
+        // so it never reads the local package this axis marks Internal — the
+        // `200` is the upstream's file, and the fixture's URL merely contains the
+        // string `pkg`.
+        Row::new("generic", "/proxy/reg/generic/pkg/9.8.7/file.bin")
+            .vis(Expect::NotChecked(
                 "path mirror: the coordinate is repo/_ and no local package is read",
-            ),
-            meta: no_meta,
-            name: "pkg",
-            version: "9.8.7",
-            control: false,
-        },
-        Row {
-            kind: "vscode-marketplace",
-            uri:
-                "/proxy/reg/vscode/asset/acme/ext/9.8.7/Microsoft.VisualStudio.Services.VSIXPackage",
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: || json!({"id": "acme.ext", "version": "9.8.7"}),
-            name: "acme.ext",
-            version: "9.8.7",
-            control: false,
-        },
-        Row {
-            kind: "vscode-marketplace",
-            uri: "/proxy/reg/vscode/gallery/publishers/acme/vsextensions/ext/9.8.7/vspackage",
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: || json!({"id": "acme.ext", "version": "9.8.7"}),
-            name: "acme.ext",
-            version: "9.8.7",
-            control: false,
-        },
+            ))
+            .no_control(),
+        Row::new(
+            "vscode-marketplace",
+            "/proxy/reg/vscode/asset/acme/ext/9.8.7/Microsoft.VisualStudio.Services.VSIXPackage",
+        )
+        .pkg("acme.ext")
+        .meta(extension_meta)
+        .no_control(),
+        Row::new(
+            "vscode-marketplace",
+            "/proxy/reg/vscode/gallery/publishers/acme/vsextensions/ext/9.8.7/vspackage",
+        )
+        .pkg("acme.ext")
+        .meta(extension_meta)
+        .no_control(),
         // ── terraform modules (the provider half is covered above) ───────────
-        Row {
-            kind: "terraform",
-            uri: "/proxy/reg/v1/modules/acme/vpc/aws/versions",
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: || json!({"kind": "module", "namespace": "acme", "name": "vpc", "provider": "aws"}),
-            name: "modules/acme/vpc/aws",
-            version: "9.8.7",
-            control: false,
-        },
+        Row::new("terraform", "/proxy/reg/v1/modules/acme/vpc/aws/versions")
+            .pkg("modules/acme/vpc/aws")
+            .meta(terraform_module_meta)
+            .no_control(),
         // ── search / whole-registry indexes ──────────────────────────────────
-        Row {
-            kind: "npm",
-            uri: "/proxy/reg/-/v1/search?text=pkg",
-            // Was survey finding 11. `resolve_and_search` took the identity and
-            // dropped it (`let _ = identity`); it now authorises the listing
-            // *and* filters the local hits, so both halves of that finding are
-            // covered by this row and by `search.rs`'s own tests.
-            expect: Expect::Denied,
-            expect_vis: WHOLE_REGISTRY,
-            meta: no_meta,
-            name: "pkg",
-            version: "9.8.7",
-            control: false,
-        },
-        Row {
-            kind: "nuget",
-            uri: "/proxy/reg/nuget/v3/query?q=pkg",
-            // Was survey finding 11 — the same `resolve_and_search` middle.
-            expect: Expect::Denied,
-            expect_vis: WHOLE_REGISTRY,
-            meta: no_meta,
-            name: "pkg",
-            version: "9.8.7",
-            control: false,
-        },
-        Row {
-            kind: "composer",
-            uri: "/proxy/reg/packages.json",
-            expect: Expect::Denied,
-            expect_vis: WHOLE_REGISTRY,
-            meta: no_meta,
-            name: "vendor/pkg",
-            version: "9.8.7",
-            control: false,
-        },
+        // Was survey finding 11. `resolve_and_search` took the identity and
+        // dropped it (`let _ = identity`); it now authorises the listing *and*
+        // filters the local hits, so both halves of that finding are covered by
+        // this row and by `search.rs`'s own tests.
+        Row::new("npm", "/proxy/reg/-/v1/search?text=pkg")
+            .vis(WHOLE_REGISTRY)
+            .no_control(),
+        // Was survey finding 11 — the same `resolve_and_search` middle.
+        Row::new("nuget", "/proxy/reg/nuget/v3/query?q=pkg")
+            .vis(WHOLE_REGISTRY)
+            .no_control(),
+        Row::new("composer", "/proxy/reg/packages.json")
+            .pkg("vendor/pkg")
+            .vis(WHOLE_REGISTRY)
+            .no_control(),
         // ── jetbrains marketplace: the XML and files routes ──────────────────
-        Row {
-            kind: "jetbrains-marketplace",
-            uri: "/proxy/reg/plugins/list?build=IU-241.1",
-            expect: Expect::Denied,
-            expect_vis: WHOLE_REGISTRY,
-            meta: || json!({"id": "org.acme.plugin", "version": "9.8.7"}),
-            name: "org.acme.plugin",
-            version: "9.8.7",
-            control: false,
-        },
-        Row {
-            kind: "jetbrains-marketplace",
-            uri: "/proxy/reg/updatePlugins.xml",
-            expect: Expect::Denied,
-            expect_vis: WHOLE_REGISTRY,
-            meta: || json!({"id": "org.acme.plugin", "version": "9.8.7"}),
-            name: "org.acme.plugin",
-            version: "9.8.7",
-            control: false,
-        },
-        Row {
-            kind: "jetbrains-marketplace",
-            uri: "/proxy/reg/plugin/download?pluginId=org.acme.plugin&version=9.8.7",
-            expect: Expect::Denied,
-            expect_vis: Expect::Denied,
-            meta: || json!({"id": "org.acme.plugin", "version": "9.8.7"}),
-            name: "org.acme.plugin",
-            version: "9.8.7",
-            control: true,
-        },
+        Row::new(
+            "jetbrains-marketplace",
+            "/proxy/reg/plugins/list?build=IU-241.1",
+        )
+        .pkg("org.acme.plugin")
+        .meta(plugin_meta)
+        .vis(WHOLE_REGISTRY)
+        .no_control(),
+        Row::new("jetbrains-marketplace", "/proxy/reg/updatePlugins.xml")
+            .pkg("org.acme.plugin")
+            .meta(plugin_meta)
+            .vis(WHOLE_REGISTRY)
+            .no_control(),
+        Row::new(
+            "jetbrains-marketplace",
+            "/proxy/reg/plugin/download?pluginId=org.acme.plugin&version=9.8.7",
+        )
+        .pkg("org.acme.plugin")
+        .meta(plugin_meta),
     ]
 }
 
