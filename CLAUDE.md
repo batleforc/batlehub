@@ -152,7 +152,9 @@ SQL migrations live in `crates/adapters/migrations/`. They are embedded via `cra
 
 `actix-web` uses `default-features = false` with actix-web 4.14's default feature set **minus `http2`**, because that feature is the only thing pulling `h2 0.3` (RUSTSEC-2026-0258) into the tree — the fix is in h2 0.4.16, `actix-http` still requires the 0.3 line, and there is no 0.3 backport. Nothing is lost: this process never terminates TLS, so its HTTP/2 would only ever be h2c, and real deployments terminate HTTP/2 at the ingress. Do not enable default features on `actix-web` unless the server gains `bind_rustls`/`bind_openssl`, and re-open the advisory with actix if it does.
 
-The three invariants above are now also enforced by `cargo-deny`: `rsa`, `sqlx-mysql`, `sqlx-macros-core`, the legacy `rustls 0.21` / `rustls-webpki 0.101` line, and `h2 <0.4` are in the `[bans].deny` list in `deny.toml`. If a dependency bump silently drags one back into the tree, `cargo deny check` (and CI) fails.
+`lru` is held at `>= 0.18.2` (RUSTSEC-2026-0253 — `LruCache::pop()` is not panic-safe, so a panicking key `Drop` leaves dangling pointers for the next eviction to write through). `aws-sdk-s3` was the only holder of the vulnerable 0.16 line and moved to `^0.18.2` in 1.144.0, so this is a lockfile floor, not a manifest pin. Do not downgrade `aws-sdk-s3` below 1.144.0.
+
+The four invariants above are now also enforced by `cargo-deny`: `rsa`, `sqlx-mysql`, `sqlx-macros-core`, the legacy `rustls 0.21` / `rustls-webpki 0.101` line, `h2 <0.4`, and `lru <0.18.2` are in the `[bans].deny` list in `deny.toml`. If a dependency bump silently drags one back into the tree, `cargo deny check` (and CI) fails.
 
 ### Vulnerability scanning
 
