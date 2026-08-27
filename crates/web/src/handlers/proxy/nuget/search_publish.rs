@@ -13,7 +13,7 @@ use batlehub_core::{
 
 use super::super::common::{
     dispatch_notification, extract_signature_headers, publish_and_respond, require_local_mode,
-    require_registry_type, MAX_UPLOAD_BYTES,
+    require_registry_type, ArtifactSignature, MAX_UPLOAD_BYTES,
 };
 use super::nuspec::{extract_nuspec_from_nupkg, parse_nuspec};
 use crate::handlers::proxy::search::resolve_and_search;
@@ -110,6 +110,7 @@ async fn collect_multipart_file(
     ),
     responses(
         (status = 200, description = "Search results JSON", body = UpstreamDocument),
+        (status = 403, description = "Access denied by the registry's rule chain"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -191,6 +192,7 @@ pub async fn nuget_search(
     ),
     responses(
         (status = 200, description = "Package id completions", body = ProtocolDocument),
+        (status = 403, description = "Access denied by the registry's rule chain"),
         (status = 404, description = "Unknown or non-nuget registry"),
     ),
     security(("bearer_token" = [])),
@@ -298,7 +300,8 @@ pub async fn nuget_publish(
         "sha256": checksum,
     });
 
-    let (signature_bytes, signature_type) = extract_signature_headers(&req);
+    let (signature_bytes, signature_type) =
+        ArtifactSignature::split(extract_signature_headers(&req)?);
 
     publish_and_respond(
         &local_svc,
@@ -380,7 +383,8 @@ pub async fn nuget_symbol_publish(
     let version = nuspec.version.clone();
     let checksum = hex::encode(Sha256::digest(&snupkg_bytes));
 
-    let (signature_bytes, signature_type) = extract_signature_headers(&req);
+    let (signature_bytes, signature_type) =
+        ArtifactSignature::split(extract_signature_headers(&req)?);
 
     publish_and_respond(
         &local_svc,

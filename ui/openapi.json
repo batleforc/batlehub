@@ -5077,6 +5077,9 @@
               }
             }
           },
+          "403": {
+            "description": "Access denied by the registry's rule chain"
+          },
           "404": {
             "description": "Unknown or non-npm registry"
           }
@@ -5984,6 +5987,9 @@
               }
             }
           },
+          "403": {
+            "description": "Access denied by the registry's rule chain"
+          },
           "404": {
             "description": "Unknown or non-cargo registry"
           }
@@ -6370,6 +6376,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Malformed signature headers"
           },
           "403": {
             "description": "Access denied or quota exceeded"
@@ -7868,6 +7877,9 @@
               }
             }
           },
+          "400": {
+            "description": "Malformed multipart, or an unacceptable distribution filename"
+          },
           "403": {
             "description": "Access denied or quota exceeded"
           },
@@ -7923,6 +7935,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Access denied by the registry's rule chain"
           },
           "404": {
             "description": "Unknown or non-composer registry"
@@ -8326,6 +8341,9 @@
               }
             }
           },
+          "403": {
+            "description": "Access denied by the registry's rule chain"
+          },
           "404": {
             "description": "Unknown or non-nuget registry"
           }
@@ -8564,6 +8582,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Access denied by the registry's rule chain"
           }
         },
         "security": [
@@ -8805,6 +8826,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Access denied by the registry's rule chain"
           },
           "404": {
             "description": "Unknown registry"
@@ -9533,6 +9557,9 @@
               }
             }
           },
+          "403": {
+            "description": "Access denied by the registry's rule chain"
+          },
           "404": {
             "description": "Unknown or non-composer registry"
           }
@@ -10245,6 +10272,9 @@
               }
             }
           },
+          "400": {
+            "description": "Malformed signature headers"
+          },
           "401": {
             "description": "Authentication required"
           },
@@ -10524,6 +10554,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Malformed signature headers"
           },
           "401": {
             "description": "Authentication required"
@@ -10851,6 +10884,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Malformed signature headers"
           },
           "401": {
             "description": "Authentication required"
@@ -12894,6 +12930,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Malformed payload or signature headers"
           },
           "403": {
             "description": "Access denied or quota exceeded"

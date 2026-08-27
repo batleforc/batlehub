@@ -38,6 +38,33 @@
 #     from the CLI that invoked it, never from its own node_modules. Pinning it
 #     to the workspace eslint dedupes away the entire second eslint 8 tree
 #     (minimatch 3, glob 7, rimraf 3 → brace-expansion 1.1.16).
+#
+# ── An override cannot fix @scalar/api-reference. Do not add one. ─────────────
+#
+# Every pin above works because the pinned package is *rebuilt into* the output:
+# Vite resolves it from node_modules at build time, so changing the graph changes
+# the bytes we ship.
+#
+# @scalar/api-reference is different. What ships is `dist/browser/standalone.js`,
+# a bundle Scalar compiled and published in the npm tarball, which
+# `build/copy-scalar.mjs` copies verbatim — there is no build step of ours in
+# between. An override there would rewrite node_modules, turn `pnpm audit` green,
+# and leave the served file byte-for-byte identical. That is worse than leaving
+# the advisory red: it silences the alarm without touching the code the console's
+# origin actually executes.
+#
+# Two further things follow from the same fact, and they are why the signal here
+# needs a human rather than a pin:
+#
+#   * ~194 packages entered this lockfile with it, but only a subset is inlined
+#     in the bundle — the rest is Scalar's own build tooling. An advisory in
+#     those is a false positive for what we ship.
+#   * Conversely an advisory in an inlined one is real, and the console origin
+#     holds the bearer *and* refresh tokens, so it is worth knowing about.
+#
+# Remediation is therefore one of: bump @scalar/api-reference (Scalar rebuilds
+# the bundle), drop it, or ignore that one advisory deliberately — see the rule
+# written next to `pnpm audit` in `.tasks/security.yaml`.
 overrides:
   undici: ^7.28.0
   js-yaml: ^4.3.1

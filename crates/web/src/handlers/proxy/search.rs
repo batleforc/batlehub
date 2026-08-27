@@ -15,61 +15,12 @@ use actix_web::{get, web, HttpResponse, Responder};
 use serde::Deserialize;
 
 use batlehub_config::schema::RegistryMode;
-use batlehub_core::services::{
-    LocalRegistryService, ProxyService, SearchHit, SearchMode, SearchResults,
-};
+use batlehub_core::entities::PackageId;
+use batlehub_core::services::{LocalRegistryService, ProxyService, SearchMode, SearchResults};
 
 use crate::handlers::proxy::common::require_registry_type;
 use crate::handlers::schemas::ProtocolDocument;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
-
-/// The packages this registry has *published*, as search hits.
-///
-/// Supplied by the caller rather than read inside `ProxyService::search`
-/// because published packages live in `LocalRegistryBackend`, a different store
-/// from the `PackageRepository` the proxy's held set comes from — the first
-/// records what was published here, the second what was fetched through here.
-/// A local-mode registry has only the first, which is why a search that read
-/// only the second returned nothing for a package it had just accepted.
-pub(crate) async fn local_hits(
-    local_svc: &LocalRegistryService,
-    registry: &str,
-    query: &str,
-    limit: usize,
-) -> Vec<SearchHit> {
-    let names = local_svc
-        .backend
-        .list_package_names(registry)
-        .await
-        .unwrap_or_default();
-
-    let q = query.to_lowercase();
-    let mut out = Vec::new();
-    for name in names {
-        if !q.is_empty() && !name.to_lowercase().contains(&q) {
-            continue;
-        }
-        // The newest published version, so a hit names something installable
-        // rather than an empty string — which is what the NuGet local branch
-        // used to emit and what made its `versions[]` unusable.
-        let version = local_svc
-            .backend
-            .get_versions(registry, &name)
-            .await
-            .ok()
-            .and_then(|v| v.last().map(|p| p.version.clone()))
-            .unwrap_or_default();
-        out.push(SearchHit {
-            name,
-            version,
-            description: None,
-        });
-        if out.len() >= limit {
-            break;
-        }
-    }
-    out
-}
 
 /// Map a registry mode onto the search sources it may use.
 pub(crate) fn search_mode(mode: RegistryMode) -> SearchMode {
@@ -138,11 +89,44 @@ pub(crate) async fn resolve_and_search(
     mode_map: &RegistryModeMap,
 ) -> Result<SearchResults, AppError> {
     require_registry_type(registry, kind, map)?;
-    // Taken so the route still requires a resolvable identity; a hit names only
-    // what the listing filters already allow, so there is nothing further to
-    // authorise here.
-    let _ = identity;
-    let local = local_hits(local_svc, registry, query, limit).await;
+
+    // The registry's own RBAC, before anything is read. The comment that used to
+    // stand here claimed "a hit names only what the listing filters already
+    // allow, so there is nothing further to authorise" — and neither half held:
+    // the local half went through `list_package_names`, which applies no filter
+    // of any kind, and the chain was never consulted, so a registry that denies
+    // anonymous reads outright still answered these routes with every private
+    // package name it held (survey finding 11).
+    //
+    // A search is a listing, so only the identity-keyed rule runs: the gate
+    // rules judge a concrete version and a search result set names many. The
+    // coordinate is the registry itself — there is no one package to name.
+    svc.authorize_listing(
+        &PackageId::new(registry, "_search", "latest"),
+        &identity.0,
+        batlehub_core::rules::resource_type::RELEASES_READ,
+    )
+    .await
+    .map_err(AppError::from)?;
+
+    // Bounded before anything reads: `search_local` walks every published name
+    // matching the query and evaluates the rule chain per candidate, and it
+    // stops early only once it has `limit` *hits* — so a caller who may see
+    // nothing walks the whole registry, at whatever `limit` the client asked
+    // for. `ProxyService::search` clamps to the same range a moment later, so
+    // this costs no reachable result: a page past 250 was never served.
+    let limit = limit.clamp(1, 250);
+
+    // Published packages, filtered to what this caller may see. Supplied by the
+    // web layer rather than read inside `ProxyService::search` because published
+    // packages live in `LocalRegistryBackend`, a different store from the
+    // `PackageRepository` the proxy's held set comes from — the first records
+    // what was published here, the second what was fetched through here. A
+    // local-mode registry has only the first, which is why a search that read
+    // only the second returned nothing for a package it had just accepted.
+    let local = local_svc
+        .search_local(registry, query, limit, &identity.0)
+        .await;
     svc.search(
         registry,
         query,
@@ -167,6 +151,7 @@ pub(crate) async fn resolve_and_search(
     ),
     responses(
         (status = 200, description = "npm search results", body = ProtocolDocument),
+        (status = 403, description = "Access denied by the registry's rule chain"),
         (status = 404, description = "Unknown or non-npm registry"),
     ),
     security(("bearer_token" = [])),
@@ -252,6 +237,7 @@ pub async fn npm_search(
     ),
     responses(
         (status = 200, description = "cargo search results", body = ProtocolDocument),
+        (status = 403, description = "Access denied by the registry's rule chain"),
         (status = 404, description = "Unknown or non-cargo registry"),
     ),
     security(("bearer_token" = [])),
@@ -318,6 +304,7 @@ pub async fn cargo_search(
     ),
     responses(
         (status = 200, description = "Package name list", body = ProtocolDocument),
+        (status = 403, description = "Access denied by the registry's rule chain"),
         (status = 404, description = "Unknown or non-composer registry"),
     ),
     security(("bearer_token" = [])),
@@ -368,6 +355,7 @@ pub async fn composer_list(
     ),
     responses(
         (status = 200, description = "Composer search results", body = ProtocolDocument),
+        (status = 403, description = "Access denied by the registry's rule chain"),
         (status = 404, description = "Unknown or non-composer registry"),
     ),
     security(("bearer_token" = [])),

@@ -35,6 +35,15 @@ tasks:
       - cargo clippy -p batlehub-cli --all-targets -- -D warnings
       - cargo fmt --all --check
 
+  authz-matrix:
+    desc: "The route-by-route authorization matrix — every local read route, both gates"
+    # Part of `cargo test --workspace`; this is the way to run it alone while
+    # working on a handler's authorization, and the name to quote in a review.
+    # The failure output is the report: it names each route, which gate it
+    # failed, and whether a known gap now looks fixed.
+    cmds:
+      - cargo test -p batlehub-web --test authz_matrix -- --nocapture
+
 
   # Every `test:pg-*` below is the same dance — start a throwaway Postgres, wait
   # for it, run one integration binary against it, tear it down — differing only

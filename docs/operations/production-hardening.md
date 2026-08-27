@@ -71,7 +71,13 @@ Scrape it in-cluster over the Service instead.
 ## 6. HSTS at the ingress
 
 BatleHub sends `X-Content-Type-Options`, `X-Frame-Options` and `Referrer-Policy` on every
-response, but deliberately **not** `Strict-Transport-Security` — TLS terminates at the ingress
+response, and `Content-Security-Policy: default-src 'none'; sandbox` on everything under
+`/proxy/**` — the protocol documents and artifact bytes, which are the responses a publisher can
+influence and a browser may render. The console is not under that prefix and keeps its own
+policy; `nosniff` alone never covered this, because a document like the PyPI Simple index
+declares `text/html` honestly.
+
+Deliberately **not** sent: `Strict-Transport-Security` — TLS terminates at the ingress
 and the server itself usually speaks plaintext HTTP, so emitting HSTS from behind the proxy
 risks pinning browsers to `https://` for a host that cannot serve it. Set it where TLS ends:
 

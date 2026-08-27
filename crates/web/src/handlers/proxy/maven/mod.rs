@@ -18,8 +18,7 @@ use batlehub_core::{
 };
 
 use super::common::{
-    collect_payload, collect_storage_stream, proxy_document, proxy_stream, require_local_mode,
-    require_registry_type,
+    collect_payload, proxy_document, proxy_stream, require_local_mode, require_registry_type,
 };
 use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,

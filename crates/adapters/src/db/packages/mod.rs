@@ -123,6 +123,47 @@ pub(super) const LOCAL_VISIBILITY_PREDICATE: &str = r#"
                 )
             )"#;
 
+/// The same gate as [`LOCAL_VISIBILITY_PREDICATE`], for a row that reaches the
+/// catalogue through `package_statuses` rather than through `local_packages`.
+///
+/// `record_access` writes a `package_statuses` row on **any allowed** download
+/// or metadata read, including on the local path. So the first time an
+/// authorised team member pulls a `team`-visibility package, that package
+/// acquires a row in a table with no visibility column — and the `proxied` CTE,
+/// which had no gate at all, then listed it to anyone who could browse the
+/// registry (survey finding 12). The `newest_version` join already carried this
+/// reasoning and its own copy of the predicate; the row that reached `agg` in
+/// the first place did not.
+///
+/// Two subqueries rather than one `NOT EXISTS … NOT (…)`, so the rule reads the
+/// way it is meant: **a package with no local row is proxied-only and stays
+/// public** — its name came from upstream and was never a secret — and a package
+/// with local rows is listed only if at least one of them is visible to this
+/// viewer, which is the same test `local_pkgs` applies row by row.
+///
+/// Correlates on `ps`, so the CTE it is spliced into must alias
+/// `package_statuses` as `ps`.
+pub(super) fn proxied_visibility_predicate(visibility: &str) -> String {
+    format!(
+        r#"
+            AND (
+                NOT EXISTS (
+                    SELECT 1 FROM local_packages lp
+                    WHERE lp.registry = ps.registry
+                      AND lp.name = ps.package_name
+                      AND lp.status = 'published'
+                )
+                OR EXISTS (
+                    SELECT 1 FROM local_packages lp
+                    WHERE lp.registry = ps.registry
+                      AND lp.name = ps.package_name
+                      AND lp.status = 'published'
+                      {visibility}
+                )
+            )"#
+    )
+}
+
 pub(super) fn sort_order_for(sort_by: &ExploreSortBy) -> &'static str {
     match sort_by {
         ExploreSortBy::Name => "package_name ASC",

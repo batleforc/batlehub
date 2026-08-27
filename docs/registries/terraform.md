@@ -200,26 +200,30 @@ Three consequences worth knowing before you turn it on:
   previously recorded no actor at all — with `anonymous` granted, the rule chain
   was evaluating *anonymous*, so group grants never applied and quota was
   charged to nobody.
-- **The token appears in your logs.** BatleHub records the full request target,
-  query string included, in the `http.target` field of its request span at
-  `INFO`. Anything that ships those logs sees the signature for its lifetime.
-  See the note below.
+- **The token can reach your logs — but not BatleHub's own.** BatleHub's request
+  span sets `http.target` from the request's *path only*, deliberately (see the
+  note below). Anything else on the path that logs a full URL still sees the
+  signature for its lifetime.
 - **`signed_downloads = true` with no `[server.signed_urls].secret` is a startup
   error**, not a warning. A registry that believes it is closed and is not is
   exactly the failure this feature exists to prevent.
 
-::: warning The signature is in your logs
-A minted URL is a bearer capability until it expires, and BatleHub's own request
-span records it: `tracing-actix-web` sets `http.target` from the request's path
-*and query*, so a log pipeline, an OTLP exporter or a reverse proxy in front of
-BatleHub will all capture the token.
+::: warning The signature can reach logs that are not BatleHub's
+A minted URL is a bearer capability until it expires, so anything that records a
+full request URL records the token. `tracing-actix-web`'s own span builder sets
+`http.target` from the request's path *and query*, which is why BatleHub does not
+use it: `BatleHubSpanBuilder` (`server/src/server_factory.rs`) is a field-for-field
+re-implementation whose one deviation is `http.target = uri.path()`, and a test
+asserts the span target never carries a query string.
 
-What that is worth to whoever reads those logs is bounded — five minutes by
-default, one file, and no permission the signed-for user did not already have.
-If that is still more than you want, the levers are: lower `ttl_seconds`, drop
-or rewrite the `http.target` field in your log pipeline, and check the access-log
-configuration of anything terminating TLS in front of BatleHub. The audit trail
-itself is clean: `access_events` records the package coordinate, never the URL.
+That covers this server and nothing else. A reverse proxy terminating TLS in
+front of BatleHub, a CDN, or Terraform's own `TF_LOG=DEBUG` output will each
+capture the whole URL. What that is worth to whoever reads those logs is bounded
+— five minutes by default, one file, and no permission the signed-for user did
+not already have. If that is still more than you want, the levers are: lower
+`ttl_seconds`, and check the access-log configuration of whatever sits in front.
+The audit trail itself is clean: `access_events` records the package coordinate,
+never the URL.
 :::
 
 **Rotating the secret** needs no restart and no flag day. Put the new secret in
@@ -234,7 +238,10 @@ previous_secrets = ["${BATLEHUB_URL_SIGNING_SECRET_OLD}"]
 ```
 
 An entry that interpolates to empty is ignored, so the `previous_secrets` line
-can stay in the file between rotations.
+can stay in the file between rotations — but the variable must still be *set*.
+`${VAR}` expansion runs before the config is parsed and refuses an unset
+variable, so once the old secret is retired either remove the line or keep
+`BATLEHUB_URL_SIGNING_SECRET_OLD=""` exported.
 
 ### Publishing modules
 

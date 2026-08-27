@@ -1,7 +1,7 @@
 use batlehub_core::ports::{ExtractedManifest, ExtractedReadme, SbomDependency};
 use bytes::Bytes;
 
-use super::readme;
+use super::{anchor, readme};
 
 pub(super) fn extract_cargo_manifest(data: &Bytes) -> ExtractedManifest {
     use flate2::read::GzDecoder;
@@ -16,26 +16,35 @@ pub(super) fn extract_cargo_manifest(data: &Bytes) -> ExtractedManifest {
         return ExtractedManifest::default();
     };
 
+    // Every `{dir}/Cargo.toml`, not the first one at any depth: a `.crate` has
+    // one wrapper directory, and `aaa/vendor/Cargo.toml` placed ahead of it used
+    // to decide the licence. See `anchor`.
+    let mut candidates: Vec<String> = Vec::new();
     for entry in entries.flatten() {
         let Ok(path) = entry.path() else { continue };
-        if path.file_name().and_then(|n| n.to_str()) == Some("Cargo.toml") {
-            let mut reader = entry;
-            let mut content = String::new();
-            if reader.read_to_string(&mut content).is_err() {
-                tracing::warn!("sbom: failed to parse cargo manifest, treating as no dependencies");
-                return ExtractedManifest::default();
-            }
-            // Same decompression, three facts. The archive is open and in
-            // memory; opening it again for the README would repeat the waste
-            // RFC 0004-bis §13.1 removed.
-            return ExtractedManifest {
-                dependencies: parse_cargo_toml_deps(&content),
-                license: parse_cargo_toml_license(&content),
-                readme: cargo_readme(data, parse_cargo_toml_readme(&content).as_deref()),
-            };
+        if !anchor::is_crate_manifest(&path.to_string_lossy()) {
+            continue;
         }
+        let mut reader = entry;
+        let mut content = String::new();
+        if reader.read_to_string(&mut content).is_err() {
+            tracing::warn!("sbom: failed to parse cargo manifest, treating as no dependencies");
+            return ExtractedManifest::default();
+        }
+        candidates.push(content);
     }
-    ExtractedManifest::default()
+
+    let Some(content) = anchor::sole(candidates) else {
+        return ExtractedManifest::default();
+    };
+    // Same decompression, three facts. The archive is open and in memory;
+    // opening it again for the README would repeat the waste RFC 0004-bis §13.1
+    // removed.
+    ExtractedManifest {
+        dependencies: parse_cargo_toml_deps(&content),
+        license: parse_cargo_toml_license(&content),
+        readme: cargo_readme(data, parse_cargo_toml_readme(&content).as_deref()),
+    }
 }
 
 /// The README named by `[package] readme`, or the conventional one.
@@ -193,6 +202,42 @@ fn parse_cargo_toml_deps(content: &str) -> Vec<SbomDependency> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const REAL: &[u8] = b"[package]\nname = \"evil\"\nlicense = \"GPL-3.0-only\"\n";
+    const DECOY: &[u8] = b"[package]\nname = \"decoy\"\nlicense = \"MIT\"\n";
+
+    /// A second `Cargo.toml` placed earlier in the tarball used to decide the
+    /// licence: this returned `MIT` before the anchor, with the crate's own
+    /// manifest sitting right behind it.
+    #[test]
+    fn a_nested_decoy_manifest_does_not_become_the_crates_own() {
+        let data = targz(&[
+            ("aaa/vendor/Cargo.toml", DECOY),
+            ("evil-1.0.0/Cargo.toml", REAL),
+        ]);
+        assert_eq!(
+            extract_cargo_manifest(&data).license.as_deref(),
+            Some("GPL-3.0-only")
+        );
+    }
+
+    /// Two manifests at the *same* depth: the anchor cannot separate them, so
+    /// the archive does not name its own manifest and the answer is unknown —
+    /// never the decoy's.
+    #[test]
+    fn two_manifests_at_the_wrapper_depth_are_ambiguous_not_first_wins() {
+        let data = targz(&[("aaa/Cargo.toml", DECOY), ("evil-1.0.0/Cargo.toml", REAL)]);
+        assert_eq!(extract_cargo_manifest(&data), ExtractedManifest::default());
+    }
+
+    #[test]
+    fn the_ordinary_single_manifest_crate_still_reads() {
+        let data = targz(&[("evil-1.0.0/Cargo.toml", REAL)]);
+        assert_eq!(
+            extract_cargo_manifest(&data).license.as_deref(),
+            Some("GPL-3.0-only")
+        );
+    }
 
     #[test]
     fn parse_cargo_toml_basic() {

@@ -68,6 +68,10 @@ pub struct ServerConfig {
 /// # that gets committed. See docs/guide/configuration.md, "Sensitive values".
 /// secret           = "${BATLEHUB_URL_SIGNING_SECRET}"
 /// ttl_seconds      = 300   # default; hard-capped at 3600
+/// # Only while rotating. `${VAR}` interpolation *fails the whole config load*
+/// # when the variable is unset (`expand_braced_var`), so once the old secret is
+/// # retired either remove this line or export the variable as an empty string —
+/// # an entry that interpolates to empty is dropped.
 /// previous_secrets = ["${BATLEHUB_URL_SIGNING_SECRET_OLD}"]
 /// ```
 #[derive(Debug, Deserialize, Clone)]
@@ -80,9 +84,12 @@ pub struct SignedUrlsConfig {
     #[serde(default = "default_signed_url_ttl")]
     pub ttl_seconds: u64,
     /// Verified against but never minted with, so a secret can be rotated
-    /// without a flag day. An entry that interpolates to empty is dropped —
-    /// `${VAR_OLD}` with no old secret set is the normal steady state, and
-    /// failing on it would make rotation a two-step config edit.
+    /// without a flag day. An entry that interpolates to empty is dropped, so
+    /// `BATLEHUB_URL_SIGNING_SECRET_OLD=""` is a valid steady state — but the
+    /// variable must still *exist*: `${VAR}` expansion happens before parsing
+    /// and `expand_braced_var` refuses an unset variable, so leaving the line in
+    /// place with the variable unset fails the config load outright rather than
+    /// being ignored. Remove the line or export it empty once rotation is done.
     #[serde(default)]
     pub previous_secrets: Vec<String>,
 }

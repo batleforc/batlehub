@@ -517,7 +517,13 @@ pub async fn jbm_plugin_manager(
                         ))
                     })?;
                 let bytes = local_svc
-                    .get_artifact(&registry, &query.id, &best.version, &identity)
+                    .get_artifact(
+                        &registry,
+                        &query.id,
+                        &best.version,
+                        batlehub_core::rules::resource_type::RELEASES_READ,
+                        &identity,
+                    )
                     .await
                     .map_err(AppError::from)?;
                 return Ok(HttpResponse::Ok()

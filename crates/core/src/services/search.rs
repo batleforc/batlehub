@@ -81,6 +81,37 @@ pub struct SearchResults {
     pub freshness: Freshness,
 }
 
+/// What the local registry contributes to a search.
+///
+/// Two fields because the local store answers two different questions, and
+/// conflating them is what made survey finding 11 reachable through the proxy's
+/// *held* set as well as through the published one:
+///
+/// - `hits` is what this caller may see, filtered by
+///   [`LocalRegistryService::search_local`] through the same funnel every other
+///   listing uses.
+/// - `all_names` is every published name in the registry, visible or not. It is
+///   never returned to a client. It exists so [`ProxyService::search`] can tell
+///   a *proxied* package (whose name is public by construction — it came from
+///   upstream) from a *locally published* one that happens to be in the access
+///   log because an authorised member downloaded it once. The second is governed
+///   by `hits` and by nothing else.
+///
+/// [`LocalRegistryService::search_local`]: crate::services::LocalRegistryService::search_local
+#[derive(Debug, Default, Clone)]
+pub struct LocalSearch {
+    pub hits: Vec<SearchHit>,
+    pub all_names: std::collections::HashSet<String>,
+}
+
+impl LocalSearch {
+    /// A search with no local contribution — a proxy-only registry, or a caller
+    /// the local store has nothing for.
+    pub fn empty() -> Self {
+        Self::default()
+    }
+}
+
 /// Which sources a search may draw on, from the registry's mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchMode {
@@ -115,20 +146,30 @@ impl ProxyService {
         query: &str,
         limit: usize,
         mode: SearchMode,
-        local: Vec<SearchHit>,
+        local: LocalSearch,
     ) -> Result<SearchResults, CoreError> {
         let limit = limit.clamp(1, 250);
 
         if mode == SearchMode::Local {
             // No upstream by definition, and nothing has been proxied into the
             // held set — published packages are the whole answer.
-            return Ok(self.finish(registry, local, Freshness::Fresh).await);
+            return Ok(self.finish(registry, local.hits, Freshness::Fresh).await);
         }
 
-        let key = format!("search:{registry}:{limit}:{query}");
+        // `v2` because what this key names changed: entries written before the
+        // local half was split out hold *merged* hits, private names included.
+        // Reading one back would serve them to whoever asks next — from rung 1
+        // while it is fresh, and from rung 3a for as long as `get_stale` will
+        // answer. Bumping the key orphans them instead of racing their TTL.
+        let key = format!("search:v2:{registry}:{limit}:{query}");
 
-        // Rung 1.
-        if let Some(hits) = self.cached_hits(&key).await {
+        // Rung 1. The cache holds the **upstream** answer only — see
+        // `cache_hits` — so the local half is merged per request, against this
+        // caller's identity, rather than replayed from whoever warmed it.
+        if let Some(mut hits) = self.cached_hits(&key).await {
+            if mode == SearchMode::Hybrid {
+                merge_local(&mut hits, local.hits);
+            }
             return Ok(self.finish(registry, hits, Freshness::Cached).await);
         }
 
@@ -143,15 +184,18 @@ impl ProxyService {
             Ok(found) => {
                 let mut hits: Vec<SearchHit> = found.into_iter().map(SearchHit::from).collect();
 
-                if mode == SearchMode::Hybrid {
-                    merge_local(&mut hits, local);
-                }
-
+                // Cached before the merge, never after.
                 self.cache_hits(registry, &key, &hits).await;
+
+                if mode == SearchMode::Hybrid {
+                    merge_local(&mut hits, local.hits);
+                }
                 Ok(self.finish(registry, hits, Freshness::Fresh).await)
             }
             // Rung 3.
-            Err(e) => Ok(self.degraded(registry, query, limit, &key, local, &e).await),
+            Err(e) => Ok(self
+                .degraded(registry, query, limit, &key, mode, local, &e)
+                .await),
         }
     }
 
@@ -163,6 +207,15 @@ impl ProxyService {
 
     /// Store a fresh result set. A cache that will not take it is worth a line
     /// in the log and nothing more — the answer has already been computed.
+    ///
+    /// **Upstream hits only.** The key is `search:{registry}:{limit}:{query}`,
+    /// which names no identity, so anything cached here is served to every later
+    /// caller of the same query. Locally published names are per-identity —
+    /// `search_visible_hits` filters them by visibility — and caching them here
+    /// would hand the first authorised searcher's private results to the next
+    /// anonymous one, undoing that filter through the cache (survey finding 11).
+    /// The upstream half is the same for everyone, which is what makes it
+    /// cacheable at all.
     async fn cache_hits(&self, registry: &str, key: &str, hits: &[SearchHit]) {
         let ttl = self.search_ttl(registry).await;
         let entry = crate::ports::CacheEntry {
@@ -184,23 +237,35 @@ impl ProxyService {
     /// packages this proxy actually holds (3b). Never an error and never an
     /// empty-because-we-gave-up list: an unreachable upstream degrades search
     /// to what this proxy can honestly answer for.
+    // Eight, because the rung needs everything the fresh path had: the
+    // coordinate, the cache key it must not recompute (the key format is
+    // versioned and lives in one place), the mode that decides whether the local
+    // half merges, and the error it is degrading from.
+    #[allow(clippy::too_many_arguments)]
     async fn degraded(
         &self,
         registry: &str,
         query: &str,
         limit: usize,
         key: &str,
-        local: Vec<SearchHit>,
+        mode: SearchMode,
+        local: LocalSearch,
         error: &dyn std::fmt::Display,
     ) -> SearchResults {
-        // Rung 3a.
+        // Rung 3a. The stale entry is the stale *upstream* answer, so the local
+        // half is merged here as it is on every other rung — otherwise a
+        // registry falling back to stale results would drop its own published
+        // packages from the answer.
         if self.serves_stale(registry).await {
             if let Ok(Some(stale)) = self.cache.get_stale(key).await {
-                if let Some(hits) = decode_hits(&stale.metadata.extra) {
+                if let Some(mut hits) = decode_hits(&stale.metadata.extra) {
                     tracing::warn!(
                         registry, error = %error,
                         "search upstream unavailable, serving stale results"
                     );
+                    if mode == SearchMode::Hybrid {
+                        merge_local(&mut hits, local.hits);
+                    }
                     return self.finish(registry, hits, Freshness::Stale).await;
                 }
             }
@@ -213,7 +278,15 @@ impl ProxyService {
             "search upstream unavailable, answering from held packages"
         );
         let mut hits = self.held_packages(registry, query, limit).await;
-        merge_local(&mut hits, local);
+        // A held hit that is also a locally published package is governed by
+        // `local.hits`, which has been filtered for this caller — the access log
+        // it comes from records that *somebody* downloaded it, which is not the
+        // same question. Drop it here and let the merge below put back the ones
+        // this caller may see (survey finding 11, through the third door).
+        hits.retain(|h| !local.all_names.contains(&h.name));
+        if mode == SearchMode::Hybrid {
+            merge_local(&mut hits, local.hits);
+        }
         self.finish(registry, hits, Freshness::Stale).await
     }
 

@@ -24,7 +24,8 @@ use batlehub_adapters::db::{PgPackageRepository, PgTeamNamespaceStore};
 use batlehub_adapters::local_registry::PostgresLocalRegistry;
 use batlehub_core::{
     entities::{
-        ExploreFilter, ExploreSortBy, ExploreViewer, PublishedPackage, TeamNamespace, Visibility,
+        AccessEvent, ExploreFilter, ExploreSortBy, ExploreViewer, PackageId, PublishedPackage,
+        Role, TeamNamespace, Visibility,
     },
     ports::{LocalRegistryBackend, PackageRepository, TeamNamespacePort},
 };
@@ -93,6 +94,24 @@ impl Fixture {
             .commit_publish(&self.registry, name, "1.0.0")
             .await
             .expect("commit publish");
+    }
+
+    /// Write the `package_statuses` row that `record_access` writes on every
+    /// allowed read — including a *local* one.
+    ///
+    /// This is the mechanism behind survey finding 12: the row lands in a table
+    /// with no visibility column, and the catalogue's `proxied` CTE used to read
+    /// that table with no gate. So a private package became listable the first
+    /// time somebody entitled to it pulled it.
+    async fn record_download(&self, name: &str) {
+        self.repo
+            .record_access(AccessEvent::allowed_download(
+                PackageId::new(&self.registry, name, "1.0.0"),
+                Some("test-user".to_owned()),
+                Role::User,
+            ))
+            .await
+            .expect("record_access");
     }
 
     async fn claim(&self, prefix: &str, group_id: &str) {
@@ -312,4 +331,68 @@ async fn mixed_visibilities_are_filtered_independently() {
         f.visible_to(admin()).await,
         vec!["int-pkg", "pub-pkg", "team-a/secret"]
     );
+}
+
+// ── The access log as a second door (survey finding 12) ──────────────────────
+
+/// The finding itself: a `team`-visibility package that its own owner has
+/// downloaded once must not thereby become listable to everyone.
+///
+/// The download is what makes this test different from the ones above — without
+/// it the package has no `package_statuses` row, the `proxied` CTE never sees
+/// it, and the assertion passes against the bug.
+#[tokio::test]
+async fn a_downloaded_team_package_does_not_leak_through_the_access_log() {
+    let url = require_db!();
+    let f = fixture(&url).await;
+    f.claim("secret-pkg", "team-a").await;
+    f.publish("secret-pkg", Visibility::Team).await;
+
+    // Control: hidden before anything is recorded, visible to a member.
+    assert!(f.visible_to(anonymous()).await.is_empty());
+    assert_eq!(f.visible_to(user(&["team-a"])).await, vec!["secret-pkg"]);
+
+    f.record_download("secret-pkg").await;
+
+    assert!(
+        f.visible_to(anonymous()).await.is_empty(),
+        "a team package became listable to an anonymous caller because a member downloaded it"
+    );
+    assert!(
+        f.visible_to(user(&["other-team"])).await.is_empty(),
+        "…and to a member of some other team"
+    );
+    assert_eq!(
+        f.visible_to(user(&["team-a"])).await,
+        vec!["secret-pkg"],
+        "the members it belongs to must still see it"
+    );
+    assert_eq!(f.visible_to(admin()).await, vec!["secret-pkg"]);
+}
+
+/// The same gate must not over-block. A package known only through the access
+/// log — proxied from upstream, never published here — has no `local_packages`
+/// row and no visibility to check: its name came from a public registry and was
+/// never a secret.
+#[tokio::test]
+async fn a_proxied_only_package_stays_listable() {
+    let url = require_db!();
+    let f = fixture(&url).await;
+    f.record_download("upstream-pkg").await;
+
+    assert_eq!(f.visible_to(anonymous()).await, vec!["upstream-pkg"]);
+    assert_eq!(f.visible_to(user(&[])).await, vec!["upstream-pkg"]);
+}
+
+/// A hybrid package — published here *and* proxied — keeps both halves of its
+/// row for a viewer who may see it. The gate excludes the proxied contribution
+/// only when the local package is one this viewer may not see.
+#[tokio::test]
+async fn a_public_local_package_keeps_its_proxied_row() {
+    let url = require_db!();
+    let f = fixture(&url).await;
+    f.publish("both-pkg", Visibility::Public).await;
+    f.record_download("both-pkg").await;
+
+    assert_eq!(f.visible_to(anonymous()).await, vec!["both-pkg"]);
 }

@@ -12,7 +12,7 @@ use batlehub_core::{
 
 use super::common::{
     collect_payload, extract_signature_headers, proxy_stream, require_local_mode,
-    require_registry_type,
+    require_registry_type, ArtifactSignature,
 };
 use crate::handlers::schemas::{ArtifactBytes, MessageResponse, UpstreamDocument};
 use crate::{
@@ -574,7 +574,13 @@ pub async fn conda_file_download(
             .map_err(AppError::from)?
             .ok_or_else(|| AppError::not_found(format!("conda package not found: {filename}")))?;
         let bytes = local_svc
-            .get_artifact(&registry, &name, &version, &identity)
+            .get_artifact(
+                &registry,
+                &name,
+                &version,
+                batlehub_core::rules::resource_type::RELEASES_READ,
+                &identity,
+            )
             .await
             .map_err(AppError::from)?;
         return Ok(HttpResponse::Ok()
@@ -589,7 +595,13 @@ pub async fn conda_file_download(
             .map_err(AppError::from)?
         {
             match local_svc
-                .get_artifact(&registry, &name, &version, &identity)
+                .get_artifact(
+                    &registry,
+                    &name,
+                    &version,
+                    batlehub_core::rules::resource_type::RELEASES_READ,
+                    &identity,
+                )
                 .await
             {
                 Ok(bytes) => {
@@ -695,6 +707,7 @@ fn conda_version_from_filename(filename: &str) -> Option<String> {
     ),
     responses(
         (status = 200, description = "Package published", body = MessageResponse),
+        (status = 400, description = "Malformed payload or signature headers"),
         (status = 403, description = "Access denied or quota exceeded"),
         (status = 409, description = "Version already published"),
         (status = 422, description = "Invalid conda package"),
@@ -750,7 +763,8 @@ pub async fn conda_publish(
         "filename": filename,
     });
 
-    let (signature_bytes, signature_type) = extract_signature_headers(&req);
+    let (signature_bytes, signature_type) =
+        ArtifactSignature::split(extract_signature_headers(&req)?);
 
     super::common::publish_and_respond(
         &local_svc,

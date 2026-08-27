@@ -887,6 +887,112 @@ fn license_gate_without_sbom_enabled_warns_that_nothing_is_extracted() {
     assert!(w.message.contains("[registries.sbom]"), "{}", w.message);
 }
 
+// ── require_signed_release vs. local publishing ──────────────────────────────
+
+/// A hybrid registry enables the rule to gate its *proxied* half; the side
+/// effect is that every local publish without `X-Artifact-Signature` is recorded
+/// unsigned and refused at download. `deny_missing_signature` does not save it —
+/// that flag governs `is_signed: None`, and a local row reports `Some(false)`.
+#[test]
+fn require_signed_release_without_publish_side_signing_warns() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "reg"
+        mode = "hybrid"
+
+        [[registries.rules]]
+        kind = "require_signed_release""#,
+    );
+    let w = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::REQUIRE_SIGNED_RELEASE_UNSIGNED_PUBLISHES)
+        .expect("warning emitted");
+    assert!(
+        w.message.contains("signing.required = true"),
+        "{}",
+        w.message
+    );
+    assert!(w.path.contains("rules[0]"), "{}", w.path);
+}
+
+/// Local mode publishes too, so it carries the same trap.
+#[test]
+fn require_signed_release_warns_in_local_mode_as_well() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "reg"
+        mode = "local"
+
+        [[registries.rules]]
+        kind = "require_signed_release""#,
+    );
+    assert!(warning_codes(&cfg)
+        .contains(&warnings::REQUIRE_SIGNED_RELEASE_UNSIGNED_PUBLISHES.to_owned()));
+}
+
+/// Pairing the two is the fix, and must silence it.
+#[test]
+fn require_signed_release_with_signing_required_is_coherent() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "reg"
+        mode = "hybrid"
+
+        [registries.signing]
+        required = true
+
+        [[registries.rules]]
+        kind = "require_signed_release""#,
+    );
+    assert!(!warning_codes(&cfg)
+        .contains(&warnings::REQUIRE_SIGNED_RELEASE_UNSIGNED_PUBLISHES.to_owned()));
+}
+
+/// A proxy-mode registry accepts no publishes, so there is no second half to
+/// disagree with and no warning to raise.
+#[test]
+fn require_signed_release_on_a_proxy_registry_is_not_flagged() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "reg"
+
+        [[registries.rules]]
+        kind = "require_signed_release""#,
+    );
+    assert!(!warning_codes(&cfg)
+        .contains(&warnings::REQUIRE_SIGNED_RELEASE_UNSIGNED_PUBLISHES.to_owned()));
+}
+
+/// `signing` present but `required = false` is the easier state to overlook,
+/// because the block is *there* — same shape as the SBOM case above.
+#[test]
+fn a_signing_block_without_required_still_warns() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "reg"
+        mode = "hybrid"
+
+        [registries.signing]
+        verify_on_download = true
+
+        [[registries.rules]]
+        kind = "require_signed_release""#,
+    );
+    assert!(warning_codes(&cfg)
+        .contains(&warnings::REQUIRE_SIGNED_RELEASE_UNSIGNED_PUBLISHES.to_owned()));
+}
+
 /// `enabled = false` is the same state as an absent block, and is the easier
 /// one to overlook because the block is *there*.
 #[test]
@@ -1791,6 +1897,23 @@ fn a_short_previous_secret_refuses_to_start() {
     );
     let err = cfg.validate().unwrap_err().to_string();
     assert!(err.contains("previous_secrets[0]"), "{err}");
+}
+
+/// The index has to name the entry in the operator's file, not its position in
+/// the filtered list. An unset `${VAR}` ahead of the short one used to shift
+/// every later index down by one, so the error pointed at the entry that was
+/// fine — during a startup failure, which is the worst moment to be misdirected.
+#[test]
+fn the_reported_index_is_the_one_in_the_config_file() {
+    let cfg = signed_urls_config(
+        &format!("        secret = \"{GOOD_SECRET}\"\n        previous_secrets = [\"\", \"nope\"]"),
+        true,
+    );
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(
+        err.contains("previous_secrets[1]"),
+        "the short entry is index 1 in the file: {err}"
+    );
 }
 
 /// `previous_secrets = ["${VAR_OLD}"]` with no old secret set is the normal

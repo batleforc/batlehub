@@ -84,7 +84,9 @@ pub async fn openvsx_publish(
     let index_metadata = manifest.index_metadata(&extension_id, &version);
 
     let (signature_bytes, signature_type) =
-        crate::handlers::proxy::common::extract_signature_headers(&req);
+        crate::handlers::proxy::common::ArtifactSignature::split(
+            crate::handlers::proxy::common::extract_signature_headers(&req)?,
+        );
 
     let quota = local_svc
         .publish(batlehub_core::services::PublishRequest {

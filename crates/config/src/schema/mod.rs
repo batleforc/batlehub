@@ -488,7 +488,61 @@ impl AppConfig {
         self.upstream_detail_warnings(&mut out);
         self.search_warnings(&mut out);
         self.signed_url_warnings(&mut out);
+        self.require_signed_release_warnings(&mut out);
         out
+    }
+
+    /// `require_signed_release` on a registry that also accepts publishes,
+    /// without `[registries.signing] required = true` to match.
+    ///
+    /// The rule judges `PackageMetadata::is_signed`, and the two halves of a
+    /// hybrid registry fill that field very differently. A proxied artifact gets
+    /// whatever signal its adapter can find, and `None` where there is none —
+    /// which the rule skips unless `deny_missing_signature` is set. A locally
+    /// published row reports `Some(false)` as soon as it holds no signature
+    /// bytes, and `RequireSignedReleaseRule` denies `Some(false)`
+    /// *unconditionally*: `deny_missing_signature` never enters into it.
+    ///
+    /// The result is that turning this rule on to gate the proxied half also
+    /// refuses every local publish, and refuses it at download time — so the
+    /// consumer sees a `403` about a decision the publisher could have fixed.
+    /// `signing.required` refuses the same artifact at the publish request
+    /// instead, which is the same policy delivered to the person who can act
+    /// on it.
+    ///
+    /// Only local and hybrid registries are considered: a proxy-mode registry
+    /// accepts no publishes, so there is no second half to disagree with.
+    fn require_signed_release_warnings(&self, out: &mut Vec<ConfigWarning>) {
+        for (index, registry) in self.registries.iter().enumerate() {
+            if registry.mode == RegistryMode::Proxy {
+                continue;
+            }
+            if registry.signing.as_ref().is_some_and(|s| s.required) {
+                continue;
+            }
+            let Some(rule_index) = registry
+                .rules
+                .iter()
+                .position(|r| matches!(r, RuleConfig::RequireSignedRelease(_)))
+            else {
+                continue;
+            };
+            out.push(ConfigWarning::new(
+                warnings::REQUIRE_SIGNED_RELEASE_UNSIGNED_PUBLISHES,
+                format!("registries[{index}].rules[{rule_index}]"),
+                format!(
+                    "registry '{}' is in {:?} mode with a require_signed_release rule, but \
+                     [registries.signing] does not set required = true. A locally published \
+                     artifact with no X-Artifact-Signature is recorded as unsigned, and this rule \
+                     denies that outright — deny_missing_signature does not apply, it governs \
+                     only artifacts whose signature state is unknown. Every publish that omits \
+                     the header will therefore succeed and then fail to download, with the 403 \
+                     landing on the consumer. Set signing.required = true so the refusal happens \
+                     at publish time instead.",
+                    registry.name, registry.mode
+                ),
+            ));
+        }
     }
 
     /// RFC 0012 §7: the two states where signing is configured and achieves
@@ -1023,12 +1077,8 @@ impl AppConfig {
         Ok(())
     }
 
-    /// Fail-fast checks for host-based routing (RFC 0001 §4.3).
+    /// Fail-fast checks for signed download URLs.
     ///
-    /// Every condition here is one where the deployment would come up looking
-    /// healthy but route wrongly — a host silently bound to the last registry
-    /// that claimed it, a registry nothing can reach, the admin API shadowed by a
-    /// vanity host, or routing driven by a header the server has no policy about.
     /// RFC 0012 §4.1. Every one of these is an error rather than a warning for
     /// the same reason: a registry that believes it is closed and is not, or
     /// one that believes downloads are signed and serves nothing, is a state an
@@ -1082,7 +1132,16 @@ impl AppConfig {
                 batlehub_core::services::SIGNED_URL_MAX_TTL_SECONDS
             );
         }
-        for (i, prev) in cfg.active_previous_secrets().iter().enumerate() {
+        // Enumerate the *configured* array, not `active_previous_secrets()`,
+        // and skip empties inside the loop. The active list has already dropped
+        // them, so its indices no longer line up with the file the operator is
+        // about to go and edit: `["${UNSET}", "tooshort"]` reported
+        // `previous_secrets[0]`, which is the entry that is fine.
+        for (i, prev) in cfg.previous_secrets.iter().enumerate() {
+            let prev = prev.trim();
+            if prev.is_empty() {
+                continue;
+            }
             if prev.len() < batlehub_core::services::SIGNED_URL_MIN_SECRET_BYTES {
                 bail!(
                     "[server.signed_urls].previous_secrets[{i}] is {} bytes; {} is the minimum. \
@@ -1096,6 +1155,12 @@ impl AppConfig {
         Ok(())
     }
 
+    /// Fail-fast checks for host-based routing (RFC 0001 §4.3).
+    ///
+    /// Every condition here is one where the deployment would come up looking
+    /// healthy but route wrongly — a host silently bound to the last registry
+    /// that claimed it, a registry nothing can reach, the admin API shadowed by a
+    /// vanity host, or routing driven by a header the server has no policy about.
     fn validate_host_routing(&self) -> Result<()> {
         if let Some(subdomain) = self.subdomain_routing.as_ref() {
             if subdomain.enabled {

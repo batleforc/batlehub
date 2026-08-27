@@ -457,9 +457,42 @@ those requests never reach the fallback.
 ### The console's content-security policy {#csp}
 
 The console's document carries its own `Content-Security-Policy`, in a
-`<meta http-equiv>` rather than a response header — it must not apply to
-`/scalar`, whose API-docs bundle comes from a CDN, and the static-file service
-cannot carry a header of its own.
+`<meta http-equiv>` rather than a response header — the static-file service
+behind it cannot carry a header of its own, and the three things this origin
+serves need three different policies. The other two are sent as headers:
+
+| Path | Policy | Why |
+| --- | --- | --- |
+| `/proxy/**` | `default-src 'none'; sandbox` | protocol documents can carry publisher-controlled strings, and a sandboxed document has no access to the console's origin or its stored tokens |
+| `/scalar` | `default-src 'none'`, `script-src 'self'`, `connect-src 'self'` | the API reference loads nothing from anywhere but this server — see below |
+
+#### The API reference makes no outbound requests {#scalar-self-hosted}
+
+`/scalar` used to load its bundle from a public CDN, unversioned. It is now
+served from this origin, out of the console's own build output
+(`assets/scalar/standalone.js`). Three things follow, and the last one is a
+behaviour change:
+
+- **It works with no egress.** The reference used to be a blank page on any
+  deployment that could not reach the internet — which is most private
+  registries. Loading it no longer sends your operators' IP addresses anywhere,
+  and no longer depends on a CDN being up.
+- **The bundle is in `ui/pnpm-lock.yaml`**, so `pnpm audit`, postmortem and the
+  SBOM all cover it. That code was always executed by your browser; it just was
+  not declared anywhere a scanner could see it.
+- **It needs `static_dir`.** A server configured without the console assets has
+  no bundle to serve, so `/scalar` answers with a short page saying exactly that
+  and how to fix it. It deliberately does **not** fall back to the CDN: that
+  would quietly reinstate the third-party script on precisely the air-gapped
+  deployments least able to reach it. The OpenAPI document stays embedded in
+  that page either way, so `curl` on the URL still yields it, as does
+  `batlehub dump-spec`.
+
+`connect-src 'self'` is deliberate rather than incidental. The bundle calls
+`api.scalar.com` on load; those URLs are compiled into it and no setting turns
+them off, so the policy is what stops them. Nothing is lost — the generated spec
+declares no `servers` block, so "Test Request" targets this server, which is the
+one the page documents.
 
 The policy is built with the console, and the server **narrows it to your
 configuration** when it serves the document. Narrowing only ever *removes*

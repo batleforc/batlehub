@@ -179,6 +179,7 @@ pub(super) async fn count_events_impl(
 /// "AND"` that no amount of type-checking catches, which is what
 /// `no_placeholder_survives_into_live_sql` now guards.
 fn explore_sql(order: &str, visibility: &str) -> String {
+    let proxied_visibility = super::proxied_visibility_predicate(visibility);
     format!(
         r#"
         WITH proxied AS (
@@ -197,6 +198,7 @@ fn explore_sql(order: &str, visibility: &str) -> String {
             WHERE ($1::text IS NULL OR ps.registry = $1)
               AND ($2::text IS NULL OR ps.package_name ILIKE '%' || $2 || '%')
               AND ($3::text[] IS NULL OR ps.registry = ANY($3::text[]))
+              {proxied_visibility}
             GROUP BY ps.registry, ps.package_name
         ),
         local_pkgs AS (
@@ -384,14 +386,16 @@ pub(super) async fn explore_packages_impl(
 /// show "37 packages" over an empty page. The brace-doubling rule from
 /// [`explore_sql`] applies here too.
 fn count_explore_sql(visibility: &str) -> String {
+    let proxied_visibility = super::proxied_visibility_predicate(visibility);
     format!(
         r#"
         WITH proxied AS (
-            SELECT registry, package_name
-            FROM package_statuses
-            WHERE ($1::text IS NULL OR registry = $1)
-              AND ($2::text IS NULL OR package_name ILIKE '%' || $2 || '%')
-              AND ($3::text[] IS NULL OR registry = ANY($3::text[]))
+            SELECT ps.registry, ps.package_name
+            FROM package_statuses ps
+            WHERE ($1::text IS NULL OR ps.registry = $1)
+              AND ($2::text IS NULL OR ps.package_name ILIKE '%' || $2 || '%')
+              AND ($3::text[] IS NULL OR ps.registry = ANY($3::text[]))
+              {proxied_visibility}
         ),
         local_pkgs AS (
             SELECT lp.registry, lp.name AS package_name
@@ -634,29 +638,76 @@ mod tests {
             .collect()
     }
 
+    /// The text of one CTE, from its `name AS (` to the start of the next.
+    ///
+    /// Counting occurrences over the whole query cannot tell "both CTEs are
+    /// gated" from "one CTE is gated twice", and that distinction is the whole
+    /// of survey finding 12: the `newest_version` join carried the predicate
+    /// while the `proxied` CTE feeding it carried none.
+    fn cte<'a>(sql: &'a str, name: &str) -> &'a str {
+        let start = sql
+            .find(&format!("{name} AS ("))
+            .unwrap_or_else(|| panic!("no `{name}` CTE in the query"));
+        let rest = &sql[start..];
+        // CTEs are separated by `),\n` at this indentation; the last one ends
+        // the WITH block. Either way the next `\n        )` closes this one.
+        match rest.find("\n        )") {
+            Some(end) => &rest[..end],
+            None => rest,
+        }
+    }
+
     #[test]
-    fn visibility_predicate_reaches_live_sql_exactly_at_its_two_splice_points() {
-        // `local_pkgs`, and the lateral join that picks the newest version.
+    fn visibility_predicate_reaches_live_sql_exactly_at_its_three_splice_points() {
+        // `proxied`, `local_pkgs`, and the lateral join that picks the newest
+        // version. The first of those was survey finding 12.
         for sort in ALL_SORTS {
             let sql = explore_sql(sort_order_for(sort), SENTINEL);
             assert_eq!(
                 live_sql(&sql).matches("sentinel_visibility").count(),
-                2,
+                3,
                 "the visibility predicate is spliced somewhere it should not be \
                  (a `{{visibility}}` in a comment?) or has stopped being applied"
             );
         }
     }
 
+    /// **Both** CTEs, named individually.
+    ///
+    /// `record_access` writes a `package_statuses` row on every allowed read,
+    /// including local ones, so a `team`-visibility package acquires one the
+    /// first time its own owner pulls it. Ungated, the `proxied` CTE then listed
+    /// that package to anyone who could browse the registry, and the
+    /// `local_pkgs` predicate never saw it.
     #[test]
-    fn count_query_applies_the_visibility_predicate_exactly_once() {
-        // One splice site, and it must exist: a count that skips the predicate
-        // reports a total the page it paginates cannot show.
+    fn both_catalogue_ctes_are_gated_by_visibility() {
+        for sort in ALL_SORTS {
+            let sql = live_sql(&explore_sql(sort_order_for(sort), SENTINEL));
+            for name in ["proxied", "local_pkgs"] {
+                assert!(
+                    cte(&sql, name).contains("sentinel_visibility"),
+                    "the `{name}` CTE lists packages without a visibility gate"
+                );
+            }
+        }
+        let count = live_sql(&count_explore_sql(SENTINEL));
+        for name in ["proxied", "local_pkgs"] {
+            assert!(
+                cte(&count, name).contains("sentinel_visibility"),
+                "the count query's `{name}` CTE counts packages without a visibility gate"
+            );
+        }
+    }
+
+    #[test]
+    fn count_query_applies_the_visibility_predicate_at_both_splice_points() {
+        // A count that skips the predicate reports a total the page it
+        // paginates cannot show — in either direction.
         assert_eq!(
             live_sql(&count_explore_sql(SENTINEL))
                 .matches("sentinel_visibility")
                 .count(),
-            1
+            2
         );
     }
 

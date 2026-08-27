@@ -37,6 +37,44 @@ impl PackageId {
         self
     }
 
+    /// Whether this coordinate names a **checksum or signature file** that
+    /// accompanies an artifact, rather than the artifact itself.
+    ///
+    /// Ecosystems that publish a version as several files make the client fetch
+    /// all of them for one logical install: resolving a single Maven dependency
+    /// pulls `.jar`, `.pom` and a `.sha1` beside each, and `mvn` will take
+    /// `.md5` and `.asc` too where they exist. Counting each as a download
+    /// reports one `mvn install` as four to six, which is what
+    /// `package_statuses.access_count`, `/api/v1/me/downloads` and the console's
+    /// popularity ordering were all reading.
+    ///
+    /// A sidecar fetch is still recorded — it is real access to a real file, and
+    /// dropping it would put a hole in the audit trail — but as
+    /// [`AccessAction::ViewMetadata`], which is what it is: a client verifying
+    /// the artifact it is about to use.
+    ///
+    /// Suffix-based rather than a per-ecosystem list, because the suffixes are
+    /// the convention every one of them borrowed. `.pom` is deliberately **not**
+    /// here: a `pom`-packaged Maven module is nothing but its POM, so treating
+    /// it as metadata would make such a module permanently show zero downloads.
+    ///
+    /// [`AccessAction::ViewMetadata`]: crate::entities::AccessAction::ViewMetadata
+    pub fn is_verification_sidecar(&self) -> bool {
+        const SIDECAR_SUFFIXES: &[&str] = &[
+            ".sha1",
+            ".sha256",
+            ".sha512",
+            ".md5",
+            ".asc",
+            ".sig",
+            ".sigstore",
+        ];
+        self.artifact.as_deref().is_some_and(|artifact| {
+            let lower = artifact.to_ascii_lowercase();
+            SIDECAR_SUFFIXES.iter().any(|s| lower.ends_with(s))
+        })
+    }
+
     /// Stable string key suitable for use as a cache or storage key.
     pub fn cache_key(&self) -> String {
         match &self.artifact {
@@ -125,6 +163,18 @@ pub struct PackageFilter {
     /// Single-registry filter. Mutually exclusive with `registries`.
     pub registry: Option<String>,
     /// Multi-registry allow-list. Empty means "all registries". Ignored when `registry` is set.
+    ///
+    /// **Empty means *all*, never *none*.** Every implementation reads it that
+    /// way — the Postgres adapter binds `NULL` through `prepare_registries_param`
+    /// and tests `$n::text[] IS NULL OR ps.registry = ANY($n)`, the in-memory
+    /// repository tests `filter.registries.is_empty() || contains(…)`.
+    ///
+    /// So a caller that derives this list from a caller's *permissions* must
+    /// reject an empty result before it gets here, or it asks for "everything"
+    /// on behalf of someone entitled to nothing. Both endpoints that do such a
+    /// derivation guard for it explicitly — `front_office/packages.rs` and
+    /// `front_office/explore/list.rs` — and both guards exist because the
+    /// second one was written after the first had shipped without it.
     pub registries: Vec<String>,
     pub name_contains: Option<String>,
     /// Exact match on `package_name` — takes priority over `name_contains`.
@@ -169,6 +219,71 @@ mod tests {
     fn with_artifact_sets_artifact_field() {
         let id = PackageId::new("cargo", "serde", "1.0.0").with_artifact("serde-1.0.0.crate");
         assert_eq!(id.artifact.as_deref(), Some("serde-1.0.0.crate"));
+    }
+
+    fn maven(artifact: &str) -> PackageId {
+        PackageId::new("maven1", "com.acme:lib", "1.2.3").with_artifact(artifact)
+    }
+
+    /// The files `mvn` fetches beside a jar for one dependency. Counting these
+    /// as downloads reported a single resolution as four to six.
+    #[test]
+    fn checksums_and_signatures_are_sidecars() {
+        for artifact in [
+            "lib-1.2.3.jar.sha1",
+            "lib-1.2.3.jar.md5",
+            "lib-1.2.3.jar.sha256",
+            "lib-1.2.3.jar.sha512",
+            "lib-1.2.3.jar.asc",
+            "lib-1.2.3.jar.sig",
+        ] {
+            assert!(maven(artifact).is_verification_sidecar(), "{artifact}");
+        }
+    }
+
+    /// The bytes a client actually installs are not sidecars, whatever their
+    /// extension.
+    #[test]
+    fn the_artifact_itself_is_not_a_sidecar() {
+        for artifact in [
+            "lib-1.2.3.jar",
+            "lib-1.2.3-sources.jar",
+            "acme.crypto.2.1.0.nupkg",
+            "linux/amd64",
+        ] {
+            assert!(!maven(artifact).is_verification_sidecar(), "{artifact}");
+        }
+    }
+
+    /// A `pom`-packaged Maven module *is* its POM, so calling it metadata would
+    /// leave such a module permanently reporting zero downloads.
+    #[test]
+    fn a_pom_is_not_a_sidecar_but_its_checksum_is() {
+        assert!(!maven("lib-1.2.3.pom").is_verification_sidecar());
+        assert!(maven("lib-1.2.3.pom.sha1").is_verification_sidecar());
+    }
+
+    /// A coordinate naming no file cannot be a sidecar — that is the ordinary
+    /// single-file version, and it must keep counting as a download.
+    #[test]
+    fn a_coordinate_without_an_artifact_is_never_a_sidecar() {
+        assert!(!PackageId::new("npm", "lodash", "4.17.21").is_verification_sidecar());
+    }
+
+    /// Suffix matching is case-insensitive: `.SHA1` is written by more than one
+    /// publishing tool.
+    #[test]
+    fn the_suffix_match_ignores_case() {
+        assert!(maven("lib-1.2.3.jar.SHA1").is_verification_sidecar());
+        assert!(maven("lib-1.2.3.jar.Asc").is_verification_sidecar());
+    }
+
+    /// A filename that merely *contains* a suffix is not a sidecar — the match
+    /// is anchored at the end.
+    #[test]
+    fn a_suffix_in_the_middle_of_a_name_does_not_match() {
+        assert!(!maven("sha1-utils-1.0.0.jar").is_verification_sidecar());
+        assert!(!maven("lib.asc.jar").is_verification_sidecar());
     }
 
     #[test]

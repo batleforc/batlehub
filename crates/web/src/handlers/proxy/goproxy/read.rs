@@ -47,8 +47,18 @@ async fn local_goproxy_file(
             local_svc
                 .check_prerelease_access(registry, version, identity)
                 .await?;
+            // `source:read`, not `releases:read`: a module zip *is* the source,
+            // and this handler's own proxy fall-through distinguishes the two
+            // the same way. A registry that grants a role releases-only must not
+            // hand it the source because the module happens to be local.
             local_svc
-                .get_artifact(registry, module, version, identity)
+                .get_artifact(
+                    registry,
+                    module,
+                    version,
+                    batlehub_core::rules::resource_type::SOURCE_READ,
+                    identity,
+                )
                 .await
                 .map(|bytes| {
                     HttpResponse::Ok()

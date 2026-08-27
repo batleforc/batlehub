@@ -39,6 +39,13 @@ findings in test or documentation files.
 | 12 | Explore catalogue leaks private package names via `package_statuses` | Medium |
 | 13 | Download-signature verification fails open when `X-Signature-Type` is omitted | **High** |
 | 14 | No CSP on the non-SPA HTML the server emits from the console origin | Medium |
+| 15 | Cargo **sparse index** local branch skips the rule chain | **High** |
+| 16 | RubyGems compact index (`/info`, `/versions`, `/names`) skips the rule chain | Medium |
+
+Findings 15 and 16 were found **after** the sweep, by the authorization matrix it recommended
+(`crates/web/tests/authz_matrix.rs`, and [its own document](./authorization-matrix.md)). They are
+the same class as 4–10 and are listed separately only because they were found by a different
+method — which is the argument for that method.
 
 Findings 4–10 are **one systemic defect with eight call sites**, described once under
 [The local-read authorization gap](#the-local-read-authorization-gap).
@@ -173,6 +180,13 @@ must be refused.
 
 ## Finding 2 — Empty accessible-registry set exposes the whole catalogue (High)
 
+> **Status: FIXED** (2026-08-26, same branch). The handler now refuses before the scope is built
+> when the accessible set is empty, mirroring the guard `explore/list.rs` already carried. The
+> `PackageFilter::registries` doc comment states the empty-means-*all* contract and what a caller
+> deriving the list from permissions must therefore do. Two regression tests in
+> `crates/web/tests/admin_packages.rs`; the security one was confirmed to fail against the
+> pre-fix handler. See [Remediation notes](#remediation-notes-finding-2).
+
 **Location:** `crates/web/src/handlers/front_office/packages.rs:90`
 **Category:** authorization bypass
 
@@ -238,6 +252,16 @@ repository implementations to read an empty scope as "unfiltered".
 ---
 
 ## Finding 3 — Stored XSS and link injection in the local PyPI Simple index (High)
+
+> **Status: FIXED** (2026-08-26, same branch). Every value the Simple index interpolates is now
+> HTML-escaped, and the filename and hash are percent-encoded before they become a path segment
+> and a fragment. The escape is a new shared helper, `batlehub_core::services::escaping`, which is
+> also what the README renderer's two private copies now call. The publish edge additionally
+> rejects a distribution filename that is not a plain PEP 427/625 name, so a hostile value no
+> longer reaches `index_metadata` at all. Four regression tests in `local_registry/tests.rs`,
+> three in `crates/web/tests/publish_traversal_guards.rs`, nine unit tests on the helpers; the
+> escaping ones were confirmed to fail against the pre-fix page.
+> See [Remediation notes](#remediation-notes-finding-3).
 
 **Location:** `crates/core/src/services/local_registry/eco_pypi.rs:34`
 (`get_pypi_simple_page`)
@@ -325,6 +349,20 @@ documents served as `text/html` from `/proxy/…`.
 ---
 
 ## The local-read authorization gap
+
+> **Status: FIXED** (2026-08-26, same branch), and fixed structurally rather than
+> site by site. The rule chain moved out of `ProxyService` into
+> `batlehub_core::services::registry_authz`, where **`LocalRegistryService` runs it
+> from its own two read funnels**: `load_visible_versions` (every local document)
+> and `get_artifact` (every local artifact, now taking the `resource_type` the
+> caller is serving). Handlers that build their own storage key call
+> `get_artifact_at_key`, which applies the same gate, so reading `local_svc.storage`
+> directly is no longer how any read path works. Findings **15 and 16 are closed by
+> the same change**, as are four routes the matrix flagged that no finding named.
+> Twelve `authz_matrix` rows flipped from `KnownGap` to `Denied`; three new
+> team-visibility tests in `crates/web/tests/local_read_authorization.rs` were
+> confirmed to fail against the pre-fix code.
+> See [Remediation notes](#remediation-notes-findings-4-to-10).
 
 Findings 4 to 10 are one defect with eight call sites.
 
@@ -570,6 +608,17 @@ NuGet and Terraform — a second asserting `403` on the artifact for a non-membe
 
 ## Finding 11 — Search endpoints enumerate every private package name (Medium)
 
+> **Status: FIXED** (2026-08-26, same branch). Three parts, because the disclosure had three
+> doors: `resolve_and_search` now authorises the listing before reading anything;
+> `LocalRegistryService::search_local` replaces the raw `list_package_names` read and filters
+> through the same funnel every other local listing uses; and the search **cache** now holds the
+> upstream answer only, so one caller's private hits can no longer be replayed to the next from a
+> key that names no identity. Rung 3b drops held hits that are locally published, letting the
+> filtered half put them back. Both `authz_matrix` search rows are `Expect::Denied`; three tests
+> in `local_read_authorization.rs`, the cache one confirmed to fail against the pre-fix order.
+> See [Remediation notes](#remediation-notes-findings-11-and-12).
+
+
 **Location:** `crates/web/src/handlers/proxy/search.rs:40` (`local_hits`) and `:144`
 (`resolve_and_search`)
 **Category:** information disclosure
@@ -623,6 +672,16 @@ uses — drop names whose `check_visibility` denies the identity, and names whos
 ---
 
 ## Finding 12 — Explore catalogue leaks private package names via `package_statuses` (Medium)
+
+> **Status: FIXED** (2026-08-26, same branch). The `proxied` CTE in both `explore_sql` and
+> `count_explore_sql` now carries `proxied_visibility_predicate`, which keeps a row whose package
+> has no `local_packages` entry (proxied-only, public by construction) and otherwise requires a
+> local row this viewer may see. A structural test asserts **both** CTEs are gated — counting
+> occurrences could not tell "both gated" from "one gated twice", which is exactly how the
+> `newest_version` join came to carry the predicate while the CTE feeding it did not. Three
+> behavioural tests in `pg_explore_visibility.rs` against real Postgres, one confirmed to fail
+> against the pre-fix SQL. See [Remediation notes](#remediation-notes-findings-11-and-12).
+
 
 **Location:** `crates/adapters/src/db/packages/explore.rs:196` (`explore_sql`), and the identical
 gap in `count_explore_sql`
@@ -678,6 +737,16 @@ predicate is spliced into both CTEs, so the two cannot drift apart again.
 ---
 
 ## Finding 13 — Download-signature verification fails open when `X-Signature-Type` is omitted (High)
+
+> **Status: FIXED** (2026-08-26, same branch). Fails closed at all three points the incoherent
+> pair could pass: the web edge rejects either header without the other (and a signature that is
+> not valid base64, which used to decode to `None` and read as *absent*); `check_signing_policy`
+> refuses bytes-without-type and type-without-bytes whenever signing is configured; and
+> `verify_download_signature` splits the two `None` cases, so a **stored** signature naming no
+> type is an `IntegrityFailure` rather than an `outcome="skipped"`. Six regression tests, and the
+> published `[registries.signing]` documentation now states that the two headers go together.
+> See [Remediation notes](#remediation-notes-finding-13).
+
 
 **Location:** `crates/core/src/services/local_registry/read.rs:314` (`verify_download_signature`),
 with the enabling gap at `crates/core/src/services/local_registry/publish.rs:31`
@@ -785,6 +854,14 @@ missing case is the one the comment asserts is handled elsewhere, and it is not.
 
 ## Finding 14 — No CSP on the non-SPA HTML served from the console origin (Medium)
 
+> **Status: FIXED** (2026-08-26, same branch). `protocol_document_csp` sends
+> `Content-Security-Policy: default-src 'none'; sandbox` on every response under `/proxy/**`,
+> wrapped inside the host-routing middleware so a host-routed registry is covered too. The
+> console and `/scalar` are outside the prefix and keep their own policies — asserted from both
+> sides, in the middleware's own tests and in `spa_csp.rs`.
+> See [Remediation notes](#remediation-notes-finding-14).
+
+
 **Location:** `crates/web/src/middleware/security_headers.rs` (module-level policy decision)
 **Category:** missing security control — amplifier for finding 3
 
@@ -838,6 +915,104 @@ responses), and reduces finding 3 from token theft to defacement of a page nobod
 Consider also moving the refresh token out of `localStorage` to an `HttpOnly` cookie, which
 removes the highest-value target from any future XSS on this origin. That is a larger change and
 belongs in its own RFC.
+
+---
+
+## Finding 15 — Cargo sparse index local branch skips the rule chain (High)
+
+> **Status: FIXED** (2026-08-26) by the findings 4-10 change. `get_index` reads through
+> `load_visible_versions_or_not_found`, which now runs the chain; no cargo-specific code was
+> touched. Its `authz_matrix` row is `Expect::Denied`.
+
+
+**Location:** `crates/web/src/handlers/proxy/cargo/index.rs:123` (`serve_local_index`), reached
+from `cargo_registry_index` at `:96` (Local) and `:100` (Hybrid)
+**Category:** authorization bypass
+**Found by:** the authorization matrix, not the sweep
+
+```rust
+async fn serve_local_index(…) -> Result<HttpResponse, AppError> {
+    let name = crate_name_from_index_path(index_path);
+    match local_svc.get_index(registry, name, identity).await {
+        Ok(content) => Ok(HttpResponse::Ok()
+            .content_type("text/plain; charset=utf-8")
+            .body(content)),
+```
+
+No `authorize_read`. The sparse index is **the** read path for `cargo build` against a private
+registry — it is what the client fetches to resolve every dependency, and it carries every crate
+name and version in the registry.
+
+What makes this the sharpest instance of the class: `proxy_upstream_index`, the function directly
+below it in the same file, carries this comment —
+
+> This route used to answer with a bare `reqwest` GET forwarded to the client: no rule chain, no
+> access event, no metadata cache. Blocked-version filtering is why it moved, but the
+> **authorisation** gap was the more serious finding — a private cargo registry's crate names and
+> versions were readable by anyone who could reach the port.
+
+That gap was identified, understood, written down, and closed **on the proxy path**. The local
+path, twenty lines above, was never given the same treatment. A registry in `local` mode — the
+mode a private company registry actually runs in — still has it.
+
+### Exploitation
+
+A cargo registry in local mode with `[registries.rbac] anonymous = []`.
+`GET /proxy/{reg}/registry/in/te/internal-auth-lib` returns the crate's full index entry —
+versions, checksums, feature sets, dependency graph — to a caller with no credentials. Walking
+the shard paths enumerates the registry.
+
+### Fix
+
+Call `svc.authorize_read(&PackageId::new(registry, name, "__index__"), identity, RELEASES_READ)`
+at the top of `serve_local_index`, matching what `proxy_upstream_index` does. The matrix row for
+`cargo /registry/{path}` flips from `KnownGap` to `Denied` in the same change.
+
+---
+
+## Finding 16 — RubyGems compact index skips the rule chain (Medium)
+
+> **Status: FIXED** (2026-08-26) by the findings 4-10 change, all three routes. `/info/{gem}`
+> refuses with `403`; `/versions` and `/names` are assembled package by package, so a denied
+> caller gets an **empty** document rather than a refusal — which discloses nothing and is what
+> the matrix asserts.
+
+
+**Locations:** `crates/web/src/handlers/proxy/rubygems/compact.rs:136` (`serve_compact`, serving
+`/versions` and `/names`) and `:323` (`gem_compact_info`, serving `/info/{gem}`)
+**Category:** information disclosure
+**Found by:** the authorization matrix, not the sweep
+
+Both follow the same shape. `serve_compact`:
+
+```rust
+let local = if mode == RegistryMode::Local || mode == RegistryMode::Hybrid {
+    which.local(local_svc, &registry, &identity.0).await.map_err(AppError::from)?
+} else { String::new() };
+if mode == RegistryMode::Local {
+    return Ok(text_body(http_req, local));       // <- returns here, no chain
+}
+// proxy/hybrid path below builds a ProxyRequest with RELEASES_READ and calls
+// multi_package_document, which does run the chain
+```
+
+The compact index is what Bundler reads first, so this is the primary read path for the
+ecosystem: `/versions` is every gem and every version in the registry, `/names` is every gem
+name, `/info/{gem}` is one gem's full version list with checksums.
+
+`/names` is documented as deliberately unfiltered for **blocking** — "a gem with one blocked
+version still exists" — and that reasoning is sound. It is a different question from whether a
+caller the registry's RBAC denies may read it at all, and the second question was never asked.
+
+Detecting this needed the matrix's version-string signal: `/info/{gem}` and `/versions` are keyed
+by the URL and their bodies are bare version lists, so they disclose a gem without ever naming
+it. A name-only disclosure check reports them clean.
+
+### Fix
+
+Run the chain before the local branch returns, in both functions — `RELEASES_READ` against the
+same synthetic coordinate the proxy path already uses (`which.coordinate()` / the gem name with
+`__compact__`). Three matrix rows flip in the same change.
 
 ---
 
@@ -910,11 +1085,83 @@ hide something.
   loads its script from a third-party CDN with no SRI and no version pin, on the console origin —
   an independent path to the same outcome as finding 3, owned by a third party rather than by a
   publisher. (The CSP half of this gap is now finding 14.)
+
+  > **Status: FIXED** (2026-08-27), and the CDN is gone rather than pinned.
+  >
+  > Rendering the page in Chrome against a running server found the gap was wider than the
+  > script tag: it reached **three** third-party origins, not one. `fonts.scalar.com` for
+  > fourteen `.woff2` files — which SRI cannot cover, since `@font-face` has no integrity
+  > mechanism — and `api.scalar.com/vector/registry/{curated,search}` fetched on every load, so
+  > opening a private registry's docs announced it to a third party. `proxy.scalar.com` is a
+  > fourth, reached when "Test Request" fires, carrying whatever token was pasted into the
+  > explorer.
+  >
+  > The bundle is now **self-hosted**: `@scalar/api-reference` is a `ui/` devDependency,
+  > `ui/build/copy-scalar.mjs` copies `dist/browser/standalone.js` into the console's build
+  > output, and `/scalar` loads `/assets/scalar/standalone.js`. `script-src` is plain `'self'`
+  > and the SRI hash is gone with the cross-origin fetch that needed it. The two configurable
+  > origins are turned off at source (`withDefaultFonts: false`, `proxyUrl: ""`); the
+  > `api.scalar.com` URLs are hardcoded and ignore `apiBaseUrl` (tried), so `connect-src 'self'`
+  > in the new `API_DOCS_CSP` is what stops them.
+  >
+  > **Verified in a browser both ways:** with the console built, the page renders identically to
+  > the CDN version (2 204 elements, four stylesheets, screenshot compared) and issues **zero**
+  > outbound requests — the only network activity is same-origin. Without `static_dir`, `/scalar`
+  > serves an honest degraded page naming what is missing and how to fix it, with the spec still
+  > embedded so `curl` yields it; it does not fall back to the CDN, which would reinstate the
+  > problem exactly where it is least wanted. `pnpm audit --audit-level high` is clean with the
+  > ~194 added packages, and both Containerfiles already run `pnpm run build` and copy `dist`, so
+  > the bundle ships with no change to them.
+  >
+  > Thirteen tests; the three stale comments naming `/scalar` as the reason no CSP could exist
+  > were corrected, as was `docs/guide/admin-config.md`.
+  >
+  > **Worth knowing:** the bundle's supply chain (25 direct, ~190 transitive) is now *declared*
+  > rather than invisible. That is the point — the browser always executed it — but it does mean
+  > an advisory in any of them can now fail CI, where before it would have failed silently in
+  > your operators' browsers.
+
 - **SBOM archive extractors** (`crates/adapters/src/sbom/extractor/*.rs`). Publisher-controlled
   tar/gz/zip decoded with no size ceiling in four of six extractors — only `conda.rs` has a
   `take` (l.75-85); `cargo.rs`, `npm.rs`, `pypi.rs`, `maven.rs` have none. Out of scope here as
   resource exhaustion, but the same code paths deserve a traversal review that this sweep did not
   perform.
+
+  > **Reviewed 2026-08-27. No traversal surface** — nothing here unpacks. There is no `unpack()`,
+  > no `File::create`, no write of any kind: entries are matched by name and read into a `String`.
+  > The size-ceiling gap stands as described and stays out of scope.
+  >
+  > The review found a different defect in the same code, now **FIXED**. Every extractor answered
+  > "which entry is the manifest?" with a suffix test and took the **first** entry that passed —
+  > `ends_with("pom.xml")`, `ends_with(".nuspec")`, a bare `Cargo.toml`/`PKG-INFO` at any depth —
+  > and archive order belongs to whoever built the archive. Verified against the pre-fix code: a
+  > `.crate` holding `aaa/vendor/Cargo.toml` (`MIT`) ahead of `evil-1.0.0/Cargo.toml`
+  > (`GPL-3.0-only`) reported MIT, and a jar holding `a/decoypom.xml` reported the decoy —
+  > `ends_with` matched a file not even named `pom.xml`. `npm.rs` was the only one that
+  > constrained position, and its depth check was not enough on its own: `aaa/package.json` sits
+  > at the same depth and still won on order.
+  >
+  > That read produces the licence `LicenseGateRule` evaluates and the `license`/dependency fields
+  > of the SBOM attested on release. It is **not** a gate on bytes — a publisher authors the real
+  > manifest anyway, so a decoy grants no licence they could not simply declare. What it grants is
+  > *disagreement*: the gate and the attested SBOM say one thing while `cargo metadata`, Maven,
+  > `pip` and any auditor reading the same archive say another. `cve_gate` is unaffected — it
+  > reads `VulnerabilityRepository::list_for_coordinate`, not the extracted dependency list.
+  >
+  > Fixed structurally, in a new `sbom/extractor/anchor.rs`: match the manifest's **canonical
+  > location**, and require **exactly one** match. Anchoring alone does not close it — a `.crate`
+  > may hold two `{dir}/Cargo.toml`, a `.nupkg` two root `.nuspec`, a wheel two
+  > `*.dist-info/METADATA` — so requiring a sole match is what removes the *choice*: a planted
+  > second manifest now yields "unknown", never an answer of the attacker's picking. "Unknown" is
+  > the state `license_gate` is built around and `allow_unknown` defaults to `true`, so the
+  > default posture is unchanged. All five extractors were converted, npm included. Fourteen
+  > regression tests; every decoy test was confirmed to fail against the pre-fix semantics.
+  >
+  > **Behaviour change worth knowing:** an uber/shaded jar carries one canonical pom per bundled
+  > dependency and nothing says which is its own, so it now reports unknown. Previously it
+  > reported whichever came first — in practice some *dependency's* licence, presented as the
+  > artifact's. Where `sbom.required = true`, such a jar's publish is refused rather than recorded
+  > against the wrong manifest.
 - **`crates/adapters/src/registry/fanout.rs`.** `list_versions` and `search_packages` return the
   first non-empty upstream result with no origin or priority guard, so a lower-priority upstream
   can shadow a name the primary registry owns — dependency confusion, sitting under exactly the
@@ -957,6 +1204,16 @@ test-only), the migrations' constraints and uniqueness guarantees backing the au
 ---
 
 ## Highest-value follow-up
+
+> **Built, 2026-08-26.** See [authorization-matrix.md](./authorization-matrix.md). One result is
+> worth recording here because it changes how this class should be hunted in future: the first
+> implementation was **static** — index the handlers, walk the call graph, record which
+> authorization primitives each route reaches — and it **failed calibration, missing six of the
+> eight known findings.** A handler with a guarded proxy branch and an unguarded local branch
+> mentions `authorize_read` either way, so the static question answers "yes" for exactly the
+> routes that are broken. The property is per-path, not per-function. The matrix is behavioural
+> for that reason, and a static version would have been worse than none.
+
 
 **Build an exhaustive route-by-route authorization matrix over every route registered in
 `crates/web/src/lib.rs`, asserting for each: (a) visibility enforcement, (b) the
@@ -1018,18 +1275,406 @@ unowned crates need to know that.
 
 ---
 
+## Remediation notes (finding 2)
+
+The guard was chosen over the structural port change, because the codebase had already weighed
+that trade and written the answer down. `explore/list.rs` guards in the handler explicitly
+*"rather than by teaching four repositories to tell 'all' from 'none' apart"* — so the consistent
+fix here is the same guard, not a second opinion about the port.
+
+What changed:
+
+- `front_office/packages.rs` — the existing early return, which covered only "a named registry the
+  caller cannot access", now also covers `accessible.is_empty()`. Same `denied_everywhere` /
+  `named_registry_denied` shape as the sibling endpoint, so the two read alike.
+- `crates/core/src/entities/package.rs` — `PackageFilter::registries` now documents that empty
+  means *all* and never *none*, names both implementations that read it that way, and states the
+  obligation on any caller deriving the list from permissions. The trap was discoverable only by
+  reading the Postgres adapter and the in-memory repository and noticing they agree.
+- `crates/web/tests/common/mod.rs` — `make_app_with_defaults_and_access` allows a suite to
+  substitute the `AccessConfig`, which is what makes "a caller entitled to nothing" expressible.
+  It was not, before; that is a large part of why this shipped.
+
+**Deliberately not changed:** `PackageFilter.registries` is still `Vec<String>` rather than
+`Option<Vec<String>>`. The overload is load-bearing — `packages.rs` passes `vec![]` to mean "no
+list restriction" once `query.registry` has been validated — so disambiguating the type is a real
+improvement but touches four repository implementations and every construction site. It belongs
+in its own change, and the guards plus the doc comment close the vulnerability without it.
+
+**Checked and not affected:** `back_office/packages/list.rs` passes `registries: vec![]`
+unconditionally, but it is `require_admin`-gated and listing everything is its purpose.
+
+---
+
+## Remediation notes (finding 3)
+
+Both halves were fixed, and in that order: escape at the sink, then validate at the edge. The
+edge check alone would have left every already-published hostile filename live; the escape alone
+would have left the value in the database for the next thing that renders it.
+
+What changed:
+
+- **`crates/core/src/services/escaping.rs`** (new) — `escape_html` / `push_escaped_html` (`&`,
+  `<`, `>`, `"`, `'`) and `percent_encode_path_segment` (RFC 3986 unreserved set kept, everything
+  else encoded, so `/`, `?`, `#`, `%` and `+` cannot leave the segment). The survey's own note
+  that `grep -rn 'html_escape|escape_html'` returned nothing across `crates/` was the finding
+  underneath the finding: there was no shared answer, so each site improvised. There is one now,
+  and it lives in `core::services` rather than in `readme::render` so the Simple index does not
+  have to depend on the README renderer to be safe.
+- **`eco_pypi.rs`** — `filename`, `sha256`, `base` and `package_name` are all escaped;
+  `filename` and `sha256` are percent-encoded first, since they land in a path segment and a
+  fragment where entity-escaping alone would not stop a `#` or a `/`. The doc comment now says
+  why each of the four is untrusted.
+- **`readme/render.rs`** — `preformatted` and `chip` had two private, identical escape
+  implementations; both now call the shared helper. `chip`'s reason for escaping `'` (the
+  `decode_basic_entities` round-trip) was moved into the doc comment so it survives the dedupe.
+- **`crates/web/src/handlers/proxy/pypi/mod.rs`** — new `validate_distribution_filename`:
+  `[A-Za-z0-9._+-]` only, no leading `.` or `..`, ≤ 256 chars, and `parse_pypi_filename` must
+  agree it names a distribution. The character-set rule is the load-bearing one — the XSS payload
+  `<img src=x onerror=…>-1.0.0.tar.gz` *parses* fine, which is asserted in the test so nobody
+  later concludes the parse was sufficient.
+- **`pypi/publish.rs`** — calls it on the filename, including the synthesised
+  `{name}-{version}.tar.gz` fallback: `name` is only checked for path-safety, so the fallback is
+  as capable of carrying markup as the uploaded value is. `400`, and the `utoipa` block now
+  declares it.
+
+**Deliberately not done here:** the `Content-Security-Policy` on `text/html` served from
+`/proxy/…` that this finding's fix section suggests. That is finding 14, it is a middleware
+change affecting every protocol document, and it belongs in its own diff — it caps the blast
+radius of this class rather than closing this instance.
+
+**Not changed, and worth knowing:** `validate_distribution_filename` does not require the
+filename's own name/version to *match* the `name` and `version` form fields, which real PyPI
+does enforce. A publisher can still upload `other-1.0.0.tar.gz` under the coordinate
+`mypkg 1.0.0`. That is a metadata-consistency defect, not an injection one — the value is inert
+now either way — but it is the obvious next tightening if this route is revisited.
+
+**Existing data:** the escape makes any already-stored hostile filename harmless on render, but
+it is still stored. A registry that ran in local or hybrid PyPI mode before this fix is worth a
+look for `index_metadata->>'filename'` values that `validate_distribution_filename` would now
+reject.
+
+---
+
+## Remediation notes (findings 4 to 10)
+
+The survey argued for the structural fix over eight local ones — *"give
+`get_artifact` the resource type and have it run the chain itself, so the safe
+path is the only path"* — and that is what was done. Adding eight calls would
+have closed eight holes and left the ninth registry adapter to rediscover the
+rule.
+
+**Where the chain lives now.** `crates/core/src/services/registry_authz.rs` holds
+`authorize_read` (the full chain) and `authorize_listing` (the identity-keyed
+`rbac` rule only), as free functions over the `HotConfigLock` both services
+share. `ProxyService`'s two methods delegate to them, so there is exactly one
+implementation of each. The reason it is not a `ProxyService` method any more is
+the whole finding: the chain was on the *proxy* side of a fork that every
+download handler makes, and the local side had to remember to reach across.
+
+**Two funnels, one gate each.**
+
+| Funnel | Runs | Covers |
+| --- | --- | --- |
+| `load_visible_versions` → new `check_read_access` | `authorize_listing` + `check_visibility` | every local **document**: cargo sparse index, npm packument, pypi simple, terraform listings, rubygems compact index, jetbrains listings, composer, maven metadata, nuget flat index |
+| `get_artifact` / `get_artifact_at_key` → new `authorize_artifact_read` | `authorize_read` + `check_visibility` + `check_prerelease_access` | every local **artifact** |
+
+`get_artifact` gained a `resource_type` parameter — not a constant — so each call
+site has to name what it serves. The compiler enumerated the sites, which is how
+the goproxy `.zip` came out as `source:read` (matching its own proxy
+fall-through) while `.info` and `.mod` stayed `releases:read`.
+
+**Listings get RBAC only, downloads get the whole chain.** This is deliberate and
+matches what the proxy path already does. `authorize_listing`'s doc comment
+explains it: every rule but `rbac` judges a concrete version, and a listing names
+none, so a licence or release-age gate handed a listing does not gate it — it
+blanks it, turning "one version is gated" into "`npm install` of anything from
+this registry fails". The chain still runs in full on the download that follows.
+
+**The three direct-storage readers.** Maven's multi-file artifacts, the NuGet flat
+`.nupkg`/`.nuspec` and the Terraform provider binary computed their own storage
+key and read `local_svc.storage` themselves, which is how they skipped
+`check_visibility` (findings 6 and 7). They now call `get_artifact_at_key`, which
+takes the key and applies the same gate. It returns `Ok(None)` for an absent key
+so hybrid can still fall through — but only a `CoreError::Storage` fault falls
+through now, never an `AccessDenied`: a refusal is an answer, and falling through
+would ask the upstream for a package the caller was just refused.
+
+**The fixture bug underneath the finding.** `crates/web/tests/common/mod.rs` built
+the `LocalRegistryService` with its **own, empty** `HotConfig`, while
+`server/src/main.rs` clones one `Arc` into both services. So no test in the suite
+could observe a local read being authorised at all — the policy the test set and
+the policy the local path read were different objects. That is a large part of
+why eight handlers shipped unguarded, and `explore.rs` carried a comment working
+around it. `make_local_svc` now takes the lock as a parameter, so every
+construction site passes the proxy's.
+
+**Also closed by the same change, and named here so the fix is not credited
+twice:**
+
+- **Finding 15** (cargo sparse index) and **finding 16** (rubygems `/info`,
+  `/versions`, `/names`) — both are `load_visible_versions` callers.
+- `terraform /v1/modules/…/versions`, `jetbrains /plugins/list`,
+  `jetbrains updatePlugins.xml` — matrix rows that were failing as `Denied`; the
+  whole-registry ones answer `200` with an **empty** document rather than `403`,
+  because they are built by asking each package in turn and a denied caller is
+  denied every one. An empty index discloses nothing, which is the property the
+  matrix measures.
+- `composer /packages.json` needed its own one-line gate: it took the identity
+  and dropped it (`_identity`), and its `available-packages` array names every
+  package in the registry. That is finding 11's *shape* on a non-search route, so
+  it is fixed here rather than left to that finding's change.
+
+**Two behavioural consequences an operator will notice.**
+
+- **The chain judges the version's real metadata, not a synthetic coordinate.**
+  Moving the chain into the local read funnel made it the gate for *every*
+  ecosystem's download rather than the six routes that used
+  `serve_local_or_proxy_artifact` — and `synthetic_metadata` reports
+  `published_at`, `is_signed` and `checksum` as `None`, which
+  `require_signed_release` with `deny_missing_signature` and `release_age` with
+  `deny_missing_timestamp` both read as *refuse*. A registry with either gate on
+  would have answered `403` to every artifact it holds, the properly signed ones
+  included. `read_gates` therefore loads the version row and evaluates against
+  it — which is what the proxy path has always done, resolving upstream metadata
+  before judging. The row is returned to the caller so the re-serve checksum and
+  signature verification reuse it instead of querying twice. Two tests hold both
+  directions: a signed version passes the gate, an unsigned one still does not.
+
+  For a coordinate with **no** row — everything a Hybrid registry proxies — the
+  chain runs minus exactly those two rules (`authorize_unheld_read`). Judging an
+  unheld version against `published_at: None` would refuse every proxied
+  artifact on a gated registry instead of falling through to the path that can
+  resolve the real metadata. It is a *skip*-list rather than an allow-list
+  because the failure modes are not symmetric: a rule added later runs by
+  default, and if it turns out to read metadata the symptom is a visible
+  over-refusal, where an allow-list would silently stop applying it. `block_list`
+  is the reason this is not just "rbac only" — a blocked version must still be
+  refused, and refused with `AccessDenied`, since `NotFound` is what a Hybrid
+  fall-through reads as "ask upstream".
+- **Maven and NuGet local reads now appear in the download audit.** Routing them
+  through `get_artifact_at_key` routes them through `record_download`, which
+  those paths never called. A `mvn install` of one artifact writes an event per
+  *file* — `.jar`, `.pom`, and their `.sha1` siblings — so download counts on a
+  local Maven registry rise several-fold against what was recorded before. That
+  is the proxy path's behaviour exactly (`ProxyService::handle` records once per
+  request, `.sha1` requests included), and the previous number was not a lower
+  count but an absent one: these reads were the audit gap `record_download`'s own
+  doc comment describes.
+
+**Deliberately not changed:**
+
+- **`LocalRegistryService::storage` is still `pub`.** The gate is now on the
+  methods, not on the field, so a handler that reaches past them can still read
+  bytes ungated. Making it private means moving the deb/rpm publish paths that
+  write through it, which is a real improvement and a different diff.
+- **`check_visibility` stays separately public.** The console's explore endpoints
+  call it on their own authorization path, where the registry's client-facing
+  RBAC is not the gate that governs; folding the chain into it would apply
+  `[registries.rbac]` to the console.
+- **Findings 11 and 12** (search endpoints, explore catalogue) are untouched.
+  Their fix is to *filter results*, not to gate a route, and they remain pinned
+  as `KnownGap` on the `npm` and `nuget` search rows.
+
+---
+
+## Remediation notes (finding 13)
+
+Three points, because the state was reachable at three and the survey's own
+lesson from findings 4–10 is that halves fixed independently leave the other
+open.
+
+- **`crates/web/src/handlers/proxy/common.rs`** — `extract_signature_headers`
+  returns `Result<Option<ArtifactSignature>, AppError>` instead of a pair of
+  `Option`s. `ArtifactSignature` holds bytes **and** type, so the incoherent
+  state is not constructible from a request: either header alone is a `400`, and
+  so is an `X-Artifact-Signature` that is not valid base64 — that used to
+  `.ok()` into `None`, making a malformed signature indistinguishable from an
+  absent one under a policy that merely required *a* signature.
+  `ArtifactSignature::split` is the single seam back to the two columns the
+  stored row has; the thirteen publish handlers changed by one `?`.
+- **`local_registry/publish.rs`** — `check_signing_policy` refuses
+  bytes-without-type *and* type-without-bytes whenever the registry has a signing
+  config. The `allowed_types` lookup is a `match` rather than an `if let` on
+  purpose: an absent type short-circuiting that check is the exact shape of the
+  finding, and it should not be reintroducible by someone later relaxing the pair
+  check above it.
+- **`local_registry/read.rs`** — `verify_download_signature` splits what was one
+  `else`. No signature at all is still `Ok` and still counted `skipped`, because
+  whether an unsigned artifact may exist is publish-time `required`'s question
+  and `verify_on_download` must not retroactively refuse everything published
+  before signing was switched on. Bytes with no type is an `IntegrityFailure`
+  counted `mismatch`, exactly as an unverifiable type already was.
+
+That last one is not redundant with the edge check: it is where **rows written
+before the edge check existed** are met. Any artifact already stored with bytes
+and no type stops being served the moment `verify_on_download` is on, which is
+the correct direction — the operator asked for every served byte to be verified.
+
+**Deliberately not done:** the survey's *"replace the two independent `Option`s
+with a single `Option<Signature>`"* stops at the edge. `signature_bytes` and
+`signature_type` are still two nullable columns on `PublishedPackage`, read by
+the Postgres and in-memory adapters and constructed in ~30 files. Collapsing the
+persisted shape is the right end state and a change of its own; the type at the
+boundary plus the fail-closed read gets the property without touching the schema.
+
+**Worth an operator's attention:** a registry with `verify_on_download` newly
+enabled will start refusing any artifact stored with bytes-and-no-type — that is
+the vulnerability being closed, but it surfaces as `502`s on downloads that
+worked yesterday. `batlehub_signature_checks_total{outcome="mismatch"}` names
+them.
+
+---
+
+## Remediation notes (finding 14)
+
+`protocol_document_csp` (`crates/web/src/middleware/security_headers.rs`), an
+`actix_web::middleware::from_fn` wrapped in `server_factory` next to
+`security_headers()`. It sends `default-src 'none'; sandbox` on any response
+whose path is `/proxy/{registry}/…`, and never overwrites a policy a handler set
+itself — the same rule `DefaultHeaders` applies to the baseline three.
+
+Three decisions worth stating, because each was a fork:
+
+- **The whole prefix, not just `text/html`.** Testing the content type would miss
+  precisely the case that motivates a CSP: a response whose declared type is
+  wrong, or is one of the *other* types a browser renders as a scriptable
+  document — `image/svg+xml`, `application/xhtml+xml`. A package manager ignores
+  CSP entirely and the header is inert on a download, so the broader scope costs
+  a few bytes per artifact and removes the question.
+- **Inside the host-routing wrap, and reading the path on the way in.**
+  `match_info().unprocessed()` is the *unrouted* remainder, so it is the whole
+  path before the router runs and empty after it — reading it on the way out
+  matches nothing, which is how the first version of this silently added the
+  header to nothing at all. Wrapped inside `HostRoutingMiddlewareFactory`, a
+  request arriving as `GET /simple/foo/` on `npm.acme.io` has already been
+  rewritten to `/proxy/{registry}/simple/foo/`, so host-routed registries — the
+  deployment most likely to have a browser pointed at it — are covered rather
+  than skipped. It also uses `unprocessed()` rather than `path()` for the
+  percent-encoding reason `extract_registry_from_path` documents: `/proxy/npm%32/…`
+  routes to `npm2` while `path()` shows something else.
+- **The console is asserted from both sides.** The middleware's tests hold that
+  `/` and `/api/**` do *not* get the header; `spa_csp.rs` holds that the console
+  document carries its `<meta>` policy and no CSP header, by all three URLs it
+  can be reached through. `default-src 'none'` on the SPA is a blank page, so a
+  future change that promotes this to a global policy fails a test rather than a
+  browser.
+
+**What this does and does not do.** It does not fix an injection — finding 3 did
+that. It caps what one is worth: markup that reaches a protocol document now
+defaces a page nobody styles instead of reading the tokens the SPA keeps in
+`localStorage`.
+
+**Still outstanding from this finding:** the refresh token sits in
+`localStorage` beside the access token (`ui/src/composables/useAuth.ts`), so any
+future XSS on this origin still yields durable account access rather than a
+session-length window. Moving it to an `HttpOnly` cookie is the survey's own
+suggestion and belongs in its own RFC — it changes the auth flow, not a header.
+
+---
+
+## Remediation notes (findings 11 and 12)
+
+One disclosure — *the names of packages you may not read* — reachable through
+four doors. Both findings named a door each; fixing those two turned up the
+other two, and neither was closed by the fix the survey proposed.
+
+**Finding 11, the search routes.**
+
+- `resolve_and_search` authorises the listing first. Only the identity-keyed
+  rule runs, on the synthetic coordinate `{registry}/_search`: a search names
+  many packages and no single version, so the gate rules have nothing to judge.
+- `LocalRegistryService::search_local` replaces the raw `list_package_names`
+  read. Each candidate goes through `load_visible_versions` — the same funnel
+  findings 4–10 put every other local listing behind — so a name appears only if
+  this caller could have listed that package directly. `AccessDenied` is a skip
+  rather than an error, for the reason `get_jetbrains_plugins` already skips:
+  refusing wholesale because one candidate is private tells the caller a private
+  package exists.
+- **The cache was the third door, and filtering alone would have left it open.**
+  The key is `search:{registry}:{limit}:{query}` — no identity in it — and the
+  *merged* result set was what got stored. The first authorised searcher wrote
+  their private hits into a shared entry and every later caller of that query
+  was served them from rung 1. The cache now holds the upstream answer only; the
+  local half is merged per request. There is a regression test, and it was
+  confirmed to fail with the two statements in the other order.
+- **Rung 3b was the fourth.** When the upstream is down, search answers from
+  `held_packages`, which reads the same `package_statuses` table finding 12 is
+  about. `LocalSearch` therefore carries `all_names` — every published name,
+  never returned to a client — so rung 3b can drop held hits that are locally
+  published and let the filtered half put back the ones this caller may see.
+
+**Finding 12, the explore catalogue.** `proxied_visibility_predicate` gates the
+`proxied` CTE in `explore_sql` and `count_explore_sql`. A package with no
+`local_packages` row is proxied-only and stays public — its name came from
+upstream and was never a secret; a package with local rows is listed only if one
+of them is visible to this viewer, which is the test `local_pkgs` applies row by
+row.
+
+The structural test is per-CTE rather than a count. Counting occurrences cannot
+tell *"both CTEs are gated"* from *"one CTE is gated twice"* — and that is
+precisely the shape of the bug, where the `newest_version` join carried the
+predicate (with a comment explaining why it had to) while the CTE feeding it
+carried none.
+
+**Testing.** The in-memory `PackageRepository` reads only its own summaries and
+has no local-package store to check visibility against, so this cannot be tested
+through the web fixtures at all — the file says so at the top, and the three new
+tests are in `pg_explore_visibility.rs` against real Postgres. One of them was
+confirmed to fail with the predicate removed; the other two exist because a
+visibility gate that over-blocks is a different bug with the same test result: a
+proxied-only package and a public hybrid one must both stay listed.
+
+**A consequence worth stating:** `Expect::KnownGap` now has no users. Every gap
+the matrix pinned is closed, which made `cargo clippy -D warnings` fail on the
+dead variant. It is kept with an `allow` rather than deleted — it is the
+ratchet's mechanism, and the next finding should be pinnable the day it is found.
+
+**Cache invalidation, on the way past.** The search cache key is now
+`search:v2:…`. Entries written before the local half was split out hold *merged*
+hits, private names included — rung 1 would serve them while fresh and rung 3a
+for as long as `get_stale` answers. Bumping the key orphans them rather than
+racing their TTL. The degraded rungs also gate their local merge on
+`SearchMode::Hybrid` now, as rungs 1 and 2 do, so a registry moved from hybrid to
+proxy does not get its local packages back through the stale door. And
+`resolve_and_search` clamps `limit` to the same `1..=250` `ProxyService::search`
+applies, because `search_local` walks every matching name and stops only once it
+has *limit hits* — a caller who may see nothing walked the whole registry at
+whatever limit the client asked for.
+
+**Deliberately not changed:** `held_packages` still reads `PackageRepository`
+without an identity. It is filtered at the call site instead, because the port
+has no viewer concept and giving it one touches four implementations — the same
+trade recorded for `PackageFilter.registries` under finding 2. The filtering is
+sound where it stands: rung 3b's caller knows which names are local.
+
+---
+
 ## Suggested remediation order
 
 1. ~~**Finding 1**~~ — **done.** Unauthenticated, trivially exploitable, supply-chain compromise.
-2. **Finding 2** — one-line guard, total catalogue exposure.
-3. **Finding 3** — escape the interpolations; the link-injection half is a supply-chain vector.
-4. **Findings 4–10** — one systemic change to `get_artifact`, plus regression tests per site.
-   Note that the rule-chain and visibility halves fail independently; fix both.
-5. **Finding 13** — fail closed on bytes-without-type at both ends. Small diff, and it restores a
-   supply-chain control the operator believes is already on.
-6. **Findings 11 and 12** — filter `local_hits`; gate the `proxied` CTE.
-7. **Finding 14** — a CSP on `/proxy/**` HTML; cheap, and it caps the blast radius of finding 3.
-8. **Then the authorization matrix**, before the next registry adapter is added.
+2. ~~**Finding 2**~~ — **done.** One-line guard, total catalogue exposure.
+3. ~~**Finding 3**~~ — **done.** Escaped at the sink, validated at the edge; the link-injection
+   half was a supply-chain vector.
+4. ~~**Findings 4–10**~~ — **done.** One systemic change: the chain moved into
+   `LocalRegistryService`'s own read funnels. Both halves fixed; findings 15 and 16 fell to the
+   same change.
+5. ~~**Finding 13**~~ — **done.** Fails closed at both ends, plus the edge that made the state
+   reachable at all. It restores a supply-chain control the operator believes is already on.
+6. ~~**Findings 11 and 12**~~ — **done.** `local_hits` filtered (and the search cache split, which
+   filtering alone would not have closed); the `proxied` CTE gated in both queries.
+7. ~~**Finding 14**~~ — **done.** A CSP on all of `/proxy/**`, not just its HTML; it caps the
+   blast radius of finding 3's whole class.
+8. ~~**Finding 15**~~ — **done** with findings 4–10, which is where it always belonged: it is
+   the read path for every `cargo build`, and `get_index` goes through the same listing funnel as
+   everything else.
+9. ~~**Finding 16**~~ — **done** with findings 4–10; all three routes go through the listing
+   funnel.
+10. ~~**The authorization matrix**~~ — **built.** `crates/web/tests/authz_matrix.rs`,
+    `task authz-matrix`, documented in [authorization-matrix.md](./authorization-matrix.md). It
+    already found findings 15 and 16. Extending it to the ecosystems it does not yet cover is now
+    the cheapest way to look for more of this class — see that document's coverage section for
+    what is still unverified.
 
 Findings 1 and 13 are the two that defeat a control an operator has explicitly configured and
 believes is protecting them. Those are worth more than their severity labels suggest.

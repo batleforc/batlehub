@@ -106,6 +106,25 @@ pub const LICENSE_GATE_NO_EXTRACTOR: &str = "license-gate.no-extractor";
 /// it: the parser worked, the rule was loaded, and no licence was ever stored.
 pub const LICENSE_GATE_SBOM_DISABLED: &str = "license-gate.sbom-disabled";
 
+/// `require_signed_release` is configured on a registry that also *publishes*,
+/// while `[registries.signing] required` is not set.
+///
+/// The rule reads `PackageMetadata::is_signed`. For a proxied artifact the
+/// adapter fills that in (a `.asc` asset on GitHub, a signature blob in an
+/// OpenVSX extension), and a type with no such signal leaves it `None`, which
+/// the rule skips by default. A **locally published** row is different: it
+/// reports `Some(false)` whenever it carries no signature bytes, and
+/// `RequireSignedReleaseRule` denies `Some(false)` outright —
+/// `deny_missing_signature` governs only the `None` case.
+///
+/// So on a hybrid registry, enabling this rule to gate the *proxied* half also
+/// makes every locally published artifact `403 this release is not signed`, at
+/// **download** time, for the consumer rather than the publisher. Pairing it
+/// with `signing.required = true` moves that refusal to the publish request,
+/// where the person who can act on it is the one who sees it.
+pub const REQUIRE_SIGNED_RELEASE_UNSIGNED_PUBLISHES: &str =
+    "require-signed-release.unsigned-publishes";
+
 /// A `[registries.readme]` block written down on a registry type that has no
 /// README to give — `maven`, the source-hosting kinds, the path-addressed kinds.
 ///

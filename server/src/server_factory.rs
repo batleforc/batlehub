@@ -328,6 +328,14 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
             // and anything the static-file service returns — carry the baseline
             // headers too, not just handler responses.
             .wrap(security_headers())
+            // The CSP the baseline set cannot carry, scoped to the one prefix the
+            // objections to a global policy do not reach. Inside the host-routing
+            // wrap below, and deliberately so: it reads the path to decide, and
+            // `npm.acme.io/simple/foo/` only looks like a proxy path *after* that
+            // rewrite. See `protocol_document_csp`.
+            .wrap(actix_web::middleware::from_fn(
+                batlehub_web::protocol_document_csp,
+            ))
             // Outermost, so the URI rewrite lands before route matching and the
             // proxy-trust verdict before anything that reads a forwarded header.
             // `.wrap` builds inside-out, so this must stay the last call.
@@ -335,14 +343,23 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
                 registry_host_map.clone(),
                 proxy_trust.clone(),
             ))
-            .service(batlehub_web::scalar(openapi))
+            // The API reference's bundle is part of the console's build output
+            // and is served from this origin, so which document `/scalar`
+            // answers with depends on whether that output is actually here. A
+            // server configured without `static_dir` gets the degraded page
+            // rather than a CDN fallback — see `batlehub_web::SCALAR_BUNDLE_PATH`.
+            .service(batlehub_web::scalar(
+                openapi,
+                static_dir_inner.as_deref().map(std::path::Path::new),
+            ))
             .configure(move |cfg| {
                 if let Some(ref dir) = static_dir_inner {
                     // Still no CSP *header* here, for the two reasons that have
-                    // not changed: it cannot be global — the Scalar API-docs page
-                    // loads its bundle from a CDN, so `script-src 'self'` would
-                    // break `/scalar` — and the `actix_files::Files` service
-                    // behind `configure_spa` is not a `ServiceFactory`, so it
+                    // not changed: it cannot be global — `/proxy/**`, `/scalar`
+                    // and the console each need a different policy, and the
+                    // first two now get theirs from the middleware wrapped
+                    // above — and the `actix_files::Files` service behind
+                    // `configure_spa` is not a `ServiceFactory`, so it
                     // cannot be wrapped individually either. The SPA carries its own policy in a
                     // `<meta http-equiv>` tag, generated at build time by
                     // `ui/build/csp.ts` so `connect-src` can follow the configured

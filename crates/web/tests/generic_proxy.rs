@@ -59,12 +59,13 @@ async fn make_generic_app(
     let policies: HashMap<String, Arc<RegistryPolicy>> =
         [("files".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
 
+    let hot = new_hot_lock(HotConfig {
+        registries,
+        policies,
+        ..Default::default()
+    });
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
+        hot: hot.clone(),
         storage: storage.clone(),
         cache,
         repo: repo_dyn.clone(),
@@ -83,7 +84,7 @@ async fn make_generic_app(
         token_repo,
         access_config_for(&["files"]),
         registry_map_for(&[("files", "generic")]),
-        make_local_svc(storage),
+        make_local_svc(hot, storage),
         RegistryModeMap::default(),
         batlehub_web::CargoIndexMap::default(),
         ConfigureAppDefaults {

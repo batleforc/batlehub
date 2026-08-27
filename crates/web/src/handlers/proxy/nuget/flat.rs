@@ -12,8 +12,7 @@ use batlehub_core::{
 };
 
 use super::super::common::{
-    append_signature_headers, collect_storage_stream, proxy_document, proxy_stream,
-    require_registry_type,
+    append_signature_headers, proxy_document, proxy_stream, require_registry_type,
 };
 use super::nuspec::{content_type_for, extract_nuspec_from_nupkg};
 use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
@@ -140,25 +139,29 @@ pub async fn nuget_flat_download(
     let mode = mode_map.get(&registry);
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        // Enforce registry RBAC before the direct local storage read: a local hit
-        // otherwise bypasses the `[registries.rbac]` rule chain that the proxy
-        // fall-through runs via `ProxyService::handle`.
-        svc.authorize_read(
-            &PackageId::new(&registry, &id, &version),
-            &identity.0,
-            batlehub_core::rules::resource_type::RELEASES_READ,
-        )
-        .await
-        .map_err(AppError::from)?;
-        local_svc
-            .check_prerelease_access(&registry, &version, &identity)
-            .await
-            .map_err(AppError::from)?;
-
+        // The `.nuspec` variant is extracted from the same stored `.nupkg`, so
+        // the key is built here — but the read goes through
+        // `get_artifact_at_key`, which applies the rule chain **and**
+        // `check_visibility`. The chain was already enforced on this route; the
+        // visibility check was not, so the flat *index* refused an
+        // Internal-visibility package while the `.nupkg` beside it was served
+        // (survey finding 6).
         let storage_key = artifact_storage_key(&registry, &id, &version);
-        match local_svc.storage.retrieve(&storage_key).await {
-            Ok(Some(artifact)) => {
-                let buf = collect_storage_stream(artifact.stream).await?;
+        // `filename` distinguishes the `.nupkg` from the `.nuspec` extracted out
+        // of it, both in the audit trail and in the download count — the two are
+        // one stored blob but two requests, and `nuget restore` makes both.
+        let pkg = batlehub_core::entities::PackageId::new(&registry, &id, &version)
+            .with_artifact(&filename);
+        match local_svc
+            .get_artifact_at_key(
+                &pkg,
+                &storage_key,
+                batlehub_core::rules::resource_type::RELEASES_READ,
+                &identity,
+            )
+            .await
+        {
+            Ok(Some(buf)) => {
                 let body = if filename.ends_with(".nuspec") {
                     Bytes::from(extract_nuspec_from_nupkg(&buf)?)
                 } else {
@@ -177,7 +180,9 @@ pub async fn nuget_flat_download(
                     "{id}@{version} not found in local registry"
                 )));
             }
-            Err(e) if mode == RegistryMode::Hybrid => {
+            // Only a storage fault falls through; an authorization refusal is an
+            // answer and must not become an upstream request.
+            Err(batlehub_core::error::CoreError::Storage(e)) if mode == RegistryMode::Hybrid => {
                 tracing::warn!("local storage error, falling back to proxy: {e}");
             }
             Err(e) => return Err(AppError::from(e)),

@@ -29,6 +29,7 @@ use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryMode
     params(("registry" = String, Path, description = "Registry name")),
     responses(
         (status = 200, description = "Composer packages.json index", body = UpstreamDocument),
+        (status = 403, description = "Access denied by the registry's rule chain"),
         (status = 404, description = "Unknown registry"),
     ),
     security(("bearer_token" = [])),
@@ -37,13 +38,38 @@ use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryMode
 pub async fn composer_packages_json(
     req: HttpRequest,
     path: web::Path<String>,
-    _identity: AuthIdentity,
+    identity: AuthIdentity,
+    svc: web::Data<Arc<ProxyService>>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
     map: web::Data<RegistryMap>,
     mode_map: web::Data<RegistryModeMap>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
     require_registry_type(&registry, "composer", &map)?;
+
+    // `available-packages` below names every package in the registry, so this
+    // document is a complete inventory and the registry's RBAC has to govern it.
+    // The identity used to be taken and dropped (`_identity`), which made the
+    // one Composer endpoint that enumerates private package names the one with
+    // no gate on it. The coordinate is the registry itself: there is no package
+    // to name, and `repo` is the same synthetic name the path-proxy routes use.
+    //
+    // `authorize_listing`, not `authorize_read`: this document names many
+    // packages and no single version, so only the identity-keyed `rbac` rule can
+    // judge it. The full chain would be handed a coordinate whose metadata is
+    // synthetic by construction — `published_at`, `is_signed` and the recorded
+    // licence are all absent for the pseudo-package `repo@_` — and
+    // `release_age.deny_missing_timestamp`, `require_signed_release` or
+    // `license_gate.allow_unknown = false` would then refuse `packages.json`
+    // outright, which breaks `composer install` for the whole registry rather
+    // than gating anything. See `registry_authz::authorize_listing`.
+    svc.authorize_listing(
+        &PackageId::new(&registry, "repo", "_"),
+        &identity.0,
+        batlehub_core::rules::resource_type::RELEASES_READ,
+    )
+    .await
+    .map_err(AppError::from)?;
 
     let base_url = registry_public_base(&req, &registry);
     let metadata_url = format!("{base_url}/p2/%package%.json");

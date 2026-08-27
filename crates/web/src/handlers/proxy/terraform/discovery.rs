@@ -254,9 +254,16 @@ pub async fn terraform_mirror_version(
         })
         .collect();
 
-    Ok(HttpResponse::Ok()
-        .content_type("application/json")
-        .json(serde_json::json!({ "archives": archives })))
+    // Every URL above carries `bh_sig` when the registry signs, and `bh_sig`
+    // encodes *this* caller's id, role and groups — so the document stops being
+    // the same for everyone the moment signing is on. Nothing here sets a
+    // validator or an expiry, which is exactly the shape a shared cache is
+    // allowed to guess a freshness lifetime for (RFC 9111 §4.2.2); without this
+    // it could hand one user's capability to the next.
+    let mut resp = HttpResponse::Ok();
+    resp.content_type("application/json");
+    super::mark_uncacheable_if_signed(&mut resp, signer.is_some());
+    Ok(resp.json(serde_json::json!({ "archives": archives })))
 }
 
 /// The platforms a mirror advertises.

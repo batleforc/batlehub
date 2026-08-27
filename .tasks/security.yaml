@@ -17,6 +17,43 @@ tasks:
     cmds:
       # Covers the whole dependency tree (direct + transitive) and resolves from
       # pnpm-lock.yaml, so it needs no install. Exits non-zero on high/critical.
+      #
+      # No `--prod`, deliberately, unlike `docs:audit`: this tree's build tooling
+      # produces what the console ships, so a dev-only advisory is still an
+      # advisory about our output. The `nanoid` pin in `ui/pnpm-workspace.yaml`
+      # exists because of exactly that.
+      #
+      # ── When this fails inside @scalar/api-reference ──────────────────────
+      #
+      # That subtree (~194 packages) arrived with the API-reference bundle
+      # `/scalar` serves. It is the one place in this tree where the usual fix is
+      # wrong: we ship Scalar's *prebuilt* `dist/browser/standalone.js`, copied
+      # verbatim by `ui/build/copy-scalar.mjs`, so an `overrides:` pin would move
+      # the lockfile, turn this command green, and change nothing about the bytes
+      # the browser executes. A false green is worse than a red build. The long
+      # form of this is in `ui/pnpm-workspace.yaml`, above `overrides:`.
+      #
+      # Valid responses, in order of preference:
+      #
+      #   1. Bump @scalar/api-reference — Scalar rebuilds the bundle, so this is
+      #      the only fix that actually reaches the shipped file.
+      #   2. Decide the advisory does not apply, and say so here:
+      #
+      #        - pnpm audit --audit-level high --ignore GHSA-xxxx-xxxx-xxxx
+      #
+      #      with a dated comment recording who checked, and *whether the package
+      #      is inlined in the bundle at all* — much of that subtree is Scalar's
+      #      own build tooling and never reaches a browser. One entry per
+      #      advisory, never a blanket carve-out.
+      #   3. Drop the dependency and vendor the single built file against a
+      #      pinned sha384. Loses the (unactionable) visibility, removes the
+      #      noise; the fallback if 1 and 2 stop being tenable.
+      #
+      # What this buys, and why it is worth the friction: that bundle used to
+      # load from a CDN, so the same code ran on the console's origin — the one
+      # holding the bearer and refresh tokens — with no advisory signal at all.
+      # The exposure did not change when it became a dependency. The visibility
+      # did.
       - pnpm audit --audit-level high
 
   docs:audit:

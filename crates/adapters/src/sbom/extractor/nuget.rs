@@ -1,7 +1,7 @@
 use batlehub_core::ports::{ExtractedManifest, SbomDependency};
 use bytes::Bytes;
 
-use super::readme;
+use super::{anchor, readme};
 
 pub(super) fn extract_nuget_manifest(data: &Bytes) -> ExtractedManifest {
     use std::io::{Cursor, Read};
@@ -13,27 +13,35 @@ pub(super) fn extract_nuget_manifest(data: &Bytes) -> ExtractedManifest {
         return ExtractedManifest::default();
     };
 
-    for i in 0..archive.len() {
-        let Ok(mut file) = archive.by_index(i) else {
-            continue;
-        };
-        let name = file.name().to_owned();
-        if name.ends_with(".nuspec") {
-            let mut content = String::new();
-            if file.read_to_string(&mut content).is_err() {
-                tracing::warn!("sbom: failed to parse nuget manifest, treating as no dependencies");
-                return ExtractedManifest::default();
-            }
-            let mut manifest = parse_nuspec(&content);
-            // `<readme>guide/README.md</readme>` names a file inside the
-            // `.nupkg`. There is no convention to fall back to: NuGet requires
-            // the element, and a package without it has none.
-            manifest.readme =
-                nuspec_readme_path(&content).and_then(|path| readme::zip_entry(data, &path));
-            return manifest;
-        }
+    // The single `{id}.nuspec` at the archive root, where NuGet puts it and
+    // where NuGet allows exactly one. `ends_with(".nuspec")` matched one at any
+    // depth and took the first, so a second `.nuspec` decided the answer. See
+    // `anchor`.
+    let matches: Vec<usize> = (0..archive.len())
+        .filter(|i| {
+            archive
+                .by_index(*i)
+                .is_ok_and(|f| anchor::is_nuspec_manifest(f.name()))
+        })
+        .collect();
+    let Some(index) = anchor::sole(matches) else {
+        return ExtractedManifest::default();
+    };
+
+    let Ok(mut file) = archive.by_index(index) else {
+        return ExtractedManifest::default();
+    };
+    let mut content = String::new();
+    if file.read_to_string(&mut content).is_err() {
+        tracing::warn!("sbom: failed to parse nuget manifest, treating as no dependencies");
+        return ExtractedManifest::default();
     }
-    ExtractedManifest::default()
+    let mut manifest = parse_nuspec(&content);
+    // `<readme>guide/README.md</readme>` names a file inside the `.nupkg`. There
+    // is no convention to fall back to: NuGet requires the element, and a
+    // package without it has none.
+    manifest.readme = nuspec_readme_path(&content).and_then(|path| readme::zip_entry(data, &path));
+    manifest
 }
 
 fn parse_nuget_dep_from_empty<'a>(
@@ -167,6 +175,34 @@ fn nuspec_readme_path(content: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const REAL_NUSPEC: &[u8] =
+        br#"<package><metadata><license type="expression">GPL-3.0-only</license></metadata></package>"#;
+    const DECOY_NUSPEC: &[u8] =
+        br#"<package><metadata><license type="expression">MIT</license></metadata></package>"#;
+
+    /// A `.nuspec` below the root is not the package's manifest — NuGet puts
+    /// exactly one at the root — but `ends_with(".nuspec")` accepted it and zip
+    /// order made it win.
+    #[test]
+    fn a_nested_nuspec_is_not_the_packages_manifest() {
+        let data = zipped(&[
+            ("lib/net8.0/decoy.nuspec", DECOY_NUSPEC),
+            ("mylib.nuspec", REAL_NUSPEC),
+        ]);
+        assert_eq!(
+            extract_nuget_manifest(&data).license.as_deref(),
+            Some("GPL-3.0-only")
+        );
+    }
+
+    /// Two at the root is malformed — NuGet itself rejects it — so the answer is
+    /// unknown rather than whichever the attacker put first.
+    #[test]
+    fn two_root_nuspecs_are_ambiguous_not_first_wins() {
+        let data = zipped(&[("aaa.nuspec", DECOY_NUSPEC), ("mylib.nuspec", REAL_NUSPEC)]);
+        assert_eq!(extract_nuget_manifest(&data), ExtractedManifest::default());
+    }
 
     #[test]
     fn parse_nuspec_deps_basic() {

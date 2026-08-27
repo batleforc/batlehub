@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod blocking;
 pub mod cache_control;
+pub mod escaping;
 pub mod eviction;
 pub mod explore_cache;
 pub mod hot_config;
@@ -10,6 +11,7 @@ pub mod metrics;
 pub mod proxy;
 pub mod quota;
 pub mod readme;
+pub mod registry_authz;
 pub mod sbom;
 pub mod search;
 pub mod signature;
@@ -23,6 +25,7 @@ pub mod warming;
 pub use admin::{AdminService, BulkActionResult, BulkBlockItem};
 pub use blocking::{BlockedVersions, ListingContext};
 pub use cache_control::{parse_cache_control, CacheControlDirectives};
+pub use escaping::{escape_html, percent_encode_path_segment};
 pub use eviction::{CoherenceReport, EvictionConfig, EvictionReport, EvictionService};
 pub use explore_cache::ExploreCache;
 pub use hot_config::{

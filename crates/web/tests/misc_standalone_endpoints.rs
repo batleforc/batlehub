@@ -29,12 +29,13 @@ use metrics_exporter_prometheus::PrometheusBuilder;
 #[actix_web::test]
 async fn healthz_returns_ok_without_db() {
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
+    let hot = new_hot_lock(HotConfig {
+        registries: HashMap::new(),
+        policies: HashMap::new(),
+        ..Default::default()
+    });
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries: HashMap::new(),
-            policies: HashMap::new(),
-            ..Default::default()
-        }),
+        hot: hot.clone(),
         storage,
         cache: Arc::new(InMemoryCacheStore::new()),
         repo: InMemoryRepo::new(),
@@ -158,12 +159,13 @@ async fn cli_download_serves_binary_when_configured() {
     let repo: Arc<dyn PackageRepository> = InMemoryRepo::new();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
+    let hot = new_hot_lock(HotConfig {
+        registries: HashMap::new(),
+        policies: HashMap::new(),
+        ..Default::default()
+    });
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries: HashMap::new(),
-            policies: HashMap::new(),
-            ..Default::default()
-        }),
+        hot: hot.clone(),
         storage,
         cache,
         repo: repo.clone(),
@@ -189,7 +191,7 @@ async fn cli_download_serves_binary_when_configured() {
         ))
         .split_for_parts();
 
-    let local_svc = make_local_svc(InMemoryStorage::new());
+    let local_svc = make_local_svc(hot.clone(), InMemoryStorage::new());
     let app = init_service(
         raw.app_data(actix_web::web::Data::new(CliBinaryPath(path)))
             .app_data(actix_web::web::Data::new(local_svc))

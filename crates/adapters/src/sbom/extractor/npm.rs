@@ -1,7 +1,7 @@
 use batlehub_core::ports::{ExtractedManifest, SbomDependency};
 use bytes::Bytes;
 
-use super::readme;
+use super::{anchor, readme};
 
 pub(super) fn extract_npm_manifest(data: &Bytes) -> ExtractedManifest {
     use flate2::read::GzDecoder;
@@ -16,29 +16,34 @@ pub(super) fn extract_npm_manifest(data: &Bytes) -> ExtractedManifest {
         return ExtractedManifest::default();
     };
 
+    // The top-level `package/package.json`. The depth check was already here —
+    // it was the only extractor that constrained position at all — but taking
+    // the *first* entry at that depth still let `aaa/package.json`, placed ahead
+    // of it in the tarball, win on order. See `anchor`.
+    let mut candidates: Vec<String> = Vec::new();
     for entry in entries.flatten() {
         let Ok(path) = entry.path() else { continue };
-        if path.file_name().and_then(|n| n.to_str()) == Some("package.json") {
-            // Only the top-level package.json (direct child of "package/")
-            let depth = path.components().count();
-            if depth != 2 {
-                continue;
-            }
-            let mut reader = entry;
-            let mut content = String::new();
-            if reader.read_to_string(&mut content).is_err() {
-                tracing::warn!("sbom: failed to parse npm manifest, treating as no dependencies");
-                return ExtractedManifest::default();
-            }
-            let mut manifest = parse_npm_package_json(&content);
-            // The tarball's own README, for the versions whose packument
-            // carries none — which is why npm's `readme_support()` is
-            // `MetadataThenArchive`. Every path is prefixed `package/`.
-            manifest.readme = readme::readme_from_targz(data, readme::root_readme_matcher(1));
-            return manifest;
+        if !anchor::is_npm_manifest(&path.to_string_lossy()) {
+            continue;
         }
+        let mut reader = entry;
+        let mut content = String::new();
+        if reader.read_to_string(&mut content).is_err() {
+            tracing::warn!("sbom: failed to parse npm manifest, treating as no dependencies");
+            return ExtractedManifest::default();
+        }
+        candidates.push(content);
     }
-    ExtractedManifest::default()
+
+    let Some(content) = anchor::sole(candidates) else {
+        return ExtractedManifest::default();
+    };
+    let mut manifest = parse_npm_package_json(&content);
+    // The tarball's own README, for the versions whose packument carries none —
+    // which is why npm's `readme_support()` is `MetadataThenArchive`. Every path
+    // is prefixed `package/`.
+    manifest.readme = readme::readme_from_targz(data, readme::root_readme_matcher(1));
+    manifest
 }
 
 fn parse_npm_package_json(content: &str) -> ExtractedManifest {
@@ -116,6 +121,27 @@ fn parse_npm_license(val: &serde_json::Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// npm was the only extractor that constrained position, and it still was
+    /// not enough: `aaa/package.json` sits at the same depth as the real one and
+    /// won on tar order. Two at that depth is ambiguous, not first-wins.
+    #[test]
+    fn a_second_manifest_at_the_package_depth_is_ambiguous() {
+        let data = targz(&[
+            ("aaa/package.json", br#"{"license":"MIT"}"#),
+            ("package/package.json", br#"{"license":"GPL-3.0-only"}"#),
+        ]);
+        assert_eq!(extract_npm_manifest(&data), ExtractedManifest::default());
+    }
+
+    #[test]
+    fn the_ordinary_single_manifest_tarball_still_reads() {
+        let data = targz(&[("package/package.json", br#"{"license":"GPL-3.0-only"}"#)]);
+        assert_eq!(
+            extract_npm_manifest(&data).license.as_deref(),
+            Some("GPL-3.0-only")
+        );
+    }
 
     #[test]
     fn parse_npm_package_json_basic() {

@@ -18,23 +18,71 @@ pub struct PublishPolicyRequest<'a> {
 }
 
 impl LocalRegistryService {
+    /// Publish-time half of the signing policy.
+    ///
+    /// The two headers are independent, so a publisher can send bytes without a
+    /// type — and that state used to satisfy `required` (bytes are present) and
+    /// skip `allowed_types` (there is no type to check), producing a stored
+    /// "signed" artifact whose signature nothing would ever verify. The download
+    /// path then read it as *absent* and served the bytes unchecked, so the
+    /// perverse rule was that a **bogus** type was refused and **no** type was
+    /// accepted (survey finding 13).
+    ///
+    /// A signature is a pair. Either half alone is incoherent, and this refuses
+    /// both orders of it whenever the operator has said anything about signing at
+    /// all.
+    ///
+    /// **Zero bytes is not a signature.** `""` is valid base64, so an empty
+    /// `X-Artifact-Signature` used to arrive here as `Some(&[])` — not `None`,
+    /// therefore satisfying `required`, and stored as `Some(vec![])`, which the
+    /// download path reads back as "this version was published signed" and
+    /// `require_signed_release` then allows. Same fail-open as the pair check
+    /// above, entered through the length rather than through the type, so both
+    /// halves are normalised to `None` before any of the questions are asked.
     fn check_signing_policy(
         signing: &crate::services::hot_config::SigningConfig,
         sig_bytes: Option<&[u8]>,
         sig_type: Option<&str>,
     ) -> Result<(), CoreError> {
+        let sig_bytes = sig_bytes.filter(|b| !b.is_empty());
+        let sig_type = sig_type.filter(|t| !t.trim().is_empty());
         if signing.required && sig_bytes.is_none() {
             return Err(CoreError::AccessDenied(
                 "artifact signature required (X-Artifact-Signature header missing)".into(),
             ));
         }
+        match (sig_bytes, sig_type) {
+            (Some(_), None) => {
+                return Err(CoreError::AccessDenied(
+                    "artifact signature supplied without a type (X-Signature-Type header \
+                     missing); a signature that names no algorithm can never be verified"
+                        .into(),
+                ));
+            }
+            (None, Some(ty)) => {
+                return Err(CoreError::AccessDenied(format!(
+                    "signature type '{ty}' supplied without a signature \
+                     (X-Artifact-Signature header missing)"
+                )));
+            }
+            _ => {}
+        }
         if !signing.allowed_types.is_empty() {
-            if let Some(st) = sig_type {
-                if !signing.allowed_types.iter().any(|t| t == st) {
+            // `None` is now unreachable with bytes present, but the list is still
+            // consulted through a match rather than an `if let`: an absent type
+            // short-circuiting this check is the exact shape of the finding, and
+            // it should not be reintroducible by someone relaxing the pair check
+            // above.
+            match sig_type {
+                Some(st) if signing.allowed_types.iter().any(|t| t == st) => {}
+                Some(st) => {
                     return Err(CoreError::AccessDenied(format!(
                         "signature type '{st}' is not in the allowed list"
                     )));
                 }
+                // No signature at all. Whether that is acceptable is
+                // `signing.required`'s question, already answered above.
+                None => {}
             }
         }
         Ok(())
@@ -215,8 +263,12 @@ impl LocalRegistryService {
             index_metadata: req.index_metadata.clone(),
             published_at: chrono::Utc::now(),
             published_by: req.publisher.user_id.clone(),
-            signature_bytes: req.signature_bytes.clone(),
-            signature_type: req.signature_type.clone(),
+            // Normalised the same way `check_signing_policy` judged them: an
+            // empty signature is no signature, and persisting `Some(vec![])`
+            // would make this row read back as "published signed" for
+            // `require_signed_release` while carrying nothing to verify.
+            signature_bytes: req.signature_bytes.clone().filter(|b| !b.is_empty()),
+            signature_type: req.signature_type.clone().filter(|t| !t.trim().is_empty()),
             visibility,
         };
 

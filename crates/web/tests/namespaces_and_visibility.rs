@@ -48,13 +48,14 @@ async fn make_app_with_ns_store(
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
     let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
     let policies: HashMap<String, Arc<RegistryPolicy>> = HashMap::new();
-    let local_svc = make_local_svc(storage.clone());
+    let hot = new_hot_lock(HotConfig {
+        registries,
+        policies,
+        ..Default::default()
+    });
+    let local_svc = make_local_svc(hot.clone(), storage.clone());
     let proxy_svc = Arc::new(ProxyService {
-        hot: new_hot_lock(HotConfig {
-            registries,
-            policies,
-            ..Default::default()
-        }),
+        hot: hot.clone(),
         storage,
         cache,
         repo: repo_dyn.clone(),

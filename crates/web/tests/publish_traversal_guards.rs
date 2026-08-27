@@ -26,6 +26,35 @@ async fn make_local_pypi_app(
     .await
 }
 
+/// Build a `twine upload`-style `multipart/form-data` body for `pypi_publish`,
+/// with the `content` part's filename chosen independently of the coordinate —
+/// which is what a hostile client does.
+fn make_pypi_publish_body_named(name: &str, version: &str, filename: &str) -> (Vec<u8>, String) {
+    let boundary = "pypiboundary";
+    let mut body = Vec::new();
+    for (field_name, value) in [
+        (":action", "file_upload"),
+        ("name", name),
+        ("version", version),
+    ] {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{field_name}\"\r\n\r\n{value}\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"content\"; filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(b"fake-pypi-sdist-content");
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    (body, format!("multipart/form-data; boundary={boundary}"))
+}
+
 /// Build a `twine upload`-style `multipart/form-data` body for `pypi_publish`.
 fn make_pypi_publish_body(name: &str, version: &str) -> (Vec<u8>, String) {
     let boundary = "pypiboundary";
@@ -64,6 +93,81 @@ async fn pypi_publish_traversal_version_returns_400() {
         .set_payload(body)
         .to_request();
     assert_eq!(call_service(&app, req).await.status(), 400);
+}
+
+/// The uploaded filename is stored in `index_metadata` and read back by the
+/// Simple index, which is `text/html` on the console's own origin. `name` and
+/// `version` are validated; the filename was not, and it is the only one of the
+/// three an attacker can fill with markup while keeping a valid coordinate.
+#[actix_web::test]
+async fn pypi_publish_markup_filename_returns_400() {
+    let app = make_local_pypi_app(RegistryMode::Local).await;
+    for filename in [
+        // Parses as a distribution — `<img …>` then `1.0.0` — so only the
+        // character set rejects it.
+        "<img src=x onerror=alert(1)>-1.0.0.tar.gz",
+        // The link-injection half: a second anchor pointing off-host.
+        "evil-1.0.tar.gz</a><a href=https://attacker.tld/backdoor.whl>backdoor<a x=",
+        "../../etc/passwd-1.0.tar.gz",
+        "not-a-distribution.exe",
+    ] {
+        let (body, content_type) = make_pypi_publish_body_named("my-pkg", "1.0.0", filename);
+        let req = TestRequest::post()
+            .uri("/proxy/local-pypi/legacy/")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .insert_header(("Content-Type", content_type))
+            .set_payload(body)
+            .to_request();
+        assert_eq!(
+            call_service(&app, req).await.status(),
+            400,
+            "accepted a hostile distribution filename: {filename}"
+        );
+    }
+}
+
+/// The guard above must not cost a real `twine upload` its publish.
+#[actix_web::test]
+async fn pypi_publish_accepts_a_wheel_filename() {
+    let app = make_local_pypi_app(RegistryMode::Local).await;
+    let (body, content_type) =
+        make_pypi_publish_body_named("my-pkg", "1.0.0", "my_pkg-1.0.0-py3-none-any.whl");
+    let req = TestRequest::post()
+        .uri("/proxy/local-pypi/legacy/")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("Content-Type", content_type))
+        .set_payload(body)
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+}
+
+/// End to end for the other half of the primitive: the package *name* reaches
+/// `<title>` and `<h1>`, and is only normalised on the way — lowercase and a
+/// `-_.` collapse, which removes no markup. The rendered page must carry it as
+/// text.
+#[actix_web::test]
+async fn pypi_simple_page_serves_a_markup_package_name_as_text() {
+    let app = make_local_pypi_app(RegistryMode::Local).await;
+
+    let hostile = "evil<script>alert(1)<script>";
+    let (body, content_type) = make_pypi_publish_body_named(hostile, "1.0.0", "evil-1.0.0.tar.gz");
+    let publish = TestRequest::post()
+        .uri("/proxy/local-pypi/legacy/")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("Content-Type", content_type))
+        .set_payload(body)
+        .to_request();
+    assert_eq!(call_service(&app, publish).await.status(), 200);
+
+    let read = TestRequest::get()
+        .uri("/proxy/local-pypi/simple/evil%3Cscript%3Ealert(1)%3Cscript%3E/")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(&app, read).await;
+    assert_eq!(resp.status(), 200);
+    let html = String::from_utf8_lossy(&actix_web::test::read_body(resp).await).into_owned();
+    assert!(!html.contains("<script>"), "{html}");
+    assert!(html.contains("&lt;script&gt;"), "{html}");
 }
 
 // ── conda publish traversal ─────────────────────────────────────────────────────

@@ -329,3 +329,101 @@ async fn audit_log_returns_events_for_admin() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["package_id"]["name"], "lodash");
 }
+
+/// A caller who may reach **nothing** sees nothing — not everything.
+///
+/// `PackageFilter::registries` is a scope, and every implementation of it reads
+/// an empty vector as *unfiltered*: `prepare_registries_param` binds `NULL` and
+/// the SQL is `$7::text[] IS NULL OR ps.registry = ANY($7)`; the in-memory
+/// repository is `filter.registries.is_empty() || contains(…)`. The handler
+/// derives that vector from `accessible_registries_for`, so a caller entitled to
+/// no registry at all produced the same empty vector as a caller asking for no
+/// restriction — and was handed the entire catalogue, block reasons and access
+/// counts included.
+///
+/// The sibling `/api/v1/explore/packages` grew this guard first; this endpoint
+/// shipped without it. The paired assertion below keeps the empty answer honest:
+/// the same rows *are* served once the registries are reachable, so this tests
+/// the gate and not an empty repository.
+#[actix_web::test]
+async fn packages_list_denied_everywhere_returns_nothing_rather_than_all_of_them() {
+    let repo = InMemoryRepo::new();
+    repo.record_access(AccessEvent::allowed_download(
+        PackageId::new("npm", "lodash", "4.17.21"),
+        Some("user-1".to_owned()),
+        Role::User,
+    ))
+    .await
+    .unwrap();
+
+    // An access config that grants no registry to any tier.
+    let app =
+        make_app_with_defaults_and_access(repo, Default::default(), Some(access_config(&[], &[])))
+            .await;
+
+    for auth in [None, Some(USER_TOKEN), Some(ADMIN_TOKEN)] {
+        let mut req = TestRequest::get().uri("/api/v1/packages");
+        if let Some(token) = auth {
+            req = req.insert_header(("Authorization", bearer(token)));
+        }
+        let resp = call_service(&app, req.to_request()).await;
+        assert_eq!(resp.status(), 200, "{auth:?}");
+        let body: Value = read_body_json(resp).await;
+        assert_eq!(body["items"], serde_json::json!([]), "{auth:?}: {body}");
+        assert_eq!(
+            body["total"], 0,
+            "{auth:?}: an empty accessible set must scope to nothing, not to everything: {body}"
+        );
+    }
+
+    // …and the same row is served once the registry is reachable.
+    let repo = InMemoryRepo::new();
+    repo.record_access(AccessEvent::allowed_download(
+        PackageId::new("npm", "lodash", "4.17.21"),
+        Some("user-1".to_owned()),
+        Role::User,
+    ))
+    .await
+    .unwrap();
+    let allowed = make_app(repo).await;
+    let resp = call_service(
+        &allowed,
+        TestRequest::get().uri("/api/v1/packages").to_request(),
+    )
+    .await;
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["total"], 1, "{body}");
+}
+
+/// The named-registry path is gated too, and for the same reason.
+#[actix_web::test]
+async fn packages_list_named_registry_outside_the_accessible_set_returns_nothing() {
+    let repo = InMemoryRepo::new();
+    repo.record_access(AccessEvent::allowed_download(
+        PackageId::new("npm", "lodash", "4.17.21"),
+        Some("user-1".to_owned()),
+        Role::User,
+    ))
+    .await
+    .unwrap();
+
+    // `cargo` is reachable; `npm` — where the row lives — is not.
+    let app = make_app_with_defaults_and_access(
+        repo,
+        Default::default(),
+        Some(access_config(&["cargo"], &["cargo"])),
+    )
+    .await;
+
+    let resp = call_service(
+        &app,
+        TestRequest::get()
+            .uri("/api/v1/packages?registry=npm")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["total"], 0, "{body}");
+}

@@ -144,19 +144,30 @@ pub fn off_origin_checksum_urls(manifest: &serde_json::Value, base: &str) -> Vec
 /// at `/`, `?`, `#` or `@`. So `https://tf.acme.io.attacker.example/x`,
 /// `https://tf.acme.io-evil.net/x` and `https://tf.acme.io@attacker.example/x`
 /// all passed a prefix match against it.
+///
+/// Returns `true` when at least one URL was signed, which makes the response a
+/// **per-caller bearer capability** rather than the identical document every
+/// caller used to get: `bh_sig` encodes this user's id, role and groups. The
+/// caller must mark such a response uncacheable — see
+/// [`mark_uncacheable_if_signed`] — or a shared cache applying heuristic
+/// freshness (RFC 9111 §4.2.2 permits it for a `200` with no explicit expiry)
+/// hands one user's token to the next.
+#[must_use = "a signed download document is a bearer capability and must not be cached; \
+              pass the result to `mark_uncacheable_if_signed`"]
 pub async fn sign_download_document(
     svc: &ProxyService,
     doc: &mut serde_json::Value,
     coords: DownloadCoords<'_>,
     base: &str,
     identity: &Identity,
-) {
+) -> bool {
     let Some(signer) = signer_for(svc, coords.registry).await else {
-        return;
+        return false;
     };
     let Some(obj) = doc.as_object_mut() else {
-        return;
+        return false;
     };
+    let mut signed_any = false;
     for (field, artifact) in [
         ("download_url", format!("{}/{}", coords.os, coords.arch)),
         ("shasums_url", "shasums".to_owned()),
@@ -166,10 +177,19 @@ pub async fn sign_download_document(
             continue;
         };
         if !is_on_origin(url, base) {
-            // `warn`, not `debug`: reaching here means a document this server
-            // is about to serve names a host it does not control, which for the
-            // local path means a publisher put it there.
-            tracing::warn!(
+            // `debug`, not `warn`, despite naming a host this server does not
+            // control. This file's own docs say an off-origin
+            // `shasums_url`/`shasums_signature_url` is "today the *only* way a
+            // local-mode provider install verifies anything" — so it is the
+            // expected steady state for a signing local registry, not an
+            // anomaly, and every `terraform init` would emit two WARN lines per
+            // platform document. A warning nobody can act on and everybody sees
+            // on every request is how real warnings get missed.
+            //
+            // The condition is not going unreported: `off_origin_checksum_urls`
+            // raises it at *publish* time, to the publisher who chose the URL
+            // and is the only party who can change it.
+            tracing::debug!(
                 field,
                 registry = coords.registry,
                 package = coords.package,
@@ -187,6 +207,24 @@ pub async fn sign_download_document(
             identity,
         );
         obj.insert(field.to_owned(), serde_json::Value::String(signed));
+        signed_any = true;
+    }
+    signed_any
+}
+
+/// Mark a response that carries a minted URL as uncacheable.
+///
+/// `private` alone would be enough for a well-behaved shared cache, but these
+/// documents have no `Cache-Control` of their own and no validator, so a proxy
+/// is entitled to guess a freshness lifetime for them. `no-store` removes the
+/// guess. Applied only when something was actually signed: an unsigned document
+/// is identical for every caller and stays as cacheable as it has always been.
+pub fn mark_uncacheable_if_signed(resp: &mut actix_web::HttpResponseBuilder, signed: bool) {
+    if signed {
+        resp.insert_header((
+            actix_web::http::header::CACHE_CONTROL,
+            "private, no-store, max-age=0",
+        ));
     }
 }
 

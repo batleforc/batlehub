@@ -1,5 +1,5 @@
 use super::{
-    append_signature_headers, collect_storage_stream, get, identity_for_artifact, proxy_stream,
+    append_signature_headers, get, identity_for_artifact, mark_uncacheable_if_signed, proxy_stream,
     registry_public_base, require_registry_type, sign_download_document,
     terraform_provider_binary_storage_key, terraform_versions_response, web, AppError, Arc,
     AuthIdentity, DownloadCoords, HttpRequest, HttpResponse, LocalRegistryService, PackageId,
@@ -239,8 +239,9 @@ pub async fn terraform_provider_download(
     // caller and refused a version it does not offer, so the signatures below
     // record that verdict rather than creating one. Signed *after* the three
     // fields are repointed at this host, so what is signed is what is served.
+    let mut signed = false;
     if let Some(json) = doc.body.as_json_mut() {
-        sign_download_document(
+        signed = sign_download_document(
             &svc,
             json,
             DownloadCoords {
@@ -256,14 +257,15 @@ pub async fn terraform_provider_download(
         .await;
     }
 
-    Ok(HttpResponse::Ok()
-        .content_type("application/json")
-        .body(match doc.body {
-            batlehub_core::ports::DocumentBody::Json(v) => {
-                serde_json::to_string(&v).unwrap_or_default()
-            }
-            batlehub_core::ports::DocumentBody::Text(t) => t,
-        }))
+    let mut resp = HttpResponse::Ok();
+    resp.content_type("application/json");
+    mark_uncacheable_if_signed(&mut resp, signed);
+    Ok(resp.body(match doc.body {
+        batlehub_core::ports::DocumentBody::Json(v) => {
+            serde_json::to_string(&v).unwrap_or_default()
+        }
+        batlehub_core::ports::DocumentBody::Text(t) => t,
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -295,7 +297,7 @@ pub(super) async fn try_local_provider_download(
             // client fetches them just as bare. Signed here rather than in the
             // core service, which has no signer and should not grow one: this
             // is a transport concern, not a local-registry one.
-            sign_download_document(
+            let signed = sign_download_document(
                 svc,
                 &mut json,
                 DownloadCoords {
@@ -310,6 +312,7 @@ pub(super) async fn try_local_provider_download(
             )
             .await;
             let mut resp = HttpResponse::Ok();
+            mark_uncacheable_if_signed(&mut resp, signed);
             append_signature_headers(&mut resp, local_svc, registry, name, version).await;
             Ok(Some(resp.json(json)))
         }
@@ -505,27 +508,26 @@ pub async fn terraform_provider_artifact(
         .await;
     }
 
-    // Local/hybrid: no proxy fall-through, so enforce the registry rule chain
-    // here — otherwise `[registries.rbac]` is never applied to a provider-binary
-    // read served straight from local storage.
-    svc.authorize_read(
-        &PackageId::new(&registry, &auth_name, &version),
-        &identity.0,
-        batlehub_core::rules::resource_type::RELEASES_READ,
-    )
-    .await
-    .map_err(AppError::from)?;
-
-    local_svc
-        .check_prerelease_access(&registry, &version, &identity)
-        .await
-        .map_err(AppError::from)?;
-
+    // Local/hybrid: no proxy fall-through, so the gate `get_artifact_at_key`
+    // applies is the only one this read ever gets. One archive per platform
+    // means the key is built here, but reading `local_svc.storage` directly —
+    // as this did — skipped `check_visibility` entirely, so a caller refused
+    // both the version list and the download *document* could still fetch the
+    // binary by constructing its URL (survey finding 7).
     let key =
         terraform_provider_binary_storage_key(&registry, &namespace, &ptype, &version, &os, &arch);
-    let artifact = local_svc
-        .storage
-        .retrieve(&key)
+    // The same `{os}/{arch}` artifact the proxy branch above puts in its
+    // `PackageId`, so one provider version's platforms are told apart in the
+    // audit trail identically on both paths. Not a sidecar — this is the archive
+    // Terraform installs.
+    let pkg = PackageId::new(&registry, &auth_name, &version).with_artifact(format!("{os}/{arch}"));
+    let buf = local_svc
+        .get_artifact_at_key(
+            &pkg,
+            &key,
+            batlehub_core::rules::resource_type::RELEASES_READ,
+            &identity,
+        )
         .await
         .map_err(AppError::from)?
         .ok_or_else(|| {
@@ -534,7 +536,6 @@ pub async fn terraform_provider_artifact(
             ))
         })?;
 
-    let buf = collect_storage_stream(artifact.stream).await?;
     Ok(HttpResponse::Ok().content_type("application/zip").body(buf))
 }
 

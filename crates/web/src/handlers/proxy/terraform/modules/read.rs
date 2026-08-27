@@ -244,23 +244,22 @@ pub async fn terraform_module_artifact(
         )
         .await;
     }
-    // Terraform is local-only (no proxy fall-through), so the registry rule chain
-    // would otherwise never run for these reads. Enforce `[registries.rbac]` here.
-    svc.authorize_read(
-        &batlehub_core::entities::PackageId::new(&registry, &pkg_name, &version),
-        &identity.0,
-        batlehub_core::rules::resource_type::RELEASES_READ,
-    )
-    .await
-    .map_err(AppError::from)?;
-
+    // Terraform is local-only (no proxy fall-through), so the registry rule
+    // chain would otherwise never run for these reads. `get_artifact` runs it
+    // against the resource type named here.
     local_svc
         .check_prerelease_access(&registry, &version, &identity)
         .await
         .map_err(AppError::from)?;
 
     let bytes = local_svc
-        .get_artifact(&registry, &pkg_name, &version, &identity)
+        .get_artifact(
+            &registry,
+            &pkg_name,
+            &version,
+            batlehub_core::rules::resource_type::RELEASES_READ,
+            &identity,
+        )
         .await
         .map_err(AppError::from)?;
 

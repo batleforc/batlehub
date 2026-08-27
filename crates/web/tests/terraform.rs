@@ -554,6 +554,78 @@ async fn terraform_module_upload_with_signature_preserved_on_artifact_download()
     );
 }
 
+/// Survey finding 13, at the edge. `X-Artifact-Signature` and `X-Signature-Type`
+/// are independent headers, so a publisher could send either alone — and bytes
+/// without a type satisfied `signing.required` while skipping the
+/// `allowed_types` allow-list, producing a stored "signed" artifact whose
+/// signature nothing would ever verify.
+///
+/// The check lives in `extract_signature_headers`, which every publish route in
+/// every ecosystem calls, so this exercises the shared extractor through the
+/// route that already covers these headers rather than repeating itself
+/// thirteen times.
+#[actix_web::test]
+async fn terraform_module_upload_with_an_incoherent_signature_pair_returns_400() {
+    let app = make_local_terraform_app(RegistryMode::Local).await;
+    let sig = base64::engine::general_purpose::STANDARD.encode(b"fake-ed25519-sig");
+
+    let cases: [(&str, Vec<(&str, String)>); 5] = [
+        (
+            "bytes with no type: the state that used to pass every check",
+            vec![("X-Artifact-Signature", sig.clone())],
+        ),
+        (
+            "a type with no bytes",
+            vec![("X-Signature-Type", "ed25519".to_owned())],
+        ),
+        (
+            // Previously decoded to `None`, making a malformed signature
+            // indistinguishable from an absent one.
+            "bytes that are not base64",
+            vec![
+                ("X-Artifact-Signature", "!!!not-base64!!!".to_owned()),
+                ("X-Signature-Type", "ed25519".to_owned()),
+            ],
+        ),
+        (
+            // The same fail-open entered through the length: `""` is valid
+            // base64 for zero bytes, so this decoded to `Some(vec![])` — present
+            // enough for `signing.required` and for the stored row to read back
+            // as signed, carrying nothing any key could verify.
+            "an empty signature with a permitted type",
+            vec![
+                ("X-Artifact-Signature", String::new()),
+                ("X-Signature-Type", "ed25519".to_owned()),
+            ],
+        ),
+        (
+            "real bytes with an empty type",
+            vec![
+                ("X-Artifact-Signature", sig.clone()),
+                ("X-Signature-Type", String::new()),
+            ],
+        ),
+    ];
+
+    for (what, headers) in cases {
+        let mut req = TestRequest::post()
+            .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.3.0")
+            .insert_header(("Authorization", bearer(USER_TOKEN)));
+        for (name, value) in headers {
+            req = req.insert_header((name, value));
+        }
+        let resp = call_service(&app, req.set_payload(b"tarball".as_slice()).to_request()).await;
+        assert_eq!(resp.status(), 400, "{what}");
+    }
+
+    // …and nothing was published under that version by any of the three.
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/modules/hashicorp/consul/aws/0.3.0/artifact")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_ne!(call_service(&app, req).await.status(), 200);
+}
+
 #[actix_web::test]
 async fn terraform_provider_upload_with_signature_preserved_on_download_info() {
     let app = make_local_terraform_app(RegistryMode::Local).await;

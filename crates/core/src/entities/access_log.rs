@@ -112,6 +112,46 @@ impl AccessEvent {
         }
     }
 
+    /// An allowed read of something that is *about* an artifact rather than the
+    /// artifact — the counterpart of [`AccessEvent::denied_metadata`].
+    ///
+    /// Its one caller today is the checksum/signature sidecar split described on
+    /// [`PackageId::is_verification_sidecar`]: the fetch is recorded, so the
+    /// audit trail stays complete, but it does not count as a download.
+    pub fn allowed_metadata(
+        package_id: PackageId,
+        user_id: Option<String>,
+        user_role: Role,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            user_id,
+            user_role,
+            package_id: Some(package_id),
+            action: AccessAction::ViewMetadata,
+            result: AccessResult::Allowed,
+            timestamp: Utc::now(),
+            ip_address: None,
+            user_agent: None,
+        }
+    }
+
+    /// [`AccessEvent::allowed_download`], or [`AccessEvent::allowed_metadata`]
+    /// when the coordinate names a checksum or signature sidecar.
+    ///
+    /// The two recording sites — `ProxyService::handle` and
+    /// `LocalRegistryService::record_download` — must agree on this, or a
+    /// hybrid registry's download counts would depend on whether the artifact
+    /// happened to be published locally. Hence one function rather than the
+    /// same `if` written twice.
+    pub fn allowed_read(package_id: PackageId, user_id: Option<String>, user_role: Role) -> Self {
+        if package_id.is_verification_sidecar() {
+            Self::allowed_metadata(package_id, user_id, user_role)
+        } else {
+            Self::allowed_download(package_id, user_id, user_role)
+        }
+    }
+
     pub fn denied_download(
         package_id: PackageId,
         user_id: Option<String>,

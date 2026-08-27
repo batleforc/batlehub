@@ -1,8 +1,8 @@
 use super::{
     collect_payload, delete, extract_signature_headers, post, put, require_local_mode,
-    require_registry_type, web, AppError, Arc, AuthIdentity, Digest, HttpRequest, HttpResponse,
-    LocalRegistryService, NotificationEventType, NotificationService, PublishRequest, RegistryMap,
-    RegistryModeMap, Responder, Sha256,
+    require_registry_type, web, AppError, Arc, ArtifactSignature, AuthIdentity, Digest,
+    HttpRequest, HttpResponse, LocalRegistryService, NotificationEventType, NotificationService,
+    PublishRequest, RegistryMap, RegistryModeMap, Responder, Sha256,
 };
 use crate::handlers::schemas::MessageResponse;
 
@@ -23,6 +23,7 @@ pub struct GemYankQuery {
     params(("registry" = String, Path, description = "Registry name")),
     responses(
         (status = 200, description = "Gem published successfully", body = MessageResponse),
+        (status = 400, description = "Malformed signature headers"),
         (status = 403, description = "Access denied or quota exceeded"),
         (status = 409, description = "Version already exists"),
         (status = 422, description = "Invalid gem file or versioning policy violation"),
@@ -72,7 +73,8 @@ pub async fn gem_publish(
     let name = gem_meta.name.clone();
     let version = gem_meta.version.clone();
 
-    let (signature_bytes, signature_type) = extract_signature_headers(&req);
+    let (signature_bytes, signature_type) =
+        ArtifactSignature::split(extract_signature_headers(&req)?);
 
     super::super::common::publish_and_respond(
         &local_svc,

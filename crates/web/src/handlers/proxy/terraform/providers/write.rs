@@ -1,10 +1,10 @@
 use super::{
     collect_payload, delete, extract_signature_headers, off_origin_checksum_urls, post, put,
     registry_public_base, require_local_mode, require_registry_type,
-    terraform_provider_binary_storage_key, terraform_set_yanked, web, AppError, Arc, AuthIdentity,
-    Digest, HttpRequest, HttpResponse, LocalRegistryService, NotificationService,
-    PublishPolicyRequest, PublishRequest, RegistryMap, RegistryModeMap, Responder, Sha256,
-    StorageMeta, TerraformYankRequest,
+    terraform_provider_binary_storage_key, terraform_set_yanked, web, AppError, Arc,
+    ArtifactSignature, AuthIdentity, Digest, HttpRequest, HttpResponse, LocalRegistryService,
+    NotificationService, PublishPolicyRequest, PublishRequest, RegistryMap, RegistryModeMap,
+    Responder, Sha256, StorageMeta, TerraformYankRequest,
 };
 use crate::handlers::schemas::{MessageResponse, OkResponse};
 
@@ -24,6 +24,7 @@ use crate::handlers::schemas::{MessageResponse, OkResponse};
     ),
     responses(
         (status = 201, description = "Provider version manifest stored", body = MessageResponse),
+        (status = 400, description = "Malformed signature headers"),
         (status = 401, description = "Authentication required"),
         (status = 403, description = "Quota exceeded or ownership denied"),
         (status = 404, description = "Registry not found or not in local/hybrid mode"),
@@ -67,7 +68,8 @@ pub async fn terraform_provider_upload(
     }
 
     let name = format!("providers/{namespace}/{ptype}");
-    let (signature_bytes, signature_type) = extract_signature_headers(&req);
+    let (signature_bytes, signature_type) =
+        ArtifactSignature::split(extract_signature_headers(&req)?);
 
     // A manifest may name checksum URLs on another host, and today that is the
     // only way a local-mode install verifies anything — BatleHub has no key it
@@ -80,13 +82,6 @@ pub async fn terraform_provider_upload(
     let message = if off_origin.is_empty() {
         MessageResponse::new("provider version published")
     } else {
-        tracing::warn!(
-            registry = %registry,
-            package = %name,
-            version = %version,
-            urls = ?off_origin,
-            "published manifest names checksum URLs on another host"
-        );
         MessageResponse::new(format!(
             "provider version published — note: {} points at another host, so `terraform init` \
              fetches it from there rather than from this registry. It is never given a signed \
@@ -95,7 +90,14 @@ pub async fn terraform_provider_upload(
         ))
     };
 
-    super::super::super::common::publish_and_respond(
+    // Kept for the log line below, which must not fire until the publish has
+    // actually landed: a 409, a 422 or a quota refusal would otherwise leave a
+    // WARN naming a version this registry does not hold, and an operator
+    // grepping for off-origin checksums would audit manifests that do not exist.
+    let logged = (!off_origin.is_empty())
+        .then(|| (registry.clone(), name.clone(), version.clone(), off_origin));
+
+    let resp = super::super::super::common::publish_and_respond(
         &local_svc,
         &notification_svc,
         PublishRequest {
@@ -113,7 +115,18 @@ pub async fn terraform_provider_upload(
         actix_web::http::StatusCode::CREATED,
         message,
     )
-    .await
+    .await?;
+
+    if let Some((registry, name, version, urls)) = logged {
+        tracing::warn!(
+            registry = %registry,
+            package = %name,
+            version = %version,
+            urls = ?urls,
+            "published manifest names checksum URLs on another host"
+        );
+    }
+    Ok(resp)
 }
 
 /// Upload a platform binary for a locally-published Terraform provider.
@@ -131,6 +144,7 @@ pub async fn terraform_provider_upload(
     ),
     responses(
         (status = 200, description = "Binary stored", body = OkResponse),
+        (status = 400, description = "Malformed signature headers"),
         (status = 401, description = "Authentication required"),
         (status = 404, description = "Registry not found or not in local/hybrid mode"),
     ),

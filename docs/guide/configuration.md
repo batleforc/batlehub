@@ -213,7 +213,7 @@ previous_secrets = ["${BATLEHUB_URL_SIGNING_SECRET_OLD}"]
 |---|---|---|---|
 | `secret` | string | *required* | HMAC-SHA256 signing key, **32 bytes minimum**. Interpolate it from the environment (see [Sensitive values](#env-inline)) — a signing key does not belong in a committed file |
 | `ttl_seconds` | u64 | `300` | Lifetime of a minted URL. Hard-capped at `3600`; Terraform follows one within milliseconds, so the margin is for a slow runner rather than a human |
-| `previous_secrets` | string[] | `[]` | Verified against but never minted with, so a secret can be rotated without a flag day. An entry that interpolates to empty is ignored |
+| `previous_secrets` | string[] | `[]` | Verified against but never minted with, so a secret can be rotated without a flag day. An entry that interpolates to empty is ignored — but the variable must still be **set** (to `""` is fine): `${VAR}` expansion runs before parsing and refuses an unset variable, so leaving this line in place after retiring the old secret fails the whole config load. Remove the line, or export the variable empty |
 
 **Startup errors.** Each of these refuses to boot rather than degrading, because
 every one of them produces a registry whose operator believes it is protected:
@@ -1367,6 +1367,8 @@ BatleHub stores physical artifact bytes at a content-addressed key (`blob/{sha25
 | `deny_missing_signature` | bool | `false` | When `true`, deny releases from registries that report no signature signal at all, instead of skipping the check and allowing the download. |
 
 > This checks `PackageMetadata.is_signed`, a best-effort signal populated per registry adapter — not full cryptographic signature verification. GitHub, Forgejo, GitLab, OpenVSX, and VS Code Marketplace populate it (presence of a `.asc`/`.sig` release asset or an extension signature blob); registries with no signing concept in their ecosystem (npm, PyPI, crates.io, Maven, RubyGems, Conda, Composer, Go, Terraform, NuGet, deb/rpm/pacman) report `None` and are allowed through unless `deny_missing_signature = true`.
+>
+> **On a `local` or `hybrid` registry, pair this with `[registries.signing] required = true`.** The paragraph above describes *proxied* artifacts. A **locally published** version is different: it is recorded as unsigned — not unknown — whenever the publish request carried no `X-Artifact-Signature` header, and this rule denies unsigned outright. `deny_missing_signature` does not soften that; it governs only the unknown case. So enabling this rule to gate the proxied half of a hybrid registry also makes every unsigned local publish fail **at download time**, with the `403` reaching the consumer rather than the publisher who could have fixed it. `signing.required = true` refuses the same artifact at the publish request instead. Configuring one without the other raises `require-signed-release.unsigned-publishes` on the **Config Reload** admin page and at `GET /api/v1/admin/config/warnings`.
 
 **`[[registries.rules]]` — Deny latest:**
 
@@ -1548,7 +1550,7 @@ verify_on_serve = false   # re-hash stored bytes on every serve, not just on fir
 
 #### `[registries.signing]` {#signing}
 
-Per-registry artifact signing. At publish time, a client supplies a detached signature via the `X-Artifact-Signature` (+ `X-Signature-Type`) headers, stored alongside the artifact. The `required`/`allowed_types` fields gate signature **presence and type** at publish; `verify_on_download`/`trusted_keys` re-check a stored `ed25519` signature on **download**.
+Per-registry artifact signing. At publish time, a client supplies a detached signature via the `X-Artifact-Signature` and `X-Signature-Type` headers, stored alongside the artifact. **The two headers go together**: either one without the other is rejected with `400`, because a signature that names no algorithm can never be verified and a type that names no signature describes nothing. The `required`/`allowed_types` fields gate signature **presence and type** at publish; `verify_on_download`/`trusted_keys` re-check a stored `ed25519` signature on **download**.
 
 ```toml
 [registries.signing]
@@ -1560,9 +1562,9 @@ trusted_keys = ["<hex pubkey>"]  # hex-encoded 32-byte Ed25519 public keys trust
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `required` | bool | `false` | Reject publish requests that do not include an `X-Artifact-Signature` header. |
-| `allowed_types` | string[] | `[]` | Accepted signature types (e.g. `["pgp", "ed25519"]`). When empty, any type (or none) is accepted. |
-| `verify_on_download` | bool | `false` | Verify a stored `ed25519` detached signature against `trusted_keys` on every download (local-registry reads). A stored signature that fails to verify — or was signed by an untrusted key — fails the download with `502`. Signatures of other types and artifacts with no stored signature are not verified here (presence is governed by `required` at publish time). |
+| `required` | bool | `false` | Reject publish requests that do not include an `X-Artifact-Signature` header. A signature is always a pair, so a publish carrying one of the two headers is refused whatever this is set to. |
+| `allowed_types` | string[] | `[]` | Accepted signature types (e.g. `["pgp", "ed25519"]`). When empty, any type is accepted. An *unsigned* publish is governed by `required` alone — this list never makes a signature mandatory. |
+| `verify_on_download` | bool | `false` | Verify a stored `ed25519` detached signature against `trusted_keys` on every download (local-registry reads). A stored signature that fails to verify — or was signed by an untrusted key, or is of a type this cannot verify, or names **no** type at all — fails the download with `502`: with this on, an artifact that carries a signature and is not verifiable is refused rather than served. An artifact with no stored signature is not verified here; its presence is governed by `required` at publish time. |
 | `trusted_keys` | string[] | `[]` | Hex-encoded 32-byte Ed25519 public keys trusted to sign artifacts in this registry. A download verifies against each in turn; any match passes. |
 
 > **Why Ed25519 only?** RSA-based crypto (the `rsa` crate, and therefore PGP / x509 / the default Sigstore paths) is hard-banned from the dependency tree by `deny.toml` (RUSTSEC-2023-0071). Ed25519 detached-signature verification keeps the tree RSA-free; Sigstore / npm provenance verification is left as a future item for that reason.
