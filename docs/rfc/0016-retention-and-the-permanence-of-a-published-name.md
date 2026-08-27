@@ -6,7 +6,7 @@ reference: true
 
 | Field       | Value                                                        |
 | ----------- | ------------------------------------------------------------ |
-| Status      | Draft                                                         |
+| Status      | **Accepted** — **phases 1 and 2 have landed**: deleting a version now spends its coordinate permanently, and tombstone compaction ships with `dry_run` defaulting on. Phases 3–5, the reclamation half, are still a proposal and cannot start before [RFC 0015](/rfc/0015-grants-on-the-resource-hierarchy)'s `policy` table exists. Implementation reversed two of this document's own decisions — a `deleted_at IS NULL` sweep smaller than §6.3 predicted, and a §4.6 validation rule that turned out to have no second operand — both recorded in §13 |
 | Short       | Retention and tombstones                                      |
 | Settles     | What happens to a locally published version over time: reclaiming what nobody is using, and a coordinate that can never be occupied twice |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                       |
@@ -369,3 +369,99 @@ The ordering is a safety property, not a convenience: retention before tombstone
 **Phase 1 is shippable on its own** and is worth shipping on its own even if 2–5 never land: a registry that cannot silently redefine a published coordinate is strictly better than one that can, and it costs no new configuration surface at all.
 
 Phases 1 and 2 depend on RFC 0015 only for the `releases:delete` verb and can land before its phase 4 with a role check in the interim. Phase 3 depends on 0015's `policy` table for the package and version tiers, and cannot start before it.
+
+---
+
+## 13. Implementation notes (phases 1–2)
+
+Phases 1 and 2 landed together, as §12 said they should. What follows is what
+building them changed about the document.
+
+### 13.1 The listing sweep was one predicate, not eight
+
+§5.2 called the `deleted_at IS NULL` sweep "the largest mechanical surface in
+this document and the one most likely to be missed somewhere", and §6.3
+enumerated eight ecosystems' listings to reach. It was three queries.
+
+Every ecosystem's listing is built on `LocalRegistryBackend`'s `get_versions`,
+`exists` and `list_package_names`; the per-ecosystem code in
+`services/local_registry/eco_*.rs` shapes rows it is handed rather than issuing
+SQL of its own. So the predicate lands in two adapters and reaches everything.
+
+That is a smaller change than predicted, and the prediction was still worth
+acting on. The per-ecosystem assertion in §10 was written anyway and stays
+written: what makes it a security test is not how many queries there are today
+but that a future reader who adds a ninth cannot quietly bypass the funnel. The
+test caught nothing at the time and is not therefore worthless — it is the thing
+that makes "we added it to the shared helper" checkable rather than asserted.
+
+Two guards went in rather than one. A tombstoned row also has `status =
+'deleted'`, and every pre-existing reader already filters `status = 'published'`,
+so a query this change failed to reach still excludes the tombstone rather than
+serving a version whose bytes are gone.
+
+### 13.2 One §4.6 rule has no second operand
+
+§4.6 requires config load to reject "a `tombstone_detail_for` window shorter
+than the registry's audit-retention window". There is no configured
+audit-retention window in this tree. The audit trail is purged by an
+operator-supplied cutoff through `AccessAction::AuditPurge` — an action, not a
+schedule — so the rule has nothing to compare against.
+
+Rather than invent one, or silently drop the rule, the implementation states the
+gap in the validator and substitutes a **30-day floor** on the window, with `0`
+rejected outright. That refuses the settings short enough to strip detail an
+investigation is plainly still using, and it refuses the far more likely mistake
+of days read as hours. If a scheduled audit retention is ever configured, the
+rule as written becomes implementable and this floor becomes its lower bound.
+
+### 13.3 `remove_version` had to be narrowed, not just left alone
+
+§6.1 said delete "sets `deleted_at` instead of removing the row" and left the
+existing hard delete unexamined. It is still needed: `remove_version` is how a
+publish that failed between reserve and commit discards its own pending row, and
+that row was never visible to anyone, so removing it spends no coordinate.
+
+But it is also the only `DELETE` left against `local_packages`, which makes it
+the one call that can free a spent name — by a caller reaching for the wrong
+cleanup, in a change nobody would think to review as a supply-chain edit. It now
+carries `AND deleted_at IS NULL` in both backends, and both suites assert that a
+tombstone survives it.
+
+### 13.4 `checksum` had to become nullable, under a CHECK
+
+Compaction nulls the checksum, which the table declared `NOT NULL`. Dropping
+that constraint outright would let a *live* row carry a null checksum, which the
+read path decodes into a `String` — a panic at read time rather than an error at
+write time.
+
+Migration 039 drops the `NOT NULL` and replaces it with
+`CHECK (deleted_at IS NOT NULL OR checksum IS NOT NULL)`, which states the actual
+invariant: only a tombstone may lack a checksum. `index_metadata` needed no such
+change — compaction sets it to `'{}'`, three bytes, keeping its `NOT NULL` —
+and `published_at` is not stripped at all, because eight bytes do not accumulate
+and "how long did this coordinate live" is the first question asked of a
+tombstone whose metadata is already gone.
+
+### 13.5 Compaction writes and reports in one statement
+
+§4.5 asked for compaction to be dry-runnable and audited, and said nothing about
+how the report is produced. Select-then-update would have been the obvious
+shape, and it is wrong: `NOW()` moves between two statements, so a tombstone that
+ages past the window in the gap is stripped without appearing in the report. The
+live path is `UPDATE … RETURNING`, which cannot disagree with what it wrote; the
+dry-run path is the matching `SELECT`. `pg_tombstones.rs` asserts the two agree.
+
+### 13.6 What is not built
+
+- **Phases 3–5.** No retention run, no `keep_versions`/`keep_for`/`keep_if_pulled`,
+  no reclamation, no UI panel. The keys are **refused by the config loader**
+  rather than accepted and ignored, so an operator who writes one is told rather
+  than left believing versions are being reclaimed.
+- **§11's still-open question** — whether a retention run needs a rate limit —
+  belongs to phase 4 and is untouched. It was to be sized against phase 3's
+  dry-run reports, which do not exist yet.
+- **The effective floor date** (§4.3), which is a property of the retention run
+  and has nothing to consume it until phase 3.
+- **Authorization.** Delete is still admin-gated at the handler, as §12 allowed
+  for the interim. `releases:delete` arrives with RFC 0015.

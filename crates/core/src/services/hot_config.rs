@@ -88,6 +88,33 @@ pub struct SigningConfig {
     pub trusted_keys: Vec<String>,
 }
 
+/// Local retention policy stored in the service (mirrors config-layer
+/// `RetentionConfig`) — RFC 0016.
+///
+/// Only the tombstone-compaction half exists; the reclamation half is phase 3
+/// and needs RFC 0015's `policy` table for its package and version tiers.
+#[derive(Debug, Clone)]
+pub struct RetentionPolicy {
+    /// How long a tombstone keeps its detail before compaction strips it to the
+    /// coordinate. `None` — the default — keeps it forever.
+    pub tombstone_detail_for: Option<Duration>,
+    /// Report and write nothing. Defaults to `true`, so a configured window does
+    /// nothing until an operator has read a report and turned it off.
+    pub dry_run: bool,
+}
+
+/// `dry_run: true`, matching the config layer. A derived `Default` would say
+/// `false` — the destructive direction — and the two definitions of "default"
+/// must not disagree about a policy that discards history.
+impl Default for RetentionPolicy {
+    fn default() -> Self {
+        Self {
+            tombstone_detail_for: None,
+            dry_run: true,
+        }
+    }
+}
+
 /// SBOM configuration stored in the service (mirrors config-layer `SbomConfig`).
 #[derive(Debug, Default, Clone)]
 pub struct SbomConfig {
@@ -301,6 +328,14 @@ pub struct HotConfig {
     pub integrity: HashMap<String, IntegrityPolicy>,
     /// Per-registry beta-channel gate ports.
     pub beta_channel: HashMap<String, Arc<dyn BetaChannelPort>>,
+    /// Per-registry local retention policies (Clone, cheap), from
+    /// `[registries.retention]` (RFC 0016).
+    ///
+    /// Keyed only by the registries that wrote the block down, like
+    /// `sbom` and unlike `readme`: absence here means keep everything forever,
+    /// which is both the default and what every instance did before this
+    /// existed. Nothing has to be populated for the absent case to be right.
+    pub retention: HashMap<String, RetentionPolicy>,
     /// Per-registry inputs for naming a package's resolution state, as plain
     /// data (Clone, cheap).
     ///
@@ -377,6 +412,7 @@ impl Default for HotConfig {
             feature_flags: HashMap::new(),
             integrity: HashMap::new(),
             beta_channel: HashMap::new(),
+            retention: HashMap::new(),
             resolution: HashMap::new(),
             signed_downloads: HashMap::new(),
             signed_url: None,

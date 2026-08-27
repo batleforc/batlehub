@@ -1778,6 +1778,52 @@ enabled = true
 - `POST   /api/v1/admin/registries/{registry}/beta-channel` — body: `{ "principal_type": "user"|"group", "principal_id": "...", "granted_by": "..." }`
 - `DELETE /api/v1/admin/registries/{registry}/beta-channel/{principal_type}/{principal_id}` — remove member
 
+#### `[registries.retention]`
+
+Retention for what this registry holds **locally**. Absent — the default — keeps
+everything forever, which is what every instance does without this block.
+
+Not to be confused with the eviction keys on [`[registries.cache]`](/guide/caching),
+which govern the *proxy cache*: an evicted cache entry is re-fetchable from
+upstream, a local version is frequently the only copy in existence. A
+`[registries.retention]` block on a `proxy`-mode registry is a **startup error**,
+because it would govern an empty set.
+
+Only tombstone compaction is implemented. Deleting a version already leaves a
+permanent tombstone with no configuration at all; this block decides when that
+tombstone's *detail* — index metadata, checksum, publisher, signature — ages out.
+The coordinate claim itself is never removed and there is no setting that removes
+it. See [Deleting a published version](/guide/admin-policies#deleting-versions).
+
+```toml
+[[registries]]
+type = "npm"
+name = "my-npm"
+mode = "local"
+
+[registries.retention]
+tombstone_detail_for_days = 730
+dry_run = false
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `tombstone_detail_for_days` | int | *(unset)* | Strip a tombstone's detail this many days after the deletion. Unset keeps it forever. Minimum 30; `0` is rejected |
+| `dry_run` | bool | `true` | Report what would be stripped and write nothing |
+
+A block with no `tombstone_detail_for_days` is rejected: it reads as
+"retention is configured" and does nothing. The reclamation keys RFC 0016
+describes (`keep_versions`, `keep_for`, `keep_if_pulled`) are a later phase and
+are **refused by the loader** rather than accepted and ignored, so an operator
+who writes one is told rather than left believing versions are being reclaimed.
+
+`dry_run = false` raises the `retention.compaction-live` warning on every reload.
+That is deliberate — it is the only setting in this block that destroys anything.
+
+**API (admin only):**
+- `GET  /api/v1/admin/registries/{registry}/tombstones` — deleted coordinates, newest first; optional `?name=`
+- `POST /api/v1/admin/registries/{registry}/tombstones/compact` — run compaction; optional `?dry_run=true` to preview. `409` when no window is configured
+
 ---
 
 ### 3.6 `[ip_blocking]` (optional)

@@ -564,6 +564,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             sbom::{export_org_sbom, get_artifact_sbom},
             stats::admin_stats,
             stats_history::admin_stats_history,
+            tombstones::{compact_tombstones, list_tombstones},
             visibility::{get_package_visibility, set_package_visibility},
         },
         front_office::{
@@ -1008,6 +1009,9 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(bulk_yank_handler);
     cfg.service(bulk_unyank);
     cfg.service(bulk_delete);
+    // Tombstones: what bulk_delete left behind, and the compaction of its detail
+    cfg.service(list_tombstones);
+    cfg.service(compact_tombstones);
     // Deprecation & unlisting admin (single version)
     cfg.service(deprecate);
     cfg.service(undeprecate);

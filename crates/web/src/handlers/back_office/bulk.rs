@@ -174,6 +174,16 @@ pub async fn bulk_unyank(
 }
 
 /// Bulk-delete versions from a local/hybrid registry (admin).
+///
+/// **The coordinates are spent, not freed** (RFC 0016 §4.4). Each version is
+/// tombstoned: the bytes, the README and the listing entry go, and the version
+/// number can never be published again. This is the only local-registry delete
+/// path in the API, so it is also the only place a coordinate is ever burned.
+///
+/// Unlike the sibling bulk handlers this does not reach into `backend` directly.
+/// A delete is four coordinated effects — tombstone, bytes, README, cache — and
+/// they belong together in `LocalRegistryService::delete_version`, next to the
+/// ordering constraint that makes them safe to interrupt.
 #[utoipa::path(
     post,
     path = "/api/v1/admin/registries/{registry}/bulk-delete",
@@ -181,7 +191,9 @@ pub async fn bulk_unyank(
     params(("registry" = String, Path, description = "Registry name")),
     request_body = BulkPackageRequest,
     responses(
-        (status = 200, description = "Bulk delete result", body = BulkPackageResponse),
+        (status = 200, description = "Bulk delete result; deleted coordinates are \
+                                      permanently spent and cannot be republished",
+            body = BulkPackageResponse),
         (status = 403, description = "Admin role required"),
     ),
     security(("bearer_token" = [])),
@@ -196,36 +208,34 @@ pub async fn bulk_delete(
     require_admin(&identity)?;
     let registry = path.into_inner();
     let items = bulk_items(body);
-    let result = local_svc
-        .backend
-        .bulk_remove_versions(&registry, &items)
-        .await
-        .map_err(AppError::from)?;
-    // A README is deleted with its version. `package_readmes` has no foreign
-    // key — a cascade from anything evictable would take the README with the
-    // bytes, which RFC 0007 §5.4 rules out — so the delete is explicit, and
-    // only for the items that actually went.
-    let failed: std::collections::HashSet<(&str, &str)> = result
-        .failed
-        .iter()
-        .map(|(name, version, _)| (name.as_str(), version.as_str()))
-        .collect();
+
+    let mut result = BulkResult {
+        processed: items.len(),
+        succeeded: 0,
+        failed: vec![],
+    };
     for (name, version) in &items {
-        if !failed.contains(&(name.as_str(), version.as_str())) {
-            local_svc
-                .delete_readme_for_version(&registry, name, version)
-                .await;
+        match local_svc
+            .delete_version(&registry, name, version, &identity.0)
+            .await
+        {
+            // `false` — nothing there to delete — counts as succeeded: the caller
+            // asked for the coordinate to be gone, and it is. Re-running a partly
+            // applied bulk delete should not report failures for the half that
+            // already went.
+            Ok(_) => result.succeeded += 1,
+            Err(e) => result
+                .failed
+                .push((name.clone(), version.clone(), e.to_string())),
         }
     }
-    record_bulk_lifecycle_audit(
-        &local_svc,
-        &registry,
-        &items,
-        &result,
-        AccessAction::Delete,
-        &identity.0,
-    )
-    .await;
+
+    // No `record_bulk_lifecycle_audit` here, unlike the siblings above:
+    // `delete_version` audits each coordinate it actually tombstones, and adding
+    // a second pass would double every event. The difference from yank/unyank is
+    // deliberate — a delete of a version that was already gone did nothing, and
+    // an audit trail that records it anyway makes a burned coordinate look like
+    // it was burned twice, by two different people, on two different days.
     Ok(HttpResponse::Ok().json(bulk_response(result)))
 }
 

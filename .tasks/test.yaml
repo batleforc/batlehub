@@ -148,6 +148,15 @@ tasks:
           CONTAINER: batlehub-test-pg-local
           PORT: "15433"
 
+  test:pg-tombstones:
+    desc: Run local-registry tombstone/compaction integration tests (starts a temporary Postgres container via Podman)
+    cmds:
+      - task: pg
+        vars:
+          TEST: pg_tombstones
+          CONTAINER: batlehub-test-pg-tombstones
+          PORT: "15438"
+
   test:pg-storage-router:
     desc: Run storage_router integration tests (starts a temporary Postgres container via Podman)
     cmds:

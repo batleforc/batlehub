@@ -51,6 +51,14 @@ pub enum AccessAction {
     ReleaseNamespace,
     /// A user's publish/download quota usage was reset by an admin.
     ResetQuota,
+    /// A registry's aged-out tombstone detail was stripped (RFC 0016 §4.5).
+    ///
+    /// An action in its own right rather than a flavour of [`Self::Delete`],
+    /// following the precedent [`Self::AuditPurge`] set: compaction is
+    /// destructive to *history* while being harmless to the invariant, which is
+    /// a different fact about a system than a version being deleted, and an
+    /// operator reading the trail has to be able to separate the two.
+    TombstoneCompact,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

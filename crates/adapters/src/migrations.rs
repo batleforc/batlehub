@@ -156,6 +156,11 @@ pub fn embedded_migrator() -> Migrator {
             "user token last used",
             "../migrations/038_user_tokens_last_used.sql"
         ),
+        mig!(
+            39,
+            "local package tombstones",
+            "../migrations/039_local_package_tombstones.sql"
+        ),
     ])
 }
 

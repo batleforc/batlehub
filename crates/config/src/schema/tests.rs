@@ -2009,3 +2009,162 @@ fn a_signing_secret_no_registry_uses_warns() {
         "{codes:?}"
     );
 }
+
+// ── Local retention (RFC 0016 §4.6) ───────────────────────────────────────────
+
+/// A `[registries.retention]` block on the given registry `mode`, with whatever
+/// keys the caller wants inside it.
+fn retention_config(mode: &str, block: &str) -> AppConfig {
+    parse_config(&format!(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "{mode}"
+        upstreams = ["https://registry.npmjs.org"]
+
+        [registries.retention]
+{block}"#
+    ))
+}
+
+#[test]
+fn retention_is_absent_by_default_and_valid() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local""#,
+    );
+    cfg.validate().expect("no block is the default");
+    assert!(cfg.registries[0].retention.is_none());
+}
+
+#[test]
+fn retention_dry_run_defaults_to_on() {
+    let cfg = retention_config("local", "        tombstone_detail_for_days = 730");
+    cfg.validate().expect("valid");
+    let ret = cfg.registries[0].retention.as_ref().unwrap();
+    assert_eq!(ret.tombstone_detail_for_days, Some(730));
+    assert!(
+        ret.dry_run,
+        "a configured window must do nothing until an operator turns dry_run off"
+    );
+}
+
+/// The derived `Default` would say `dry_run: false`, which is the destructive
+/// direction and the opposite of the `serde` default. The two must agree.
+#[test]
+fn retention_struct_default_matches_the_serde_default() {
+    let from_toml: RetentionConfig = toml::from_str("").expect("empty table parses");
+    let from_default = RetentionConfig::default();
+    assert_eq!(from_default.dry_run, from_toml.dry_run);
+    assert!(from_default.dry_run);
+    assert_eq!(
+        from_default.tombstone_detail_for_days,
+        from_toml.tombstone_detail_for_days
+    );
+}
+
+#[test]
+fn retention_on_a_proxy_registry_is_rejected() {
+    let err = retention_config("proxy", "        tombstone_detail_for_days = 730")
+        .validate()
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("locally published versions"), "{err}");
+    assert!(
+        err.contains("[registries.cache]"),
+        "the error must point at the block the operator actually meant: {err}"
+    );
+}
+
+#[test]
+fn an_empty_retention_block_is_rejected() {
+    let err = retention_config("local", "        # nothing at all")
+        .validate()
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no setting that does anything"), "{err}");
+}
+
+#[test]
+fn a_zero_or_short_detail_window_is_rejected() {
+    let zero = retention_config("local", "        tombstone_detail_for_days = 0")
+        .validate()
+        .unwrap_err()
+        .to_string();
+    assert!(zero.contains("never be investigated"), "{zero}");
+
+    let short = retention_config("local", "        tombstone_detail_for_days = 7")
+        .validate()
+        .unwrap_err()
+        .to_string();
+    assert!(short.contains("30-day floor"), "{short}");
+}
+
+/// The reclamation keys are phase 3 and depend on RFC 0015's `policy` table.
+/// They must fail to load rather than parse and sit inert — an operator who
+/// wrote one believes versions are being reclaimed.
+#[test]
+fn a_phase_three_retention_key_is_refused_rather_than_ignored() {
+    // Not through `parse_config`, which `expect`s the parse: the failure is the
+    // assertion here, not the setup.
+    let raw = r#"
+        [database]
+        type = "postgresql"
+        url = "postgresql://localhost/test"
+
+        [storage]
+        type = "filesystem"
+        path = "/tmp/batlehub-test"
+
+        [server]
+        host = "127.0.0.1"
+        port = 8080
+
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+
+        [registries.retention]
+        keep_if_pulled = "90d""#;
+    let err = toml::from_str::<AppConfig>(raw)
+        .expect_err("an unimplemented key must not load silently")
+        .to_string();
+    assert!(err.contains("keep_if_pulled"), "{err}");
+}
+
+#[test]
+fn live_compaction_warns_on_every_reload() {
+    let cfg = retention_config(
+        "local",
+        "        tombstone_detail_for_days = 730\n        dry_run = false",
+    );
+    cfg.validate().expect("legal — it is the only way it works");
+    let warning = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::RETENTION_COMPACTION_LIVE)
+        .expect("an armed compaction must be said out loud");
+    assert!(
+        warning.message.contains("coordinate claim is kept"),
+        "the warning must say what survives, not only what is lost: {}",
+        warning.message
+    );
+    assert_eq!(warning.path, "registries[0].retention");
+}
+
+#[test]
+fn a_dry_run_compaction_does_not_warn() {
+    let cfg = retention_config("local", "        tombstone_detail_for_days = 730");
+    let codes: Vec<String> = cfg.warnings().into_iter().map(|w| w.code).collect();
+    assert!(
+        !codes
+            .iter()
+            .any(|c| c == warnings::RETENTION_COMPACTION_LIVE),
+        "{codes:?}"
+    );
+}

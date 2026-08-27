@@ -283,6 +283,7 @@ pub async fn package_detail(
                 AccessAction::ClaimNamespace => "claim_namespace",
                 AccessAction::ReleaseNamespace => "release_namespace",
                 AccessAction::ResetQuota => "reset_quota",
+                AccessAction::TombstoneCompact => "tombstone_compact",
             };
             // `event_filter` above always sets `registry`/`package_name`, so any
             // event matching it has a package coordinate; the fallback only

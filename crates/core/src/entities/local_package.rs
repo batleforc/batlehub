@@ -110,6 +110,96 @@ pub struct PublishedPackage {
     pub visibility: Visibility,
 }
 
+/// A version coordinate that has been published and then deleted (RFC 0016 §4.4).
+///
+/// The coordinate is spent. `(registry, name, version)` may never be occupied by
+/// different bytes, whether the version was released by hand or reclaimed by a
+/// retention policy, so this row is what the publish path consults before it
+/// accepts anything.
+///
+/// The row holds two things with two different lifetimes (RFC 0016 §4.5): the
+/// **claim** — the coordinate itself, permanent, and the reason the row exists —
+/// and the **detail** — checksum, publisher, index metadata, signature — which is
+/// audit history and ages out under `tombstone_detail_for`. Every detail field is
+/// therefore `Option`, and `detail_compacted_at` says which of the two reasons a
+/// `None` has: never recorded, or stripped by compaction. An auditor reading a
+/// bare row needs to be able to tell those apart.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Tombstone {
+    pub registry: String,
+    pub name: String,
+    pub version: String,
+    /// When the version was deleted. Always present — this is what makes the row
+    /// a tombstone rather than a live version.
+    pub deleted_at: DateTime<Utc>,
+    /// The identity that deleted it, or `None` for a deletion by a principal with
+    /// no user id (an unauthenticated admin path, or a retention run).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_by: Option<String>,
+    /// When the detail columns below were stripped. `None` means they were not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail_compacted_at: Option<DateTime<Utc>>,
+    /// When the version was originally published.
+    ///
+    /// Not part of the detail that compaction strips: eight bytes do not
+    /// accumulate, and "how long did this coordinate live" is the first question
+    /// asked of a tombstone whose index metadata is already gone.
+    pub published_at: DateTime<Utc>,
+    /// Detail: who published it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_by: Option<String>,
+    /// Detail: SHA-256 hex of the artifact bytes that used to be here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<String>,
+}
+
+impl Tombstone {
+    /// Whether the detail columns have been stripped by a compaction run.
+    ///
+    /// Distinct from "the detail is absent": a tombstone written by a path that
+    /// never had a checksum is not compacted, and re-running compaction over it
+    /// must not claim it was.
+    pub fn is_compacted(&self) -> bool {
+        self.detail_compacted_at.is_some()
+    }
+
+    /// The message a publish onto this coordinate is refused with.
+    ///
+    /// Shared by every backend so a caller sees the same refusal whichever store
+    /// is behind it, and worded to say the thing that is actually true: the
+    /// version is not *published*, it is *spent*. "Already exists" would send a
+    /// publisher looking for bytes that are not there.
+    pub fn burned_coordinate_message(&self) -> String {
+        format!(
+            "{}@{} was published and deleted on {} in registry '{}'; a published \
+             version coordinate is never reused — publish under a new version",
+            self.name,
+            self.version,
+            self.deleted_at.format("%Y-%m-%d"),
+            self.registry,
+        )
+    }
+}
+
+/// What one tombstone-compaction run did, or — under `dry_run` — would have done.
+///
+/// Compaction is destructive to history even though it is not destructive to the
+/// invariant (RFC 0016 §4.5), so it reports like eviction does and is dry-runnable
+/// for the same reason.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct CompactionReport {
+    /// Tombstones whose detail was stripped (or would have been, under `dry_run`).
+    pub compacted: u64,
+    /// Tombstones examined and left alone — already compacted, or inside the window.
+    pub skipped: u64,
+    /// True when nothing was written.
+    pub dry_run: bool,
+    /// The coordinates compacted, `"{name}@{version}"`, for the operator reading
+    /// a dry run before turning it off.
+    #[serde(default)]
+    pub coordinates: Vec<String>,
+}
+
 /// One newline-delimited line in a Cargo sparse index file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CargoIndexEntry {

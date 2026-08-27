@@ -330,17 +330,25 @@ These commands require an admin token.
 |---------|--------|
 | `yank` | Marks a version unavailable (kept in storage, download blocked) |
 | `unyank` | Reverses a yank |
-| `delete` | Permanently removes the version and its artifact |
+| `delete` | Drops the artifact **and spends the version number permanently** |
 
 > **Package name casing**: package names are normalized to lowercase when published (NuGet lowercases the package ID, cargo and npm use lowercase by convention). Use the lowercase form with `version yank/unyank/delete` to match the stored name — e.g. `serilog`, not `Serilog`.
 
 `delete` prompts for confirmation unless `--yes` is passed:
 
 ```
-$ batlehub-cli version delete internal Serilog 2.0.0
-Permanently delete internal/Serilog@2.0.0? This cannot be undone. [y/N] y
-Deleted internal/Serilog@2.0.0
+$ batlehub-cli version delete internal serilog 2.0.0
+Delete internal/serilog@2.0.0? The artifact is dropped and the version number is
+spent permanently — 2.0.0 can never be published again. [y/N] y
+Deleted internal/serilog@2.0.0
 ```
+
+A deleted version number is never reused. Publishing `2.0.0` again is refused
+with `409`, whoever asks and however long afterwards, so "delete and re-upload to
+fix it" is not a plan — publish `2.0.1`, or `yank` instead if you only need the
+version to stop being installed. The reasoning, and what the deletion leaves
+behind for an auditor, are in
+[Deleting a published version](/guide/admin-policies#deleting-versions).
 
 ---
 

@@ -23,8 +23,8 @@ pub use notifications::{
 };
 pub use registry::{
     default_true, BetaChannelConfig, CachePolicy, FeatureFlagsConfig, IntegrityConfig, QuotaConfig,
-    QuotaEnforcement, ReadmeConfig, RegistryConfig, RegistryMode, RepoSigningConfig, SbomConfig,
-    SigningConfig, UpstreamDetailConfig, VersioningPolicy,
+    QuotaEnforcement, ReadmeConfig, RegistryConfig, RegistryMode, RepoSigningConfig,
+    RetentionConfig, SbomConfig, SigningConfig, UpstreamDetailConfig, VersioningPolicy,
 };
 pub use routing::{
     is_dns_label, normalise_host, validate_host_entry, wildcard_host, HostSyntaxError,
@@ -487,6 +487,7 @@ impl AppConfig {
         self.readme_warnings(&mut out);
         self.upstream_detail_warnings(&mut out);
         self.search_warnings(&mut out);
+        self.retention_warnings(&mut out);
         self.signed_url_warnings(&mut out);
         self.require_signed_release_warnings(&mut out);
         out
@@ -602,6 +603,38 @@ impl AppConfig {
              The index will be built and stay empty: nothing is ever stored to put in it, so the \
              search box gains an option that can only answer 'no package here says that'.",
         ));
+    }
+
+    /// Compaction armed to actually strip detail.
+    ///
+    /// Raised on every reload for as long as the configuration stands, which is
+    /// the point (RFC 0016 §4.6): unlike the inert-block warnings above, this one
+    /// is not saying the setting does nothing — it is saying the setting works,
+    /// and that what it discards does not come back.
+    fn retention_warnings(&self, out: &mut Vec<ConfigWarning>) {
+        for (index, registry) in self.registries.iter().enumerate() {
+            let Some(ret) = &registry.retention else {
+                continue;
+            };
+            let Some(days) = ret.tombstone_detail_for_days else {
+                continue;
+            };
+            if ret.dry_run {
+                continue;
+            }
+            out.push(ConfigWarning::new(
+                warnings::RETENTION_COMPACTION_LIVE,
+                format!("registries[{index}].retention"),
+                format!(
+                    "registry '{}' will strip the detail of every tombstone deleted more than \
+                     {days} days ago: the checksum, publisher, signature and index metadata of \
+                     those versions are discarded and cannot be recovered. The coordinate claim \
+                     is kept — a compacted tombstone still refuses a re-publish — and there is no \
+                     setting that removes it. Set dry_run = true to report without stripping.",
+                    registry.name,
+                ),
+            ));
+        }
     }
 
     /// A `[registries.upstream_detail]` block that cannot do what it says.
@@ -1271,6 +1304,81 @@ impl AppConfig {
         Ok(())
     }
 
+    /// Refuse a `[registries.retention]` block that cannot mean what it says
+    /// (RFC 0016 §4.6).
+    ///
+    /// Only the tombstone-compaction rules are here, because that is the only
+    /// half of retention that ships in phases 1–2. The rules RFC 0016 §4.6 states
+    /// for reclamation — a block with no keep condition, a version-tier block
+    /// carrying more than `keep`, `dry_run = false` with no `keep_if_pulled` —
+    /// have no fields to check yet and arrive with phase 3.
+    ///
+    /// One §4.6 rule is **not** implemented and is not deferred by oversight: a
+    /// `tombstone_detail_for` window shorter than the registry's audit-retention
+    /// window. There is no configured audit-retention window in this tree to
+    /// compare against — the audit trail is purged by an operator-supplied
+    /// cutoff through `AccessAction::AuditPurge`, not on a schedule — so the
+    /// check has no second operand. The floor below is what stands in for it:
+    /// it refuses the windows short enough to strip detail an investigation is
+    /// plainly still using.
+    fn validate_retention(&self, registry: &RegistryConfig) -> Result<()> {
+        let Some(ret) = registry.retention.as_ref() else {
+            return Ok(());
+        };
+
+        // A proxy-mode registry publishes nothing locally, so it has no versions
+        // to delete and no tombstones to compact. The block would govern an empty
+        // set in silence, and the operator who wrote it meant `[registries.cache]`.
+        if registry.mode == RegistryMode::Proxy {
+            bail!(
+                "registry '{}': [registries.retention] governs locally published versions, and a \
+                 'proxy' mode registry has none — every setting in the block would apply to an \
+                 empty set. For the proxy cache, use the eviction keys on [registries.cache] \
+                 (idle_days, keep_latest_n, max_size_bytes)",
+                registry.name
+            );
+        }
+
+        // An empty block reads as "retention is configured" and does nothing.
+        // Phases 1-2 give it exactly one thing to say, so a block that does not
+        // say it is a mistake worth catching at startup rather than at the first
+        // run that reclaims nothing.
+        if ret.tombstone_detail_for_days.is_none() {
+            bail!(
+                "registry '{}': [registries.retention] has no setting that does anything. The \
+                 only key this version implements is 'tombstone_detail_for_days'; omit the block \
+                 entirely to keep every tombstone's detail forever, which is the default",
+                registry.name
+            );
+        }
+
+        // A short window strips the evidence while the incident that prompted the
+        // deletion is still open. Thirty days is not a considered policy — it is
+        // the floor below which the setting is more likely a units mistake
+        // (days read as hours) than an intent.
+        const MIN_DETAIL_DAYS: u32 = 30;
+        if let Some(days) = ret.tombstone_detail_for_days {
+            if days == 0 {
+                bail!(
+                    "registry '{}': [registries.retention] tombstone_detail_for_days = 0 would \
+                     strip a tombstone's detail the moment it is created, so a deletion could \
+                     never be investigated. Omit the key to keep detail forever",
+                    registry.name
+                );
+            }
+            if days < MIN_DETAIL_DAYS {
+                bail!(
+                    "registry '{}': [registries.retention] tombstone_detail_for_days = {days} is \
+                     below the {MIN_DETAIL_DAYS}-day floor. Compaction discards the checksum, \
+                     publisher and metadata of a deleted version — an auditor asking what was \
+                     removed within the last month should still get an answer",
+                    registry.name
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<()> {
         if let Some(v) = self.config_version {
             if v > CURRENT_CONFIG_VERSION {
@@ -1427,6 +1535,7 @@ impl AppConfig {
                     registry.name
                 );
             }
+            self.validate_retention(registry)?;
             // deb/rpm have no universal default upstream, so proxy mode (which would
             // otherwise fall back to an unreachable placeholder) also requires an
             // explicit upstream. Caught at startup instead of every fetch failing.

@@ -179,6 +179,17 @@ pub const UPSTREAM_DETAIL_NO_UPSTREAM: &str = "upstream-detail.no-upstream";
 /// find this by name.
 pub const LICENSE_GATE_DENIES_EVERYTHING: &str = "license-gate.denies-everything";
 
+/// `[registries.retention]` has `tombstone_detail_for_days` set with
+/// `dry_run = false`, so compaction will actually strip detail on the next run.
+///
+/// Legal, and the only way the feature ever does anything — but it is the one
+/// configuration in this block that destroys something, and RFC 0016 §4.6 asks
+/// for it to be said loudly on **every** reload rather than once at the edit
+/// that introduced it. What is lost is a deleted version's checksum, publisher
+/// and metadata; what is kept, always and with no setting that changes it, is
+/// the coordinate claim.
+pub const RETENTION_COMPACTION_LIVE: &str = "retention.compaction-live";
+
 /// `[search] readmes = true` while every registry has README capture off.
 ///
 /// Accepted. The index will exist and stay empty, because nothing is ever stored

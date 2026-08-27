@@ -30,7 +30,7 @@ pub use eviction::{CoherenceReport, EvictionConfig, EvictionReport, EvictionServ
 pub use explore_cache::ExploreCache;
 pub use hot_config::{
     new_hot_lock, FeatureFlags, HotConfig, HotConfigLock, IntegrityPolicy,
-    ReadmeConfig as HotReadmeConfig, RegistryPolicy, RemoteImagePolicy,
+    ReadmeConfig as HotReadmeConfig, RegistryPolicy, RemoteImagePolicy, RetentionPolicy,
     SbomConfig as HotSbomConfig, SigningConfig, UpstreamDetailConfig as HotUpstreamDetailConfig,
     VersioningPolicy, DEFAULT_CONSOLE_FETCH, DEFAULT_README_IMAGE_MAX_BYTES,
     DEFAULT_README_MAX_BYTES, DEFAULT_UPSTREAM_MAX_VERSIONS, DEFAULT_UPSTREAM_NEGATIVE_TTL_SECS,

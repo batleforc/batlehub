@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 
@@ -10,8 +11,8 @@ use batlehub_core::ports::{
 };
 use batlehub_core::services::{
     FeatureFlags, HotConfig, HotReadmeConfig, HotSbomConfig, HotUpstreamDetailConfig,
-    IntegrityPolicy, RemoteImagePolicy, SignedUrlService, SigningConfig as CoreSigningConfig,
-    VersioningPolicy,
+    IntegrityPolicy, RemoteImagePolicy, RetentionPolicy, SignedUrlService,
+    SigningConfig as CoreSigningConfig, VersioningPolicy,
 };
 
 use crate::builders::parse_role;
@@ -106,6 +107,25 @@ fn build_signing_map(registries: &[RegistryConfig]) -> HashMap<String, CoreSigni
             allowed_types: s.allowed_types.clone(),
             verify_on_download: s.verify_on_download,
             trusted_keys: s.trusted_keys.clone(),
+        },
+    )
+}
+
+/// Only the registries that wrote a `[registries.retention]` block, the same way
+/// `build_sbom_map` works and the opposite of `build_readme_map`: an absent entry
+/// means keep everything forever, which is the default and needs no row.
+fn build_retention_map(registries: &[RegistryConfig]) -> HashMap<String, RetentionPolicy> {
+    map_registries(
+        registries,
+        |reg| reg.retention.as_ref(),
+        |_reg, r| RetentionPolicy {
+            // `validate()` has already refused 0 and anything under the 30-day
+            // floor, so this multiplication cannot produce a window that strips
+            // detail the moment it is written.
+            tombstone_detail_for: r
+                .tombstone_detail_for_days
+                .map(|d| Duration::from_secs(u64::from(d) * 24 * 60 * 60)),
+            dry_run: r.dry_run,
         },
     )
 }
@@ -327,6 +347,7 @@ pub(super) fn build_hot_bundle(
         feature_flags: build_feature_flags_map(&cfg.registries),
         integrity: build_integrity_map(&cfg.registries),
         beta_channel: build_beta_channel_map(Arc::clone(beta_channel_store), &cfg.registries),
+        retention: build_retention_map(&cfg.registries),
         resolution: reg_resolution,
         signed_downloads: cfg
             .registries

@@ -251,6 +251,7 @@ pub(super) fn action_to_str(action: &AccessAction) -> &'static str {
         AccessAction::ClaimNamespace => "claim_namespace",
         AccessAction::ReleaseNamespace => "release_namespace",
         AccessAction::ResetQuota => "reset_quota",
+        AccessAction::TombstoneCompact => "tombstone_compact",
     }
 }
 
@@ -280,6 +281,7 @@ pub(super) fn str_to_action(s: &str) -> Result<AccessAction, CoreError> {
         "claim_namespace" => Ok(AccessAction::ClaimNamespace),
         "release_namespace" => Ok(AccessAction::ReleaseNamespace),
         "reset_quota" => Ok(AccessAction::ResetQuota),
+        "tombstone_compact" => Ok(AccessAction::TombstoneCompact),
         other => Err(CoreError::Database(format!(
             "invalid access action in db: '{other}'"
         ))),

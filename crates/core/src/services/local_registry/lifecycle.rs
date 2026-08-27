@@ -1,6 +1,7 @@
 use super::{
-    AccessAction, AccessEvent, AccessResult, CoreError, Identity, LocalRegistryService, PackageId,
-    PublishRequest, ReadmeFormat, Role, SbomFormat, SbomPublishOptions,
+    artifact_storage_key, AccessAction, AccessEvent, AccessResult, CoreError, Identity,
+    LocalRegistryService, PackageId, PublishRequest, ReadmeFormat, Role, SbomFormat,
+    SbomPublishOptions,
 };
 
 impl LocalRegistryService {
@@ -139,8 +140,152 @@ impl LocalRegistryService {
         Ok(())
     }
 
+    /// Delete a published version: drop the bytes, keep the coordinate.
+    ///
+    /// This is the whole of RFC 0016 §4.4 in one place. The version row is
+    /// tombstoned rather than removed, so `1.4.0` can never mean two different
+    /// things to two different lockfiles — and the artifact, its README, and the
+    /// explore cache entry all go, because what the caller asked for is that the
+    /// bytes stop being served.
+    ///
+    /// Returns `true` when a published version was tombstoned, `false` when there
+    /// was nothing to delete. `false` is not an error: the coordinate is gone
+    /// either way, which is what the caller asked for, and a bulk delete over a
+    /// list that has already been partly processed should not fail on the
+    /// second pass.
+    ///
+    /// **Order matters.** The row is tombstoned *first*. Between that and the
+    /// storage delete the version is already invisible to every listing and
+    /// already refuses a re-publish, so a crash in the middle leaves an orphaned
+    /// blob — recoverable, and the coherence sweep collects it. The other order
+    /// would leave a *live* version pointing at bytes that are gone, which every
+    /// client resolves and then fails to download.
+    pub async fn delete_version(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        identity: &Identity,
+    ) -> Result<bool, CoreError> {
+        // Same gate as yank/unyank. Authorization proper is RFC 0015's `releases:delete`
+        // and explicitly not this document's (RFC 0016 §3); until it lands, delete is
+        // reachable only through the admin-gated handler, and this is the floor under it.
+        if !identity.has_role_at_least(&Role::User) {
+            return Err(CoreError::AccessDenied(
+                "delete requires at least User role".into(),
+            ));
+        }
+        self.check_namespace_membership(registry, name, identity)
+            .await?;
+        self.check_ownership_lifecycle_access(registry, name, identity)
+            .await?;
+
+        let tombstoned = self
+            .backend
+            .tombstone_version(registry, name, version, identity.user_id.as_deref())
+            .await?;
+        if !tombstoned {
+            return Ok(false);
+        }
+
+        self.drop_version_bytes(registry, name, version).await;
+        self.delete_readme_for_version(registry, name, version)
+            .await;
+        if let Some(ref cache) = self.explore_cache {
+            cache.invalidate(Some(registry)).await;
+        }
+        self.record_lifecycle_action(registry, name, version, AccessAction::Delete, identity)
+            .await;
+        Ok(true)
+    }
+
+    /// Strip aged-out tombstone detail, keeping every coordinate claim
+    /// (RFC 0016 §4.5).
+    ///
+    /// Audited as [`AccessAction::TombstoneCompact`] rather than as a delete: it
+    /// is destructive to *history* and harmless to the invariant, which is a
+    /// different fact about the system and one an operator reading the trail has
+    /// to be able to separate from a version being deleted. Same reasoning
+    /// `AuditPurge` already follows for the audit trail's own purge.
+    ///
+    /// A dry run is not audited. Nothing happened, and an audit trail that
+    /// records reads is a trail nobody finishes reading.
+    pub async fn compact_tombstone_detail(
+        &self,
+        registry: &str,
+        older_than: std::time::Duration,
+        dry_run: bool,
+        identity: &Identity,
+    ) -> Result<crate::entities::CompactionReport, CoreError> {
+        if !identity.has_role_at_least(&Role::Admin) {
+            return Err(CoreError::AccessDenied(
+                "compacting tombstone detail requires the Admin role".into(),
+            ));
+        }
+        let report = self
+            .backend
+            .compact_tombstone_detail(registry, older_than, dry_run)
+            .await?;
+        if !dry_run && report.compacted > 0 {
+            self.record_registry_action(registry, AccessAction::TombstoneCompact, identity)
+                .await;
+        }
+        Ok(report)
+    }
+
+    /// Audit an action that is about a whole registry rather than one version.
+    ///
+    /// The `AccessEvent` shape wants a `PackageId`, so compaction — which
+    /// touches many coordinates at once and is reported by count — records the
+    /// registry with an empty name and version. That is what `AuditPurge`
+    /// already does for an action with no coordinate at all, and it keeps the
+    /// event joinable to a registry without inventing a package that was not
+    /// involved.
+    async fn record_registry_action(
+        &self,
+        registry: &str,
+        action: AccessAction,
+        identity: &Identity,
+    ) {
+        self.record_lifecycle_action(registry, "", "", action, identity)
+            .await;
+    }
+
+    /// Drop every stored byte belonging to one version.
+    ///
+    /// Two calls rather than one because a version owns two shapes of key. The
+    /// single-file ecosystems store the artifact *at* `local:{reg}/{name}/{ver}`;
+    /// Maven and the Terraform providers store a directory of files *under* it
+    /// (`…/{ver}/{filename}`, `…/{ver}/{os}-{arch}`). A prefix delete on the bare
+    /// key would take neither reliably and both too much: `local:r/p/1.0` is a
+    /// prefix of `local:r/p/1.0.1`, so it would delete a sibling version. The
+    /// trailing slash on the prefix is what stops that.
+    ///
+    /// Non-fatal by construction. The tombstone is already written by the time
+    /// this runs, so the version is unreachable regardless; a storage error here
+    /// leaves an orphaned blob for the coherence sweep, and turning that into a
+    /// failed delete would tell the caller the version is still live when it is
+    /// not.
+    async fn drop_version_bytes(&self, registry: &str, name: &str, version: &str) {
+        let key = artifact_storage_key(registry, name, version);
+        if let Err(e) = self.storage.delete(&key).await {
+            tracing::warn!(
+                registry, name, version, error = %e,
+                "delete: dropping the artifact bytes failed; the version is tombstoned \
+                 and unreachable, and the blob is left for the coherence sweep"
+            );
+        }
+        if let Err(e) = self.storage.delete_by_prefix(&format!("{key}/")).await {
+            tracing::warn!(
+                registry, name, version, error = %e,
+                "delete: dropping the multi-file artifacts under the version failed \
+                 (non-fatal, see above)"
+            );
+        }
+    }
+
     /// Record a successful lifecycle admin action (yank/unyank/deprecate/
-    /// undeprecate/unlist/relist) through `package_repo`, when configured. Mirrors
+    /// undeprecate/unlist/relist/delete) through `package_repo`, when configured. Mirrors
     /// `read.rs`'s `record_download` so these mutations aren't a silent audit
     /// gap next to the package-block/visibility/ownership admin actions that
     /// already go through `AdminService::record_admin_action`.

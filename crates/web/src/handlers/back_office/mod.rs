@@ -11,6 +11,7 @@ pub mod packages;
 pub mod sbom;
 pub mod stats;
 pub mod stats_history;
+pub mod tombstones;
 pub mod visibility;
 
 use std::time::{SystemTime, UNIX_EPOCH};

@@ -246,6 +246,185 @@ curl -X POST \
 
 ---
 
+## Deleting a published version {#deleting-versions}
+
+Deleting a version from a `local` or `hybrid` registry does two things, and the
+second one surprises people:
+
+1. The **artifact is dropped**. The bytes are gone; nothing serves them again.
+2. The **version number is spent**. `1.4.0` can never be published again in that
+   registry — not by you, not by anyone, not in a year.
+
+The second is deliberate and there is no setting that turns it off.
+
+::: warning Delete-and-re-upload is not a fix
+If you published broken bytes under `1.4.0`, deleting it does not free `1.4.0`
+for a corrected upload. Publish `1.4.1`. If you need the broken version to stop
+being installed *without* spending its number, [yank it](/use/cli)
+instead — a yanked version stays resolvable by exact pin and can be unyanked.
+:::
+
+### Why a name is never reused
+
+A lockfile pins `1.4.0` and records its checksum. If deleting `1.4.0` freed the
+coordinate, then some later publish — by a different person, months afterwards,
+for perfectly good reasons — could occupy it with entirely different bytes. Every
+consumer that resolves that lockfile then installs something that merely shares a
+name with what they reviewed.
+
+This is npm's model, and npm has been exploited through it. crates.io and PyPI
+take the other one, and so does BatleHub. It matters more here than upstream: a
+private registry is frequently the *only* copy of what it holds, so there is no
+second source to notice the substitution.
+
+The mechanism is a **tombstone**: the version row survives the delete with a
+`deleted_at` timestamp, and the publish path consults it. A publish onto a spent
+coordinate is refused with `409`:
+
+```
+my-pkg@1.4.0 was published and deleted on 2026-08-27 in registry 'acme-npm';
+a published version coordinate is never reused — publish under a new version
+```
+
+| | After deleting `1.4.0` |
+| --- | --- |
+| The artifact | gone from storage |
+| Every registry listing — packument, sparse index, flat index, Simple page, `maven-metadata.xml`, compact index, `@v/list` | `1.4.0` is absent |
+| Downloading `1.4.0` by exact coordinate | `404` |
+| Publishing `1.4.0` again | `409`, permanently |
+| The package **name** | free, if every version is gone — see below |
+| The audit trail | records who deleted it and when |
+
+Deleting every version of `@acme/widgets` releases the *name*: someone the grants
+permit may create `@acme/widgets` again. The version numbers that existed stay
+spent. Re-creating `@acme/widgets` is allowed; re-creating `@acme/widgets@1.4.0`
+is not.
+
+### Deleting
+
+```sh
+batlehub version delete acme-npm my-pkg 1.4.0
+```
+
+It prompts, because of the second effect above. `-y` skips the prompt. The same
+endpoint takes a list:
+
+```sh
+curl -X POST \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"packages": [{"name": "my-pkg", "version": "1.4.0"}]}' \
+  http://localhost:8080/api/v1/admin/registries/acme-npm/bulk-delete
+```
+
+Deleting a coordinate that is already deleted, or never existed, counts as
+success — re-running a bulk delete that half-applied is safe.
+
+### Reading what was deleted
+
+```sh
+curl -H "Authorization: Bearer <admin-token>" \
+  'http://localhost:8080/api/v1/admin/registries/acme-npm/tombstones?name=my-pkg'
+```
+
+```json
+{
+  "registry": "acme-npm",
+  "total": 1,
+  "tombstones": [
+    {
+      "registry": "acme-npm",
+      "name": "my-pkg",
+      "version": "1.4.0",
+      "deleted_at": "2026-08-27T09:14:22+00:00",
+      "deleted_by": "alice",
+      "published_at": "2026-03-02T11:40:05+00:00",
+      "published_by": "ci-runner",
+      "checksum": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+    }
+  ]
+}
+```
+
+The `name` query parameter is optional; without it you get every tombstone in the
+registry, newest deletion first.
+
+You cannot un-delete. Restore the bytes from a backup and publish them under a
+new version number. If the deletion was recent, the tombstone still carries the
+original checksum, so you can verify that what you restored is what was there.
+
+### Tombstone compaction {#tombstone-compaction}
+
+A tombstone row holds two things with two different lifetimes:
+
+| Part | Example | Lifetime |
+| --- | --- | --- |
+| **The claim** | `(acme-npm, my-pkg, 1.4.0)` | permanent — it *is* the invariant |
+| **The detail** | index metadata, checksum, publisher, signature | audit history |
+
+Only the detail grows. A cargo index line carries a version's full dependency
+graph and an npm manifest its scripts and `dist` block — kilobytes each — while
+the coordinate is a hundred bytes. Compaction strips the detail after a window
+and keeps the claim.
+
+```toml
+[registries.retention]
+tombstone_detail_for_days = 730   # strip detail after two years
+dry_run = false                   # defaults to true
+```
+
+**Unset by default**, so nothing is stripped until you ask. An auditor
+investigating a deletion is the reader most likely to be surprised by a default
+here, and the cost of keeping the detail is disk — which is recoverable — where
+the cost of losing it is a question that can no longer be answered. Full field
+reference: [`[registries.retention]`](/guide/configuration).
+
+```sh
+curl -X POST -H "Authorization: Bearer <admin-token>" \
+  'http://localhost:8080/api/v1/admin/registries/acme-npm/tombstones/compact?dry_run=true'
+```
+
+```json
+{ "registry": "acme-npm", "compacted": 412, "skipped": 38, "dry_run": true,
+  "coordinates": ["my-pkg@1.4.0", "..."] }
+```
+
+`409` if the registry has no `tombstone_detail_for_days` — an unconfigured
+registry is not a run that found nothing.
+
+- **`dry_run` defaults to `true`.** A configured window reports and strips
+  nothing until you set `dry_run = false`. Once you do, the server raises
+  `retention.compaction-live` on every config reload; that is intentional,
+  because it is the one setting in this block that destroys something.
+- **`?dry_run=` can only make a run safer.** `?dry_run=true` previews against a
+  registry configured live; `?dry_run=false` does *not* override a configured
+  `dry_run = true`.
+- **Compaction never touches a live version**, and never touches a tombstone twice.
+- **There is no way to delete a tombstone.** Not a setting left off, not an
+  endpoint behind a flag — the schema has no representation for it, because
+  collecting a tombstone reopens exactly the hole tombstones exist to close.
+
+### This is not cache eviction
+
+`[registries.retention]` and `[registries.cache]`'s eviction keys look alike and
+govern opposite things.
+
+| | `[registries.cache]` eviction | `[registries.retention]` |
+| --- | --- | --- |
+| Governs | proxy-cached artifacts | locally published versions and their tombstones |
+| Another copy exists | yes, upstream | frequently not |
+| Cost of a wrong reclaim | a re-fetch | the artifact |
+| Default | configured per registry | keep everything, forever |
+
+A `[registries.retention]` block on a `proxy`-mode registry is a config error,
+not a silent no-op: that registry publishes nothing locally, so the block would
+govern an empty set — [`[registries.cache]`](#cache-policy) is what you meant.
+
+Why it works this way, and what the reclamation half of retention will look
+like: [RFC 0016](/rfc/0016-retention-and-the-permanence-of-a-published-name).
+
+---
+
 ## Rules {#rules}
 
 Rules are optional per-registry policies evaluated after RBAC.

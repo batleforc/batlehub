@@ -21,7 +21,9 @@ pub use explore::{
 };
 pub use identity::{Identity, Role};
 pub use links::{normalize_url, MetadataLinks};
-pub use local_package::{CargoDep, CargoIndexEntry, PublishedPackage, Visibility};
+pub use local_package::{
+    CargoDep, CargoIndexEntry, CompactionReport, PublishedPackage, Tombstone, Visibility,
+};
 pub use notification::{
     InboundWebhookEvent, NotificationEvent, NotificationEventType, NotificationSubscription,
 };

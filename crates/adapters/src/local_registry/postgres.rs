@@ -3,7 +3,48 @@ use std::time::Duration;
 use async_trait::async_trait;
 use sqlx::{PgPool, Row};
 
-use batlehub_core::{entities::PublishedPackage, error::CoreError, ports::LocalRegistryBackend};
+use batlehub_core::{
+    entities::{CompactionReport, PublishedPackage, Tombstone},
+    error::CoreError,
+    ports::LocalRegistryBackend,
+};
+
+/// `SELECT`-and-`FROM` for a [`Tombstone`], with the caller's `WHERE` clause
+/// appended. Shared by the point lookup and the listing so the two column lists
+/// cannot drift out of step with [`tombstone_from_row`].
+///
+/// A macro over `concat!` rather than a `&str` const because sqlx only accepts
+/// SQL that is a literal at compile time — which is the point: the `WHERE`
+/// fragment a caller passes is a literal too, so nothing dynamic can reach the
+/// query text.
+macro_rules! tombstone_query {
+    ($where:literal) => {
+        concat!(
+            "SELECT registry, name, version, deleted_at, deleted_by, \
+             detail_compacted_at, published_at, published_by, checksum \
+             FROM local_packages WHERE ",
+            $where
+        )
+    };
+}
+
+/// Read a tombstone from a row selected with [`TOMBSTONE_COLUMNS`].
+///
+/// `checksum` reads as `Option` because compaction nulls it, and a compacted
+/// tombstone is exactly the row this has to keep returning.
+fn tombstone_from_row(r: &sqlx::postgres::PgRow) -> Tombstone {
+    Tombstone {
+        registry: r.get("registry"),
+        name: r.get("name"),
+        version: r.get("version"),
+        deleted_at: r.get("deleted_at"),
+        deleted_by: r.get("deleted_by"),
+        detail_compacted_at: r.get("detail_compacted_at"),
+        published_at: r.get("published_at"),
+        published_by: r.get("published_by"),
+        checksum: r.get("checksum"),
+    }
+}
 
 pub struct PostgresLocalRegistry {
     pool: PgPool,
@@ -21,8 +62,20 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
     /// invisible to readers until `commit_publish` promotes it.
     ///
     /// Any stale pending row from a previous crashed publish is removed first so
-    /// the caller can retry without hitting the unique constraint.
+    /// the caller can retry without hitting the unique constraint. A *tombstoned*
+    /// row is not stale and is never removed: it refuses the publish outright.
     async fn publish(&self, pkg: PublishedPackage) -> Result<(), CoreError> {
+        // A spent coordinate is refused before anything is written. `uq_local_package`
+        // would refuse it anyway once the tombstone row is in the way — this exists
+        // so the caller is told *why*, rather than being told the version is
+        // published when it is deleted.
+        if let Some(ts) = self
+            .find_tombstone(&pkg.registry, &pkg.name, &pkg.version)
+            .await?
+        {
+            return Err(CoreError::Conflict(ts.burned_coordinate_message()));
+        }
+
         // Remove a stale pending row if one exists (crash recovery for the caller).
         sqlx::query(
             "DELETE FROM local_packages \
@@ -205,6 +258,7 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
                     published_at, published_by, signature_bytes, signature_type, visibility \
              FROM local_packages \
              WHERE registry = $1 AND name = $2 AND status = 'published' \
+               AND deleted_at IS NULL \
              ORDER BY published_at ASC",
         )
         .bind(registry)
@@ -243,6 +297,7 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
         let row = sqlx::query(
             "SELECT 1 FROM local_packages \
              WHERE registry = $1 AND name = $2 AND status = 'published' \
+               AND deleted_at IS NULL \
              LIMIT 1",
         )
         .bind(registry)
@@ -253,6 +308,10 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
         Ok(row.is_some())
     }
 
+    /// `deleted_at IS NULL` is on the rollback primitive too: this is the one
+    /// path in the tree that still issues a `DELETE` against `local_packages`,
+    /// and a coordinate RFC 0016 §4.4 calls permanently spent must not be freed
+    /// by a caller reaching for the wrong cleanup.
     async fn remove_version(
         &self,
         registry: &str,
@@ -261,7 +320,8 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
     ) -> Result<(), CoreError> {
         sqlx::query(
             "DELETE FROM local_packages \
-             WHERE registry = $1 AND name = $2 AND version = $3",
+             WHERE registry = $1 AND name = $2 AND version = $3 \
+               AND deleted_at IS NULL",
         )
         .bind(registry)
         .bind(name)
@@ -270,6 +330,165 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
         .await
         .map_err(|e| CoreError::Database(e.to_string()))?;
         Ok(())
+    }
+
+    /// `status = 'deleted'` is set alongside `deleted_at`, so the six mutators
+    /// and three readers above that already filter `status = 'published'` exclude
+    /// the tombstone whether or not their own `deleted_at IS NULL` predicate is
+    /// there. Two guards for one invariant, because a listing that serves a
+    /// coordinate whose bytes are gone is a build that fails at download.
+    ///
+    /// `WHERE status = 'published'` also makes this idempotent for free: a second
+    /// delete matches nothing and returns `false`, leaving the original
+    /// `deleted_at` — the timestamp compaction ages against — untouched.
+    async fn tombstone_version(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        deleted_by: Option<&str>,
+    ) -> Result<bool, CoreError> {
+        let result = sqlx::query(
+            "UPDATE local_packages \
+             SET status = 'deleted', deleted_at = NOW(), deleted_by = $4 \
+             WHERE registry = $1 AND name = $2 AND version = $3 \
+               AND status = 'published' AND deleted_at IS NULL",
+        )
+        .bind(registry)
+        .bind(name)
+        .bind(version)
+        .bind(deleted_by)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| CoreError::Database(e.to_string()))?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn find_tombstone(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+    ) -> Result<Option<Tombstone>, CoreError> {
+        let row = sqlx::query(tombstone_query!(
+            "registry = $1 AND name = $2 AND version = $3 AND deleted_at IS NOT NULL"
+        ))
+        .bind(registry)
+        .bind(name)
+        .bind(version)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| CoreError::Database(e.to_string()))?;
+        Ok(row.as_ref().map(tombstone_from_row))
+    }
+
+    async fn list_tombstones(
+        &self,
+        registry: &str,
+        name: Option<&str>,
+    ) -> Result<Vec<Tombstone>, CoreError> {
+        // `$2 IS NULL OR name = $2` rather than two query strings: the filter is
+        // optional at the call site and the plan is the same either way.
+        let rows = sqlx::query(tombstone_query!(
+            "registry = $1 AND deleted_at IS NOT NULL \
+             AND ($2::text IS NULL OR name = $2) \
+             ORDER BY deleted_at DESC, name ASC, version ASC"
+        ))
+        .bind(registry)
+        .bind(name)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::Database(e.to_string()))?;
+        Ok(rows.iter().map(tombstone_from_row).collect())
+    }
+
+    /// Strip the detail, keep the claim (RFC 0016 §4.5).
+    ///
+    /// `index_metadata` is set to `'{}'` rather than nulled — it is `NOT NULL`
+    /// and three bytes is not what accumulates. Everything else the RFC calls
+    /// detail is nulled. `deleted_at`, `deleted_by`, `published_at` and the
+    /// coordinate stay: they *are* the claim and its provenance.
+    ///
+    /// `detail_compacted_at IS NULL` in the predicate is what makes a second run
+    /// a no-op instead of a re-stamp, so `skipped` means the same thing on every
+    /// run and a dry run's numbers survive to the live one.
+    async fn compact_tombstone_detail(
+        &self,
+        registry: &str,
+        older_than: Duration,
+        dry_run: bool,
+    ) -> Result<CompactionReport, CoreError> {
+        let secs = older_than.as_secs() as i64;
+        // The `WHERE` clause is repeated verbatim in the two arms rather than
+        // shared: sqlx only takes literal SQL, so factoring it out would mean a
+        // macro, and one predicate does not earn one. The two must agree, and
+        // `pg_tombstones.rs` asserts that a dry run and the live run that follows
+        // it report the same coordinates.
+        //
+        // The live path writes and reports in one statement rather than
+        // select-then-update: `NOW()` moves between two statements, so a
+        // tombstone that ages past the window in that gap would be stripped
+        // without appearing in the report. `RETURNING` cannot disagree with what
+        // it wrote.
+        let rows = if dry_run {
+            sqlx::query(
+                "SELECT name, version FROM local_packages \
+                 WHERE registry = $1 AND deleted_at IS NOT NULL \
+                   AND detail_compacted_at IS NULL \
+                   AND deleted_at < NOW() - ($2 || ' seconds')::INTERVAL \
+                 ORDER BY name ASC, version ASC",
+            )
+        } else {
+            sqlx::query(
+                "UPDATE local_packages \
+                 SET index_metadata = '{}'::jsonb, \
+                     checksum = NULL, \
+                     published_by = NULL, \
+                     signature_bytes = NULL, \
+                     signature_type = NULL, \
+                     deprecation_message = NULL, \
+                     detail_compacted_at = NOW() \
+                 WHERE registry = $1 AND deleted_at IS NOT NULL \
+                   AND detail_compacted_at IS NULL \
+                   AND deleted_at < NOW() - ($2 || ' seconds')::INTERVAL \
+                 RETURNING name, version",
+            )
+        }
+        .bind(registry)
+        .bind(secs)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::Database(e.to_string()))?;
+
+        let total: i64 = sqlx::query(
+            "SELECT COUNT(*) AS n FROM local_packages \
+             WHERE registry = $1 AND deleted_at IS NOT NULL",
+        )
+        .bind(registry)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| CoreError::Database(e.to_string()))?
+        .get("n");
+
+        let mut coordinates: Vec<String> = rows
+            .iter()
+            .map(|r| {
+                format!(
+                    "{}@{}",
+                    r.get::<String, _>("name"),
+                    r.get::<String, _>("version")
+                )
+            })
+            .collect();
+        coordinates.sort();
+        let compacted = coordinates.len() as u64;
+
+        Ok(CompactionReport {
+            compacted,
+            skipped: (total as u64).saturating_sub(compacted),
+            dry_run,
+            coordinates,
+        })
     }
 
     async fn cleanup_pending(&self, older_than: Duration) -> Result<u64, CoreError> {
@@ -290,6 +509,7 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
         let rows = sqlx::query(
             "SELECT DISTINCT name FROM local_packages \
              WHERE registry = $1 AND status = 'published' \
+               AND deleted_at IS NULL \
              ORDER BY name ASC",
         )
         .bind(registry)

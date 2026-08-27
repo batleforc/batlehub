@@ -229,6 +229,65 @@ pub struct RegistryConfig {
     /// module paths upstream.
     #[serde(default)]
     pub sumdb_url: Option<String>,
+    /// Optional retention policy for what this registry holds *locally*
+    /// (RFC 0016). Absent means keep everything, forever, which is what every
+    /// instance does today.
+    ///
+    /// Not to be confused with [`CachePolicy`]'s `idle_days`/`keep_latest_n`,
+    /// which govern the **proxy cache** and are a different problem: an evicted
+    /// cache entry is re-fetchable from upstream, a reclaimed local version is
+    /// frequently the only copy in existence (RFC 0016 §5.1). The two are
+    /// deliberately separate blocks with opposite defaults, and this one must not
+    /// be implemented by widening that one.
+    #[serde(default)]
+    pub retention: Option<RetentionConfig>,
+}
+
+// ── Local retention ────────────────────────────────────────────────────────────
+
+/// Retention policy for locally published versions and for the tombstones they
+/// leave behind (RFC 0016).
+///
+/// Only the tombstone half is implemented: RFC 0016 phases 1–2. The reclamation
+/// half — `keep_versions`, `keep_for`, `keep_if_pulled` — is phase 3 and depends
+/// on RFC 0015's `policy` table for its package and version tiers, so those
+/// fields are deliberately absent rather than present and inert. An operator who
+/// writes one gets an unknown-field error from the loader, which is the right
+/// answer: the setting would not have done anything.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetentionConfig {
+    /// Days after deletion at which a tombstone's *detail* — index metadata,
+    /// checksum, publisher, signature — is stripped, keeping the coordinate
+    /// claim forever (RFC 0016 §4.5).
+    ///
+    /// **Unset by default.** Disk is recoverable; a question an auditor can no
+    /// longer answer is not. Nothing is stripped until an operator asks for it.
+    ///
+    /// There is deliberately no setting that *removes* a tombstone. Not "off by
+    /// default" — absent from the schema, so it cannot be reached by an operator
+    /// in a hurry, because collecting a tombstone reopens the hole tombstones
+    /// exist to close.
+    #[serde(default)]
+    pub tombstone_detail_for_days: Option<u32>,
+    /// Report what compaction would strip and strip nothing. **On by default**,
+    /// so a configured window does nothing until the operator has read a report
+    /// and turned it off.
+    #[serde(default = "default_true")]
+    pub dry_run: bool,
+}
+
+/// Hand-written rather than derived: `#[derive(Default)]` would make `dry_run`
+/// **false**, which is the opposite of what the `serde` default above says and
+/// of what RFC 0016 §4.2 requires. A struct whose two defaults disagree is the
+/// kind of divergence that only shows up when something destructive runs.
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            tombstone_detail_for_days: None,
+            dry_run: true,
+        }
+    }
 }
 
 // ── Artifact integrity ──────────────────────────────────────────────────────────

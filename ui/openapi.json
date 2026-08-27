@@ -1951,6 +1951,7 @@
           "back-office"
         ],
         "summary": "Bulk-delete versions from a local/hybrid registry (admin).",
+        "description": "**The coordinates are spent, not freed** (RFC 0016 §4.4). Each version is\ntombstoned: the bytes, the README and the listing entry go, and the version\nnumber can never be published again. This is the only local-registry delete\npath in the API, so it is also the only place a coordinate is ever burned.\n\nUnlike the sibling bulk handlers this does not reach into `backend` directly.\nA delete is four coordinated effects — tombstone, bytes, README, cache — and\nthey belong together in `LocalRegistryService::delete_version`, next to the\nordering constraint that makes them safe to interrupt.",
         "operationId": "bulk_delete",
         "parameters": [
           {
@@ -1975,7 +1976,7 @@
         },
         "responses": {
           "200": {
-            "description": "Bulk delete result",
+            "description": "Bulk delete result; deleted coordinates are permanently spent and cannot be republished",
             "content": {
               "application/json": {
                 "schema": {
@@ -2737,6 +2738,115 @@
           },
           "403": {
             "description": "Admin role required"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/registries/{registry}/tombstones": {
+      "get": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "List the coordinates deleted from a local/hybrid registry (admin).",
+        "description": "These version numbers are permanently spent: a publish to any of them is\nrefused, whoever makes it and however long ago the deletion was.",
+        "operationId": "list_tombstones",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "description": "Narrow the list to one package name. Absent lists every tombstone in the\nregistry.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted coordinates, newest deletion first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TombstoneListResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin role required"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/registries/{registry}/tombstones/compact": {
+      "post": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "Strip aged-out tombstone detail in a local/hybrid registry (admin).",
+        "description": "Compaction discards the checksum, publisher, signature and index metadata of\nversions deleted longer ago than `[registries.retention]\ntombstone_detail_for_days`. It never discards the coordinate claim, and there\nis no endpoint, setting or query parameter that does: a compacted tombstone\nstill refuses a re-publish forever (RFC 0016 §4.5).\n\n`409` when the registry has no `tombstone_detail_for_days` configured. Not a\nsilent no-op: an operator calling this on an unconfigured registry believes\nthey are reclaiming space, and a `200 { \"compacted\": 0 }` would confirm it.",
+        "operationId": "compact_tombstones",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dry_run",
+            "in": "query",
+            "description": "Report without writing. Absent falls back to the registry's configured\n`dry_run`, which itself defaults to `true`.\n\nA caller may pass `true` to preview against a registry configured live,\nbut passing `false` does **not** override a configured `dry_run = true`:\nan operator who armed the safety catch should not have it taken off by a\nquery string.",
+            "required": false,
+            "schema": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What was stripped, or would be under dry_run",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompactionResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin role required"
+          },
+          "409": {
+            "description": "No tombstone_detail_for_days configured for this registry"
           }
         },
         "security": [
@@ -13570,7 +13680,8 @@
           "removebetamember",
           "claimnamespace",
           "releasenamespace",
-          "resetquota"
+          "resetquota",
+          "tombstonecompact"
         ]
       },
       "AccessCheckRequest": {
@@ -14486,6 +14597,44 @@
           "cleared": {
             "type": "integer",
             "description": "Number of artifacts removed from storage.",
+            "minimum": 0
+          }
+        }
+      },
+      "CompactionResponse": {
+        "type": "object",
+        "required": [
+          "registry",
+          "compacted",
+          "skipped",
+          "dry_run",
+          "coordinates"
+        ],
+        "properties": {
+          "compacted": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Tombstones whose detail was stripped, or would have been under `dry_run`.",
+            "minimum": 0
+          },
+          "coordinates": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The affected coordinates, `\"{name}@{version}\"`."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "True when nothing was written."
+          },
+          "registry": {
+            "type": "string"
+          },
+          "skipped": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Tombstones examined and left alone — inside the window, or already compacted.",
             "minimum": 0
           }
         }
@@ -17431,6 +17580,85 @@
           },
           "role": {
             "type": "string"
+          }
+        }
+      },
+      "TombstoneDto": {
+        "type": "object",
+        "description": "One deleted coordinate.\n\nMirrors [`Tombstone`] rather than re-exporting it, so the API shape is a\ndecision this crate makes: the entity is what the store holds, and the two\nare free to diverge when the store gains a column the API should not carry.",
+        "required": [
+          "registry",
+          "name",
+          "version",
+          "deleted_at",
+          "published_at"
+        ],
+        "properties": {
+          "checksum": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deleted_at": {
+            "type": "string",
+            "description": "RFC 3339 timestamp of the deletion."
+          },
+          "deleted_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The identity that deleted it, when the deletion carried one."
+          },
+          "detail_compacted_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 timestamp of when this tombstone's detail was stripped, or\nabsent when it still has it. The field that tells a reader whether an\nabsent `checksum` means \"never recorded\" or \"aged out\"."
+          },
+          "name": {
+            "type": "string"
+          },
+          "published_at": {
+            "type": "string",
+            "description": "RFC 3339 timestamp of the original publish. Never stripped."
+          },
+          "published_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "registry": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "TombstoneListResponse": {
+        "type": "object",
+        "required": [
+          "registry",
+          "total",
+          "tombstones"
+        ],
+        "properties": {
+          "registry": {
+            "type": "string"
+          },
+          "tombstones": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TombstoneDto"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       },

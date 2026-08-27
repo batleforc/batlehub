@@ -160,6 +160,20 @@ impl LocalRegistryService {
         validate_package_name(req.name)?;
         validate_path_safe("version", req.version)?;
 
+        // A spent coordinate is refused before anything else is decided
+        // (RFC 0016 §4.4). Ahead of the quota reservation on purpose: a publish
+        // that can never succeed should not first charge the publisher for bytes
+        // and then hand them back. The backends refuse it a second time in
+        // `publish()` — that one is the invariant, this one is the clean error and
+        // the one the path-addressed (deb/rpm) publishers also pass through.
+        if let Some(ts) = self
+            .backend
+            .find_tombstone(req.registry, req.name, req.version)
+            .await?
+        {
+            return Err(CoreError::Conflict(ts.burned_coordinate_message()));
+        }
+
         // Snapshot hot-swappable policy (versioning, signing, size limit).
         let (versioning, signing, limit) = {
             let hot = self.hot.read().await;
