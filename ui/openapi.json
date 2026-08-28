@@ -2747,6 +2747,113 @@
         ]
       }
     },
+    "/api/v1/admin/registries/{registry}/retention": {
+      "post": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "Run retention over a local/hybrid registry's published versions (admin).",
+        "description": "**A version survives if *any* configured keep condition matches.** There is\nno expression to write and no ordering to get wrong: the only way to reclaim\na version is for every configured condition to decline to keep it. Wrong\nconfiguration therefore fails toward keeping.\n\nA reclaimed version leaves a tombstone and its number can never be taken\nagain. Freeing disk must not free the *namespace*, or retention becomes a\nsupply-chain mechanism by accident (RFC 0016 §4.2).\n\n`409` when the registry has no `[registries.retention]` block, or one with no\nkeep condition. Not a silent no-op: an operator calling this believes they\nare reclaiming space, and a `200 {\"reclaimed\": 0}` would confirm it.",
+        "operationId": "run_retention",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dry_run",
+            "in": "query",
+            "description": "Report without reclaiming. Absent falls back to the registry's configured\n`dry_run`, which itself defaults to `true`.\n\nA caller may pass `true` to preview against a registry configured live,\nbut passing `false` does **not** override a configured `dry_run = true`:\nan operator who armed the safety catch should not have it taken off by a\nquery string.",
+            "required": false,
+            "schema": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What was reclaimed, or would be under dry_run",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetentionResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin role required"
+          },
+          "409": {
+            "description": "No retention keep condition configured for this registry"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/registries/{registry}/retention-pin": {
+      "post": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "Pin a version against retention, or release the pin (admin).",
+        "description": "A pinned version is never reclaimed by a retention run, whatever the\nregistry's policy says — the escape every automatic policy needs, for the\nrelease an LTS customer runs and the pull statistics will eventually stop\ndefending (RFC 0016 §4.1).\n\nIt is a **keep, never a reclaim**. There is deliberately no spelling of this\nendpoint that makes retention *more* aggressive for one version, because a\npolicy that deletes should not be reachable one version at a time.\n\nPinning changes nothing else: the version resolves, downloads and lists\nexactly as it did. Pinning a coordinate that is already deleted is a no-op —\na spent coordinate cannot be protected from a reclamation that can never\nreach it.",
+        "operationId": "set_retention_pin",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetentionPinRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Pin set or released",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin role required"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
     "/api/v1/admin/registries/{registry}/tombstones": {
       "get": {
         "tags": [
@@ -13681,7 +13788,8 @@
           "claimnamespace",
           "releasenamespace",
           "resetquota",
-          "tombstonecompact"
+          "tombstonecompact",
+          "setretentionpin"
         ]
       },
       "AccessCheckRequest": {
@@ -17244,6 +17352,115 @@
           "file_watcher",
           "admin_request"
         ]
+      },
+      "RetentionDecisionDto": {
+        "type": "object",
+        "required": [
+          "name",
+          "version"
+        ],
+        "properties": {
+          "kept_because": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the version survived, or absent when it is to be reclaimed."
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "RetentionPinRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "version",
+          "keep"
+        ],
+        "properties": {
+          "keep": {
+            "type": "boolean",
+            "description": "`true` pins, `false` unpins."
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "RetentionResponse": {
+        "type": "object",
+        "required": [
+          "registry",
+          "examined",
+          "reclaimed",
+          "kept",
+          "dry_run",
+          "reclaimed_coordinates",
+          "decisions",
+          "decisions_truncated"
+        ],
+        "properties": {
+          "decisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RetentionDecisionDto"
+            },
+            "description": "Per-version decisions, including the kept ones and why."
+          },
+          "decisions_truncated": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many decisions were dropped from `decisions`. Non-zero means the list\nis a sample, not the answer.",
+            "minimum": 0
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "True when nothing was written."
+          },
+          "examined": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Versions examined.",
+            "minimum": 0
+          },
+          "incomplete_because": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set when the run stopped early. `reclaimed_coordinates` is then what was\nactually reclaimed before the fault, and everything after it was not\nattempted — a partial run that says so, rather than an error that throws\naway the record of what already happened."
+          },
+          "kept": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Versions kept.",
+            "minimum": 0
+          },
+          "reclaimed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Versions reclaimed, or that would be under `dry_run`.",
+            "minimum": 0
+          },
+          "reclaimed_coordinates": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The affected coordinates, `\"{name}@{version}\"`. The list an operator\nactually reads before turning `dry_run` off."
+          },
+          "registry": {
+            "type": "string"
+          }
+        }
       },
       "Role": {
         "type": "string",

@@ -300,6 +300,16 @@ permit may create `@acme/widgets` again. The version numbers that existed stay
 spent. Re-creating `@acme/widgets` is allowed; re-creating `@acme/widgets@1.4.0`
 is not.
 
+**Its package owners go with it.** When the last version of a package is
+deleted, every owner entry on that name is dropped, and the next publisher
+becomes the owner of the name they created. The alternative is worse in a way
+that is easy to miss: owner rows keyed by a name, surviving the package, mean the
+previous owner still holds publish and owner-management rights over a package
+they have never seen — and, more immediately, their stale row *refuses* the
+newcomer trying to take the released name. The version tombstones stay, because
+they are the invariant; the owners go, because they are a decision about a thing
+that no longer exists.
+
 ### Deleting
 
 ```sh
@@ -403,6 +413,88 @@ registry is not a run that found nothing.
 - **There is no way to delete a tombstone.** Not a setting left off, not an
   endpoint behind a flag — the schema has no representation for it, because
   collecting a tombstone reopens exactly the hole tombstones exist to close.
+
+### Reclaiming versions nobody is using {#retention}
+
+Everything above is about deleting a version *by hand*. Retention does it on a
+policy — and because a locally published artifact is frequently the only copy in
+existence, every default is set so that getting the policy wrong keeps too much
+rather than too little.
+
+```toml
+[registries.retention]
+keep_versions       = 10
+keep_if_pulled_days = 90
+dry_run             = false
+```
+
+**A version survives if *any* configured condition matches.** There is no
+expression to write and no ordering to get wrong; the only way to reclaim a
+version is for every condition to decline. A block with no keep condition at all
+is refused at startup, because it is the one that would reclaim everything on its
+first run.
+
+`keep_if_pulled_days` is the one that matters. `keep_versions = 10` alone throws
+away the version half your estate is pinned to, because it happens to be eleventh
+by date. With the pull veto, whatever anyone is actually using stays, regardless
+of age or count — and configuring reclamation without it warns on every reload.
+
+Run it:
+
+```sh
+batlehub admin retention acme-npm              # report; changes nothing
+batlehub admin retention acme-npm --show-kept  # …and why each survivor survived
+batlehub admin retention acme-npm --reclaim    # actually reclaim
+```
+
+`--reclaim` is only half the interlock: the registry also needs `dry_run = false`.
+Two decisions in two places, one of them a config file someone reviewed.
+
+```
+Retention on acme-npm: dry run — nothing was changed
+  examined 1284   kept 1201   reclaimed 83
+
+would reclaim:
+  internal-tool@0.1.0
+  …
+```
+
+A reclaimed version is deleted the same way a hand deletion is: the bytes go, a
+tombstone stays, and **the coordinate is spent**. Freeing disk must not free the
+namespace, or retention becomes a supply-chain mechanism by accident.
+
+#### Pinning a version against retention
+
+The escape every automatic policy needs — the release an LTS customer runs, which
+the pull statistics will eventually stop defending:
+
+```sh
+batlehub version pin   acme-npm my-pkg 2.4.0
+batlehub version unpin acme-npm my-pkg 2.4.0
+```
+
+A pinned version is never reclaimed, whatever the policy says. It changes nothing
+else: the version resolves, downloads and lists exactly as it did. There is
+deliberately no opposite — no way to make retention *more* aggressive for one
+version — because a policy that deletes should not be reachable one version at a
+time.
+
+#### Reading the download signal, and its gaps
+
+`keep_if_pulled_days` counts **downloads**, not index reads. One `mvn` resolution
+touches a `.jar`, a `.pom` and a checksum beside each: the checksum records as a
+metadata view, the `.pom` as a download, because a `.pom` is a file a build
+actually consumes. So a version kept alive only by checksum fetches is *not*
+kept, and one whose `.pom` is still being resolved is.
+
+The Maven and NuGet local artifact paths recorded no download event at all before
+2026-08-26. Retention will not read that silence as disuse: a version with no
+download record that was published before the floor is kept.
+`download_signal_floor_days` moves the floor if this instance's audit history
+begins later — after a restore, or an `audit_purge`.
+
+A `keep_if_pulled_days` policy on a deployment with no package repository refuses
+to run rather than reclaiming what it cannot prove is idle.
 
 ### This is not cache eviction
 

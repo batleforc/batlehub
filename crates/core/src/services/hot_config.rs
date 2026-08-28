@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use regex::Regex;
 use tokio::sync::RwLock;
 
@@ -91,27 +92,96 @@ pub struct SigningConfig {
 /// Local retention policy stored in the service (mirrors config-layer
 /// `RetentionConfig`) — RFC 0016.
 ///
-/// Only the tombstone-compaction half exists; the reclamation half is phase 3
-/// and needs RFC 0015's `policy` table for its package and version tiers.
+/// Registry tier. The namespace and package tiers RFC 0016 §4.1 describes need
+/// RFC 0015's namespace blocks and its `policy` table; the version-tier `keep`
+/// pin does not, and lives on the version row as `retention_keep`.
 #[derive(Debug, Clone)]
 pub struct RetentionPolicy {
+    /// Keep the newest N versions of each package.
+    pub keep_versions: Option<u32>,
+    /// Keep anything published within this window.
+    pub keep_for: Option<Duration>,
+    /// Keep anything downloaded within this window — the veto that makes
+    /// retention safe to switch on (RFC 0016 §4.3).
+    pub keep_if_pulled: Option<Duration>,
+    /// Keep yanked versions. Defaults to `true`.
+    pub keep_yanked: bool,
+    /// Before this instant, an absent download record proves nothing.
+    pub download_signal_floor: DateTime<Utc>,
+    /// Pause between reclamations, bounding the blast radius of a first live run
+    /// without leaving the estate in a state nothing else models.
+    pub reclaim_delay: Duration,
     /// How long a tombstone keeps its detail before compaction strips it to the
     /// coordinate. `None` — the default — keeps it forever.
     pub tombstone_detail_for: Option<Duration>,
-    /// Report and write nothing. Defaults to `true`, so a configured window does
+    /// Report and write nothing. Defaults to `true`, so a configured policy does
     /// nothing until an operator has read a report and turned it off.
     pub dry_run: bool,
 }
 
-/// `dry_run: true`, matching the config layer. A derived `Default` would say
-/// `false` — the destructive direction — and the two definitions of "default"
-/// must not disagree about a policy that discards history.
+impl RetentionPolicy {
+    /// The plain-data policy the retention run takes. The two are separate types
+    /// on purpose: this one mirrors a config block and lives behind a lock, that
+    /// one is a snapshot a run is judged against for its whole duration.
+    pub fn for_run(&self) -> crate::services::retention::RetentionPolicy {
+        crate::services::retention::RetentionPolicy {
+            keep_versions: self.keep_versions,
+            keep_for: self.keep_for,
+            keep_if_pulled: self.keep_if_pulled,
+            keep_yanked: self.keep_yanked,
+            download_signal_floor: self.download_signal_floor,
+            reclaim_delay: self.reclaim_delay,
+            dry_run: self.dry_run,
+        }
+    }
+}
+
+/// `dry_run: true` and `keep_yanked: true`, matching the config layer. A derived
+/// `Default` would say `false` for both — the destructive direction — and the
+/// two definitions of "default" must not disagree about a policy that destroys
+/// the only copy of something.
 impl Default for RetentionPolicy {
     fn default() -> Self {
         Self {
+            keep_versions: None,
+            keep_for: None,
+            keep_if_pulled: None,
+            keep_yanked: true,
+            download_signal_floor: default_download_signal_floor(),
+            reclaim_delay: Duration::ZERO,
             tombstone_detail_for: None,
             dry_run: true,
         }
+    }
+}
+
+/// [`crate::services::retention::DEFAULT_DOWNLOAD_SIGNAL_FLOOR`], parsed.
+///
+/// Infallible in practice — the constant is a literal this crate owns — and a
+/// parse failure falls back to [`DateTime::UNIX_EPOCH`], which disables the
+/// floor rather than enabling it for everything. Failing open here would keep
+/// every version forever; failing closed would reclaim on evidence the RFC says
+/// is not evidence.
+pub fn default_download_signal_floor() -> DateTime<Utc> {
+    crate::services::retention::DEFAULT_DOWNLOAD_SIGNAL_FLOOR
+        .parse()
+        .unwrap_or(DateTime::UNIX_EPOCH)
+}
+
+/// Resolve `download_signal_floor_days` — days before *now* — into the instant a
+/// run compares against, or [`default_download_signal_floor`] when unset.
+///
+/// Resolved once, at config load, and not per run: a floor recomputed from the
+/// clock would creep forward, so a version protected by it today would be
+/// reclaimable tomorrow. That is the opposite of a floor.
+///
+/// Here rather than in the server crate because it is chrono arithmetic and the
+/// server does not depend on chrono — and because a second implementation of
+/// "what does this number mean" is how the two would come to disagree.
+pub fn resolve_download_signal_floor(days_before_now: Option<u32>) -> DateTime<Utc> {
+    match days_before_now {
+        Some(d) => Utc::now() - chrono::Duration::days(i64::from(d)),
+        None => default_download_signal_floor(),
     }
 }
 

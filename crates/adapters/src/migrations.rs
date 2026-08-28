@@ -161,6 +161,11 @@ pub fn embedded_migrator() -> Migrator {
             "local package tombstones",
             "../migrations/039_local_package_tombstones.sql"
         ),
+        mig!(
+            40,
+            "retention keep pin",
+            "../migrations/040_retention_keep.sql"
+        ),
     ])
 }
 

@@ -770,6 +770,57 @@ anonymous = ["releases:read"]
 # [registries.beta_channel]
 # enabled = true
 
+# ── Local retention (RFC 0016) ────────────────────────────────────────────────
+#
+# Reclaims locally published versions nobody is using, and ages out the detail of
+# the tombstones deletions leave. Absent — the default — keeps everything forever.
+#
+# NOT the same as the eviction keys on [registries.cache], which govern the proxy
+# cache. An evicted cache entry is re-fetchable from upstream; a locally published
+# artifact is frequently the only copy in existence. A [registries.retention]
+# block on a `proxy` mode registry is a startup error, because it would govern an
+# empty set.
+#
+# KEEP CONDITIONS ARE A UNION OF VETOES: a version survives if ANY configured
+# condition matches. There is no expression to write and no ordering to get
+# wrong, and wrong configuration therefore fails toward keeping. A block with no
+# keep condition at all is rejected — that is the one that reclaims everything on
+# its first live run.
+#
+# keep_if_pulled_days is the setting that makes this safe to switch on.
+# keep_versions = 10 alone throws away the version half the estate is pinned to,
+# because it happens to be eleventh by date. Configuring reclamation without the
+# pull veto raises `retention.no-pull-veto` on every reload.
+#
+# Deleting a version ALWAYS spends its number permanently, with or without this
+# block, and a reclamation is a deletion — freeing disk must not free the
+# namespace. There is no setting that lets a coordinate be reused.
+#
+#   POST /api/v1/admin/registries/{registry}/retention?dry_run=true
+#   POST /api/v1/admin/registries/{registry}/retention-pin   body: {name, version, keep}
+#   GET  /api/v1/admin/registries/{registry}/tombstones
+#   POST /api/v1/admin/registries/{registry}/tombstones/compact
+#
+# [[registries]]
+# type = "npm"
+# name = "my-npm"
+# mode = "local"
+#
+# [registries.retention]
+# keep_versions              = 10    # newest N per package, by publish date
+# keep_for_days              = 365   # anything published within this window
+# keep_if_pulled_days        = 90    # anything DOWNLOADED within this window
+# keep_yanked                = true  # default: a yank is not a reason to destroy
+# download_signal_floor_days = 400   # before this, "no download record" proves
+#                                    # nothing (default: 2026-08-27, when the
+#                                    # Maven/NuGet local paths began recording)
+# reclaim_delay_ms           = 250   # pace a first live run; 0 paces nothing
+# tombstone_detail_for_days  = 730   # strip a deleted version's checksum,
+#                                    # publisher and metadata after two years.
+#                                    # The coordinate claim is kept forever and
+#                                    # there is no setting that removes it.
+# dry_run                    = true  # DEFAULT. Report and change nothing.
+
 # ── IP-Based Blocking (fail2ban) ──────────────────────────────────────────────
 #
 # Automatically blocks IPs that trigger too many violation events (rate limit hits,

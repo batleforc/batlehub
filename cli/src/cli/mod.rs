@@ -55,7 +55,7 @@ pub enum Command {
         #[command(subcommand)]
         cmd: package::PackageCommand,
     },
-    /// Yank, unyank, or delete specific versions
+    /// Yank, delete, or pin specific versions against retention
     Version {
         #[command(subcommand)]
         cmd: version::VersionCommand,

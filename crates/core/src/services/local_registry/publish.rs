@@ -284,6 +284,10 @@ impl LocalRegistryService {
             signature_bytes: req.signature_bytes.clone().filter(|b| !b.is_empty()),
             signature_type: req.signature_type.clone().filter(|t| !t.trim().is_empty()),
             visibility,
+            // Never pinned on publish. A retention pin is an operator's later
+            // decision about a specific release; a publisher who could set it
+            // would make every version exempt from the policy above them.
+            retention_keep: false,
         };
 
         let storage_key = artifact_storage_key(&req.registry, &req.name, &req.version);

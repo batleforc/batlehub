@@ -561,6 +561,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                 delete_package, invalidate_package, list_packages as admin_list_packages,
                 package_detail, unblock_package,
             },
+            retention::{run_retention, set_retention_pin},
             sbom::{export_org_sbom, get_artifact_sbom},
             stats::admin_stats,
             stats_history::admin_stats_history,
@@ -1010,6 +1011,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(bulk_unyank);
     cfg.service(bulk_delete);
     // Tombstones: what bulk_delete left behind, and the compaction of its detail
+    cfg.service(run_retention);
+    cfg.service(set_retention_pin);
     cfg.service(list_tombstones);
     cfg.service(compact_tombstones);
     // Deprecation & unlisting admin (single version)

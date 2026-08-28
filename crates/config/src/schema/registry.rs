@@ -248,15 +248,72 @@ pub struct RegistryConfig {
 /// Retention policy for locally published versions and for the tombstones they
 /// leave behind (RFC 0016).
 ///
-/// Only the tombstone half is implemented: RFC 0016 phases 1–2. The reclamation
-/// half — `keep_versions`, `keep_for`, `keep_if_pulled` — is phase 3 and depends
-/// on RFC 0015's `policy` table for its package and version tiers, so those
-/// fields are deliberately absent rather than present and inert. An operator who
-/// writes one gets an unknown-field error from the loader, which is the right
-/// answer: the setting would not have done anything.
+/// Valid at **registry tier**. The namespace and package tiers RFC 0016 §4.1
+/// describes need RFC 0015's namespace config blocks and its `policy` table,
+/// neither of which exists; the version-tier `keep` pin does *not* need them and
+/// is a column on the version row, set through the admin API beside
+/// `yanked`/`unlisted`.
+///
+/// # Keep conditions are a union of vetoes
+///
+/// **A version survives if *any* configured condition matches.** There is no
+/// expression to write and no ordering to get wrong: the only way to reclaim a
+/// version is for every configured condition to decline to keep it. Wrong
+/// configuration therefore fails toward keeping, which is the direction that is
+/// recoverable (RFC 0016 §4.2).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RetentionConfig {
+    /// Keep the newest N versions of every package, by publish date.
+    ///
+    /// Alone, this throws away the version half the estate is pinned to because
+    /// it happens to be N+1th by date. Pair it with `keep_if_pulled_days`.
+    #[serde(default)]
+    pub keep_versions: Option<u32>,
+    /// Keep anything **published** within this many days.
+    #[serde(default)]
+    pub keep_for_days: Option<u32>,
+    /// Keep anything **downloaded** within this many days.
+    ///
+    /// The rule that makes retention safe to switch on: whatever anyone is
+    /// actually using stays, regardless of age or count (RFC 0016 §4.3).
+    ///
+    /// Reads the download signal, so it also reads
+    /// [`Self::download_signal_floor_days`] — absence of a pull record from
+    /// before the floor is not evidence of disuse.
+    #[serde(default)]
+    pub keep_if_pulled_days: Option<u32>,
+    /// Keep yanked versions. **On by default**: a yank says "do not install
+    /// this", which is a reason to stop resolving it and not a reason to destroy
+    /// the only copy — a yanked version is frequently the one an incident is
+    /// still being investigated against.
+    #[serde(default = "default_true")]
+    pub keep_yanked: bool,
+    /// The date before which "no recorded download" proves nothing (RFC 0016 §4.3).
+    ///
+    /// Expressed as days before now. The Maven and NuGet local artifact paths
+    /// recorded no download event at all until the 2026-08-26 survey
+    /// remediation, so for those ecosystems the audit trail is silent for that
+    /// period, and a retention run that read the silence as disuse would reclaim
+    /// versions the estate was using every day.
+    ///
+    /// A version whose only evidence is older than the floor is **kept**. Unset
+    /// uses the built-in floor, which is the remediation date itself; set it
+    /// explicitly if this instance's audit history begins later — after a
+    /// restore from backup, say, or an `audit_purge`.
+    #[serde(default)]
+    pub download_signal_floor_days: Option<u32>,
+    /// Milliseconds to wait between reclamations in one run.
+    ///
+    /// A first live run on an estate that has never reclaimed anything may drop
+    /// a large fraction of its storage in one pass. A rate limit rather than a
+    /// per-run cap, per RFC 0016 §11: a cap leaves the estate mid-reclamation in
+    /// a state nothing else models, where every intermediate state of a paced
+    /// run is a valid one.
+    ///
+    /// `0` — the default — paces nothing.
+    #[serde(default)]
+    pub reclaim_delay_ms: u64,
     /// Days after deletion at which a tombstone's *detail* — index metadata,
     /// checksum, publisher, signature — is stripped, keeping the coordinate
     /// claim forever (RFC 0016 §4.5).
@@ -270,20 +327,46 @@ pub struct RetentionConfig {
     /// exist to close.
     #[serde(default)]
     pub tombstone_detail_for_days: Option<u32>,
-    /// Report what compaction would strip and strip nothing. **On by default**,
-    /// so a configured window does nothing until the operator has read a report
-    /// and turned it off.
+    /// Report what a run would reclaim or strip, and change nothing. **On by
+    /// default**, so a configured policy does nothing until the operator has
+    /// read a report and turned it off.
+    ///
+    /// Retention is the one policy whose dry-run direction is unambiguously safe
+    /// — the system does less — which is why it is the only one that defaults to
+    /// on (RFC 0016 §4.2).
     #[serde(default = "default_true")]
     pub dry_run: bool,
 }
 
+impl RetentionConfig {
+    /// Whether any *reclamation* keep condition is configured — i.e. whether a
+    /// retention run would do anything at all.
+    ///
+    /// `keep_yanked` is excluded on purpose: it defaults to `true` and only ever
+    /// vetoes, so a block containing nothing else describes a policy that
+    /// reclaims every unyanked version. That is the configuration validation
+    /// refuses, and it must not look configured here.
+    pub fn reclaims_anything(&self) -> bool {
+        self.keep_versions.is_some()
+            || self.keep_for_days.is_some()
+            || self.keep_if_pulled_days.is_some()
+    }
+}
+
 /// Hand-written rather than derived: `#[derive(Default)]` would make `dry_run`
-/// **false**, which is the opposite of what the `serde` default above says and
-/// of what RFC 0016 §4.2 requires. A struct whose two defaults disagree is the
-/// kind of divergence that only shows up when something destructive runs.
+/// and `keep_yanked` **false**, which is the opposite of what the `serde`
+/// defaults above say and of what RFC 0016 §4.2 requires. A struct whose two
+/// defaults disagree is the kind of divergence that only shows up when something
+/// destructive runs.
 impl Default for RetentionConfig {
     fn default() -> Self {
         Self {
+            keep_versions: None,
+            keep_for_days: None,
+            keep_if_pulled_days: None,
+            keep_yanked: true,
+            download_signal_floor_days: None,
+            reclaim_delay_ms: 0,
             tombstone_detail_for_days: None,
             dry_run: true,
         }

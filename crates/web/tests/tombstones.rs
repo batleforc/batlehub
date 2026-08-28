@@ -24,6 +24,7 @@ use serde_json::{json, Value};
 
 use batlehub_config::schema::RegistryMode;
 use batlehub_core::entities::{Identity, Role};
+use batlehub_core::ports::OwnershipPort as _;
 use batlehub_core::services::{artifact_storage_key, PublishRequest, RetentionPolicy};
 
 fn publisher() -> Identity {
@@ -62,6 +63,44 @@ async fn publish(
         .await
         .expect("publish");
     artifact_storage_key(registry, name, version)
+}
+
+/// A local-npm app with an ownership store wired in, handed back so a test can
+/// inspect it.
+///
+/// A separate builder because the shared factory leaves `ownership: None`, and
+/// that is not a neutral default for these two tests: with the port absent there
+/// are no grants to outlive anything, and both would pass without exercising a
+/// single check.
+async fn ownership_app() -> (
+    std::sync::Arc<batlehub_core::services::LocalRegistryService>,
+    std::sync::Arc<batlehub_adapters::in_memory::InMemoryOwnershipStore>,
+    impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+) {
+    let mut parts = local_registry_app_parts("local-npm", "npm", RegistryMode::Local, None);
+    let ownership = batlehub_adapters::in_memory::InMemoryOwnershipStore::new();
+    let cur = parts.local_svc.clone();
+    parts.local_svc = std::sync::Arc::new(batlehub_core::services::LocalRegistryService {
+        backend: cur.backend.clone(),
+        storage: cur.storage.clone(),
+        hot: cur.hot.clone(),
+        quota: cur.quota.clone(),
+        ownership: Some(
+            ownership.clone() as std::sync::Arc<dyn batlehub_core::ports::OwnershipPort>
+        ),
+        team_namespace: cur.team_namespace.clone(),
+        sbom: cur.sbom.clone(),
+        explore_cache: cur.explore_cache.clone(),
+        package_repo: cur.package_repo.clone(),
+        readme: cur.readme.clone(),
+    });
+    let local_svc = parts.local_svc.clone();
+    let app = build_local_registry_app(parts, Default::default(), None).await;
+    (local_svc, ownership, app)
 }
 
 fn bulk_delete_request(registry: &str, name: &str, version: &str) -> actix_http::Request {
@@ -251,6 +290,119 @@ async fn a_fully_deleted_name_may_be_republished_but_not_its_old_numbers() {
         .await
         .expect_err("the old version number stays spent");
     assert!(err.to_string().contains("never reused"), "{err}");
+}
+
+/// **Package-tier grants do not outlive their package** (RFC 0016 §4.4, §7).
+///
+/// The name is released when its last version goes, so someone else may take it.
+/// If the owner rows survived that, the previous owner would still hold publish
+/// and owner-management authority over a package they have never seen — a claim
+/// on a name nobody currently owns, arriving through the back door. The version
+/// tombstones stay, because they are the invariant; the grants go, because they
+/// are a decision about a thing that no longer exists.
+#[actix_web::test]
+async fn deleting_the_last_version_takes_the_package_grants_with_it() {
+    let (local_svc, ownership, app) = ownership_app().await;
+
+    publish(&local_svc, "local-npm", "handover", "1.0.0", json!({})).await;
+    publish(&local_svc, "local-npm", "handover", "2.0.0", json!({})).await;
+    assert!(
+        !ownership
+            .list_owners("local-npm", "handover")
+            .await
+            .unwrap()
+            .is_empty(),
+        "the first publish registers its publisher as owner"
+    );
+
+    // One of two versions: the package still exists, so its grants stand.
+    assert_eq!(
+        call_service(&app, bulk_delete_request("local-npm", "handover", "1.0.0"))
+            .await
+            .status(),
+        200
+    );
+    assert!(
+        !ownership
+            .list_owners("local-npm", "handover")
+            .await
+            .unwrap()
+            .is_empty(),
+        "a package with a surviving version keeps its owners"
+    );
+
+    // The last one: the name is released, and the grants go with it.
+    assert_eq!(
+        call_service(&app, bulk_delete_request("local-npm", "handover", "2.0.0"))
+            .await
+            .status(),
+        200
+    );
+    assert!(
+        ownership
+            .list_owners("local-npm", "handover")
+            .await
+            .unwrap()
+            .is_empty(),
+        "the last version's deletion releases the name, so nothing may still claim it"
+    );
+}
+
+/// The consequence of the above, from the side that matters: a *different*
+/// principal takes the released name and the previous owner has no say in it.
+#[actix_web::test]
+async fn a_previous_owner_holds_nothing_over_a_released_name() {
+    let (local_svc, ownership, app) = ownership_app().await;
+
+    publish(&local_svc, "local-npm", "released", "1.0.0", json!({})).await;
+    assert_eq!(
+        call_service(&app, bulk_delete_request("local-npm", "released", "1.0.0"))
+            .await
+            .status(),
+        200
+    );
+
+    // Someone else creates the name.
+    let newcomer = Identity {
+        user_id: Some("user-2".to_owned()),
+        role: Role::User,
+        auth_provider: None,
+        groups: vec![],
+    };
+    local_svc
+        .publish(PublishRequest {
+            registry: "local-npm".to_owned(),
+            name: "released".to_owned(),
+            version: "9.0.0".to_owned(),
+            artifact: bytes::Bytes::from_static(b"new-owner-bytes"),
+            checksum: "c".to_owned(),
+            index_metadata: json!({}),
+            unlisted: false,
+            publisher: newcomer.clone(),
+            signature_bytes: None,
+            signature_type: None,
+        })
+        .await
+        .expect("the released name may be taken");
+
+    let owners = ownership
+        .list_owners("local-npm", "released")
+        .await
+        .unwrap();
+    assert_eq!(
+        owners.len(),
+        1,
+        "exactly one owner — the newcomer. A surviving row for user-1 is authority \
+         over a package they have never seen: {owners:?}"
+    );
+    assert_eq!(owners[0].principal_id, "user-2");
+    assert!(
+        !ownership
+            .can_publish("local-npm", "released", &publisher())
+            .await
+            .unwrap(),
+        "the previous owner must not be able to publish to the new owner's package"
+    );
 }
 
 /// The rollback primitive must not be able to erase a tombstone. It is the only
@@ -460,6 +612,26 @@ async fn a_tombstoned_version_is_absent_from_every_ecosystem_listing() {
             listing: "/proxy/local-composer/p2/acme/listpkg.json",
             metadata: bare,
         },
+        // The package name is the storage-side coordinate the handler builds
+        // (`modules/{namespace}/{name}/{provider}`), not the request path.
+        EcoCase {
+            registry: "local-tf",
+            kind: "terraform",
+            package: "modules/hashicorp/listmod/aws",
+            deleted: "0.1.0",
+            kept: "0.2.0",
+            listing: "/proxy/local-tf/v1/modules/hashicorp/listmod/aws/versions",
+            metadata: bare,
+        },
+        EcoCase {
+            registry: "local-tf-prov",
+            kind: "terraform",
+            package: "providers/hashicorp/listprov",
+            deleted: "1.0.0",
+            kept: "2.0.0",
+            listing: "/proxy/local-tf-prov/v1/providers/hashicorp/listprov/versions",
+            metadata: bare,
+        },
     ];
 
     for case in cases {
@@ -597,6 +769,7 @@ async fn compaction_app(
             RetentionPolicy {
                 tombstone_detail_for: Some(window),
                 dry_run,
+                ..Default::default()
             },
         );
     }
@@ -803,4 +976,216 @@ async fn compaction_requires_admin() {
         .insert_header(("Authorization", bearer(USER_TOKEN)))
         .to_request();
     assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+// ── Retention (RFC 0016 §4.1–4.3) ─────────────────────────────────────────────
+
+/// A registry with a retention policy, plus the store the download signal is
+/// recorded into so a test can make a version look used.
+async fn retention_app(
+    policy: RetentionPolicy,
+) -> (
+    std::sync::Arc<batlehub_core::services::LocalRegistryService>,
+    impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+) {
+    let parts = local_registry_app_parts("local-npm", "npm", RegistryMode::Local, None);
+    let local_svc = parts.local_svc.clone();
+    local_svc
+        .hot
+        .write()
+        .await
+        .retention
+        .insert("local-npm".to_owned(), policy);
+    let app = build_local_registry_app(parts, Default::default(), None).await;
+    (local_svc, app)
+}
+
+fn retention_request(dry_run: Option<bool>) -> actix_http::Request {
+    let uri = match dry_run {
+        Some(v) => format!("/api/v1/admin/registries/local-npm/retention?dry_run={v}"),
+        None => "/api/v1/admin/registries/local-npm/retention".to_owned(),
+    };
+    TestRequest::post()
+        .uri(&uri)
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request()
+}
+
+/// A live run reclaims through the same path a hand deletion takes: the bytes
+/// go, the listing loses the version, and the coordinate is spent.
+#[actix_web::test]
+async fn a_reclaimed_version_is_deleted_the_same_way_a_hand_deletion_is() {
+    let (local_svc, app) = retention_app(RetentionPolicy {
+        keep_versions: Some(1),
+        dry_run: false,
+        ..Default::default()
+    })
+    .await;
+    let storage = local_svc.storage.clone();
+
+    let old = publish(&local_svc, "local-npm", "p", "1.0.0", json!({})).await;
+    let new = publish(&local_svc, "local-npm", "p", "2.0.0", json!({})).await;
+
+    let resp = call_service(&app, retention_request(None)).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["reclaimed"], 1, "{body}");
+    assert_eq!(body["dry_run"], false, "{body}");
+    assert_eq!(body["reclaimed_coordinates"][0], "p@1.0.0", "{body}");
+
+    assert!(!storage.exists(&old).await.unwrap(), "the bytes are gone");
+    assert!(
+        storage.exists(&new).await.unwrap(),
+        "the kept one is intact"
+    );
+    assert!(
+        local_svc
+            .backend
+            .find_tombstone("local-npm", "p", "1.0.0")
+            .await
+            .unwrap()
+            .is_some(),
+        "a reclamation spends the coordinate, exactly as a deletion does"
+    );
+}
+
+/// A configured `dry_run = true` is an operator's safety catch, and a query
+/// string must not take it off — the same interlock compaction has.
+#[actix_web::test]
+async fn a_configured_retention_dry_run_cannot_be_overridden_by_the_request() {
+    let (local_svc, app) = retention_app(RetentionPolicy {
+        keep_versions: Some(1),
+        dry_run: true,
+        ..Default::default()
+    })
+    .await;
+    publish(&local_svc, "local-npm", "p", "1.0.0", json!({})).await;
+    publish(&local_svc, "local-npm", "p", "2.0.0", json!({})).await;
+
+    let body: Value =
+        read_body_json(call_service(&app, retention_request(Some(false))).await).await;
+    assert_eq!(
+        body["dry_run"], true,
+        "dry_run=false must not disarm a configured dry run: {body}"
+    );
+    assert_eq!(body["reclaimed"], 1, "it still reports what it would do");
+    assert_eq!(
+        local_svc
+            .backend
+            .get_versions("local-npm", "p")
+            .await
+            .unwrap()
+            .len(),
+        2,
+        "nothing may have been reclaimed"
+    );
+}
+
+/// The version-tier pin, end to end through its own endpoint.
+#[actix_web::test]
+async fn a_pinned_version_survives_a_live_run() {
+    let (local_svc, app) = retention_app(RetentionPolicy {
+        keep_versions: Some(1),
+        dry_run: false,
+        ..Default::default()
+    })
+    .await;
+    publish(&local_svc, "local-npm", "p", "1.0.0", json!({})).await;
+    publish(&local_svc, "local-npm", "p", "2.0.0", json!({})).await;
+
+    let pin = TestRequest::post()
+        .uri("/api/v1/admin/registries/local-npm/retention-pin")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(json!({ "name": "p", "version": "1.0.0", "keep": true }))
+        .to_request();
+    assert_eq!(call_service(&app, pin).await.status(), 200);
+
+    let body: Value = read_body_json(call_service(&app, retention_request(None)).await).await;
+    assert_eq!(
+        body["reclaimed"], 0,
+        "the pin outranks the policy above it: {body}"
+    );
+    let pinned = body["decisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["version"] == "1.0.0")
+        .unwrap();
+    assert_eq!(pinned["kept_because"], "pinned", "{body}");
+}
+
+/// Unpinning gives the policy back its say.
+#[actix_web::test]
+async fn unpinning_lets_the_policy_reclaim_again() {
+    let (local_svc, app) = retention_app(RetentionPolicy {
+        keep_versions: Some(1),
+        dry_run: false,
+        ..Default::default()
+    })
+    .await;
+    publish(&local_svc, "local-npm", "p", "1.0.0", json!({})).await;
+    publish(&local_svc, "local-npm", "p", "2.0.0", json!({})).await;
+
+    for keep in [true, false] {
+        let req = TestRequest::post()
+            .uri("/api/v1/admin/registries/local-npm/retention-pin")
+            .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+            .set_json(json!({ "name": "p", "version": "1.0.0", "keep": keep }))
+            .to_request();
+        assert_eq!(call_service(&app, req).await.status(), 200);
+    }
+
+    let body: Value = read_body_json(call_service(&app, retention_request(None)).await).await;
+    assert_eq!(body["reclaimed_coordinates"][0], "p@1.0.0", "{body}");
+}
+
+/// An unconfigured registry gets a `409`, not a run that found nothing: an
+/// operator calling this believes they are reclaiming space.
+#[actix_web::test]
+async fn retention_is_a_conflict_when_no_keep_condition_is_configured() {
+    let app = build_local_registry_app(
+        local_registry_app_parts("local-npm", "npm", RegistryMode::Local, None),
+        Default::default(),
+        None,
+    )
+    .await;
+    assert_eq!(
+        call_service(&app, retention_request(None)).await.status(),
+        409
+    );
+
+    // …and the same for a block that only configures compaction.
+    let (_svc, app) = retention_app(RetentionPolicy {
+        tombstone_detail_for: Some(Duration::from_secs(0)),
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(
+        call_service(&app, retention_request(None)).await.status(),
+        409
+    );
+}
+
+#[actix_web::test]
+async fn retention_requires_admin() {
+    let (_svc, app) = retention_app(RetentionPolicy {
+        keep_versions: Some(1),
+        ..Default::default()
+    })
+    .await;
+    for uri in [
+        "/api/v1/admin/registries/local-npm/retention",
+        "/api/v1/admin/registries/local-npm/retention-pin",
+    ] {
+        let req = TestRequest::post()
+            .uri(uri)
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .set_json(json!({ "name": "p", "version": "1.0.0", "keep": true }))
+            .to_request();
+        assert_eq!(call_service(&app, req).await.status(), 403, "{uri}");
+    }
 }

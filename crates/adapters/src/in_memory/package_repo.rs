@@ -363,6 +363,47 @@ impl PackageRepository for InMemoryPackageRepository {
         Ok(result)
     }
 
+    /// The same three constraints the port states — `Download`, allowed, newest
+    /// per version — applied to the event vector.
+    ///
+    /// The sidecar split does not appear here, and must not: it is drawn at
+    /// record time, so a `.sha1` fetch arrives as `ViewMetadata` and is excluded
+    /// by the action filter alone. Re-deriving it from `package_id` would make
+    /// this double the rule and disagree with Postgres the day the suffix list
+    /// changes.
+    async fn last_downloads(
+        &self,
+        registry: &str,
+        package: &str,
+    ) -> Result<Vec<(String, DateTime<Utc>)>, CoreError> {
+        let events = self.events.read().await;
+        let mut newest: HashMap<String, DateTime<Utc>> = HashMap::new();
+        for event in events.iter() {
+            if !matches!(event.action, AccessAction::Download)
+                || !matches!(event.result, AccessResult::Allowed)
+            {
+                continue;
+            }
+            let Some(pkg) = event.package_id.as_ref() else {
+                continue;
+            };
+            if pkg.registry != registry || pkg.name != package {
+                continue;
+            }
+            newest
+                .entry(pkg.version.clone())
+                .and_modify(|t| {
+                    if event.timestamp > *t {
+                        *t = event.timestamp;
+                    }
+                })
+                .or_insert(event.timestamp);
+        }
+        let mut out: Vec<(String, DateTime<Utc>)> = newest.into_iter().collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(out)
+    }
+
     async fn count_events(&self, filter: EventFilter) -> Result<u64, CoreError> {
         let no_page = EventFilter {
             limit: 0,

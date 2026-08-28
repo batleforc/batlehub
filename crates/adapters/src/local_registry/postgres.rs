@@ -91,8 +91,9 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
         sqlx::query(
             "INSERT INTO local_packages \
                 (registry, name, version, checksum, yanked, index_metadata, \
-                 published_at, published_by, status, signature_bytes, signature_type, visibility) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $10, $11)",
+                 published_at, published_by, status, signature_bytes, signature_type, visibility, \
+                 retention_keep) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $10, $11, $12)",
         )
         .bind(&pkg.registry)
         .bind(&pkg.name)
@@ -105,6 +106,7 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
         .bind(&pkg.signature_bytes)
         .bind(&pkg.signature_type)
         .bind(pkg.visibility.to_string())
+        .bind(pkg.retention_keep)
         .execute(&self.pool)
         .await
         .map_err(|e| {
@@ -247,6 +249,32 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
         Ok(())
     }
 
+    /// `WHERE … status = 'published'` makes this a no-op for a tombstone: a
+    /// coordinate that is already spent cannot be protected from a reclamation
+    /// that can never reach it.
+    async fn set_retention_keep(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        keep: bool,
+    ) -> Result<bool, CoreError> {
+        let result = sqlx::query(
+            "UPDATE local_packages SET retention_keep = $4 \
+             WHERE registry = $1 AND name = $2 AND version = $3 \
+               AND status = 'published' AND deleted_at IS NULL \
+               AND retention_keep IS DISTINCT FROM $4",
+        )
+        .bind(registry)
+        .bind(name)
+        .bind(version)
+        .bind(keep)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| CoreError::Database(e.to_string()))?;
+        Ok(result.rows_affected() > 0)
+    }
+
     async fn get_versions(
         &self,
         registry: &str,
@@ -255,7 +283,8 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
         let rows = sqlx::query(
             "SELECT registry, name, version, checksum, yanked, deprecated, \
                     deprecation_message, unlisted, index_metadata, \
-                    published_at, published_by, signature_bytes, signature_type, visibility \
+                    published_at, published_by, signature_bytes, signature_type, visibility, \
+                    retention_keep \
              FROM local_packages \
              WHERE registry = $1 AND name = $2 AND status = 'published' \
                AND deleted_at IS NULL \
@@ -288,6 +317,7 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
                     signature_bytes: r.get("signature_bytes"),
                     signature_type: r.get("signature_type"),
                     visibility: vis,
+                    retention_keep: r.get("retention_keep"),
                 })
             })
             .collect()

@@ -194,6 +194,7 @@ fn pkg(registry: &str, name: &str, version: &str) -> PublishedPackage {
         signature_bytes: None,
         signature_type: None,
         visibility: Default::default(),
+        retention_keep: false,
     }
 }
 
@@ -1588,6 +1589,7 @@ fn seed_version(
         published_by: None,
         signature_bytes: sig_bytes,
         signature_type: sig_type,
+        retention_keep: false,
         visibility: Default::default(),
     });
 }

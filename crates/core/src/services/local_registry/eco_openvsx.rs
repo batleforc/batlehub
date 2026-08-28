@@ -238,6 +238,7 @@ mod tests {
             signature_bytes: None,
             signature_type: None,
             visibility: Visibility::Public,
+            retention_keep: false,
         }
     }
 

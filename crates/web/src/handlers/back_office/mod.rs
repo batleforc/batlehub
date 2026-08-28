@@ -8,6 +8,7 @@ pub mod health;
 pub mod notification;
 pub mod ops;
 pub mod packages;
+pub mod retention;
 pub mod sbom;
 pub mod stats;
 pub mod stats_history;

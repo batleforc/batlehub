@@ -2168,3 +2168,132 @@ fn a_dry_run_compaction_does_not_warn() {
         "{codes:?}"
     );
 }
+
+// ── Retention keep conditions (RFC 0016 §4.2, §4.6) ───────────────────────────
+
+#[test]
+fn retention_keep_conditions_parse_with_safe_defaults() {
+    let cfg = retention_config(
+        "local",
+        "        keep_versions = 10\n        keep_if_pulled_days = 90",
+    );
+    cfg.validate().expect("valid");
+    let ret = cfg.registries[0].retention.as_ref().unwrap();
+    assert_eq!(ret.keep_versions, Some(10));
+    assert_eq!(ret.keep_if_pulled_days, Some(90));
+    assert!(
+        ret.dry_run,
+        "a configured policy reclaims nothing until asked"
+    );
+    assert!(
+        ret.keep_yanked,
+        "a yank is not a reason to destroy the only copy"
+    );
+    assert_eq!(ret.reclaim_delay_ms, 0);
+    assert!(ret.download_signal_floor_days.is_none());
+}
+
+/// The block that would reclaim *everything* on its first live run: no keep
+/// condition, so the union of vetoes is empty and nothing vetoes.
+#[test]
+fn a_retention_block_with_no_keep_condition_is_rejected() {
+    let err = retention_config("local", "        keep_yanked = true")
+        .validate()
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("reclaim every version on its first live run"),
+        "the error must say what the empty block would do: {err}"
+    );
+}
+
+/// `keep_yanked` alone must not make an otherwise-empty block look configured —
+/// it defaults to true and only ever vetoes, so a block containing nothing else
+/// still destroys every unyanked version.
+#[test]
+fn keep_yanked_alone_does_not_count_as_a_keep_condition() {
+    let cfg = retention_config("local", "        keep_yanked = false");
+    assert!(cfg.validate().is_err());
+    assert!(!cfg.registries[0]
+        .retention
+        .as_ref()
+        .unwrap()
+        .reclaims_anything());
+}
+
+#[test]
+fn a_zero_keep_condition_is_rejected() {
+    for key in ["keep_versions", "keep_for_days", "keep_if_pulled_days"] {
+        let err = retention_config("local", &format!("        {key} = 0"))
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("keeps nothing"), "{key}: {err}");
+    }
+}
+
+/// **The mistake this feature exists to make hard** — reclaiming without
+/// consulting the download signal.
+#[test]
+fn live_reclamation_without_a_pull_veto_warns_loudly() {
+    let cfg = retention_config(
+        "local",
+        "        keep_versions = 10\n        dry_run = false",
+    );
+    cfg.validate()
+        .expect("legal, and exactly the dangerous shape");
+    let codes: Vec<String> = cfg.warnings().into_iter().map(|w| w.code).collect();
+    assert!(
+        codes.iter().any(|c| c == warnings::RETENTION_NO_PULL_VETO),
+        "{codes:?}"
+    );
+    assert!(
+        codes
+            .iter()
+            .any(|c| c == warnings::RETENTION_RECLAMATION_LIVE),
+        "{codes:?}"
+    );
+
+    let warning = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::RETENTION_NO_PULL_VETO)
+        .unwrap();
+    assert!(
+        warning.message.contains("pinned to"),
+        "the warning must describe the consequence, not the setting: {}",
+        warning.message
+    );
+}
+
+#[test]
+fn live_reclamation_with_a_pull_veto_warns_once_not_twice() {
+    let cfg = retention_config(
+        "local",
+        "        keep_versions = 10\n        keep_if_pulled_days = 90\n        dry_run = false",
+    );
+    let codes: Vec<String> = cfg.warnings().into_iter().map(|w| w.code).collect();
+    assert!(
+        !codes.iter().any(|c| c == warnings::RETENTION_NO_PULL_VETO),
+        "a policy that consults the signal must not be warned about it: {codes:?}"
+    );
+    assert!(
+        codes
+            .iter()
+            .any(|c| c == warnings::RETENTION_RECLAMATION_LIVE),
+        "it is still destroying the only copy: {codes:?}"
+    );
+}
+
+#[test]
+fn a_dry_run_policy_does_not_warn_about_reclamation() {
+    let cfg = retention_config("local", "        keep_versions = 10");
+    let codes: Vec<String> = cfg.warnings().into_iter().map(|w| w.code).collect();
+    assert!(
+        !codes
+            .iter()
+            .any(|c| c == warnings::RETENTION_RECLAMATION_LIVE
+                || c == warnings::RETENTION_NO_PULL_VETO),
+        "{codes:?}"
+    );
+}

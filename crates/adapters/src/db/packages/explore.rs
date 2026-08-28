@@ -531,6 +531,41 @@ pub(super) async fn purge_events_before_impl(
     Ok(result.rows_affected())
 }
 
+/// The newest allowed download of each version of one package (RFC 0016 §4.3).
+///
+/// `DISTINCT ON` rather than `GROUP BY`, so the planner walks
+/// `idx_access_events_pkg_allowed_recent` — `(registry, package_name,
+/// package_version, outcome, created_at DESC)` — and stops at the first row per
+/// version instead of aggregating the whole history of a package that may have
+/// been downloaded a million times.
+///
+/// `action = 'download'` is the whole of the sidecar rule as far as SQL is
+/// concerned: the `Download`/`ViewMetadata` split is drawn at record time by
+/// `PackageId::is_verification_sidecar`, so a `.sha1` never wrote a `download`
+/// row to exclude here and a `.pom` did write one to include.
+pub(super) async fn last_downloads_impl(
+    pool: &PgPool,
+    registry: &str,
+    package: &str,
+) -> Result<Vec<(String, DateTime<Utc>)>, CoreError> {
+    let rows = sqlx::query(
+        "SELECT DISTINCT ON (package_version) package_version, created_at \
+         FROM access_events \
+         WHERE registry = $1 AND package_name = $2 \
+           AND action = 'download' AND outcome = 'allowed' \
+         ORDER BY package_version, created_at DESC",
+    )
+    .bind(registry)
+    .bind(package)
+    .fetch_all(pool)
+    .await
+    .db_err()?;
+    Ok(rows
+        .into_iter()
+        .map(|r| (r.get("package_version"), r.get("created_at")))
+        .collect())
+}
+
 /// Distinct audit subjects, most-recently-active first (RFC 0004-bis A8).
 ///
 /// Ordered by last activity rather than alphabetically: a suggesting field is

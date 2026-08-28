@@ -119,15 +119,30 @@ fn build_retention_map(registries: &[RegistryConfig]) -> HashMap<String, Retenti
         registries,
         |reg| reg.retention.as_ref(),
         |_reg, r| RetentionPolicy {
+            keep_versions: r.keep_versions,
+            keep_for: r.keep_for_days.map(days),
+            keep_if_pulled: r.keep_if_pulled_days.map(days),
+            keep_yanked: r.keep_yanked,
+            // Expressed in config as days-before-now and resolved once here, at
+            // load. A floor recomputed per run would creep forward with the
+            // clock, so a version protected by it today would be reclaimable
+            // tomorrow — the opposite of a floor.
+            download_signal_floor:
+                batlehub_core::services::hot_config::resolve_download_signal_floor(
+                    r.download_signal_floor_days,
+                ),
+            reclaim_delay: Duration::from_millis(r.reclaim_delay_ms),
             // `validate()` has already refused 0 and anything under the 30-day
             // floor, so this multiplication cannot produce a window that strips
             // detail the moment it is written.
-            tombstone_detail_for: r
-                .tombstone_detail_for_days
-                .map(|d| Duration::from_secs(u64::from(d) * 24 * 60 * 60)),
+            tombstone_detail_for: r.tombstone_detail_for_days.map(days),
             dry_run: r.dry_run,
         },
     )
+}
+
+fn days(d: u32) -> Duration {
+    Duration::from_secs(u64::from(d) * 24 * 60 * 60)
 }
 
 fn build_sbom_map(registries: &[RegistryConfig]) -> HashMap<String, HotSbomConfig> {

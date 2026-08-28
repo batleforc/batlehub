@@ -157,6 +157,15 @@ tasks:
           CONTAINER: batlehub-test-pg-tombstones
           PORT: "15438"
 
+  test:pg-retention:
+    desc: Run retention-run integration tests against real Postgres and a real store (starts a temporary Postgres container via Podman)
+    cmds:
+      - task: pg
+        vars:
+          TEST: pg_retention
+          CONTAINER: batlehub-test-pg-retention
+          PORT: "15439"
+
   test:pg-storage-router:
     desc: Run storage_router integration tests (starts a temporary Postgres container via Podman)
     cmds:

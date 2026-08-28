@@ -12,6 +12,7 @@ pub mod proxy;
 pub mod quota;
 pub mod readme;
 pub mod registry_authz;
+pub mod retention;
 pub mod sbom;
 pub mod search;
 pub mod signature;
@@ -49,6 +50,10 @@ pub use quota::{
     RegistryQuotaStatus,
 };
 pub use readme::{truncate_to, ReadmeCapture, ReadmeService, RecordOutcome};
+pub use retention::{
+    KeepReason, RetentionDecision, RetentionPolicy as RetentionRunPolicy, RetentionReport,
+    RetentionService, DEFAULT_DOWNLOAD_SIGNAL_FLOOR, MAX_REPORTED_DECISIONS,
+};
 pub use sbom::{SbomProxiedOptions, SbomPublishOptions, SbomService};
 pub use search::{SearchHit, SearchMode, SearchResults};
 pub use signed_url::{

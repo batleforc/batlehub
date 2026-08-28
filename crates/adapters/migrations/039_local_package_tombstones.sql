@@ -16,6 +16,13 @@
 --
 -- No backfill is possible: rows deleted before this migration are gone and
 -- their coordinates are, unavoidably, still free. The invariant starts here.
+--
+-- Rolling back (RFC 0016 §9): dropping these columns is not enough. Every
+-- tombstone would become a live version with no bytes, which every client
+-- resolves and then fails to download — worse than the behaviour being restored.
+-- A rollback must first
+--   DELETE FROM local_packages WHERE deleted_at IS NOT NULL;
+-- and only then drop the columns and the CHECK below.
 ALTER TABLE local_packages ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 ALTER TABLE local_packages ADD COLUMN IF NOT EXISTS deleted_by TEXT;
 

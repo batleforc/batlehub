@@ -6,7 +6,7 @@ reference: true
 
 | Field       | Value                                                        |
 | ----------- | ------------------------------------------------------------ |
-| Status      | **Accepted** — **phases 1 and 2 have landed**: deleting a version now spends its coordinate permanently, and tombstone compaction ships with `dry_run` defaulting on. Phases 3–5, the reclamation half, are still a proposal and cannot start before [RFC 0015](/rfc/0015-grants-on-the-resource-hierarchy)'s `policy` table exists. Implementation reversed two of this document's own decisions — a `deleted_at IS NULL` sweep smaller than §6.3 predicted, and a §4.6 validation rule that turned out to have no second operand — both recorded in §13 |
+| Status      | **Implemented** — all five phases landed. A deleted coordinate is permanently spent, tombstone compaction and the retention run both default to `dry_run`, and the version-tier pin, the download-signal veto and its floor date all ship. **Two things this document describes are not built and are not deferred by oversight**: retention's *namespace and package tiers* need [RFC 0015](/rfc/0015-grants-on-the-resource-hierarchy)'s namespace blocks and `policy` table, so retention is registry tier plus the version pin; and §12's phase-5 UI panel hangs off an authorization page 0015 has not built. §13 records those and the seven readings implementation argued with |
 | Short       | Retention and tombstones                                      |
 | Settles     | What happens to a locally published version over time: reclaiming what nobody is using, and a coordinate that can never be occupied twice |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                       |
@@ -348,9 +348,13 @@ Retention deletes; its tests run against real Postgres and real storage, not in-
 | 6 | Should this be part of RFC 0015? | **No.** It shares 0015's tier system and verbs but nothing else: it is the only feature in either document that destroys data, and the reviewers who care about a reclamation policy are not the reviewers who care about a permission vocabulary. Splitting it also lets 0015's phases 0–2 ship without waiting on a schema change to every listing query. |
 | 7 | What do package-tier grants do when the package is deleted? | **They go with it.** Grants keyed by a name that outlive the package leave a previous owner holding authority over a name someone else may take. |
 
+| 8 | Does a retention run need a rate limit, or a bytes-per-run cap? | **A rate limit**, as the recommendation below said. `reclaim_delay_ms` paces the deletions, so every intermediate state of a run is one the rest of the system already models; a cap would stop mid-estate in a shape nothing else does. Sizing it was to wait for real dry-run reports, so the default is `0` — paces nothing — and the report an operator reads before arming reclamation is what sizes it (§13.10). |
+
 ### Still open
 
-1. **Does a retention run need a rate limit, or a bytes-per-run cap?** A first live run on an estate that has never reclaimed anything may drop a large fraction of its storage in one pass. The dry-run default means an operator has seen the report first, so this is a question about blast radius after an informed decision rather than about surprise. The alternatives are a cap (predictable, but leaves the estate mid-reclamation in a state nothing else models) and a rate limit (slower, but every intermediate state is a valid one). **Recommendation: rate limit**, deferred until a real report exists to size it against — which is phase 3's dry-run-only release.
+Nothing. The one question this document left open is answered above; §13.12
+records what is *not built*, which is a different list — work this document
+describes that belongs to RFC 0015, not decisions it failed to take.
 
 ---
 
@@ -443,7 +447,45 @@ and `published_at` is not stripped at all, because eight bytes do not accumulate
 and "how long did this coordinate live" is the first question asked of a
 tombstone whose metadata is already gone.
 
-### 13.5 Compaction writes and reports in one statement
+### 13.5 §4.4's grant release was the part that was nearly missed
+
+§4.4 says a package's tier policy does not survive the deletion of its last
+version, and §7 restates it as a security property: "a re-created name does not
+carry the previous owner's authority". RFC 0015's `policy` table does not exist,
+so it would have been easy to read that as deferred with the rest of the tier
+system. It is not. `package_owners` **is** the package-tier grant today — 0015
+§5.1 migrates it into the policy table rather than replacing it — and it is keyed
+by `(registry, package_name)` with nothing that removes it.
+
+The first cut of this implementation shipped without it, and the gap was found by
+writing §10's own test rather than by reading. `OwnershipPort` gained
+`remove_all_owners`, and `delete_version` calls it when the deleted version was
+the package's last live one.
+
+It also had a second effect the RFC does not mention, and it is the one an
+operator would have hit first. A stale grant does not merely linger — it
+**blocks**. A newcomer taking the released name is refused by an owner row
+belonging to a package that no longer exists, so the "a package name may be
+published to again" half of §4.4 did not work either.
+
+### 13.6 Delete had to *skip* the ownership check, not run it
+
+Modelling `delete_version` on `yank` meant calling
+`check_ownership_lifecycle_access`, which was wrong in a way that only a test
+with the ownership port wired in could show: `can_publish` answers "is this
+principal an owner" and has no role bypass, so an administrator who is not an
+owner is refused. Since every package acquires an owner on its first publish,
+that made admin bulk-delete fail on every package that had ever been published —
+and the shared test factory leaves `ownership: None`, so nothing caught it.
+
+Admins now bypass it, exactly as they already bypass the namespace check
+immediately above. That is not a widening: the handler in front is
+`require_admin`, so the reachable authorization is unchanged, and §3 says this
+document must not decide who may delete. Worth recording because the instinct —
+"a delete should be at least as guarded as a yank" — is a reasonable one that
+produces a broken product here.
+
+### 13.7 Compaction writes and reports in one statement
 
 §4.5 asked for compaction to be dry-runnable and audited, and said nothing about
 how the report is produced. Select-then-update would have been the obvious
@@ -452,16 +494,113 @@ ages past the window in the gap is stripped without appearing in the report. The
 live path is `UPDATE … RETURNING`, which cannot disagree with what it wrote; the
 dry-run path is the matching `SELECT`. `pg_tombstones.rs` asserts the two agree.
 
-### 13.6 What is not built
+### 13.8 The version pin is not a tiered policy
 
-- **Phases 3–5.** No retention run, no `keep_versions`/`keep_for`/`keep_if_pulled`,
-  no reclamation, no UI panel. The keys are **refused by the config loader**
-  rather than accepted and ignored, so an operator who writes one is told rather
-  than left believing versions are being reclaimed.
-- **§11's still-open question** — whether a retention run needs a rate limit —
-  belongs to phase 4 and is untouched. It was to be sized against phase 3's
-  dry-run reports, which do not exist yet.
-- **The effective floor date** (§4.3), which is a property of the retention run
-  and has nothing to consume it until phase 3.
-- **Authorization.** Delete is still admin-gated at the handler, as §12 allowed
-  for the interim. `releases:delete` arrives with RFC 0015.
+§4.1 puts package- and version-tier retention in RFC 0015's `policy` table, and
+for the *package* tier that is right: a package block narrowing its namespace's
+is tiered policy resolution, and it needs the table and the namespace blocks
+above it.
+
+The version-tier `keep` pin is not that. It is a per-version boolean that says
+"this particular version is special", which is exactly what `yanked`,
+`deprecated` and `unlisted` already are — three columns on the version row, set
+through the same admin surface, read by the same code paths. So `retention_keep`
+is a fourth column beside them rather than a policy row, and phase 3's most
+important safety property ships without waiting on 0015.
+
+That reading is worth stating because it is the difference between "retention has
+no escape hatch until 0015 lands" and "it has one now". Automatic reclamation
+without a pin is a policy an operator cannot override for the one release that
+matters, which is not a feature anybody should turn on.
+
+### 13.9 Retention refuses rather than guesses
+
+Not in the document at all, and it follows from §4.2's own logic. The keep
+conditions are a union of vetoes, so a condition that cannot be evaluated does
+not fail neutrally — it fails *open*, and the policy silently becomes more
+aggressive than what the operator wrote.
+
+The case is `keep_if_pulled` on a deployment with no package repository: there is
+no download signal, every version reads as never-pulled, and a run would reclaim
+the whole estate on a policy that was written to protect it. The run now errors
+with that sentence rather than proceeding.
+
+The same reasoning drew two narrower lines the RFC does not mention. A **denied**
+download does not count as use — otherwise a blocked package defends itself from
+reclamation by being repeatedly refused. And the floor date is consulted **only
+when `keep_if_pulled` is configured**: with no download condition in the policy,
+the signal is not being read and its gaps are nobody's business, where a floor
+that always applied would silently protect everything old from a pure
+`keep_versions` policy.
+
+### 13.10 §11's open question, answered
+
+**Rate limit, as §11 recommended**, not a per-run cap: `reclaim_delay_ms` paces
+the deletions, so every intermediate state of a run is a state the rest of the
+system already models — a cap would stop mid-estate in a shape nothing else does.
+
+§11 deferred sizing it until real dry-run reports existed. They do not yet, so
+the default is `0` — paces nothing — and the report an operator reads before
+arming reclamation is what sizes it. That is the same ordering §11 asked for, one
+release earlier: the number is the operator's, and the mechanism is there for
+them to set it with.
+
+### 13.11 The retention tests split across two suites, and the split is the point
+
+§10 says "retention deletes; its tests run against real Postgres and real
+storage, not in-memory doubles", and puts all seven of them in
+`crates/adapters/tests/pg_retention.rs`. That is not where they ended up, and the
+reason is worth recording because the instinct it corrects is a good one.
+
+Most of what §10 lists is a claim about a *decision*: whether a version survives
+is arithmetic over a policy and three facts about that version. `keep_for`,
+`keep_yanked`, the floor date and the refusal without a download signal are all
+decided before any query runs, and a database adds nothing to asserting them but
+time. Those live in `crates/core/src/services/retention/tests.rs`.
+
+What genuinely needed the database is the part §10 did not separate out: every
+claim that crosses the boundary between the decision and the store. `pg_retention.rs`
+is that file, and each of its tests fails against a one-line mutation of real SQL
+that the entire rest of the suite passes:
+
+| Mutation | What survives it |
+| --- | --- |
+| `action = 'download'` → any other literal | everything except `pg_retention.rs` |
+| the `action` predicate dropped | everything except `pg_retention.rs` |
+| the `outcome = 'allowed'` predicate dropped | everything except `pg_retention.rs` |
+| `created_at DESC` → `ASC` in `DISTINCT ON` | everything except `pg_retention.rs` |
+| `retention_keep` read back as a constant | everything except `pg_retention.rs` |
+
+The first four are all one function — `last_downloads`, whose only caller is the
+retention run. §4.3 calls the pull veto "the rule that makes retention safe to
+switch on", and until this file existed there was no test anywhere that executed
+the query implementing it. The core suite's double reimplements the same three
+constraints in Rust, and its own comment says so; two implementations that agree
+by transcription are exactly the pair that drift.
+
+One test in the file is deliberately weaker than the others and says so:
+`keep_versions` keeping the newest N has both halves guarded already — the
+adapter's `ORDER BY published_at ASC` by `local_registry.rs`, the ranking by the
+core suite — and only the *dependency between them* is new. It is kept because
+the failure it guards against is reclaiming the newest versions instead of
+keeping them.
+
+The prediction in §10 was still worth making, in the same way §13.1's was: it is
+what produced the file. What it got wrong was assuming that "retention deletes"
+makes every retention test an integration test, when what makes a test need a
+database is whether the claim is about SQL.
+
+### 13.12 What is not built
+
+- **Retention's namespace and package tiers** (§4.1). Registry tier ships in
+  TOML; the version-tier pin ships as a column (§13.8). The middle two need RFC
+  0015's `[registries.namespaces.*]` blocks and its `policy` table, and there is
+  no second store standing in for them — §3 rules that out, and inventing one
+  would be the thing this document says not to do.
+- **The retention panel** (§12, phase 5). It hangs off "the authorization page
+  (RFC 0015 §4.8)", which does not exist. The CLI and the API do, and
+  `batlehub admin retention` prints the report the panel would have shown.
+- **`releases:delete`.** Delete and retention are still admin-gated at the
+  handler, as §12 allowed for the interim. The verb arrives with RFC 0015, and
+  §13.6 is the note about what happened when this document's own instinct was to
+  gate it harder in the meantime.

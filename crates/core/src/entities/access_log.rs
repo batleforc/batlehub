@@ -59,6 +59,15 @@ pub enum AccessAction {
     /// a different fact about a system than a version being deleted, and an
     /// operator reading the trail has to be able to separate the two.
     TombstoneCompact,
+    /// A version was pinned against retention, or the pin was released
+    /// (RFC 0016 §4.1).
+    ///
+    /// One action for both directions, unlike `Yank`/`Unyank`: a pin is a toggle
+    /// whose current state is readable from the version row, and two actions
+    /// would make "who exempted this version from the policy" a question you
+    /// answer by scanning for the newest of two event kinds rather than the
+    /// newest of one.
+    SetRetentionPin,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

@@ -64,6 +64,33 @@ pub trait OwnershipPort: Send + Sync {
         package: &str,
     ) -> Result<Vec<OwnerEntry>, CoreError>;
 
+    /// Drop every owner entry for a package, releasing the name.
+    ///
+    /// Called when the last version of a package is deleted (RFC 0016 §4.4).
+    /// Ownership is keyed by `(registry, package_name)` and nothing else would
+    /// remove it, so without this the previous owner keeps publish and
+    /// owner-management authority over a name someone else may now take —
+    /// authority over a package they have never seen, granted by a decision
+    /// nobody remembers making.
+    ///
+    /// The version tombstones stay, because they are the invariant. The grants
+    /// go, because they are a decision about a thing that no longer exists.
+    ///
+    /// The default loops `list_owners` + `remove_owner`, which is correct for
+    /// any store; a backend that can do it in one statement should.
+    async fn remove_all_owners(&self, registry: &str, package: &str) -> Result<(), CoreError> {
+        for entry in self.list_owners(registry, package).await? {
+            self.remove_owner(
+                registry,
+                package,
+                &entry.principal_type,
+                &entry.principal_id,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     /// The reverse of [`list_owners`](OwnershipPort::list_owners): every
     /// `(registry, package)` this identity owns, whether directly or through
     /// one of its groups.

@@ -137,6 +137,7 @@ impl Fixture {
             signature_bytes: None,
             signature_type: None,
             visibility: Visibility::Public,
+            retention_keep: false,
         };
         // `publish` inserts in the *pending* state, which the explore queries
         // filter out via `status = 'published'`; `commit_publish` is what makes

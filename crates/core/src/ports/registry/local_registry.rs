@@ -84,6 +84,25 @@ pub trait LocalRegistryBackend: Send + Sync {
     /// Reverse an unlist, making the version visible in listings again.
     async fn relist(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError>;
 
+    /// Pin or unpin a version against retention (RFC 0016 §4.1).
+    ///
+    /// A pinned version is never reclaimed by a retention run, whatever the
+    /// registry's policy says. It changes nothing else: the version resolves,
+    /// downloads and lists exactly as it did.
+    ///
+    /// Returns `true` when a published version's pin changed. A no-op returns
+    /// `false` rather than erroring, so setting a pin that is already set is
+    /// safe to repeat.
+    async fn set_retention_keep(
+        &self,
+        _registry: &str,
+        _name: &str,
+        _version: &str,
+        _keep: bool,
+    ) -> Result<bool, CoreError> {
+        Ok(false)
+    }
+
     /// Return all versions of `name` in `registry`, sorted by `published_at` ASC.
     /// Returns an empty vec (not an error) when the crate has never been published.
     /// Must only return rows in the *published* state.

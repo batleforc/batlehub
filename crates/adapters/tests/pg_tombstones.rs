@@ -26,7 +26,7 @@ use batlehub_adapters::local_registry::PostgresLocalRegistry;
 use batlehub_core::{
     entities::{PublishedPackage, Visibility},
     error::CoreError,
-    ports::LocalRegistryBackend,
+    ports::{LocalRegistryBackend, OwnershipPort},
 };
 
 fn db_url() -> Option<String> {
@@ -82,6 +82,7 @@ impl TestRegistry {
             signature_bytes: Some(vec![1, 2, 3]),
             signature_type: Some("ed25519".to_owned()),
             visibility: Visibility::Public,
+            retention_keep: false,
         }
     }
 
@@ -567,6 +568,69 @@ async fn compaction_is_scoped_to_one_registry() {
             .get::<Option<String>, _>("checksum")
             .is_some(),
         "the other registry's tombstone detail must be untouched"
+    );
+}
+
+/// Releasing a name drops every grant on it in one statement (RFC 0016 §4.4).
+///
+/// Against real SQL because the port's default implementation is a
+/// read-then-delete-each loop, and the override that replaces it here is the one
+/// that cannot leave half the previous owner's authority standing over a package
+/// someone else may already have taken.
+#[tokio::test]
+async fn removing_all_owners_releases_one_package_and_no_other() {
+    let Some(url) = db_url() else {
+        eprintln!("skipping: DATABASE_URL not set");
+        return;
+    };
+    let t = make_registry(&url).await;
+    let owners = batlehub_adapters::db::PgOwnershipStore::new(t.pool.clone());
+
+    sqlx::query("DELETE FROM package_owners WHERE registry = $1")
+        .bind(&t.registry)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+
+    owners
+        .initialize_owner(&t.registry, "released", "alice")
+        .await
+        .unwrap();
+    owners
+        .add_owner(
+            &t.registry,
+            "released",
+            batlehub_core::ports::OwnerEntry {
+                principal_type: "group".to_owned(),
+                principal_id: "team-alpha".to_owned(),
+                role: "maintainer".to_owned(),
+                granted_by: Some("alice".to_owned()),
+            },
+        )
+        .await
+        .unwrap();
+    owners
+        .initialize_owner(&t.registry, "kept", "bob")
+        .await
+        .unwrap();
+
+    owners
+        .remove_all_owners(&t.registry, "released")
+        .await
+        .unwrap();
+
+    assert!(
+        owners
+            .list_owners(&t.registry, "released")
+            .await
+            .unwrap()
+            .is_empty(),
+        "every grant on the released name goes — the user row and the group row"
+    );
+    assert_eq!(
+        owners.list_owners(&t.registry, "kept").await.unwrap().len(),
+        1,
+        "another package's owners must be untouched"
     );
 }
 

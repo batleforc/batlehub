@@ -239,6 +239,26 @@ impl LocalRegistryBackend for InMemoryLocalRegistry {
         Ok(())
     }
 
+    /// `published_mut` filters to published rows, so this is a no-op for a
+    /// tombstone: a coordinate that is already spent cannot be protected from a
+    /// reclamation that can never reach it.
+    async fn set_retention_keep(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        keep: bool,
+    ) -> Result<bool, CoreError> {
+        let mut map = self.inner.write().await;
+        match published_mut(&mut map, registry, name, version) {
+            Some(r) if r.pkg.retention_keep != keep => {
+                r.pkg.retention_keep = keep;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     async fn get_versions(
         &self,
         registry: &str,
@@ -467,6 +487,7 @@ mod tests {
             signature_bytes: None,
             signature_type: None,
             visibility: Default::default(),
+            retention_keep: false,
         }
     }
 

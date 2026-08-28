@@ -252,6 +252,7 @@ pub(super) fn action_to_str(action: &AccessAction) -> &'static str {
         AccessAction::ReleaseNamespace => "release_namespace",
         AccessAction::ResetQuota => "reset_quota",
         AccessAction::TombstoneCompact => "tombstone_compact",
+        AccessAction::SetRetentionPin => "set_retention_pin",
     }
 }
 
@@ -282,6 +283,7 @@ pub(super) fn str_to_action(s: &str) -> Result<AccessAction, CoreError> {
         "release_namespace" => Ok(AccessAction::ReleaseNamespace),
         "reset_quota" => Ok(AccessAction::ResetQuota),
         "tombstone_compact" => Ok(AccessAction::TombstoneCompact),
+        "set_retention_pin" => Ok(AccessAction::SetRetentionPin),
         other => Err(CoreError::Database(format!(
             "invalid access action in db: '{other}'"
         ))),
@@ -375,6 +377,14 @@ impl PackageRepository for PgPackageRepository {
 
     async fn purge_events_before(&self, before: DateTime<Utc>) -> Result<u64, CoreError> {
         explore::purge_events_before_impl(&self.pool, before).await
+    }
+
+    async fn last_downloads(
+        &self,
+        registry: &str,
+        package: &str,
+    ) -> Result<Vec<(String, DateTime<Utc>)>, CoreError> {
+        explore::last_downloads_impl(&self.pool, registry, package).await
     }
 
     async fn distinct_event_subjects(

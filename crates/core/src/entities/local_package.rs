@@ -108,6 +108,15 @@ pub struct PublishedPackage {
     /// Download visibility for this package.
     #[serde(default)]
     pub visibility: Visibility,
+    /// Never reclaim this version, whatever the registry's retention policy says
+    /// (RFC 0016 §4.1).
+    ///
+    /// Set through the admin API beside `yanked`/`unlisted`, and read only by a
+    /// retention run — it changes nothing about how the version resolves,
+    /// downloads or lists. A pinned version behaves in every other respect
+    /// exactly like an unpinned one.
+    #[serde(default)]
+    pub retention_keep: bool,
 }
 
 /// A version coordinate that has been published and then deleted (RFC 0016 §4.4).

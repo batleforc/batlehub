@@ -45,6 +45,23 @@ pub enum AdminCommand {
         #[command(subcommand)]
         cmd: BannerCommand,
     },
+    /// Run retention over a registry's locally published versions
+    ///
+    /// Reports by default. Reclaiming needs `dry_run = false` on the registry's
+    /// `[registries.retention]` block *and* `--reclaim` here — a deletion that
+    /// destroys the only copy should take two decisions, not one.
+    Retention {
+        /// Registry name
+        registry: String,
+        /// Actually reclaim. Without it the run reports and changes nothing,
+        /// whatever the server is configured for.
+        #[arg(long)]
+        reclaim: bool,
+        /// Print every kept version and the condition that kept it, not just
+        /// what would be reclaimed.
+        #[arg(long)]
+        show_kept: bool,
+    },
     /// Query the access audit log
     AuditLog {
         #[arg(long)]
@@ -349,6 +366,11 @@ pub async fn run(cmd: AdminCommand, client: &BatleHubClient, json: bool) -> Resu
         AdminCommand::Config { cmd } => handle_config_admin(cmd, client, json).await?,
         AdminCommand::Cache { cmd } => handle_cache(cmd, client).await?,
         AdminCommand::Banner { cmd } => handle_banner(cmd, client).await?,
+        AdminCommand::Retention {
+            registry,
+            reclaim,
+            show_kept,
+        } => handle_retention(&registry, reclaim, show_kept, client, json).await?,
         AdminCommand::AuditLog {
             registry,
             user,
@@ -688,6 +710,82 @@ async fn handle_cache(cmd: CacheCommand, client: &BatleHubClient) -> Result<()> 
             client.cache_clear(&registry).await?;
             println!("Cache cleared for {registry}");
         }
+    }
+    Ok(())
+}
+
+/// Run retention and print the report.
+///
+/// `--reclaim` is the client's half of a two-key interlock: the server also has
+/// to be configured with `dry_run = false`. Without the flag this always sends
+/// `?dry_run=true`, and because the server treats that query as "only ever more
+/// conservative", a live registry previews rather than reclaims. Retention
+/// destroys the only copy of a locally published artifact — an operator should
+/// have to say so twice, in two places, once of them a config file someone
+/// reviewed.
+async fn handle_retention(
+    registry: &str,
+    reclaim: bool,
+    show_kept: bool,
+    client: &BatleHubClient,
+    json: bool,
+) -> Result<()> {
+    let report = client.run_retention(registry, !reclaim).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+
+    let mode = if report.dry_run {
+        "dry run — nothing was changed"
+    } else {
+        "LIVE — versions were reclaimed"
+    };
+    println!("Retention on {registry}: {mode}");
+    println!(
+        "  examined {}   kept {}   reclaimed {}",
+        report.examined, report.kept, report.reclaimed
+    );
+
+    if !report.reclaimed_coordinates.is_empty() {
+        let verb = if report.dry_run {
+            "would reclaim"
+        } else {
+            "reclaimed"
+        };
+        println!("\n{verb}:");
+        for coord in &report.reclaimed_coordinates {
+            println!("  {coord}");
+        }
+    }
+
+    if show_kept {
+        println!("\nkept:");
+        for d in report.decisions.iter().filter(|d| d.kept_because.is_some()) {
+            let reason = d.kept_because.as_deref().unwrap_or("");
+            println!("  {}@{}  ({reason})", d.name, d.version);
+        }
+    }
+
+    // Never silent about a bounded list: a truncated report read as complete is
+    // how an operator approves a reclamation they have not actually seen.
+    if report.decisions_truncated > 0 {
+        println!(
+            "\n({} more per-version decisions not shown; the reclaim list above is complete)",
+            report.decisions_truncated
+        );
+    }
+    if report.dry_run && report.reclaimed > 0 {
+        println!(
+            "\nNothing was deleted. To reclaim: set dry_run = false on this registry's \
+             [registries.retention] block, then re-run with --reclaim."
+        );
+    }
+    // Last, and unmissable: the counts above describe a run that stopped, and
+    // reading them as a completed sweep is how the rest of the estate goes
+    // unreclaimed without anyone noticing.
+    if let Some(reason) = &report.incomplete_because {
+        println!("\nRUN INCOMPLETE: {reason}");
     }
     Ok(())
 }

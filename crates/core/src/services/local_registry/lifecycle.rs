@@ -177,8 +177,18 @@ impl LocalRegistryService {
         }
         self.check_namespace_membership(registry, name, identity)
             .await?;
-        self.check_ownership_lifecycle_access(registry, name, identity)
-            .await?;
+        // Admins bypass the ownership check, as they already do the namespace
+        // one directly above. Not a widening: this is the only delete path, the
+        // handler in front of it is `require_admin`, and `can_publish` answers
+        // "is this principal an owner" with no role bypass of its own — so
+        // running it here would have made an administrator unable to delete any
+        // package that has an owner, which is every package that was ever
+        // published. Who may delete is `releases:delete` and RFC 0015 owns it
+        // (RFC 0016 §3); this must not tighten it as a side effect.
+        if !identity.is_admin() {
+            self.check_ownership_lifecycle_access(registry, name, identity)
+                .await?;
+        }
 
         let tombstoned = self
             .backend
@@ -191,12 +201,60 @@ impl LocalRegistryService {
         self.drop_version_bytes(registry, name, version).await;
         self.delete_readme_for_version(registry, name, version)
             .await;
+        self.release_name_if_last_version(registry, name).await;
         if let Some(ref cache) = self.explore_cache {
             cache.invalidate(Some(registry)).await;
         }
         self.record_lifecycle_action(registry, name, version, AccessAction::Delete, identity)
             .await;
         Ok(true)
+    }
+
+    /// Pin a version against retention, or release the pin (RFC 0016 §4.1).
+    ///
+    /// The same gate the other lifecycle mutations use, and audited the same
+    /// way, because it is one: a pin is an operator's statement about a specific
+    /// release, and "who exempted this version from the policy" is exactly the
+    /// question a later reader asks.
+    ///
+    /// Recorded as `Unlist`/`Relist`'s sibling rather than as a new action —
+    /// `AccessAction::SetRetentionPin` carries whether it was set or released in
+    /// the same event, because two actions for one toggle would make the trail
+    /// harder to read, not easier.
+    pub async fn set_retention_pin(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        keep: bool,
+        identity: &Identity,
+    ) -> Result<bool, CoreError> {
+        if !identity.has_role_at_least(&Role::User) {
+            return Err(CoreError::AccessDenied(
+                "setting a retention pin requires at least User role".into(),
+            ));
+        }
+        self.check_namespace_membership(registry, name, identity)
+            .await?;
+        if !identity.is_admin() {
+            self.check_ownership_lifecycle_access(registry, name, identity)
+                .await?;
+        }
+        let changed = self
+            .backend
+            .set_retention_keep(registry, name, version, keep)
+            .await?;
+        if changed {
+            self.record_lifecycle_action(
+                registry,
+                name,
+                version,
+                AccessAction::SetRetentionPin,
+                identity,
+            )
+            .await;
+        }
+        Ok(changed)
     }
 
     /// Strip aged-out tombstone detail, keeping every coordinate claim
@@ -249,6 +307,52 @@ impl LocalRegistryService {
     ) {
         self.record_lifecycle_action(registry, "", "", action, identity)
             .await;
+    }
+
+    /// When a package's last live version is deleted, drop its ownership grants
+    /// (RFC 0016 §4.4).
+    ///
+    /// A package name is a weaker claim than a version coordinate: the numbers
+    /// stay spent forever, but the *name* is released and someone the grants
+    /// permit may create it again. Ownership is keyed by `(registry, name)` and
+    /// nothing else removes it, so leaving it behind means the previous owner
+    /// holds `releases:publish` and owner-management authority over a package
+    /// they have never seen — a smaller version of the 2026-08-26 survey's
+    /// finding 1 arriving through the back door.
+    ///
+    /// It has a second effect worth naming, because it is the one an operator
+    /// notices: a stale grant does not merely linger, it **blocks**. The
+    /// newcomer taking the released name is refused by an owner row belonging to
+    /// a package that no longer exists.
+    ///
+    /// Non-fatal. The version is already tombstoned and the name already
+    /// released by the time this runs; failing the delete because the grant
+    /// cleanup did not land would report a deletion that in fact happened.
+    async fn release_name_if_last_version(&self, registry: &str, name: &str) {
+        let Some(ref ownership) = self.ownership else {
+            return;
+        };
+        // `exists` counts published rows only — a tombstone is not one — so this
+        // is false exactly when the package has no live version left.
+        match self.backend.exists(registry, name).await {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(
+                    registry, name, error = %e,
+                    "delete: could not tell whether this was the last version, so the \
+                     package's ownership grants were left in place"
+                );
+                return;
+            }
+        }
+        if let Err(e) = ownership.remove_all_owners(registry, name).await {
+            tracing::warn!(
+                registry, name, error = %e,
+                "delete: releasing the package name's ownership grants failed; the \
+                 previous owner still holds authority over a name that is now free"
+            );
+        }
     }
 
     /// Drop every stored byte belonging to one version.

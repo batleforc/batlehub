@@ -190,6 +190,25 @@ pub const LICENSE_GATE_DENIES_EVERYTHING: &str = "license-gate.denies-everything
 /// the coordinate claim.
 pub const RETENTION_COMPACTION_LIVE: &str = "retention.compaction-live";
 
+/// `[registries.retention]` will reclaim versions on its next run — `dry_run` is
+/// off and at least one keep condition is set.
+///
+/// Legal, and the only way reclamation ever happens. Said loudly on every reload
+/// because unlike cache eviction it destroys the only copy: an evicted cache
+/// entry is re-fetchable from upstream, a reclaimed local version is frequently
+/// the only copy in existence.
+pub const RETENTION_RECLAMATION_LIVE: &str = "retention.reclamation-live";
+
+/// `[registries.retention]` reclaims on a policy that does not consult the
+/// download signal — `dry_run = false` with no `keep_if_pulled_days`.
+///
+/// **The mistake this feature exists to make hard** (RFC 0016 §4.6). Without it,
+/// `keep_versions = 10` throws away the version half the estate is pinned to
+/// because it happens to be eleventh by date, and the first anyone hears of it
+/// is a build failing against a lockfile that resolved yesterday. With it,
+/// whatever anyone is actually using stays, regardless of age or count.
+pub const RETENTION_NO_PULL_VETO: &str = "retention.no-pull-veto";
+
 /// `[search] readmes = true` while every registry has README capture off.
 ///
 /// Accepted. The index will exist and stay empty, because nothing is ever stored

@@ -284,6 +284,7 @@ pub async fn package_detail(
                 AccessAction::ReleaseNamespace => "release_namespace",
                 AccessAction::ResetQuota => "reset_quota",
                 AccessAction::TombstoneCompact => "tombstone_compact",
+                AccessAction::SetRetentionPin => "set_retention_pin",
             };
             // `event_filter` above always sets `registry`/`package_name`, so any
             // event matching it has a package coordinate; the fallback only

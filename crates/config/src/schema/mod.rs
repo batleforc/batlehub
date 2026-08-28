@@ -605,32 +605,69 @@ impl AppConfig {
         ));
     }
 
-    /// Compaction armed to actually strip detail.
+    /// Retention armed to actually do something.
     ///
     /// Raised on every reload for as long as the configuration stands, which is
-    /// the point (RFC 0016 §4.6): unlike the inert-block warnings above, this one
-    /// is not saying the setting does nothing — it is saying the setting works,
-    /// and that what it discards does not come back.
+    /// the point (RFC 0016 §4.6): unlike the inert-block warnings above, these
+    /// are not saying a setting does nothing — they are saying it works, and
+    /// that what it destroys does not come back.
     fn retention_warnings(&self, out: &mut Vec<ConfigWarning>) {
         for (index, registry) in self.registries.iter().enumerate() {
             let Some(ret) = &registry.retention else {
                 continue;
             };
-            let Some(days) = ret.tombstone_detail_for_days else {
-                continue;
-            };
             if ret.dry_run {
                 continue;
             }
+            let path = format!("registries[{index}].retention");
+
+            if let Some(days) = ret.tombstone_detail_for_days {
+                out.push(ConfigWarning::new(
+                    warnings::RETENTION_COMPACTION_LIVE,
+                    path.clone(),
+                    format!(
+                        "registry '{}' will strip the detail of every tombstone deleted more than \
+                         {days} days ago: the checksum, publisher, signature and index metadata \
+                         of those versions are discarded and cannot be recovered. The coordinate \
+                         claim is kept — a compacted tombstone still refuses a re-publish — and \
+                         there is no setting that removes it. Set dry_run = true to report \
+                         without stripping.",
+                        registry.name,
+                    ),
+                ));
+            }
+
+            if !ret.reclaims_anything() {
+                continue;
+            }
+
+            // The loud one. Ordered before the general reclamation warning so an
+            // operator reading a list top-down meets the dangerous configuration
+            // before the merely destructive one.
+            if ret.keep_if_pulled_days.is_none() {
+                out.push(ConfigWarning::new(
+                    warnings::RETENTION_NO_PULL_VETO,
+                    path.clone(),
+                    format!(
+                        "registry '{}' will reclaim locally published versions WITHOUT consulting \
+                         the download signal: dry_run is off and keep_if_pulled_days is unset. A \
+                         version the whole estate is pinned to will be destroyed the moment it \
+                         falls outside the other conditions, and the first anyone hears of it is \
+                         a build failing against a lockfile that resolved yesterday. Set \
+                         keep_if_pulled_days so that whatever is actually being used stays.",
+                        registry.name,
+                    ),
+                ));
+            }
+
             out.push(ConfigWarning::new(
-                warnings::RETENTION_COMPACTION_LIVE,
-                format!("registries[{index}].retention"),
+                warnings::RETENTION_RECLAMATION_LIVE,
+                path,
                 format!(
-                    "registry '{}' will strip the detail of every tombstone deleted more than \
-                     {days} days ago: the checksum, publisher, signature and index metadata of \
-                     those versions are discarded and cannot be recovered. The coordinate claim \
-                     is kept — a compacted tombstone still refuses a re-publish — and there is no \
-                     setting that removes it. Set dry_run = true to report without stripping.",
+                    "registry '{}' will reclaim locally published versions on its next retention \
+                     run. Unlike cache eviction this destroys the only copy — there is no \
+                     upstream to re-fetch a locally published artifact from. The coordinates stay \
+                     spent either way. Set dry_run = true to report without reclaiming.",
                     registry.name,
                 ),
             ));
@@ -1307,12 +1344,6 @@ impl AppConfig {
     /// Refuse a `[registries.retention]` block that cannot mean what it says
     /// (RFC 0016 §4.6).
     ///
-    /// Only the tombstone-compaction rules are here, because that is the only
-    /// half of retention that ships in phases 1–2. The rules RFC 0016 §4.6 states
-    /// for reclamation — a block with no keep condition, a version-tier block
-    /// carrying more than `keep`, `dry_run = false` with no `keep_if_pulled` —
-    /// have no fields to check yet and arrive with phase 3.
-    ///
     /// One §4.6 rule is **not** implemented and is not deferred by oversight: a
     /// `tombstone_detail_for` window shorter than the registry's audit-retention
     /// window. There is no configured audit-retention window in this tree to
@@ -1327,7 +1358,7 @@ impl AppConfig {
         };
 
         // A proxy-mode registry publishes nothing locally, so it has no versions
-        // to delete and no tombstones to compact. The block would govern an empty
+        // to reclaim and no tombstones to compact. The block would govern an empty
         // set in silence, and the operator who wrote it meant `[registries.cache]`.
         if registry.mode == RegistryMode::Proxy {
             bail!(
@@ -1339,17 +1370,39 @@ impl AppConfig {
             );
         }
 
-        // An empty block reads as "retention is configured" and does nothing.
-        // Phases 1-2 give it exactly one thing to say, so a block that does not
-        // say it is a mistake worth catching at startup rather than at the first
-        // run that reclaims nothing.
-        if ret.tombstone_detail_for_days.is_none() {
+        // **The rule that matters most in this function.** A retention block
+        // whose only keep conditions are absent reclaims *everything* on its
+        // first live run: the union of vetoes is empty, so nothing vetoes.
+        // `keep_yanked` does not count — it defaults to true and would make an
+        // otherwise-empty block look configured while still destroying every
+        // unyanked version in the registry.
+        if !ret.reclaims_anything() && ret.tombstone_detail_for_days.is_none() {
             bail!(
-                "registry '{}': [registries.retention] has no setting that does anything. The \
-                 only key this version implements is 'tombstone_detail_for_days'; omit the block \
-                 entirely to keep every tombstone's detail forever, which is the default",
+                "registry '{}': [registries.retention] has no setting that does anything, and an \
+                 empty block is the one that would reclaim every version on its first live run. \
+                 Set at least one keep condition (keep_versions, keep_for_days, \
+                 keep_if_pulled_days) or tombstone_detail_for_days — or omit the block entirely \
+                 to keep everything forever, which is the default",
                 registry.name
             );
+        }
+
+        // Every keep condition is a *window*, and a zero-length one keeps
+        // nothing. Distinguishable from "unset", which is the caller declining
+        // to use that condition at all, so this is a typo rather than a policy.
+        for (key, value) in [
+            ("keep_versions", ret.keep_versions),
+            ("keep_for_days", ret.keep_for_days),
+            ("keep_if_pulled_days", ret.keep_if_pulled_days),
+        ] {
+            if value == Some(0) {
+                bail!(
+                    "registry '{}': [registries.retention] {key} = 0 keeps nothing, which is not \
+                     what a keep condition set to zero looks like it means. Omit the key to \
+                     disable this condition",
+                    registry.name
+                );
+            }
         }
 
         // A short window strips the evidence while the incident that prompted the
