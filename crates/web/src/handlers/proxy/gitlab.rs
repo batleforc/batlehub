@@ -7,6 +7,7 @@ use batlehub_core::{entities::PackageId, services::ProxyService};
 use super::common::{proxy_document, proxy_stream};
 use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
+use batlehub_core::entities::Action;
 
 fn require_gitlab(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry).as_deref() {
@@ -29,7 +30,7 @@ async fn gitlab_proxy(
     project: String,
     pkg_ref: impl Into<String>,
     artifact: Option<String>,
-    scope: &str,
+    scope: Action,
     svc: web::Data<Arc<ProxyService>>,
     identity: AuthIdentity,
     map: &RegistryMap,
@@ -90,7 +91,7 @@ pub async fn gl_list_releases(
         svc,
         PackageId::new(&registry, project, "releases"),
         identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         batlehub_core::ports::DocumentKind::Versions,
         String::new(),
     )
@@ -127,7 +128,7 @@ pub async fn gl_get_release(
         project,
         tag,
         None,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         svc,
         identity,
         &map,
@@ -166,7 +167,7 @@ pub async fn gl_download_link(
         project,
         tag,
         Some(format!("link/{name}")),
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         svc,
         identity,
         &map,
@@ -206,7 +207,7 @@ pub async fn gl_download_archive(
         project,
         tag,
         Some(format!("source/{format}")),
-        batlehub_core::rules::resource_type::SOURCE_READ,
+        Action::SourceRead,
         svc,
         identity,
         &map,
@@ -245,7 +246,7 @@ pub async fn gl_download_raw(
         project,
         git_ref.clone(),
         Some(format!("rawfile/{git_ref}/{file_path}")),
-        batlehub_core::rules::resource_type::SOURCE_READ,
+        Action::SourceRead,
         svc,
         identity,
         &map,
@@ -286,12 +287,5 @@ pub async fn gl_packages(
     batlehub_core::services::validate_path_safe("path", &api_path).map_err(AppError::from)?;
     let pkg = PackageId::new(&registry, "_packages", "_")
         .with_artifact(format!("pkgpath/api/v4/{api_path}"));
-    proxy_stream(
-        svc,
-        pkg,
-        identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
-        None,
-    )
-    .await
+    proxy_stream(svc, pkg, identity, Action::ReleasesRead, None).await
 }

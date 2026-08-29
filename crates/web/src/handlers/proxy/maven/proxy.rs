@@ -7,6 +7,7 @@ use super::{
     Sha256, StorageMeta,
 };
 use crate::handlers::schemas::{ArtifactBytes, OkResponse};
+use batlehub_core::entities::Action;
 
 /// Proxy or serve a Maven repository request.
 ///
@@ -58,7 +59,7 @@ pub async fn maven_get(
         svc.authorize_read(
             &PackageId::new(&registry, auth_name, auth_version),
             &identity.0,
-            batlehub_core::rules::resource_type::RELEASES_READ,
+            Action::ReleasesRead,
         )
         .await
         .map_err(AppError::from)?;
@@ -83,7 +84,7 @@ pub async fn maven_get(
                 svc,
                 PackageId::new(&registry, name.clone(), "maven-metadata.xml"),
                 identity,
-                batlehub_core::rules::resource_type::RELEASES_READ,
+                Action::ReleasesRead,
                 batlehub_core::ports::DocumentKind::Versions,
                 String::new(),
             )
@@ -99,7 +100,7 @@ pub async fn maven_get(
                 PackageId::new(&registry, name.clone(), version.as_str())
                     .with_artifact(filename.as_str()),
                 identity,
-                batlehub_core::rules::resource_type::RELEASES_READ,
+                Action::ReleasesRead,
                 Some(content_type_for(filename)),
             )
             .await
@@ -172,6 +173,7 @@ pub async fn maven_put(
                 // through the same policy gate (role, versioning, signing, quota,
                 // size limit) that the .pom branch gets via `publish_and_respond`.
                 let artifact_len = bytes.len() as u64;
+                let storage_key = maven_artifact_storage_key(&registry, &name, &version, &filename);
                 local_svc
                     .enforce_publish_policy(
                         &PublishPolicyRequest {
@@ -181,13 +183,20 @@ pub async fn maven_put(
                             artifact_len,
                             signature_bytes: None,
                             signature_type: None,
+                            // RFC 0015 §4.5: a Maven coordinate is several files
+                            // PUT one at a time, so `immutable` has to ask
+                            // whether *this file* is being replaced. The version
+                            // row exists from the `.pom` onward, and deciding on
+                            // it would make an `immutable = "always"` namespace
+                            // refuse the jar of the publish that just created
+                            // it — permanence turned into impossibility.
+                            artifact_key: Some(&storage_key),
                         },
                         &identity.0,
                     )
                     .await
                     .map_err(AppError::from)?;
 
-                let storage_key = maven_artifact_storage_key(&registry, &name, &version, &filename);
                 if let Err(e) = local_svc
                     .storage
                     .store(

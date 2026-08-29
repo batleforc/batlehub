@@ -6,6 +6,9 @@ license.workspace = true
 
 [dependencies]
 batlehub-core = { path = "../core" }
+# RFC 0015 §4.7's `grants_shadow.until` is a date, and making it a date rather
+# than a string is what stops an unparseable one reaching the resolver.
+chrono.workspace = true
 glob.workspace = true
 ipnet.workspace = true
 regex.workspace = true

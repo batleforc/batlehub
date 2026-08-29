@@ -11,7 +11,6 @@ use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
     entities::PackageId,
     error::CoreError,
-    rules::resource_type::RELEASES_READ,
     services::{validate_package_name, LocalRegistryService, ProxyRequest, ProxyService},
 };
 
@@ -20,6 +19,7 @@ use super::{registry_public_base, require_jbm, STABLE_CHANNEL};
 use crate::handlers::proxy::common::require_local_mode;
 use crate::handlers::schemas::ProtocolDocument;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+use batlehub_core::entities::Action;
 
 #[derive(Debug, Deserialize)]
 pub struct UpdatePluginsQuery {
@@ -165,7 +165,7 @@ pub async fn jbm_plugins_list(
     let proxy_req = ProxyRequest {
         package_id: PackageId::new(&registry, xml_id, "latest"),
         identity: identity.0,
-        resource_type: RELEASES_READ.to_owned(),
+        action: Action::ReleasesRead.to_owned(),
         ip_address: None,
         user_agent: None,
     };

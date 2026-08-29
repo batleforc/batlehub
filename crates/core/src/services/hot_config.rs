@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use regex::Regex;
 use tokio::sync::RwLock;
 
+use crate::entities::{RegistryGrants, RegistryPolicyTiers};
 use crate::entities::{ResolutionPolicy, Role};
 use crate::ports::{BetaChannelPort, RegistryClient};
 use crate::rules::Rule;
@@ -366,6 +367,81 @@ pub struct HotConfig {
     pub registries: HashMap<String, Arc<dyn RegistryClient>>,
     /// Per-registry access policies. `Arc` allows cheap cloning (rules are not Clone).
     pub policies: HashMap<String, Arc<RegistryPolicy>>,
+    /// Per-namespace rule chains, for the namespaces that override a gate
+    /// (RFC 0015 §4.1).
+    ///
+    /// `(match_prefix, chain)` in config order, and **only for namespaces that
+    /// declared `rules`** — one with none runs the registry's chain from
+    /// `policies` above, and holding an identical copy would double the trait
+    /// objects for no behaviour change.
+    ///
+    /// Composition is deepest-wins, so the **last** matching prefix supplies the
+    /// chain: an operator who writes `@acme` and then `@acme/billing` gets the
+    /// more specific answer from the block they wrote second.
+    pub namespace_policies: HashMap<String, Vec<(String, Arc<RegistryPolicy>)>>,
+    /// Per-registry grant hierarchies (RFC 0015 §4.1).
+    ///
+    /// The registry and namespace tiers, built from the config file. Package and
+    /// version tiers come from the `policy` table and are not here.
+    ///
+    /// **A registry with no entry grants nothing**, which is the fail-closed
+    /// reading and the one §4.3 requires: absence is not "everything". Every
+    /// registry the server configures gets an entry, so a missing key only
+    /// happens in a test that did not build one — and such a test gets a closed
+    /// registry rather than an open one.
+    pub grants: HashMap<String, Arc<RegistryGrants>>,
+    /// RFC 0015 §4.1's tier above `registry` — the whole server.
+    ///
+    /// Where the control-surface verbs live, because about a dozen admin
+    /// endpoints name no registry and so had no node to attach a grant to. It is
+    /// prepended to every resolution path, so it composes by §4.3's union like
+    /// any other tier rather than by a rule of its own.
+    ///
+    /// `None` is **not** a seal: a deployment that has never written an instance
+    /// grant must behave as it did before this tier existed, and a union with
+    /// nothing is what that means. The empty-versus-absent distinction §4.3 draws
+    /// for a node's `grants` is carried by the `Node` inside, not by this
+    /// `Option`.
+    pub instance: Option<Arc<crate::entities::Node>>,
+    /// Per-registry policy tiers (RFC 0015 §4.1) — the other five policies.
+    ///
+    /// `grants` above carries the one that composes by union; this carries
+    /// `visibility`, `prerelease_visibility`, `versioning`, `quota` and `rules`,
+    /// which compose deepest-wins.
+    ///
+    /// **A registry with no entry constrains nothing**, which is the opposite of
+    /// the reading `grants` takes and is not an inconsistency: grants only widen,
+    /// so a union of nothing is nothing and absence must fail closed; these are
+    /// constraints, so absence must leave behaviour exactly as it is today.
+    pub policy_tiers: HashMap<String, Arc<RegistryPolicyTiers>>,
+    /// Storage for the package and version tiers (RFC 0015 §6.3).
+    ///
+    /// `None` means those two tiers contribute nothing — which is the correct
+    /// reading for a deployment with no database and for a test fixture that
+    /// wired none, and is *not* the same as "they deny": a tier with no rows
+    /// inherits.
+    pub grant_repo: Option<Arc<dyn crate::ports::GrantRepository>>,
+    /// Storage for the package and version *policy* tiers (RFC 0015 §6.3).
+    ///
+    /// `None` means those two tiers contribute nothing, which is the correct
+    /// reading for a deployment with no database and for a fixture that wired
+    /// none — and is not the same as "they deny": a tier with no row inherits.
+    pub policy_repo: Option<Arc<dyn crate::ports::PolicyRepository>>,
+    /// What shadow mode would have refused (RFC 0015 §4.7).
+    ///
+    /// `None` disables the recording, not the shadow — a node in `dry_run` still
+    /// serves what it would refuse. That asymmetry is deliberate: the fail-open
+    /// behaviour is what the operator configured, and dropping it because a
+    /// buffer is missing would make the setting mean different things in
+    /// different builds. What a missing log costs is the *visibility*, which is
+    /// why every wiring path installs one.
+    pub shadow_log: Option<Arc<crate::services::shadow::ShadowLog>>,
+    /// Whole-registry documents, cached per grant set (RFC 0015 §11.7 arm 3).
+    ///
+    /// `None` disables the cache entirely, which is what every fixture that does
+    /// not build one gets — correct, because a missing cache is a slow answer
+    /// rather than a wrong one.
+    pub document_cache: Option<Arc<crate::services::document_cache::DocumentCache>>,
     /// Per-registry versioning policies (Clone, cheap).
     pub versioning: HashMap<String, VersioningPolicy>,
     /// Per-registry artifact signing configs (Clone, cheap).
@@ -473,6 +549,14 @@ impl Default for HotConfig {
         Self {
             registries: HashMap::new(),
             policies: HashMap::new(),
+            namespace_policies: HashMap::new(),
+            grants: HashMap::new(),
+            instance: None,
+            policy_tiers: HashMap::new(),
+            grant_repo: None,
+            policy_repo: None,
+            shadow_log: None,
+            document_cache: None,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),

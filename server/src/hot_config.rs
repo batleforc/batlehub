@@ -301,6 +301,12 @@ pub(super) fn build_hot_bundle(
     repo: &Arc<dyn PackageRepository>,
     vuln_repo: &Arc<dyn VulnerabilityRepository>,
     sbom_repo: &Arc<dyn SbomRepository>,
+    // The package and version tiers (RFC 0015 §6.3). Threaded through rather
+    // than defaulted: a `None` here on the reload path would silently drop those
+    // two tiers on every config change, and the symptom would be a grant that
+    // worked until someone edited an unrelated setting.
+    grant_repo: &Option<Arc<dyn batlehub_core::ports::GrantRepository>>,
+    policy_repo: &Option<Arc<dyn batlehub_core::ports::PolicyRepository>>,
 ) -> anyhow::Result<(
     HotConfig,
     AccessConfig,
@@ -312,12 +318,20 @@ pub(super) fn build_hot_bundle(
 )> {
     let mut reg_clients: HashMap<String, Arc<dyn batlehub_core::ports::RegistryClient>> =
         HashMap::new();
+    let mut ns_policies: HashMap<
+        String,
+        Vec<(String, Arc<batlehub_core::services::RegistryPolicy>)>,
+    > = HashMap::new();
     let mut reg_policies: HashMap<String, Arc<batlehub_core::services::RegistryPolicy>> =
         HashMap::new();
     let mut reg_type_map: HashMap<String, String> = HashMap::new();
     let mut reg_mode_map: HashMap<String, RegistryMode> = HashMap::new();
     let mut upstream_map: HashMap<String, String> = HashMap::new();
     let mut reg_resolution: HashMap<String, batlehub_core::entities::ResolutionPolicy> =
+        HashMap::new();
+    let mut reg_grants: HashMap<String, Arc<batlehub_core::entities::RegistryGrants>> =
+        HashMap::new();
+    let mut reg_policy: HashMap<String, Arc<batlehub_core::entities::RegistryPolicyTiers>> =
         HashMap::new();
 
     for reg in &cfg.registries {
@@ -332,6 +346,37 @@ pub(super) fn build_hot_bundle(
         )
         .with_context(|| format!("building policy for '{}'", reg.name))?;
         reg_policies.insert(reg.name.clone(), Arc::new(policy));
+        // RFC 0015 §4.1 — one chain per namespace that overrides a gate. Empty
+        // for a registry whose namespaces override none, which is every registry
+        // before phase 4 and most of them after it.
+        let ns = crate::builders::build_namespace_policies(
+            reg,
+            Arc::clone(repo),
+            Arc::clone(vuln_repo),
+            Arc::clone(sbom_repo),
+        )
+        .with_context(|| format!("building namespace rule overrides for '{}'", reg.name))?;
+        if !ns.is_empty() {
+            ns_policies.insert(reg.name.clone(), ns);
+        }
+        // Built in the same pass as the policy, from the same `reg`, so a
+        // registry can never end up with a rule chain and no grant hierarchy —
+        // which under §4.3's "absence is not everything" would refuse every
+        // request to it.
+        reg_grants.insert(
+            reg.name.clone(),
+            Arc::new(
+                crate::grants::build_registry_grants(reg)
+                    .with_context(|| format!("building grants for '{}'", reg.name))?,
+            ),
+        );
+        // No `?`: the validation that could fail ran in `build_registry_grants`
+        // just above, for both halves. A second fallible builder over the same
+        // config would be a second opinion on whether it is legal.
+        reg_policy.insert(
+            reg.name.clone(),
+            Arc::new(crate::grants::build_policy_tiers(reg)),
+        );
         // Built from the same `reg` in the same pass as the policy above, so a
         // registry can never end up with a rule the catalog cannot see.
         reg_resolution.insert(
@@ -346,9 +391,34 @@ pub(super) fn build_hot_bundle(
         }
     }
 
+    // A top-level `[grants]` block, parsed into the instance tier's map.
+    let instance_grants = crate::grants::build_instance_grants(cfg)?;
+
     let hot = HotConfig {
+        // RFC 0015 §4.1's tier above every registry — where the control-surface
+        // verbs live (§4.2's deferred `require_admin` split). Built from rule 5's
+        // translation, plus any top-level `[grants]` block, so an admin reaches
+        // exactly what they reached before and the verbs become delegable.
+        instance: Some(std::sync::Arc::new(
+            batlehub_core::services::authz::translate::instance_node(instance_grants.as_ref()),
+        )),
+        grants: reg_grants,
+        policy_tiers: reg_policy,
+        grant_repo: grant_repo.clone(),
+        policy_repo: policy_repo.clone(),
+        // A fresh cache per reload. Config that changes what a grant resolves to
+        // must not be answered from documents built under the old one — and a
+        // reload is rare enough that rebuilding a handful of documents costs
+        // nothing next to reasoning about which entries survived.
+        document_cache: Some(batlehub_core::services::document_cache::DocumentCache::new()),
         registries: reg_clients,
         policies: reg_policies,
+        // One buffer for the whole instance, replaced on reload with the config
+        // that produced it. A shadow's would-have-beens describe the config that
+        // was in force, so carrying them across a reload that changed the
+        // grants would show an operator entries a node no longer produces.
+        shadow_log: Some(Arc::new(batlehub_core::services::shadow::ShadowLog::new())),
+        namespace_policies: ns_policies,
         versioning: build_versioning_map(&cfg.registries),
         signing: build_signing_map(&cfg.registries),
         sbom: build_sbom_map(&cfg.registries),
@@ -611,6 +681,8 @@ pub(super) fn make_hot_builder(
     repo: Arc<dyn PackageRepository>,
     vuln_repo: Arc<dyn VulnerabilityRepository>,
     sbom_repo: Arc<dyn SbomRepository>,
+    grant_repo: Option<Arc<dyn batlehub_core::ports::GrantRepository>>,
+    policy_repo: Option<Arc<dyn batlehub_core::ports::PolicyRepository>>,
     text_config: SettledTextConfig,
 ) -> batlehub_web::services::HotConfigBuilder {
     Arc::new(move |cfg: &AppConfig| {
@@ -618,8 +690,15 @@ pub(super) fn make_hot_builder(
         // configuration this server does not have is refused here, on the same
         // path the config editor's "validate" button takes.
         text_config.check(&cfg.search)?;
-        let (hot, access, rm, rmm, um, vuln_db, sumdb) =
-            build_hot_bundle(cfg, &beta_channel_store, &repo, &vuln_repo, &sbom_repo)?;
+        let (hot, access, rm, rmm, um, vuln_db, sumdb) = build_hot_bundle(
+            cfg,
+            &beta_channel_store,
+            &repo,
+            &vuln_repo,
+            &sbom_repo,
+            &grant_repo,
+            &policy_repo,
+        )?;
         let mut cargo_map: HashMap<String, CargoIndexProxy> = HashMap::new();
         for reg in &cfg.registries {
             if reg.registry_type == RegistryKind::Cargo.as_str()

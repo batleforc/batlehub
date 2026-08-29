@@ -7,6 +7,7 @@ use libfuzzer_sys::fuzz_target;
 use tokio::runtime::Runtime;
 
 use batlehub_core::{
+    entities::Action,
     entities::{Identity, PackageId, PackageMetadata, Role},
     rules::{ReleaseAgeGateRule, Rule, RuleContext},
 };
@@ -55,7 +56,7 @@ fuzz_target!(|data: &[u8]| {
     let ctx = RuleContext {
         identity: &identity,
         package: &meta,
-        resource_type: "releases:read",
+        action: Action::ReleasesRead,
         cache_entry: None,
         requested_version: None,
     };

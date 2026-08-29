@@ -88,7 +88,9 @@ pub use config_change::PgConfigChangeRepository;
 pub use governance::beta_channel::PgBetaChannelStore;
 
 #[cfg(feature = "db-postgres")]
+pub use governance::grants::PgGrantRepository;
 pub use governance::ownership::PgOwnershipStore;
+pub use governance::policy::PgPolicyRepository;
 
 #[cfg(feature = "db-postgres")]
 pub use governance::team_namespace::PgTeamNamespaceStore;

@@ -88,13 +88,22 @@ async fn make_explore_app_full(
         .collect();
     let policies: HashMap<String, Arc<RegistryPolicy>> = reg_names
         .iter()
-        .map(|n| (n.to_string(), Arc::new(rbac_policy(repo_dyn.clone()))))
+        .map(|n| (n.to_string(), Arc::new(rbac_policy(repo_dyn.clone()).0)))
         .collect();
 
     // One lock for both services, as `server/src/main.rs` wires it. This fixture
     // used to build two and write the page size into both by hand; it no longer
     // has to, and a policy set here is now the one the local read path consults.
     let hot = new_hot_lock(HotConfig {
+        // RFC 0015 §4.2's instance tier, wired exactly as production wires it:
+        // `instance_node` is §10 rule 5's own translation, so the fixture's admin
+        // holds the control verbs and nobody else does. Without it every
+        // `require_verb` on a control endpoint refuses, including the admin the
+        // suite is asserting about — a fixture that does not build the model
+        // tests a server nobody runs (§13.5).
+        instance: Some(std::sync::Arc::new(
+            batlehub_core::services::authz::translate::instance_node(None),
+        )),
         registries,
         policies,
         versions_per_page: versions_per_page

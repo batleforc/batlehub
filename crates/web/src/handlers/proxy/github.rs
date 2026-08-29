@@ -7,6 +7,7 @@ use batlehub_core::{entities::PackageId, services::ProxyService};
 use super::common::{proxy_document, proxy_stream};
 use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
+use batlehub_core::entities::Action;
 
 /// Forgejo/Gitea expose an identical release URL scheme (`{owner}/{repo}/releases…`)
 /// and the same `PackageId` semantics as GitHub, so they share these handlers — the
@@ -34,7 +35,7 @@ async fn github_proxy(
     repo: String,
     pkg_ref: impl Into<String>,
     artifact: Option<String>,
-    scope: &str,
+    scope: Action,
     svc: web::Data<Arc<ProxyService>>,
     identity: AuthIdentity,
     map: &RegistryMap,
@@ -80,7 +81,7 @@ pub async fn list_releases(
         svc,
         PackageId::new(&registry, format!("{owner}/{repo}"), "releases"),
         identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         batlehub_core::ports::DocumentKind::Versions,
         String::new(),
     )
@@ -118,7 +119,7 @@ pub async fn get_release(
         format!("{owner}/{repo}"),
         tag,
         None,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         svc,
         identity,
         &map,
@@ -163,7 +164,7 @@ pub async fn download_asset(
         format!("{owner}/{repo}"),
         tag,
         Some(asset_id),
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         svc,
         identity,
         &map,
@@ -203,7 +204,7 @@ pub async fn download_asset_by_name(
         format!("{owner}/{repo}"),
         tag,
         Some(format!("filename/{filename}")),
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         svc,
         identity,
         &map,
@@ -243,7 +244,7 @@ pub async fn download_tarball(
         format!("{owner}/{repo}"),
         tag,
         Some(artifact),
-        batlehub_core::rules::resource_type::SOURCE_READ,
+        Action::SourceRead,
         svc,
         identity,
         &map,
@@ -282,7 +283,7 @@ pub async fn download_zipball(
         format!("{owner}/{repo}"),
         tag,
         Some("zipball".to_owned()),
-        batlehub_core::rules::resource_type::SOURCE_READ,
+        Action::SourceRead,
         svc,
         identity,
         &map,
@@ -323,7 +324,7 @@ pub async fn download_raw(
         format!("{owner}/{repo}"),
         git_ref,
         Some(artifact),
-        batlehub_core::rules::resource_type::SOURCE_READ,
+        Action::SourceRead,
         svc,
         identity,
         &map,

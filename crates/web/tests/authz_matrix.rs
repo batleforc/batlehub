@@ -86,6 +86,9 @@ use batlehub_core::entities::{Identity, Role};
 use batlehub_core::ports::TeamNamespacePort;
 use batlehub_core::services::PublishRequest;
 
+/// A request body and its `Content-Type`, built per row.
+type Body = fn() -> (Vec<u8>, &'static str);
+
 /// What the matrix expects a request from a caller the axis denies.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Expect {
@@ -131,6 +134,26 @@ struct Row {
     /// permitted caller in this minimal fixture (they need multi-file artifacts
     /// or an upstream). Stated per row rather than globally.
     control: bool,
+    /// The string that betrays this package in *this* document, when the
+    /// coordinate itself does not appear in it.
+    ///
+    /// `disclosed` looks for the package name, the version or the artifact
+    /// bytes, which covers almost every route. It does not cover a document that
+    /// names the package by a *part* of its coordinate: the OpenVSX namespace
+    /// listing keys extensions by their short name, so `acme.zqfixture` appears
+    /// as `zqfixture` and none of the three default signals fires. Naming the
+    /// token per row is honest about what leakage looks like there; widening the
+    /// default signals would make every row's assertion vaguer to fix one.
+    token: Option<&'static str>,
+    /// A read reached by `POST` rather than `GET`, with the body it needs.
+    ///
+    /// Three routes in this server take a request document and answer with
+    /// package data — the VS Code gallery's `extensionquery`, JetBrains'
+    /// compatible-updates lookup. They are *reads* by every measure this file
+    /// cares about, and the HTTP method is the only thing that kept them out of
+    /// [`ROUTE_INVENTORY`], which filters on `item.get`. A search that discloses
+    /// a private package discloses it whichever verb carried the request.
+    post: Option<Body>,
 }
 
 /// Axis B is only meaningful on routes that serve *this package's* data.
@@ -154,7 +177,7 @@ const FIXTURE_BYTES: &[u8] = b"matrix-fixture-bytes";
 /// everything. So the question is not "was it a 200" but "did the package
 /// appear in it" — which is also the property the operator actually cares
 /// about, and the one a status-only assertion gets wrong in both directions.
-async fn disclosed<S>(app: &S, uri: &str, pkg: &str, version: &str) -> (bool, u16)
+async fn disclosed<S>(app: &S, row: &Row) -> (bool, u16)
 where
     S: actix_web::dev::Service<
         actix_http::Request,
@@ -162,17 +185,11 @@ where
         Error = actix_web::Error,
     >,
 {
-    disclosed_as(app, uri, pkg, version, None).await
+    disclosed_as(app, row, None).await
 }
 
 /// [`disclosed`], as a specific caller. `None` is anonymous.
-async fn disclosed_as<S>(
-    app: &S,
-    uri: &str,
-    pkg: &str,
-    version: &str,
-    token: Option<&str>,
-) -> (bool, u16)
+async fn disclosed_as<S>(app: &S, row: &Row, token: Option<&str>) -> (bool, u16)
 where
     S: actix_web::dev::Service<
         actix_http::Request,
@@ -180,7 +197,17 @@ where
         Error = actix_web::Error,
     >,
 {
-    let mut req = TestRequest::get().uri(uri);
+    let (pkg, version) = (row.name, row.version);
+    let mut req = match row.post {
+        None => TestRequest::get().uri(row.uri),
+        Some(body) => {
+            let (bytes, content_type) = body();
+            TestRequest::post()
+                .uri(row.uri)
+                .insert_header(("Content-Type", content_type))
+                .set_payload(bytes)
+        }
+    };
     if let Some(t) = token {
         req = req.insert_header(("Authorization", bearer(t)));
     }
@@ -225,7 +252,7 @@ where
     let leaked = body
         .windows(FIXTURE_BYTES.len())
         .any(|w| w == FIXTURE_BYTES)
-        || text.contains(pkg)
+        || text.contains(row.token.unwrap_or(pkg))
         || text.contains(version);
     (leaked, status)
 }
@@ -246,7 +273,22 @@ impl Row {
             name: "pkg",
             version: "9.8.7",
             control: true,
+            token: None,
+            post: None,
         }
+    }
+
+    /// The string that gives this package away in this route's document, when
+    /// the coordinate itself does not appear in it.
+    fn token(mut self, token: &'static str) -> Self {
+        self.token = Some(token);
+        self
+    }
+
+    /// This read is reached by `POST` with the given body, not by `GET`.
+    fn post(mut self, body: Body) -> Self {
+        self.post = Some(body);
+        self
     }
 
     /// Override **axis A**, the registry rule chain.
@@ -307,6 +349,25 @@ fn terraform_provider_meta() -> serde_json::Value {
 /// Terraform module coordinates.
 fn terraform_module_meta() -> serde_json::Value {
     json!({"kind": "module", "namespace": "acme", "name": "vpc", "provider": "aws"})
+}
+
+/// [`terraform_module_meta`] with the fields a module *detail* read resolves by.
+///
+/// `terraform_module_upload` writes `version` and `sha256` into the index line,
+/// and the detail route answers `404 — not available` without them. The
+/// versions-listing row above does not need them, which is why the two metas are
+/// separate rather than one widened for both.
+fn terraform_module_version_meta() -> serde_json::Value {
+    json!({
+        "kind": "module", "namespace": "acme", "name": "vpc", "provider": "aws",
+        "version": "9.8.7", "sha256": "", "yanked": false,
+    })
+}
+
+/// An OpenVSX extension in the `acme` namespace, under a name no other string
+/// in a namespace document collides with.
+fn namespaced_extension_meta() -> serde_json::Value {
+    json!({"id": "acme.zqfixture", "version": "9.8.7"})
 }
 
 /// The sdist filename the PyPI read paths key on.
@@ -527,7 +588,91 @@ fn matrix() -> Vec<Row> {
         )
         .pkg("org.acme.plugin")
         .meta(plugin_meta),
+        // ── routes the inventory claimed and no row reached ──────────────────
+        //
+        // Five entries were marked `Coverage::Row` with nothing behind them,
+        // while five others were marked `NoRow` and were being exercised all
+        // along. The counts matched, so `every_row_is_accounted_for_in_the_inventory`
+        // saw nothing; `coverage_claims_match_the_routes_rows_actually_reach`
+        // is what found it, and these rows are what make the five claims true
+        // rather than retracted.
+        // The namespace listing keys extensions by their short name, so the
+        // coordinate `acme.zqfixture` shows up as `zqfixture` and nothing else
+        // in the document resembles it — `ext` would have matched the literal
+        // `"extensions"` key and reported a leak from an empty document.
+        Row::new("openvsx", "/proxy/reg/api/acme")
+            .pkg("acme.zqfixture")
+            .token("zqfixture")
+            .meta(namespaced_extension_meta)
+            .vis(WHOLE_REGISTRY),
+        Row::new("openvsx", "/proxy/reg/api/acme/ext")
+            .pkg("acme.ext")
+            .meta(extension_meta),
+        Row::new("openvsx", "/proxy/reg/api/acme/ext/9.8.7")
+            .pkg("acme.ext")
+            .meta(extension_meta),
+        Row::new("terraform", "/proxy/reg/v1/modules/acme/vpc/aws/9.8.7")
+            .pkg("modules/acme/vpc/aws")
+            .meta(terraform_module_version_meta)
+            // Like the `/versions` row above it: the handler answers from
+            // `ProxyService::version_document` rather than from the local
+            // registry, so the fixture's published module never reaches it and
+            // a permitted caller gets the same `404`. The negative assertion is
+            // what this row is for — the chain must run before the fall-through.
+            .no_control(),
+        // ── reads that arrive as POST ────────────────────────────────────────
+        //
+        // Neither of these was in any inventory: the read gate filters on
+        // `item.get`, and the write gate below would have classified them as
+        // writes they are not. Both are searches, and a search that answers an
+        // anonymous caller with a package name is survey finding 11 with a
+        // different verb on the front of it.
+        Row::new("openvsx", "/proxy/reg/vscode/gallery/extensionquery")
+            .pkg("acme.ext")
+            .meta(extension_meta)
+            .post(extension_query_body)
+            .vis(WHOLE_REGISTRY),
+        Row::new(
+            "jetbrains-marketplace",
+            "/proxy/reg/api/search/updates/compatible",
+        )
+        .pkg("org.acme.plugin")
+        .meta(plugin_meta)
+        .post(jbm_compatible_body)
+        .vis(WHOLE_REGISTRY)
+        // The fixture publishes no plugin *update* rows, which is what this
+        // route answers from — a permitted caller gets `[]` too.
+        .no_control(),
     ]
+}
+
+/// The VS Code gallery query an editor sends to resolve one extension by name.
+fn extension_query_body() -> (Vec<u8>, &'static str) {
+    let body = json!({
+        "filters": [{
+            "criteria": [
+                { "filterType": 8, "value": "Microsoft.VisualStudio.Code" },
+                { "filterType": 7, "value": "acme.ext" }
+            ],
+            "pageNumber": 1, "pageSize": 50, "sortBy": 0, "sortOrder": 0
+        }],
+        "assetTypes": [],
+        // IncludeVersions | IncludeFiles | IncludeVersionProperties
+        "flags": 0x1 | 0x2 | 0x10
+    });
+    (
+        serde_json::to_vec(&body).expect("query body"),
+        "application/json",
+    )
+}
+
+/// The JetBrains compatible-updates lookup, keyed by IDE build.
+fn jbm_compatible_body() -> (Vec<u8>, &'static str) {
+    let body = json!({ "build": "IU-241.1", "pluginXMLIds": ["org.acme.plugin"] });
+    (
+        serde_json::to_vec(&body).expect("query body"),
+        "application/json",
+    )
 }
 
 /// Build a local-mode registry whose RBAC *allows* anonymous, holding one
@@ -580,17 +725,31 @@ async fn vis_app_for(row: &Row) -> impl TestService {
 
 /// Publish the row's package into `parts`.
 async fn seed(parts: &LocalRegistryAppParts, row: &Row) {
-    let artifact = Bytes::from_static(b"matrix-fixture-bytes");
+    publish_fixture(parts, row.name, row.version, (row.meta)()).await;
+}
+
+/// Publish one coordinate into `parts`, as `user-1`.
+///
+/// Shared by the read rows and the write rows: a yank has to have something to
+/// yank, and a fixture that seeds differently for the two halves is a fixture
+/// whose two halves can disagree.
+async fn publish_fixture(
+    parts: &LocalRegistryAppParts,
+    name: &str,
+    version: &str,
+    index_metadata: serde_json::Value,
+) {
+    let artifact = Bytes::from_static(FIXTURE_BYTES);
     let checksum = hex::encode(Sha256::digest(&artifact));
     parts
         .local_svc
         .publish(PublishRequest {
             registry: "reg".to_owned(),
-            name: row.name.to_owned(),
-            version: row.version.to_owned(),
+            name: name.to_owned(),
+            version: version.to_owned(),
             artifact,
             checksum,
-            index_metadata: (row.meta)(),
+            index_metadata,
             unlisted: false,
             publisher: Identity {
                 user_id: Some("user-1".to_owned()),
@@ -696,8 +855,8 @@ const ROUTE_INVENTORY: &[(&str, Coverage)] = &[
     ("/proxy/{registry}/api/security-advisories/", Coverage::NoPackage("Composer advisory feed; CVE data, not package contents")),
     ("/proxy/{registry}/api/v1/crates", Coverage::NoRow("package read, not yet exercised")),
     ("/proxy/{registry}/api/v1/crates/{name}/owners", Coverage::NoRow("package read, not yet exercised")),
-    ("/proxy/{registry}/api/v1/gems/{name}.json", Coverage::NoRow("package read, not yet exercised")),
-    ("/proxy/{registry}/api/v1/versions/{name}.json", Coverage::NoRow("package read, not yet exercised")),
+    ("/proxy/{registry}/api/v1/gems/{name}.json", Coverage::Row),
+    ("/proxy/{registry}/api/v1/versions/{name}.json", Coverage::Row),
     ("/proxy/{registry}/api/v4/{path}", Coverage::NoRow("package read, not yet exercised")),
     ("/proxy/{registry}/api/version", Coverage::NoPackage("JetBrains marketplace API version banner")),
     ("/proxy/{registry}/api/{namespace}", Coverage::Row),
@@ -767,11 +926,11 @@ const ROUTE_INVENTORY: &[(&str, Coverage)] = &[
     ("/proxy/{registry}/vscode/item", Coverage::NoRow("package read, not yet exercised")),
     ("/proxy/{registry}/vscode/unpkg/{publisher}/{name}/{version}/{path}", Coverage::NoRow("package read, not yet exercised")),
     ("/proxy/{registry}/{extension_id}/{version}/vsix", Coverage::Row),
-    ("/proxy/{registry}/{hostname}/{namespace}/{ptype}/index.json", Coverage::Row),
+    ("/proxy/{registry}/{hostname}/{namespace}/{ptype}/index.json", Coverage::NoRow("package read, not yet exercised: the Terraform provider *mirror*, which refuses any hostname that is not the registry's own upstream and answers `no upstream configured` against this fixture's FixedRegistry. Needs a registry with a real upstream URL, not a local-mode one")),
     ("/proxy/{registry}/{hostname}/{namespace}/{ptype}/{version}.json", Coverage::NoRow("package read, not yet exercised")),
-    ("/proxy/{registry}/{module}/@latest", Coverage::NoRow("package read, not yet exercised")),
-    ("/proxy/{registry}/{module}/@v/list", Coverage::NoRow("package read, not yet exercised")),
-    ("/proxy/{registry}/{module}/@v/{filename}", Coverage::NoRow("package read, not yet exercised")),
+    ("/proxy/{registry}/{module}/@latest", Coverage::Row),
+    ("/proxy/{registry}/{module}/@v/list", Coverage::Row),
+    ("/proxy/{registry}/{module}/@v/{filename}", Coverage::Row),
     ("/proxy/{registry}/{name}/{version}/download", Coverage::Row),
     ("/proxy/{registry}/{owner}/{repo}/raw/{git_ref}/{path}", Coverage::NoRow("package read, not yet exercised")),
     ("/proxy/{registry}/{owner}/{repo}/releases", Coverage::NoRow("package read, not yet exercised")),
@@ -952,8 +1111,7 @@ async fn every_local_read_route_enforces_the_registry_rule_chain() {
         // negative assertion below proves nothing.
         let mut control_ok = true;
         if row.control {
-            let (shown, status) =
-                disclosed_as(&app, row.uri, row.name, row.version, Some(USER_TOKEN)).await;
+            let (shown, status) = disclosed_as(&app, &row, Some(USER_TOKEN)).await;
             if !shown {
                 broken_controls.push(format!(
                     "[chain] {} {} — a permitted caller did NOT see the package (status {status}). \
@@ -967,7 +1125,7 @@ async fn every_local_read_route_enforces_the_registry_rule_chain() {
 
         if control_ok {
             // Anonymous, whom the registry's RBAC grants nothing.
-            let (served, status) = disclosed(&app, row.uri, row.name, row.version).await;
+            let (served, status) = disclosed(&app, &row).await;
             match row.expect {
                 Expect::Denied if served => failures.push(format!(
                     "[chain] {} {} — disclosed the package to a caller the registry's RBAC denies \
@@ -993,8 +1151,7 @@ async fn every_local_read_route_enforces_the_registry_rule_chain() {
         if row.control {
             // A `User` is above the bar `Visibility::Internal` sets, so the same
             // request must still be served — the control for this axis.
-            let (shown, status) =
-                disclosed_as(&vapp, row.uri, row.name, row.version, Some(USER_TOKEN)).await;
+            let (shown, status) = disclosed_as(&vapp, &row, Some(USER_TOKEN)).await;
             if !shown {
                 broken_controls.push(format!(
                     "[visibility] {} {} — a permitted caller did NOT see the package (status \
@@ -1007,7 +1164,7 @@ async fn every_local_read_route_enforces_the_registry_rule_chain() {
 
         if vis_control_ok {
             // Anonymous. The chain allows; only `check_visibility` can refuse.
-            let (served, status) = disclosed(&vapp, row.uri, row.name, row.version).await;
+            let (served, status) = disclosed(&vapp, &row).await;
             match row.expect_vis {
                 Expect::Denied if served => failures.push(format!(
                     "[visibility] {} {} — disclosed an Internal-visibility package to an \
@@ -1044,6 +1201,1112 @@ async fn every_local_read_route_enforces_the_registry_rule_chain() {
             "\n{} known gap(s) that appear fixed:\n  {}\n",
             gaps_now_fixed.len(),
             gaps_now_fixed.join("\n  ")
+        ));
+    }
+    assert!(report.is_empty(), "{report}");
+}
+
+// ═══ The write surface ═══════════════════════════════════════════════════════
+//
+// Everything above this line is about reads, and until now so was the whole
+// file: [`ROUTE_INVENTORY`] filters the router on `item.get`, so a `PUT` that
+// publishes a package, a `DELETE` that yanks one and the owners API were not
+// merely uncovered — they were not *counted*. RFC 0015 §11.1 names that as the
+// first thing to fix, and the reason is the same one the read half opens with:
+// today's write authority is one `has_role_at_least(&Role::User)` repeated at
+// seven call sites (`local_registry/publish.rs`, six more in `lifecycle.rs`),
+// applied by convention rather than by construction. A handler that forgets it
+// looks exactly like one that does not.
+//
+// # What a write row asserts
+//
+// Two things, because the status code alone is not enough:
+//
+// 1. An anonymous request is **not** answered `2xx`.
+// 2. The registry's published state for the coordinate is **byte-identical**
+//    afterwards.
+//
+// The second is what makes the row a test of the write rather than of the
+// response. A handler that validates its payload, mutates, and *then* refuses
+// passes (1) and fails (2); so does one that answers `400` for an unrelated
+// reason while a side effect has already landed. The fingerprint is
+// `get_versions`, serialised — it carries the yank, deprecation, unlist and
+// retention flags as well as the version set, so a yank that succeeded shows up
+// even though the version count did not change.
+//
+// # The positive control is not optional here
+//
+// It matters more than on the read side. A write row sends a body, and a body
+// the handler rejects produces a `400` that reads as *denied* — a row that
+// asserts nothing while looking green. So the control makes the identical
+// request as `USER_TOKEN` and requires a `2xx` *and* a changed fingerprint.
+// Refusal is only attributable to authorization once the same payload is known
+// to work for someone.
+
+use batlehub_core::ports::{LocalRegistryBackend, OwnershipPort};
+
+/// The HTTP verb a write row uses.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Verb {
+    Put,
+    Post,
+    Delete,
+}
+
+/// One non-GET route under test.
+struct WriteRow {
+    kind: &'static str,
+    verb: Verb,
+    /// Route to request, with `{registry}` already substituted.
+    uri: &'static str,
+    /// The request body and its `Content-Type`.
+    body: Body,
+    /// Publish the coordinate before the request. Yank, unyank and the owners
+    /// API all need a version to act on; a publish row must not have one, or it
+    /// answers `409` for both callers.
+    seed: bool,
+    /// Yank the seeded version too, so an `unyank` row has something to undo.
+    ///
+    /// Without it an unyank is a no-op that answers `200` and changes nothing,
+    /// and the row's control cannot distinguish that from a route that works.
+    /// Whether the no-op is even *visible* differs by ecosystem — cargo seeds
+    /// `"yanked": false` in its index line, so unyanking it rewrites the same
+    /// value, while rubygems has no such field and gains one. A row whose
+    /// meaning depends on that is not a row.
+    seed_yanked: bool,
+    /// Add this principal as a second owner before the request.
+    ///
+    /// `cargo owner --remove` refuses to remove the last owner — that would
+    /// leave a crate anyone may publish to — so a remove row whose target is not
+    /// already an owner answers `200` and changes nothing, and its control
+    /// cannot tell that from a working route.
+    seed_owner: Option<&'static str>,
+    /// Wire an `OwnershipPort` into the service.
+    ///
+    /// Not a detail: with the port absent the cargo owners routes answer `404`
+    /// *before* any authorization, so the row would assert nothing and its
+    /// control would fail. `make_local_cargo_ownership_app` records the same
+    /// hazard for the same reason.
+    ownership: bool,
+    /// The coordinate to seed, and the one the row's URI names.
+    name: &'static str,
+    version: &'static str,
+    meta: fn() -> serde_json::Value,
+    expect: Expect,
+    control: bool,
+}
+
+impl WriteRow {
+    /// A row with the defaults every write shares: the gate refuses, no seeded
+    /// coordinate, no ownership port, `pkg` / `9.8.7`, control on.
+    fn new(kind: &'static str, verb: Verb, uri: &'static str, body: Body) -> Self {
+        WriteRow {
+            kind,
+            verb,
+            uri,
+            body,
+            seed: false,
+            seed_yanked: false,
+            seed_owner: None,
+            ownership: false,
+            name: "pkg",
+            version: "9.8.7",
+            meta: no_meta,
+            expect: Expect::Denied,
+            control: true,
+        }
+    }
+
+    /// Publish the coordinate first. Every yank, unyank and owners row needs it.
+    fn seeded(mut self) -> Self {
+        self.seed = true;
+        self
+    }
+
+    /// Publish the coordinate and yank it, so an `unyank` row has work to do.
+    fn seeded_yanked(mut self) -> Self {
+        self.seed = true;
+        self.seed_yanked = true;
+        self
+    }
+
+    /// Wire an `OwnershipPort`, without which the route 404s before authorizing.
+    fn with_ownership(mut self) -> Self {
+        self.ownership = true;
+        self
+    }
+
+    /// Seed a second owner, so a `--remove` row has one it may actually remove.
+    fn with_second_owner(mut self, principal: &'static str) -> Self {
+        self.seed_owner = Some(principal);
+        self.ownership = true;
+        self
+    }
+
+    /// Seed and address a different coordinate.
+    fn coord(mut self, name: &'static str, version: &'static str) -> Self {
+        self.name = name;
+        self.version = version;
+        self
+    }
+
+    /// Seed under a different name. The version stays `9.8.7`.
+    fn pkg(mut self, name: &'static str) -> Self {
+        self.name = name;
+        self
+    }
+
+    /// Extra index metadata this ecosystem's read path needs.
+    fn meta(mut self, meta: fn() -> serde_json::Value) -> Self {
+        self.meta = meta;
+        self
+    }
+
+    /// Skip the positive control. Every use says why.
+    ///
+    /// No row uses it today, and that is the state to keep: on the write side a
+    /// row without a control asserts almost nothing, because a rejected payload
+    /// and a rejected caller both answer non-`2xx`. It is kept for the same
+    /// reason as [`Expect::KnownGap`] — the first write route that legitimately
+    /// cannot be driven from this fixture wants to be recordable on the day it
+    /// arrives, not after a debate about how to keep the suite green.
+    #[allow(dead_code)]
+    fn no_control(mut self) -> Self {
+        self.control = false;
+        self
+    }
+}
+
+// ── Request bodies ───────────────────────────────────────────────────────────
+//
+// Each is the wire format the ecosystem's own client sends, harvested from the
+// suite that already publishes through that route — `local_npm_registry.rs`,
+// `local_nuget_registry.rs`, `publish_traversal_guards.rs` and friends. A
+// hand-rolled approximation would be rejected on its merits and the row would
+// assert nothing, which is exactly what the positive control is there to catch.
+
+fn empty_body() -> (Vec<u8>, &'static str) {
+    (Vec::new(), "application/octet-stream")
+}
+
+/// The `npm publish` wire format: a packument with the tarball attached.
+fn npm_publish_body() -> (Vec<u8>, &'static str) {
+    use base64::Engine as _;
+    let tarball = base64::engine::general_purpose::STANDARD.encode(FIXTURE_BYTES);
+    let doc = json!({
+        "name": "pkg",
+        "versions": { "9.8.7": {
+            "name": "pkg", "version": "9.8.7",
+            "description": "matrix fixture",
+            "dist": { "shasum": "abc123" }
+        }},
+        "_attachments": { "pkg-9.8.7.tgz": {
+            "content_type": "application/octet-stream",
+            "data": tarball,
+            "length": FIXTURE_BYTES.len(),
+        }}
+    });
+    (
+        serde_json::to_vec(&doc).expect("packument"),
+        "application/json",
+    )
+}
+
+/// `cargo publish`'s length-prefixed metadata + crate pair.
+fn cargo_publish_body() -> (Vec<u8>, &'static str) {
+    let meta = json!({
+        "name": "pkg", "vers": "9.8.7",
+        "deps": [], "features": {}, "authors": [],
+        "description": null, "documentation": null, "homepage": null,
+        "readme": null, "readme_file": null, "keywords": [],
+        "categories": [], "license": null, "license_file": null,
+        "repository": null, "badges": {}, "links": null
+    });
+    let meta_bytes = serde_json::to_vec(&meta).expect("crate metadata");
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&(meta_bytes.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&meta_bytes);
+    buf.extend_from_slice(&(FIXTURE_BYTES.len() as u32).to_le_bytes());
+    buf.extend_from_slice(FIXTURE_BYTES);
+    (buf, "application/octet-stream")
+}
+
+/// `cargo owner --add`.
+fn cargo_owners_body() -> (Vec<u8>, &'static str) {
+    let doc = json!({ "users": ["user-2"] });
+    (
+        serde_json::to_vec(&doc).expect("owners"),
+        "application/json",
+    )
+}
+
+/// A minimal `.nupkg` (a ZIP holding one `.nuspec`), in the `multipart/form-data`
+/// envelope `dotnet nuget push` wraps it in.
+fn nuget_publish_body() -> (Vec<u8>, &'static str) {
+    use std::io::Write as _;
+    let nuspec = r#"<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>pkg</id>
+    <version>9.8.7</version>
+    <description>matrix fixture</description>
+    <authors>TestAuthor</authors>
+  </metadata>
+</package>"#;
+    let mut nupkg = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut nupkg));
+        zip.start_file("pkg.nuspec", zip::write::SimpleFileOptions::default())
+            .expect("nuspec entry");
+        zip.write_all(nuspec.as_bytes()).expect("nuspec bytes");
+        zip.finish().expect("nupkg");
+    }
+
+    let boundary = "matrixboundary";
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"package\"; \
+         filename=\"package.nupkg\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+    )
+    .into_bytes();
+    body.extend_from_slice(&nupkg);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    (body, "multipart/form-data; boundary=matrixboundary")
+}
+
+/// A minimal `.gem`: a tar holding a gzipped `metadata.gz`.
+fn gem_publish_body() -> (Vec<u8>, &'static str) {
+    (make_gem("pkg", "9.8.7"), "application/octet-stream")
+}
+
+/// The `twine upload` `multipart/form-data` envelope.
+fn pypi_publish_body() -> (Vec<u8>, &'static str) {
+    let boundary = "matrixboundary";
+    let mut body = Vec::new();
+    for (field, value) in [
+        (":action", "file_upload"),
+        ("name", "pkg"),
+        ("version", "9.8.7"),
+    ] {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; \
+                 name=\"{field}\"\r\n\r\n{value}\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"content\"; \
+             filename=\"pkg-9.8.7.tar.gz\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(FIXTURE_BYTES);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    (body, "multipart/form-data; boundary=matrixboundary")
+}
+
+/// A ZIP holding a `composer.json`.
+fn composer_publish_body() -> (Vec<u8>, &'static str) {
+    (
+        make_composer_zip("vendor/pkg", "9.8.7"),
+        "application/octet-stream",
+    )
+}
+
+/// A Go module ZIP, whose entries must be prefixed `module@version/`.
+fn go_publish_body() -> (Vec<u8>, &'static str) {
+    use std::io::Write as _;
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut buf);
+        let opts = zip::write::SimpleFileOptions::default();
+        writer
+            .start_file("example.com/m@v9.8.7/go.mod", opts)
+            .expect("go.mod entry");
+        writer
+            .write_all(b"module example.com/m\n\ngo 1.21\n")
+            .expect("go.mod bytes");
+        writer.finish().expect("module zip");
+    }
+    (buf.into_inner(), "application/octet-stream")
+}
+
+/// A conda `.tar.bz2`: a bzip2ed tar holding `info/index.json`.
+fn conda_publish_body() -> (Vec<u8>, &'static str) {
+    use std::io::Write as _;
+    let index = json!({
+        "name": "pkg", "version": "9.8.7", "build": "0",
+        "build_number": 0, "depends": [], "subdir": "linux-64",
+    });
+    let index_bytes = serde_json::to_vec(&index).expect("index.json");
+
+    let mut tar_bytes = Vec::new();
+    {
+        let mut builder = tar::Builder::new(&mut tar_bytes);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(index_bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "info/index.json", index_bytes.as_slice())
+            .expect("tar entry");
+        builder.finish().expect("tar");
+    }
+
+    let mut encoder = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::fast());
+    encoder.write_all(&tar_bytes).expect("bzip2");
+    (encoder.finish().expect("bzip2"), "application/octet-stream")
+}
+
+/// A minimal VSIX: a ZIP with the `[Content_Types].xml` the handler looks for.
+fn vsix_publish_body() -> (Vec<u8>, &'static str) {
+    use std::io::Write as _;
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut zw = zip::ZipWriter::new(&mut buf);
+        zw.start_file(
+            "[Content_Types].xml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .expect("content types entry");
+        zw.write_all(
+            b"<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/\
+              package/2006/content-types\"></Types>",
+        )
+        .expect("content types bytes");
+        zw.finish().expect("vsix");
+    }
+    (buf.into_inner(), "application/octet-stream")
+}
+
+/// The write matrix.
+fn write_matrix() -> Vec<WriteRow> {
+    vec![
+        // ── npm ──────────────────────────────────────────────────────────────
+        WriteRow::new("npm", Verb::Put, "/proxy/reg/pkg", npm_publish_body),
+        // ── cargo ────────────────────────────────────────────────────────────
+        WriteRow::new(
+            "cargo",
+            Verb::Put,
+            "/proxy/reg/api/v1/crates/new",
+            cargo_publish_body,
+        ),
+        WriteRow::new(
+            "cargo",
+            Verb::Delete,
+            "/proxy/reg/api/v1/crates/pkg/9.8.7/yank",
+            empty_body,
+        )
+        .seeded()
+        .meta(cargo_index_meta),
+        WriteRow::new(
+            "cargo",
+            Verb::Put,
+            "/proxy/reg/api/v1/crates/pkg/9.8.7/unyank",
+            empty_body,
+        )
+        .seeded_yanked()
+        .meta(cargo_index_meta),
+        WriteRow::new(
+            "cargo",
+            Verb::Put,
+            "/proxy/reg/api/v1/crates/pkg/owners",
+            cargo_owners_body,
+        )
+        .seeded()
+        .with_ownership()
+        .meta(cargo_index_meta),
+        WriteRow::new(
+            "cargo",
+            Verb::Delete,
+            "/proxy/reg/api/v1/crates/pkg/owners",
+            cargo_owners_body,
+        )
+        .seeded()
+        .with_second_owner("user-2")
+        .meta(cargo_index_meta),
+        // ── nuget ────────────────────────────────────────────────────────────
+        WriteRow::new(
+            "nuget",
+            Verb::Put,
+            "/proxy/reg/nuget/api/v2/package",
+            nuget_publish_body,
+        ),
+        WriteRow::new(
+            "nuget",
+            Verb::Delete,
+            "/proxy/reg/nuget/v2/package/pkg/9.8.7",
+            empty_body,
+        )
+        .seeded(),
+        // ── rubygems ─────────────────────────────────────────────────────────
+        WriteRow::new(
+            "rubygems",
+            Verb::Post,
+            "/proxy/reg/api/v1/gems",
+            gem_publish_body,
+        ),
+        WriteRow::new(
+            "rubygems",
+            Verb::Delete,
+            "/proxy/reg/api/v1/gems/yank?gem_name=pkg&version=9.8.7",
+            empty_body,
+        )
+        .seeded(),
+        WriteRow::new(
+            "rubygems",
+            Verb::Put,
+            "/proxy/reg/api/v1/gems/unyank?gem_name=pkg&version=9.8.7",
+            empty_body,
+        )
+        .seeded_yanked(),
+        // ── pypi ─────────────────────────────────────────────────────────────
+        WriteRow::new("pypi", Verb::Post, "/proxy/reg/legacy/", pypi_publish_body),
+        // ── composer ─────────────────────────────────────────────────────────
+        WriteRow::new(
+            "composer",
+            Verb::Post,
+            "/proxy/reg/api/upload",
+            composer_publish_body,
+        )
+        .pkg("vendor/pkg"),
+        WriteRow::new(
+            "composer",
+            Verb::Delete,
+            "/proxy/reg/api/packages/vendor/pkg/versions/9.8.7",
+            empty_body,
+        )
+        .seeded()
+        .pkg("vendor/pkg"),
+        // ── goproxy ──────────────────────────────────────────────────────────
+        WriteRow::new(
+            "goproxy",
+            Verb::Put,
+            "/proxy/reg/example.com/m/@v/v9.8.7.zip",
+            go_publish_body,
+        )
+        .coord("example.com/m", "v9.8.7"),
+        // ── conda ────────────────────────────────────────────────────────────
+        WriteRow::new(
+            "conda",
+            Verb::Post,
+            "/proxy/reg/linux-64/",
+            conda_publish_body,
+        )
+        .meta(conda_meta),
+        // ── openvsx ──────────────────────────────────────────────────────────
+        WriteRow::new(
+            "openvsx",
+            Verb::Put,
+            "/proxy/reg/acme.ext/9.8.7/vsix",
+            vsix_publish_body,
+        )
+        .pkg("acme.ext"),
+    ]
+}
+
+/// Build a local-mode registry denying anonymous everything, seeded per the row,
+/// and hand back the backend so the caller can fingerprint it.
+async fn write_app_for(row: &WriteRow) -> (impl TestService, StateProbe) {
+    let mut parts = local_only_app_parts_with_policy(
+        "reg",
+        row.kind,
+        RegistryMode::Local,
+        true,
+        rbac_policy_deny_anonymous,
+    )
+    .await;
+
+    let mut ownership: Option<Arc<dyn OwnershipPort>> = None;
+    if row.ownership {
+        let store =
+            batlehub_adapters::in_memory::InMemoryOwnershipStore::new() as Arc<dyn OwnershipPort>;
+        ownership = Some(store.clone());
+        let cur = parts.local_svc.clone();
+        parts.local_svc = Arc::new(batlehub_core::services::LocalRegistryService {
+            backend: cur.backend.clone(),
+            storage: cur.storage.clone(),
+            hot: cur.hot.clone(),
+            quota: cur.quota.clone(),
+            ownership: Some(store),
+            team_namespace: cur.team_namespace.clone(),
+            sbom: cur.sbom.clone(),
+            explore_cache: cur.explore_cache.clone(),
+            package_repo: cur.package_repo.clone(),
+            readme: cur.readme.clone(),
+        });
+    }
+
+    if row.seed {
+        publish_fixture(&parts, row.name, row.version, (row.meta)()).await;
+    }
+    if let Some(principal) = row.seed_owner {
+        ownership
+            .as_ref()
+            .expect("seed_owner implies with_ownership")
+            .add_owner(
+                "reg",
+                row.name,
+                batlehub_core::ports::OwnerEntry {
+                    principal_type: "user".to_owned(),
+                    principal_id: principal.to_owned(),
+                    role: "maintainer".to_owned(),
+                    granted_by: Some("user-1".to_owned()),
+                },
+            )
+            .await
+            .expect("seed owner");
+    }
+    if row.seed_yanked {
+        parts
+            .local_svc
+            .backend
+            .yank("reg", row.name, row.version)
+            .await
+            .expect("seed yank");
+    }
+
+    let probe = StateProbe {
+        backend: parts.local_svc.backend.clone(),
+        ownership,
+    };
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    (app, probe)
+}
+
+/// Everything the registry records about a coordinate, for before/after comparison.
+///
+/// Two sources, because one is not enough. `get_versions` carries `yanked`,
+/// `deprecated`, `unlisted` and the retention pin as well as the version set, so
+/// a yank that landed shows up even though nothing was added or removed. But it
+/// is blind to ownership — `package_owners` is a separate store — and the cargo
+/// owners routes write only there. A probe that could not see them would report
+/// "changed nothing" for a working route and, worse, for a broken one.
+struct StateProbe {
+    backend: Arc<dyn LocalRegistryBackend>,
+    ownership: Option<Arc<dyn OwnershipPort>>,
+}
+
+impl StateProbe {
+    async fn fingerprint(&self, name: &str) -> String {
+        let versions = self
+            .backend
+            .get_versions("reg", name)
+            .await
+            .unwrap_or_default();
+        let mut out = serde_json::to_string(&versions).unwrap_or_default();
+        if let Some(ownership) = &self.ownership {
+            let owners = ownership.list_owners("reg", name).await.unwrap_or_default();
+            out.push_str(&format!("{owners:?}"));
+        }
+        out
+    }
+}
+
+/// Make the row's request as `token` (`None` is anonymous) and report the status
+/// alongside whether the registry's state for the coordinate changed.
+async fn attempt_write<S: TestService>(
+    app: &S,
+    probe: &StateProbe,
+    row: &WriteRow,
+    token: Option<&str>,
+) -> (u16, bool) {
+    let before = probe.fingerprint(row.name).await;
+
+    let (bytes, content_type) = (row.body)();
+    let mut req = match row.verb {
+        Verb::Put => TestRequest::put(),
+        Verb::Post => TestRequest::post(),
+        Verb::Delete => TestRequest::delete(),
+    }
+    .uri(row.uri)
+    .insert_header(("Content-Type", content_type));
+    if let Some(t) = token {
+        req = req.insert_header(("Authorization", bearer(t)));
+    }
+
+    // Bounded for the same reason the read half is: a row that falls through to
+    // the fixture's upstream can otherwise hang the suite instead of failing one
+    // row. A request that never answers changed nothing, and its control times
+    // out identically and is reported as broken.
+    let Ok(resp) = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        call_service(app, req.set_payload(bytes).to_request()),
+    )
+    .await
+    else {
+        return (0, false);
+    };
+    let status = resp.status().as_u16();
+
+    let after = probe.fingerprint(row.name).await;
+    (status, before != after)
+}
+
+/// The write matrix.
+///
+/// One test rather than one per row, for the same reason as the read half: the
+/// value is in the table being exhaustive, and a failure names its row.
+#[actix_web::test]
+async fn no_write_route_accepts_an_unauthenticated_caller() {
+    let mut failures: Vec<String> = Vec::new();
+    let mut broken_controls: Vec<String> = Vec::new();
+    let mut gaps_now_fixed: Vec<String> = Vec::new();
+
+    for row in write_matrix() {
+        // Positive control: a caller today's `has_role_at_least(&Role::User)`
+        // admits must be able to make this exact request, with this exact body.
+        // Until that holds, a refusal below is not attributable to authorization
+        // — it could be a rejected payload, and a `400` reads as denied.
+        let mut control_ok = true;
+        if row.control {
+            let (app, probe) = write_app_for(&row).await;
+            let (status, changed) = attempt_write(&app, &probe, &row, Some(USER_TOKEN)).await;
+            if !(200..300).contains(&status) || !changed {
+                broken_controls.push(format!(
+                    "[write] {} {:?} {} — a permitted caller was refused or changed nothing \
+                     (status {status}, state changed: {changed}). The fixture or the route is \
+                     wrong, and the anonymous assertion below proves nothing until it is fixed.",
+                    row.kind, row.verb, row.uri,
+                ));
+                control_ok = false;
+            }
+        }
+
+        if !control_ok {
+            continue;
+        }
+
+        // A fresh app, so the control's own write is not what the anonymous
+        // caller is measured against.
+        let (app, probe) = write_app_for(&row).await;
+        let (status, changed) = attempt_write(&app, &probe, &row, None).await;
+        let accepted = (200..300).contains(&status) || changed;
+
+        match row.expect {
+            Expect::Denied if accepted => failures.push(format!(
+                "[write] {} {:?} {} — accepted a write from an unauthenticated caller \
+                 (status {status}, state changed: {changed})",
+                row.kind, row.verb, row.uri
+            )),
+            Expect::KnownGap(_) if !accepted => gaps_now_fixed.push(format!(
+                "[write] {} {:?} {} — now correctly refuses ({status}). Flip this row to \
+                 Expect::Denied.",
+                row.kind, row.verb, row.uri,
+            )),
+            _ => {}
+        }
+    }
+
+    let mut report = String::new();
+    if !broken_controls.is_empty() {
+        report.push_str(&format!(
+            "\n{} row(s) whose positive control failed:\n  {}\n",
+            broken_controls.len(),
+            broken_controls.join("\n  ")
+        ));
+    }
+    if !failures.is_empty() {
+        report.push_str(&format!(
+            "\n{} NEW write authorization gap(s):\n  {}\n",
+            failures.len(),
+            failures.join("\n  ")
+        ));
+    }
+    if !gaps_now_fixed.is_empty() {
+        report.push_str(&format!(
+            "\n{} known gap(s) that appear fixed:\n  {}\n",
+            gaps_now_fixed.len(),
+            gaps_now_fixed.join("\n  ")
+        ));
+    }
+    assert!(report.is_empty(), "{report}");
+}
+
+// ── Write completeness ───────────────────────────────────────────────────────
+//
+// The read inventory's argument, applied to the half it could not see. It
+// filters the router on `item.get`, so every `PUT`, `POST` and `DELETE` this
+// server registers was invisible to it — not classified as uncovered, simply
+// absent. RFC 0015 §11.1: *"the same pattern over `put`/`post`/`delete` yields
+// the write surface, which currently has no coverage of any kind."*
+//
+// # How to extend
+//
+// 1. Add the `(method, path)` pair — the failure message prints the line.
+// 2. Choose its [`WriteCoverage`]:
+//    - [`WriteCoverage::Row`] once a row in [`write_matrix`] makes the request;
+//    - [`WriteCoverage::ReadRow`] for a POST-shaped *read*, covered by a row in
+//      [`matrix`] carrying a `.post(…)` body;
+//    - [`WriteCoverage::NoWrite`] if nothing is mutated, with the reason;
+//    - [`WriteCoverage::NoRow`] otherwise — a write nobody has covered yet.
+// 3. If you chose `NoRow`, adding the row is the actual work.
+
+/// Whether the matrix exercises a non-GET route, and if not, why not.
+#[derive(Debug, Clone, Copy)]
+enum WriteCoverage {
+    /// A row in [`write_matrix`] makes the request and asserts both halves —
+    /// refused, and nothing written.
+    Row,
+    /// A POST-shaped *read*, exercised by a `.post(…)` row in [`matrix`] under
+    /// the disclosure assertion, which is the one that fits it.
+    ReadRow,
+    /// The route mutates nothing: a vulnerability feed that takes a manifest, or
+    /// an endpoint that declines unconditionally. A claim about the route, so it
+    /// is recorded per route rather than inferred from the path.
+    NoWrite(&'static str),
+    /// A write with no row yet — the write-side twin of [`Coverage::NoRow`].
+    /// Finite, visible, and meant to shrink.
+    NoRow(&'static str),
+}
+
+const WRITE_ROUTE_INVENTORY: &[(&str, &str, WriteCoverage)] = &[
+    // ── npm ──────────────────────────────────────────────────────────────────
+    ("PUT", "/proxy/{registry}/{name}", WriteCoverage::Row),
+    ("PUT", "/proxy/{registry}/-/package/{package}/dist-tags/{tag}", WriteCoverage::NoWrite("declined unconditionally with 501: dist-tags are derived from the published version set here, so nothing is mutated for any caller. RFC 0015 §4.2 files the action itself under a future `npm:dist-tags:write`")),
+    ("DELETE", "/proxy/{registry}/-/package/{package}/dist-tags/{tag}", WriteCoverage::NoWrite("declined unconditionally with 501, as the `add` half above")),
+    ("POST", "/proxy/{registry}/-/npm/v1/audit/quick", WriteCoverage::NoWrite("npm audit: takes a dependency manifest and answers with advisories. CVE data, not package contents, and nothing is written")),
+    ("POST", "/proxy/{registry}/-/npm/v1/audit/bulk", WriteCoverage::NoWrite("npm audit, bulk form; same shape")),
+    ("POST", "/proxy/{registry}/-/npm/v1/security/audits/quick", WriteCoverage::NoWrite("npm audit under its current path; same shape")),
+    ("POST", "/proxy/{registry}/-/npm/v1/security/advisories/bulk", WriteCoverage::NoWrite("npm advisories, bulk form; same shape")),
+    // ── cargo ────────────────────────────────────────────────────────────────
+    ("PUT", "/proxy/{registry}/api/v1/crates/new", WriteCoverage::Row),
+    ("DELETE", "/proxy/{registry}/api/v1/crates/{name}/{version}/yank", WriteCoverage::Row),
+    ("PUT", "/proxy/{registry}/api/v1/crates/{name}/{version}/unyank", WriteCoverage::Row),
+    ("PUT", "/proxy/{registry}/api/v1/crates/{name}/owners", WriteCoverage::Row),
+    ("DELETE", "/proxy/{registry}/api/v1/crates/{name}/owners", WriteCoverage::Row),
+    // ── nuget ────────────────────────────────────────────────────────────────
+    ("PUT", "/proxy/{registry}/nuget/api/v2/package", WriteCoverage::Row),
+    ("PUT", "/proxy/{registry}/nuget/api/v2/symbolpackage", WriteCoverage::NoRow("write, not yet exercised: needs a symbol package whose .nuspec the symbol path accepts")),
+    ("DELETE", "/proxy/{registry}/nuget/v2/package/{id}/{version}", WriteCoverage::Row),
+    // ── rubygems ─────────────────────────────────────────────────────────────
+    ("POST", "/proxy/{registry}/api/v1/gems", WriteCoverage::Row),
+    ("DELETE", "/proxy/{registry}/api/v1/gems/yank", WriteCoverage::Row),
+    ("PUT", "/proxy/{registry}/api/v1/gems/unyank", WriteCoverage::Row),
+    // ── pypi ─────────────────────────────────────────────────────────────────
+    ("POST", "/proxy/{registry}/legacy/", WriteCoverage::Row),
+    // ── composer ─────────────────────────────────────────────────────────────
+    ("POST", "/proxy/{registry}/api/upload", WriteCoverage::Row),
+    ("DELETE", "/proxy/{registry}/api/packages/{vendor}/{package}/versions/{version}", WriteCoverage::Row),
+    // ── goproxy ──────────────────────────────────────────────────────────────
+    ("PUT", "/proxy/{registry}/{module}/@v/{filename}", WriteCoverage::Row),
+    ("POST", "/proxy/{registry}/v1/query", WriteCoverage::NoWrite("Go vulnerability database query: takes a module list, answers with OSV records. Nothing is written")),
+    // ── conda ────────────────────────────────────────────────────────────────
+    ("POST", "/proxy/{registry}/{platform}/", WriteCoverage::Row),
+    // ── openvsx / vscode ─────────────────────────────────────────────────────
+    ("PUT", "/proxy/{registry}/{extension_id}/{version}/vsix", WriteCoverage::Row),
+    ("POST", "/proxy/{registry}/api/-/publish", WriteCoverage::NoRow("write, not yet exercised: the OpenVSX REST publish, which takes its coordinate from the VSIX manifest rather than the URL")),
+    ("POST", "/proxy/{registry}/vscode/gallery/extensionquery", WriteCoverage::ReadRow),
+    // ── maven ────────────────────────────────────────────────────────────────
+    ("PUT", "/proxy/{registry}/maven2/{path}", WriteCoverage::NoRow("write, not yet exercised: a Maven deploy is several files under one coordinate, so the row needs the multi-file storage key rather than the flat fixture")),
+    // ── terraform ────────────────────────────────────────────────────────────
+    ("POST", "/proxy/{registry}/v1/modules/{namespace}/{name}/{provider}/{version}", WriteCoverage::NoRow("write, not yet exercised")),
+    ("DELETE", "/proxy/{registry}/v1/modules/{namespace}/{name}/{provider}/versions/{version}", WriteCoverage::NoRow("write, not yet exercised")),
+    ("POST", "/proxy/{registry}/v1/modules/{namespace}/{name}/{provider}/versions/{version}/unyank", WriteCoverage::NoRow("write, not yet exercised")),
+    ("POST", "/proxy/{registry}/v1/providers/{namespace}/{ptype}/versions", WriteCoverage::NoRow("write, not yet exercised")),
+    ("PUT", "/proxy/{registry}/v1/providers/{namespace}/{ptype}/{version}/artifact/{os}/{arch}", WriteCoverage::NoRow("write, not yet exercised: a provider binary is uploaded per platform against a version created by the route above")),
+    ("DELETE", "/proxy/{registry}/v1/providers/{namespace}/{ptype}/versions/{version}", WriteCoverage::NoRow("write, not yet exercised")),
+    ("POST", "/proxy/{registry}/v1/providers/{namespace}/{ptype}/versions/{version}/unyank", WriteCoverage::NoRow("write, not yet exercised")),
+    // ── jetbrains marketplace ────────────────────────────────────────────────
+    ("POST", "/proxy/{registry}/api/updates/upload", WriteCoverage::NoRow("write, not yet exercised: a plugin upload is a multipart form carrying a JAR whose plugin.xml supplies the coordinate")),
+    ("POST", "/proxy/{registry}/api/search/updates/compatible", WriteCoverage::ReadRow),
+    // ── deb / rpm / pacman ───────────────────────────────────────────────────
+    ("PUT", "/proxy/{registry}/deb/pool/{distribution}/{component}/upload", WriteCoverage::NoRow("write, not yet exercised: needs a real .deb, whose control archive supplies the coordinate")),
+    ("PUT", "/proxy/{registry}/rpm/upload", WriteCoverage::NoRow("write, not yet exercised: needs a real .rpm header")),
+    ("PUT", "/proxy/{registry}/pacman/upload", WriteCoverage::NoRow("write, not yet exercised: needs a real .pkg.tar.zst with a .PKGINFO")),
+];
+
+/// Every non-GET `/proxy/**` route this server registers is classified, exactly.
+///
+/// The read gate's two failure directions, on the surface it could not see. A
+/// write route the server registers and this list does not name is a mutation
+/// nobody has considered; an entry naming a route that no longer exists is a
+/// claim of coverage over nothing.
+#[test]
+fn the_write_route_inventory_matches_the_router() {
+    let spec = batlehub_web::openapi_spec();
+    let mut registered: Vec<(&'static str, String)> = Vec::new();
+    for (path, item) in spec.paths.paths.iter() {
+        if !path.starts_with("/proxy/") {
+            continue;
+        }
+        for (verb, present) in [
+            ("PUT", item.put.is_some()),
+            ("POST", item.post.is_some()),
+            ("DELETE", item.delete.is_some()),
+            ("PATCH", item.patch.is_some()),
+        ] {
+            if present {
+                registered.push((verb, path.clone()));
+            }
+        }
+    }
+
+    let unlisted: Vec<&(&str, String)> = registered
+        .iter()
+        .filter(|(m, p)| {
+            !WRITE_ROUTE_INVENTORY
+                .iter()
+                .any(|(im, ip, _)| im == m && ip == p)
+        })
+        .collect();
+    let stale: Vec<String> = WRITE_ROUTE_INVENTORY
+        .iter()
+        .filter(|(im, ip, _)| !registered.iter().any(|(m, p)| m == im && p == ip))
+        .map(|(m, p, _)| format!("{m} {p}"))
+        .collect();
+
+    let mut report = String::new();
+    if !unlisted.is_empty() {
+        report.push_str(&format!(
+            "\n{} proxy write route(s) are registered but absent from WRITE_ROUTE_INVENTORY.\n\
+             A route that mutates a package and nobody has classified is the write-side\n\
+             version of the 2026-08-26 survey's finding class. Add:\n\n{}\n\n\
+             …then either write a row in `write_matrix()` and mark it WriteCoverage::Row,\n\
+             or record why it needs none.\n",
+            unlisted.len(),
+            unlisted
+                .iter()
+                .map(|(m, p)| format!(
+                    "    (\"{m}\", \"{p}\", WriteCoverage::NoRow(\"write, not yet exercised\")),"
+                ))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ));
+    }
+    if !stale.is_empty() {
+        report.push_str(&format!(
+            "\n{} WRITE_ROUTE_INVENTORY entr(ies) name a route this server no longer\n\
+             registers. Delete them — a stale entry claims coverage of nothing:\n  {}\n",
+            stale.len(),
+            stale.join("\n  ")
+        ));
+    }
+    assert!(report.is_empty(), "{report}");
+}
+
+/// Every `WriteCoverage::Row` has a row behind it, and every excuse says something.
+#[test]
+fn every_write_claim_has_a_row_and_every_excuse_has_a_reason() {
+    let claimed = WRITE_ROUTE_INVENTORY
+        .iter()
+        .filter(|(_, _, c)| matches!(c, WriteCoverage::Row))
+        .count();
+    let rows = write_matrix().len();
+    assert!(
+        rows >= claimed,
+        "WRITE_ROUTE_INVENTORY claims {claimed} routes are exercised by a row, but \
+         `write_matrix()` only has {rows} rows — at least one claim has no test behind it"
+    );
+
+    let claimed_reads = WRITE_ROUTE_INVENTORY
+        .iter()
+        .filter(|(_, _, c)| matches!(c, WriteCoverage::ReadRow))
+        .count();
+    let post_rows = matrix().iter().filter(|r| r.post.is_some()).count();
+    assert!(
+        post_rows >= claimed_reads,
+        "WRITE_ROUTE_INVENTORY claims {claimed_reads} POST-shaped reads are covered by a \
+         `.post(…)` row, but `matrix()` only has {post_rows}"
+    );
+
+    let empty: Vec<String> = WRITE_ROUTE_INVENTORY
+        .iter()
+        .filter_map(|(m, p, c)| match c {
+            WriteCoverage::NoWrite(why) | WriteCoverage::NoRow(why) if why.trim().is_empty() => {
+                Some(format!("{m} {p}"))
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        empty.is_empty(),
+        "these write routes are excused with no reason given:\n  {}",
+        empty.join("\n  ")
+    );
+}
+
+/// How much of the write surface is actually exercised, printed on every run.
+///
+/// The read half's ratio, for the half that had none. Before this existed the
+/// honest number was zero and nothing said so.
+#[test]
+fn report_write_surface_coverage() {
+    let total = WRITE_ROUTE_INVENTORY.len();
+    let rows = WRITE_ROUTE_INVENTORY
+        .iter()
+        .filter(|(_, _, c)| matches!(c, WriteCoverage::Row | WriteCoverage::ReadRow))
+        .count();
+    let no_write = WRITE_ROUTE_INVENTORY
+        .iter()
+        .filter(|(_, _, c)| matches!(c, WriteCoverage::NoWrite(_)))
+        .count();
+    let no_row: Vec<String> = WRITE_ROUTE_INVENTORY
+        .iter()
+        .filter_map(|(m, p, c)| match c {
+            WriteCoverage::NoRow(why) => Some(format!("{m} {p} — {why}")),
+            _ => None,
+        })
+        .collect();
+    let denominator = total - no_write;
+    println!(
+        "authz matrix (writes): {rows}/{denominator} mutating routes exercised \
+         ({} with no row, {no_write} mutate nothing, {total} total)",
+        no_row.len()
+    );
+    for line in &no_row {
+        println!("  no row: {line}");
+    }
+}
+
+/// Every `Coverage::Row` claim names a route a row actually reaches, and every
+/// route a row reaches is claimed.
+///
+/// # Why this is measured rather than reviewed
+///
+/// [`ROUTE_INVENTORY`]'s `Coverage::Row` entries were hand-maintained, and the
+/// only thing checking them was `every_row_is_accounted_for_in_the_inventory` —
+/// which compares two *counts*. Counts cannot see a swap: one route over-claimed
+/// and one under-claimed net to zero, and the report prints the same ratio
+/// either way. An over-claim is the worse half, because it is a route this file
+/// says is covered and is not, which is precisely the "wrong *covered*" the
+/// inventory's own header calls "exactly the outcome this file exists to
+/// prevent".
+///
+/// That header goes on to say the mapping is stated rather than inferred
+/// because a hand-written matcher got it wrong in both directions — a path
+/// parameter is not always one segment, so a greedy matcher claims coverage
+/// that does not exist. True, and the conclusion does not follow: actix already
+/// holds the answer. `HttpRequest::match_pattern` reports the pattern the real
+/// router selected for a request that was really made, so there is no
+/// approximation to get wrong. The inventory stays stated; this asserts the
+/// statement against the router instead of against a count.
+///
+/// One app routes every row: the route table is registered in full regardless of
+/// registry type, and which handler *answers* is a question about guards, not
+/// about matching.
+///
+/// # The two spellings
+///
+/// actix reports the pattern as registered, regexes and all —
+/// `/proxy/{registry}/deb/{path:.*}`, `/proxy/{registry}/{module:[^@]+}@v/list`
+/// — while the OpenAPI spec [`ROUTE_INVENTORY`] is written against strips the
+/// constraint and splices a `/` before the `@`. Same route, two spellings, so
+/// both sides are canonicalised before they are compared. Getting that wrong
+/// would report thirteen phantom mismatches, which is a gate nobody would keep.
+#[actix_web::test]
+async fn coverage_claims_match_the_routes_rows_actually_reach() {
+    use std::collections::BTreeSet;
+
+    /// Drop `:regex` from every `{param:regex}`, then join `}/@` back to `}@`.
+    ///
+    /// The scan is brace-balanced rather than a search for `}`: a constraint can
+    /// contain braces of its own (`{filename:.+\.(?:tar\.bz2|conda)}` does not,
+    /// but `{n:\d{1,3}}` would), and a naive split would truncate mid-pattern
+    /// and silently invent a route.
+    fn canonical(pattern: &str) -> String {
+        let mut out = String::with_capacity(pattern.len());
+        let mut chars = pattern.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c != '{' {
+                out.push(c);
+                continue;
+            }
+            let mut name = String::new();
+            let mut depth = 1usize;
+            let mut in_constraint = false;
+            for c in chars.by_ref() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    ':' if depth == 1 && !in_constraint => in_constraint = true,
+                    _ if !in_constraint => name.push(c),
+                    _ => {}
+                }
+            }
+            out.push('{');
+            out.push_str(&name);
+            out.push('}');
+        }
+        out.replace("}/@", "}@")
+    }
+
+    let parts = local_only_app_parts_with_policy(
+        "reg",
+        "npm",
+        RegistryMode::Local,
+        true,
+        rbac_policy_deny_anonymous,
+    )
+    .await;
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+
+    let mut reached: BTreeSet<String> = BTreeSet::new();
+    let mut unrouted: Vec<&str> = Vec::new();
+
+    for row in matrix() {
+        // GET-shaped rows only. A `.post(…)` row is claimed in
+        // WRITE_ROUTE_INVENTORY as a `ReadRow`, because ROUTE_INVENTORY filters
+        // the router on `item.get` and cannot name a POST-only path.
+        if row.post.is_some() {
+            continue;
+        }
+        let resp = call_service(&app, TestRequest::get().uri(row.uri).to_request()).await;
+        match resp.request().match_pattern() {
+            Some(pattern) => {
+                reached.insert(canonical(&pattern));
+            }
+            None => unrouted.push(row.uri),
+        }
+    }
+
+    let claimed: BTreeSet<String> = ROUTE_INVENTORY
+        .iter()
+        .filter(|(_, c)| matches!(c, Coverage::Row))
+        .map(|(p, _)| canonical(p))
+        .collect();
+
+    let over: Vec<&String> = claimed.difference(&reached).collect();
+    let under: Vec<&String> = reached.difference(&claimed).collect();
+
+    let mut report = String::new();
+    if !unrouted.is_empty() {
+        report.push_str(&format!(
+            "\n{} row URI(s) match no route at all. A row that routes nowhere still \"passes\"\n\
+             its negative assertion, because a 404 reads as denied:\n  {}\n",
+            unrouted.len(),
+            unrouted.join("\n  ")
+        ));
+    }
+    if !over.is_empty() {
+        report.push_str(&format!(
+            "\n{} route(s) are marked Coverage::Row and no row reaches them. This is a\n\
+             claim of coverage over nothing — the failure direction the inventory's header\n\
+             calls out. Either add a row, or reclassify:\n  {}\n",
+            over.len(),
+            over.iter()
+                .map(|p| p.as_str())
+                .collect::<Vec<_>>()
+                .join("\n  ")
+        ));
+    }
+    if !under.is_empty() {
+        report.push_str(&format!(
+            "\n{} route(s) are reached by a row but not marked Coverage::Row. The suite is\n\
+             under-reporting its own coverage; mark them:\n  {}\n",
+            under.len(),
+            under
+                .iter()
+                .map(|p| format!("    (\"{p}\", Coverage::Row),"))
+                .collect::<Vec<_>>()
+                .join("\n  ")
         ));
     }
     assert!(report.is_empty(), "{report}");

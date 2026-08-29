@@ -9,7 +9,6 @@ use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
     entities::PackageId,
     error::CoreError,
-    rules::resource_type::RELEASES_READ,
     services::{
         validate_package_name, validate_path_safe, LocalRegistryService, ProxyRequest, ProxyService,
     },
@@ -23,6 +22,7 @@ use crate::handlers::proxy::common::{
 };
 use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
+use batlehub_core::entities::Action;
 
 /// Forward a fixed-URL blob through the cached-forward helper (the IDE fetches
 /// these at startup — the highest-value offline case).
@@ -214,7 +214,7 @@ async fn load_entries(
     let proxy_req = ProxyRequest {
         package_id: PackageId::new(registry, xml_id, "latest"),
         identity: identity.0,
-        resource_type: RELEASES_READ.to_owned(),
+        action: Action::ReleasesRead.to_owned(),
         ip_address: None,
         user_agent: None,
     };
@@ -352,7 +352,7 @@ pub async fn jbm_file_download(
             artifact_suffix: &artifact,
             local_content_type: content_type_for(&file_name),
             proxy_content_type: None,
-            resource_type: RELEASES_READ,
+            action: Action::ReleasesRead,
             check_prerelease: false,
             append_signature: true,
         },
@@ -435,7 +435,7 @@ pub async fn jbm_plugin_download(
             artifact_suffix: &artifact,
             local_content_type: "application/octet-stream",
             proxy_content_type: None,
-            resource_type: RELEASES_READ,
+            action: Action::ReleasesRead,
             check_prerelease: false,
             append_signature: true,
         },
@@ -521,7 +521,7 @@ pub async fn jbm_plugin_manager(
                         &registry,
                         &query.id,
                         &best.version,
-                        batlehub_core::rules::resource_type::RELEASES_READ,
+                        Action::ReleasesRead,
                         &identity,
                     )
                     .await
@@ -544,7 +544,7 @@ pub async fn jbm_plugin_manager(
     let proxy_req = ProxyRequest {
         package_id: PackageId::new(&registry, &query.id, "latest"),
         identity: identity.0.clone(),
-        resource_type: RELEASES_READ.to_owned(),
+        action: Action::ReleasesRead.to_owned(),
         ip_address: None,
         user_agent: None,
     };
@@ -566,7 +566,7 @@ pub async fn jbm_plugin_manager(
         .ok_or_else(|| AppError::not_found("upstream version list is empty".to_owned()))?;
 
     let pkg = PackageId::new(&registry, &query.id, &version).with_artifact(PLUGIN_ARTIFACT);
-    let mut resp = proxy_stream(svc, pkg, identity, RELEASES_READ, None).await?;
+    let mut resp = proxy_stream(svc, pkg, identity, Action::ReleasesRead, None).await?;
     resp.headers_mut().insert(
         header::CONTENT_DISPOSITION,
         plugin_attachment_value(&query.id, &version)?,

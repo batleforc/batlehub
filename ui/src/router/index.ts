@@ -294,6 +294,10 @@ export const router = createRouter({
         { path: "security/blocks", component: () => import("@/pages/AdminBlocks.vue") },
         { path: "security/access-check", component: () => import("@/pages/AdminAccessCheck.vue") },
         {
+          path: "security/authorization",
+          component: () => import("@/pages/AdminAuthorization.vue"),
+        },
+        {
           path: "namespaces/team-namespaces",
           component: () => import("@/pages/AdminTeamNamespaces.vue"),
         },

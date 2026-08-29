@@ -2,8 +2,23 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-/// Visibility level for a locally published package.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+/// How wide the audience for a resource is — RFC 0015 §4.5's one *narrowing*
+/// dimension.
+///
+/// Grants and visibility answer the same question from opposite directions, and
+/// the model ships both deliberately: a grant says *this subject may* and
+/// composes by union, so it can only ever widen; visibility says *the audience
+/// is this wide*, is a single scalar, and composes deepest-wins, so it can only
+/// ever narrow. **A caller needs both** — a grant for the verb and membership of
+/// the audience — which is an AND, not a fallback. A `releases:read` grant does
+/// not make a `team` package public, and a `public` namespace does not serve a
+/// caller no grant matches.
+///
+/// The variants are ordered widest to narrowest, and [`Self::narrower_of`]
+/// depends on that order.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize, ToSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Visibility {
     /// Anyone, including anonymous users, may download.
@@ -13,15 +28,55 @@ pub enum Visibility {
     Internal,
     /// Only members of the owning team group may download.
     Team,
+    /// Inherited read grants do not apply — only grants written on this node or
+    /// below (RFC 0015 §4.5).
+    ///
+    /// This is the case the other three cannot express: narrowing to *fewer
+    /// subjects than the parent named*, which is RFC 0011-bis §4.3's empty
+    /// reader set — the shape it uses to keep one package private inside a
+    /// shared namespace. It is a scalar rather than a second subject list, so it
+    /// enumerates nobody and adds no second place to look.
+    ///
+    /// **Package and version tier only.** §4.9 rejects it at registry or
+    /// namespace tier, where "only grants written at this node or below" either
+    /// says nothing or says what `grants = {}` already says properly — accepting
+    /// it higher up would give sealing a second, weaker spelling.
+    ///
+    /// §4.3's administrative floor applies to it exactly as it does to a seal,
+    /// so it cannot lock an operator out of their own registry.
+    Private,
+}
+
+impl Visibility {
+    /// The narrower of two visibilities.
+    ///
+    /// Not a composition rule — visibility composes *deepest-wins*, not by
+    /// intersection (§4.1). This is for the places that must satisfy two
+    /// independent audience constraints at once, of which
+    /// `prerelease_visibility` beside `visibility` is the motivating one.
+    pub fn narrower_of(self, other: Self) -> Self {
+        self.max(other)
+    }
+
+    /// Whether this value may be written at `tier` (§4.9).
+    pub fn is_valid_at(self, tier: crate::entities::Tier) -> bool {
+        use crate::entities::Tier;
+        !matches!(self, Self::Private) || matches!(tier, Tier::Package | Tier::Version)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Internal => "internal",
+            Self::Team => "team",
+            Self::Private => "private",
+        }
+    }
 }
 
 impl std::fmt::Display for Visibility {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Visibility::Public => write!(f, "public"),
-            Visibility::Internal => write!(f, "internal"),
-            Visibility::Team => write!(f, "team"),
-        }
+        f.write_str(self.as_str())
     }
 }
 
@@ -32,6 +87,7 @@ impl std::str::FromStr for Visibility {
             "public" => Ok(Self::Public),
             "internal" => Ok(Self::Internal),
             "team" => Ok(Self::Team),
+            "private" => Ok(Self::Private),
             other => Err(format!("unknown visibility: '{other}'")),
         }
     }
@@ -52,9 +108,50 @@ mod tests {
         assert_eq!(Visibility::from_str("team").unwrap(), Visibility::Team);
     }
 
+    /// `private` is RFC 0015 §4.5's fourth value, and it round-trips like the
+    /// other three. It used to be the example of an unknown one — see the test
+    /// below, which kept the assertion and changed the string.
+    #[test]
+    fn private_round_trips() {
+        assert_eq!(
+            Visibility::from_str("private").unwrap(),
+            Visibility::Private
+        );
+        assert_eq!(Visibility::Private.to_string(), "private");
+    }
+
+    /// The variants are ordered widest to narrowest, which `narrower_of` relies
+    /// on. Pinned because reordering the enum for readability would silently
+    /// invert it.
+    #[test]
+    fn visibility_is_ordered_widest_to_narrowest() {
+        assert!(Visibility::Public < Visibility::Internal);
+        assert!(Visibility::Internal < Visibility::Team);
+        assert!(Visibility::Team < Visibility::Private);
+        assert_eq!(
+            Visibility::Public.narrower_of(Visibility::Team),
+            Visibility::Team
+        );
+    }
+
+    /// §4.9: `private` is a package- and version-tier value. Higher up it either
+    /// says nothing or duplicates a seal.
+    #[test]
+    fn private_is_only_valid_at_the_two_deepest_tiers() {
+        use crate::entities::Tier;
+        assert!(!Visibility::Private.is_valid_at(Tier::Registry));
+        assert!(!Visibility::Private.is_valid_at(Tier::Namespace));
+        assert!(Visibility::Private.is_valid_at(Tier::Package));
+        assert!(Visibility::Private.is_valid_at(Tier::Version));
+        // The other three are valid everywhere.
+        for v in [Visibility::Public, Visibility::Internal, Visibility::Team] {
+            assert!(v.is_valid_at(Tier::Registry), "{v}");
+        }
+    }
+
     #[test]
     fn from_str_unknown_is_err() {
-        assert!(Visibility::from_str("private").is_err());
+        assert!(Visibility::from_str("secret").is_err());
         assert!(Visibility::from_str("").is_err());
         assert!(Visibility::from_str("Public").is_err());
     }

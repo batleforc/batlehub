@@ -98,6 +98,18 @@ async fn make_quota_app(
     };
     let admin_svc = Arc::new(AdminService::new(InMemoryRepo::new()));
     let app = actix_web::App::new()
+        // RFC 0015 §4.2 — this app registers only the handlers under test, so the
+        // hot lock the control-verb check reads has to be registered with them.
+        .app_data(actix_web::web::Data::new(
+            batlehub_core::services::hot_config::new_hot_lock(
+                batlehub_core::services::hot_config::HotConfig {
+                    instance: Some(std::sync::Arc::new(
+                        batlehub_core::services::authz::translate::instance_node(None),
+                    )),
+                    ..Default::default()
+                },
+            ),
+        ))
         .app_data(actix_web::web::Data::new(quota_svc))
         .app_data(actix_web::web::Data::new(admin_svc))
         .service(list_quota)

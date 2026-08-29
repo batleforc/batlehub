@@ -1,7 +1,8 @@
 use super::{
-    artifact_storage_key, check_team_visibility, AccessEvent, Bytes, CoreError, Identity,
-    LocalRegistryService, PackageId, PublishedPackage, Role, StreamExt, Visibility,
+    artifact_storage_key, AccessEvent, Bytes, CoreError, Identity, LocalRegistryService, PackageId,
+    PublishedPackage, StreamExt,
 };
+use crate::entities::Action;
 
 impl LocalRegistryService {
     /// Return the sparse index file content (newline-delimited JSON) for a Cargo crate.
@@ -148,12 +149,12 @@ impl LocalRegistryService {
         registry: &str,
         name: &str,
         version: &str,
-        resource_type: &str,
+        action: Action,
         identity: &Identity,
     ) -> Result<Option<PublishedPackage>, CoreError> {
         super::validate_coordinate(name, version, None)?;
         match self
-            .read_gates(registry, name, version, resource_type, identity)
+            .read_gates(registry, name, version, action, identity)
             .await
         {
             Ok(row) => Ok(row),
@@ -176,7 +177,7 @@ impl LocalRegistryService {
         registry: &str,
         name: &str,
         version: &str,
-        resource_type: &str,
+        action: Action,
         identity: &Identity,
     ) -> Result<Option<PublishedPackage>, CoreError> {
         // The version's own row, because the chain is about to judge it. The
@@ -226,11 +227,8 @@ impl LocalRegistryService {
                     extra: serde_json::Value::Null,
                     cache_control: None,
                 };
-                crate::services::registry_authz::authorize_read_against(
-                    &self.hot,
-                    &metadata,
-                    identity,
-                    resource_type,
+                crate::services::authz::authorize_read_against(
+                    &self.hot, &metadata, identity, action,
                 )
                 .await?;
             }
@@ -256,13 +254,8 @@ impl LocalRegistryService {
             // row is a store inconsistency, not a publish; `verify_on_serve` and
             // `verify_on_download` both fail closed on it a few lines below.
             None => {
-                crate::services::registry_authz::authorize_unheld_read(
-                    &self.hot,
-                    &pkg_id,
-                    identity,
-                    resource_type,
-                )
-                .await?;
+                crate::services::authz::authorize_unheld_read(&self.hot, &pkg_id, identity, action)
+                    .await?;
             }
         }
         self.check_visibility(registry, name, identity).await?;
@@ -280,7 +273,7 @@ impl LocalRegistryService {
     /// Retrieve the raw artifact bytes for download.
     ///
     /// `resource_type` is the permission the read needs — normally
-    /// [`crate::rules::resource_type::RELEASES_READ`], `SOURCE_READ` for the
+    /// [`crate::entities::Action::ReleasesRead`], `Action::SourceRead` for the
     /// paths that serve source archives. It is a parameter rather than a
     /// constant so that every call site has to name what it is serving, which
     /// is the same question the proxy fall-through answers for the same route.
@@ -289,11 +282,11 @@ impl LocalRegistryService {
         registry: &str,
         name: &str,
         version: &str,
-        resource_type: &str,
+        action: Action,
         identity: &Identity,
     ) -> Result<Bytes, CoreError> {
         let row = self
-            .authorize_artifact_read(registry, name, version, resource_type, identity)
+            .authorize_artifact_read(registry, name, version, action, identity)
             .await?;
         let key = artifact_storage_key(registry, name, version);
         let artifact = self.storage.retrieve(&key).await?.ok_or_else(|| {
@@ -387,17 +380,11 @@ impl LocalRegistryService {
         &self,
         pkg: &PackageId,
         key: &str,
-        resource_type: &str,
+        action: Action,
         identity: &Identity,
     ) -> Result<Option<Bytes>, CoreError> {
-        self.authorize_artifact_read(
-            &pkg.registry,
-            &pkg.name,
-            &pkg.version,
-            resource_type,
-            identity,
-        )
-        .await?;
+        self.authorize_artifact_read(&pkg.registry, &pkg.name, &pkg.version, action, identity)
+            .await?;
         let Some(stored) = self.storage.retrieve(key).await? else {
             return Ok(None);
         };
@@ -619,28 +606,166 @@ impl LocalRegistryService {
         package: &str,
         identity: &Identity,
     ) -> Result<(), CoreError> {
-        if identity.is_admin() {
-            return Ok(());
-        }
-        let Some(ref ns_port) = self.team_namespace else {
-            return Ok(());
+        self.authorizer()
+            .check_visibility(registry, package, identity)
+            .await
+    }
+
+    /// Which packages in `registry` this caller may read (RFC 0015 §4.4).
+    ///
+    /// The **whole configured hierarchy** — the registry node and every
+    /// `[[registries.namespaces]]` block — resolved once against this caller, and
+    /// then one further query for the registry's package-tier grants, made only
+    /// when the config tiers did not already grant the read on everything. Never
+    /// one query per package: that is the N+1 phase 0b measured at 806× the
+    /// cached document on the M corpus (§13.2), and it is the reason this helper
+    /// exists rather than a `resolve` call inside each loop.
+    ///
+    /// Resolving only the *registry* node — which is what this did first — made
+    /// the namespace tier invisible to every whole-registry document, both by
+    /// dropping packages a namespace grant reaches and by listing packages a
+    /// namespace seal withholds. [`Readable`] carries the reasoning; the tier is
+    /// config-declared and its `match` is a string comparison, so there was never
+    /// a cost that justified leaving it out.
+    ///
+    /// A registry with no configured hierarchy answers
+    /// [`Readable::Everything`] — the same reading `authorize_grants` takes for
+    /// an unknown registry, and for the same reason: that is a routing question
+    /// answered `404` by the handler, not an authorization one. Filtering a
+    /// document to nothing because a test fixture built no grants would be a
+    /// refusal wearing an empty document's clothes.
+    pub(super) async fn readable_packages(
+        &self,
+        registry: &str,
+        identity: &Identity,
+    ) -> Result<crate::services::authz::filter::Readable, CoreError> {
+        use crate::entities::{Action, Subject};
+        use crate::services::authz::filter::Readable;
+
+        let (grants, instance, repo) = {
+            let hot = self.hot.read().await;
+            (
+                hot.grants.get(registry).cloned(),
+                hot.instance.clone(),
+                hot.grant_repo.clone(),
+            )
         };
-        let vis = ns_port.get_visibility(registry, package).await?;
-        match vis {
-            Visibility::Public => Ok(()),
-            Visibility::Internal => {
-                if identity.has_role_at_least(&Role::User) {
-                    Ok(())
-                } else {
-                    Err(CoreError::AccessDenied(
-                        "package is internal; authentication required".into(),
-                    ))
-                }
-            }
-            Visibility::Team => {
-                check_team_visibility(&**ns_port, registry, package, identity).await
-            }
+        let Some(grants) = grants else {
+            return Ok(Readable::Everything);
+        };
+
+        let subject = Subject::Identity(identity.clone());
+        let readable =
+            Readable::from_registry(instance.as_deref(), &grants, Action::ReleasesRead, &subject);
+
+        // The fast path fetches nothing: a caller the config tiers already grant
+        // the read to has no package-tier row that could widen it further.
+        let (true, Some(repo)) = (readable.needs_package_grants(), repo) else {
+            return Ok(readable);
+        };
+        let rows = repo
+            .package_grants_in_registry(registry)
+            .await?
+            .into_iter()
+            .map(|g| (g.node_key, g.subject, g.actions));
+
+        Ok(readable.with_package_grants(rows, Action::ReleasesRead, &subject))
+    }
+
+    /// Every whole-registry document for `registry` is now stale.
+    ///
+    /// Called by every write. A generation bump rather than a TTL, because a TTL
+    /// heals eventually and a resolver does not wait: conda's
+    /// `repodata.json.zst` was keyed on a fingerprint a publish did not change,
+    /// and a client that had probed the channel once kept being served
+    /// pre-publish bytes while the uncompressed document showed the new package
+    /// (`publish_traversal_guards.rs`). This is that bug made unrepresentable.
+    pub(super) async fn invalidate_documents(&self, registry: &str) {
+        let cache = { self.hot.read().await.document_cache.clone() };
+        if let Some(cache) = cache {
+            cache.invalidate_registry(registry).await;
         }
+    }
+
+    /// A cached whole-registry document, or the generation to store one under.
+    ///
+    /// Returns `Ok(Err(generation))` on a miss: the generation is read *before*
+    /// the document is built, so a publish landing mid-render invalidates the
+    /// result rather than being stamped with a value that postdates it.
+    pub(super) async fn cached_document(
+        &self,
+        registry: &str,
+        document: &str,
+        identity: &Identity,
+    ) -> Result<Result<std::sync::Arc<String>, (String, u64)>, CoreError> {
+        use crate::entities::{resolve, Subject};
+        use crate::services::authz::filter::document_cache_key;
+
+        let (grants, cache) = {
+            let hot = self.hot.read().await;
+            (
+                hot.grants.get(registry).cloned(),
+                hot.document_cache.clone(),
+            )
+        };
+        let (Some(grants), Some(cache)) = (grants, cache) else {
+            // No hierarchy or no cache: build it every time. A missing cache is
+            // a slow answer, never a wrong one.
+            return Ok(Err((String::new(), 0)));
+        };
+
+        let subject = Subject::Identity(identity.clone());
+        let broad = resolve(std::slice::from_ref(&grants.registry), &subject);
+        let key = document_cache_key(&format!("{registry}/{document}"), &broad);
+
+        let generation = cache.generation(registry).await;
+        match cache.get(registry, &key).await {
+            Some(body) => Ok(Ok(body)),
+            None => Ok(Err((key, generation))),
+        }
+    }
+
+    /// Store a document built after `generation` was read.
+    pub(super) async fn store_document(&self, key: String, body: &str, generation: u64) {
+        if key.is_empty() {
+            return;
+        }
+        let cache = { self.hot.read().await.document_cache.clone() };
+        if let Some(cache) = cache {
+            cache
+                .put(key, std::sync::Arc::new(body.to_owned()), generation)
+                .await;
+        }
+    }
+
+    /// Everything RFC 0015 §4.1 says applies to one coordinate, composed.
+    ///
+    /// Delegates to [`resolve_policy`](crate::services::authz::resolve_policy),
+    /// which is where it lives so that `explain` (§4.8) can answer the same
+    /// question without a `LocalRegistryService` — a diagnostic that resolved
+    /// policy by a second route is a diagnostic that can disagree with the thing
+    /// it describes, which §11.6 calls worse than none.
+    pub(super) async fn resolve_policy(
+        &self,
+        registry: &str,
+        package: &str,
+        version: Option<&str>,
+    ) -> Result<crate::entities::ResolvedPolicy, CoreError> {
+        crate::services::authz::resolve_policy(&self.hot, registry, package, version).await
+    }
+
+    /// The [`Authorizer`](crate::services::authz::Authorizer) for this service.
+    ///
+    /// Built from the handles this service already holds rather than stored
+    /// beside them. Storing it would mean two owners of the same ports, and a
+    /// `LocalRegistryService` whose `team_namespace` was swapped after
+    /// construction — which `authz_matrix.rs`'s visibility fixture does, and so
+    /// does `make_local_cargo_ownership_app` — would keep authorizing against
+    /// the old one. Two answers to one question is the defect the funnel exists
+    /// to remove; a cheap constructor is a small price for not reintroducing it
+    /// one layer down.
+    pub fn authorizer(&self) -> crate::services::authz::Authorizer {
+        crate::services::authz::Authorizer::new(self.hot.clone(), self.team_namespace.clone())
     }
 
     /// Locally published packages matching `query`, as search hits the caller is
@@ -725,7 +850,7 @@ impl LocalRegistryService {
     /// Only the identity-keyed `rbac` rule runs, not the full chain: this
     /// authorises a *listing*, and the gate rules judge a concrete version that
     /// a listing does not name — see
-    /// [`crate::services::registry_authz::authorize_listing`]. The full chain
+    /// [`crate::services::authz::authorize_listing`]. The full chain
     /// still runs on the download that follows, in
     /// [`Self::authorize_artifact_read`].
     ///
@@ -738,11 +863,11 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<(), CoreError> {
-        crate::services::registry_authz::authorize_listing(
+        crate::services::authz::authorize_listing(
             &self.hot,
             &PackageId::new(registry, name, "latest"),
             identity,
-            crate::rules::resource_type::RELEASES_READ,
+            crate::entities::Action::ReleasesRead,
         )
         .await?;
         self.check_visibility(registry, name, identity).await
@@ -752,18 +877,12 @@ impl LocalRegistryService {
 
     /// Returns `true` when `version` is a pre-release.
     ///
-    /// Handles semver pre-release components (`1.0.0-beta.1`), optional `v` prefixes
-    /// (`v1.0.0-beta.1`), and Composer-style dev-branch aliases (`dev-main`, `1.x-dev`).
+    /// Delegates to the free [`is_prerelease`](super::is_prerelease), which is
+    /// where the definition lives now that it has a consumer outside this module
+    /// (RFC 0015 §6.1). Kept as an associated function because this module calls
+    /// it as `Self::is_prerelease` in several places and the indirection is free.
     pub(super) fn is_prerelease(version: &str) -> bool {
-        // Composer dev-branch aliases are always pre-release.
-        if version.starts_with("dev-") || version.ends_with("-dev") {
-            return true;
-        }
-        // Strip optional leading 'v' before strict semver parse.
-        let v = version.strip_prefix('v').unwrap_or(version);
-        semver::Version::parse(v)
-            .map(|sv| !sv.pre.is_empty())
-            .unwrap_or(false)
+        super::is_prerelease(version)
     }
 
     /// Filter `versions` to remove pre-release entries when `identity` is not a
@@ -958,19 +1077,9 @@ impl LocalRegistryService {
         version: &str,
         identity: &Identity,
     ) -> Result<(), CoreError> {
-        if !Self::is_prerelease(version) {
-            return Ok(());
-        }
-        let beta_port = self.hot.read().await.beta_channel.get(registry).cloned();
-        let Some(beta_port) = beta_port else {
-            return Ok(());
-        };
-        if beta_port.is_member(registry, identity).await? {
-            return Ok(());
-        }
-        Err(CoreError::NotFound(format!(
-            "version '{version}' is a pre-release and you are not a beta-channel member"
-        )))
+        self.authorizer()
+            .check_prerelease_access(registry, version, identity)
+            .await
     }
 
     /// Look up the metadata for a specific published version.

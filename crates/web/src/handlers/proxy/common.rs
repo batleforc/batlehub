@@ -19,6 +19,7 @@ use crate::{
     services::NotificationService,
     RegistryHostMap, RegistryMap, RegistryModeMap,
 };
+use batlehub_core::entities::Action;
 
 /// The public base URL of `registry` **as seen by this client** — the prefix every
 /// self-referencing URL the server generates should be built on.
@@ -319,7 +320,7 @@ pub async fn proxy_gem_specs(
         svc,
         pkg,
         identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         Some("application/octet-stream"),
     )
     .await
@@ -348,13 +349,13 @@ pub async fn proxy_stream(
     svc: web::Data<Arc<ProxyService>>,
     pkg: PackageId,
     identity: AuthIdentity,
-    resource_type: &str,
+    action: Action,
     content_type: Option<&str>,
 ) -> Result<HttpResponse, AppError> {
     let req = ProxyRequest {
         package_id: pkg,
         identity: identity.0,
-        resource_type: resource_type.to_owned(),
+        action: action.to_owned(),
         ip_address: None,
         user_agent: None,
     };
@@ -386,12 +387,12 @@ pub async fn proxy_document(
     svc: web::Data<Arc<ProxyService>>,
     pkg: PackageId,
     identity: AuthIdentity,
-    resource_type: &str,
+    action: Action,
     doc_kind: DocumentKind,
     public_base: String,
 ) -> Result<HttpResponse, AppError> {
     Ok(document_response(
-        fetch_proxy_document(svc, pkg, identity, resource_type, doc_kind, public_base).await?,
+        fetch_proxy_document(svc, pkg, identity, action, doc_kind, public_base).await?,
     ))
 }
 
@@ -402,14 +403,14 @@ pub async fn fetch_proxy_document(
     svc: web::Data<Arc<ProxyService>>,
     pkg: PackageId,
     identity: AuthIdentity,
-    resource_type: &str,
+    action: Action,
     doc_kind: DocumentKind,
     public_base: String,
 ) -> Result<VersionDocument, AppError> {
     let req = ProxyRequest {
         package_id: pkg,
         identity: identity.0,
-        resource_type: resource_type.to_owned(),
+        action: action.to_owned(),
         ip_address: None,
         user_agent: None,
     };
@@ -454,7 +455,7 @@ pub struct LocalOrProxyArtifactOpts<'a> {
     /// `Content-Type` passed to [`proxy_stream`] on the proxy fallback.
     pub proxy_content_type: Option<&'static str>,
     /// `resource_type` passed to [`proxy_stream`], e.g. `"releases:read"`, `"source:read"`.
-    pub resource_type: &'a str,
+    pub action: Action,
     /// Call `local_svc.check_prerelease_access(...)` before `get_artifact` in
     /// the Local/Hybrid branches.
     pub check_prerelease: bool,
@@ -494,7 +495,7 @@ pub async fn serve_local_or_proxy_artifact(
                 .map_err(AppError::from)?;
         }
         match local_svc
-            .get_artifact(registry, name, version, opts.resource_type, &identity)
+            .get_artifact(registry, name, version, opts.action, &identity)
             .await
         {
             Ok(bytes) => {
@@ -512,14 +513,7 @@ pub async fn serve_local_or_proxy_artifact(
     }
 
     let pkg = PackageId::new(registry, name, version).with_artifact(opts.artifact_suffix);
-    proxy_stream(
-        svc,
-        pkg,
-        identity,
-        opts.resource_type,
-        opts.proxy_content_type,
-    )
-    .await
+    proxy_stream(svc, pkg, identity, opts.action, opts.proxy_content_type).await
 }
 
 /// Serve JSON metadata from local storage (Local/Hybrid mode) or fall back to
@@ -543,7 +537,7 @@ async fn local_first<T, F, Fut>(
     local_fetch: F,
     not_found_msg: String,
     pkg: &PackageId,
-    resource_type: &str,
+    action: Action,
 ) -> Result<Option<T>, AppError>
 where
     F: FnOnce(batlehub_core::entities::Identity) -> Fut,
@@ -552,7 +546,7 @@ where
     if !matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
         return Ok(None);
     }
-    svc.authorize_read(pkg, &identity.0, resource_type)
+    svc.authorize_read(pkg, &identity.0, action)
         .await
         .map_err(AppError::from)?;
     match local_fetch(identity.0.clone()).await {
@@ -575,7 +569,7 @@ pub async fn serve_local_or_proxy_json<T, F, Fut>(
     local_fetch: F,
     not_found_msg: String,
     pkg: PackageId,
-    resource_type: &str,
+    action: Action,
     proxy_content_type: Option<&str>,
 ) -> Result<HttpResponse, AppError>
 where
@@ -590,13 +584,13 @@ where
         local_fetch,
         not_found_msg,
         &pkg,
-        resource_type,
+        action,
     )
     .await?;
     if let Some(x) = local {
         return Ok(HttpResponse::Ok().content_type("application/json").json(x));
     }
-    proxy_stream(svc, pkg, identity, resource_type, proxy_content_type).await
+    proxy_stream(svc, pkg, identity, action, proxy_content_type).await
 }
 
 /// [`serve_local_or_proxy_json`] for routes whose proxy fall-through serves a
@@ -618,7 +612,7 @@ pub async fn serve_local_or_proxy_document<T, F, Fut>(
     local_fetch: F,
     not_found_msg: String,
     pkg: PackageId,
-    resource_type: &str,
+    action: Action,
     doc_kind: DocumentKind,
     local_content_type: &str,
     public_base: String,
@@ -635,15 +629,14 @@ where
         local_fetch,
         not_found_msg,
         &pkg,
-        resource_type,
+        action,
     )
     .await?;
     if let Some(x) = local {
         return Ok(HttpResponse::Ok().content_type(local_content_type).json(x));
     }
 
-    let doc =
-        fetch_proxy_document(svc, pkg, identity, resource_type, doc_kind, public_base).await?;
+    let doc = fetch_proxy_document(svc, pkg, identity, action, doc_kind, public_base).await?;
     Ok(document_response(doc))
 }
 
@@ -671,7 +664,7 @@ pub async fn local_or_proxy_document_value<T, F, Fut>(
     local_fetch: F,
     not_found_msg: String,
     pkg: PackageId,
-    resource_type: &str,
+    action: Action,
     doc_kind: DocumentKind,
     public_base: String,
 ) -> Result<serde_json::Value, AppError>
@@ -687,7 +680,7 @@ where
         local_fetch,
         not_found_msg,
         &pkg,
-        resource_type,
+        action,
     )
     .await?;
     if let Some(x) = local {
@@ -695,15 +688,8 @@ where
             .map_err(|e| AppError::internal(format!("could not render the local document: {e}")));
     }
 
-    let doc = fetch_proxy_document(
-        svc.clone(),
-        pkg,
-        identity,
-        resource_type,
-        doc_kind,
-        public_base,
-    )
-    .await?;
+    let doc =
+        fetch_proxy_document(svc.clone(), pkg, identity, action, doc_kind, public_base).await?;
     doc.body.as_json().cloned().ok_or_else(|| {
         AppError::internal("upstream document is not JSON and cannot be read as one".to_owned())
     })

@@ -99,10 +99,179 @@ fn parse(raw: &str) -> Option<Parsed> {
     semver::Version::parse(&padded).ok().map(|v| (v, extra))
 }
 
+/// Whether `version` names a pre-release. **The** definition, RFC 0015 §4.5.
+///
+/// # Why it lives beside the order rather than beside its callers
+///
+/// There were two implementations and they disagreed. `local_registry`'s did a
+/// strict `semver::Version::parse`, so `1.0-SNAPSHOT` failed on its
+/// two-component core, fell through an `unwrap_or(false)`, and was called a
+/// **release** — the exact case `immutable = "released"` exists to catch. The
+/// console's was `version.contains('-')`, which called the same string a
+/// pre-release for the right reason by accident and would say the same of
+/// `2.0.0+build-1`. Both were wrong on PyPI's `1.0.0rc1`.
+///
+/// Two answers was tolerable while the question only decided a label in a
+/// version table. It stopped being tolerable when it started deciding whether a
+/// version may be **replaced** (`immutable = "released"`), whether it may be
+/// **published** (`allow_prerelease`) and who may **see** it
+/// (`prerelease_visibility`). Three enforcement points cannot each hold their
+/// own opinion, so the definition sits next to [`parse`] — the normalisation
+/// that makes it right — rather than next to any one consumer.
+///
+/// `parse` is what fixes the SNAPSHOT: it pads a two-component core before the
+/// semver parse, so `1.0-SNAPSHOT` is read as `1.0.0-SNAPSHOT` and its `pre`
+/// component is non-empty. Nothing about the *order* changes; this reuses the
+/// reading the order already does.
+///
+/// # The two arms `parse` cannot answer
+///
+/// **Composer dev-branch aliases** (`dev-main`, `1.x-dev`) are pre-releases by
+/// the ecosystem's definition and are not semver at all. Carried over from the
+/// implementation this replaces.
+///
+/// **PEP 440 suffixes** (`1.0.0rc1`, `2.1b2`, `3.0a1.dev4`) attach without a
+/// separator, so `parse` returns `None` and the version would otherwise be
+/// called a release. §4.5 records both previous rules as wrong here and does not
+/// say what replaces them; left unhandled, an `immutable = "released"` namespace
+/// on a PyPI registry would freeze every release candidate the moment it was
+/// published, which is the same defect as the SNAPSHOT one and on the ecosystem
+/// where pre-releases are most common. So it is handled, and deliberately only
+/// for the shape PEP 440 defines: a numeric core, then `a`/`b`/`rc`/`alpha`/
+/// `beta`/`dev`/`post`-style marker. A letter anywhere else still reads as a
+/// release, because guessing wider would start calling `1.0.0final` one.
+pub fn is_prerelease(version: &str) -> bool {
+    // Composer dev-branch aliases are always pre-release.
+    if version.starts_with("dev-") || version.ends_with("-dev") {
+        return true;
+    }
+    if let Some((parsed, _)) = parse(version) {
+        return !parsed.pre.is_empty();
+    }
+    // `parse` said no. The remaining pre-release spelling is PEP 440's
+    // separator-less suffix, which is a numeric core followed directly by a
+    // marker: `1.0.0rc1`, `2.1b2`, `3.0a1`.
+    pep440_prerelease(version)
+}
+
+/// PEP 440's separator-less pre-release suffix, for versions [`parse`] rejects.
+///
+/// Split at the first non-`[0-9.]` byte: everything before is the numeric
+/// release segment, everything after is the suffix. A pre-release marker is one
+/// of PEP 440's own spellings — anything else (a `final`, a Debian-style
+/// `1.0.0ubuntu1`) is a release, because the alternative is inventing a rule
+/// wider than the specification and enforcing publishes with it.
+fn pep440_prerelease(version: &str) -> bool {
+    let v = version.strip_prefix('v').unwrap_or(version);
+    let Some(split) = v.find(|c: char| !c.is_ascii_digit() && c != '.') else {
+        return false;
+    };
+    // A core is required: `rc1` alone is not a version with a pre-release, it is
+    // not a version.
+    if split == 0 || !v[..split].starts_with(|c: char| c.is_ascii_digit()) {
+        return false;
+    }
+    let suffix = v[split..].to_ascii_lowercase();
+    // `.dev` and `-dev` reach here too when the core has four components or
+    // similar, so the marker is matched after stripping a leading separator.
+    let marker = suffix.trim_start_matches(['.', '-', '_']);
+    [
+        "a", "b", "c", "rc", "alpha", "beta", "pre", "preview", "dev",
+    ]
+    .iter()
+    .any(|m| {
+        marker.strip_prefix(m).is_some_and(|rest| {
+            // `1.0.0rc1` and `1.0.0rc` both count; `1.0.0release` does not,
+            // because `rc` must not match the `r` of a longer word.
+            rest.is_empty()
+                || rest.starts_with(|c: char| c.is_ascii_digit() || c == '.' || c == '-')
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::newest_first;
+    use super::{is_prerelease, newest_first};
     use std::cmp::Ordering;
+
+    /// The case that motivated converging the two definitions (RFC 0015 §4.5).
+    ///
+    /// The old `local_registry` rule parsed strict semver, failed on the
+    /// two-component core, and its `unwrap_or(false)` called a SNAPSHOT a
+    /// release — so `immutable = "released"` would have frozen the one kind of
+    /// version Maven expects to churn.
+    #[test]
+    fn a_maven_snapshot_is_a_prerelease() {
+        assert!(is_prerelease("1.0-SNAPSHOT"));
+        assert!(is_prerelease("1.0.0-SNAPSHOT"));
+        assert!(is_prerelease("v2.5-SNAPSHOT"));
+    }
+
+    /// The case the console's `contains('-')` got wrong in the other direction:
+    /// a build metadata suffix is not a pre-release.
+    #[test]
+    fn build_metadata_is_not_a_prerelease() {
+        assert!(!is_prerelease("2.0.0+build-1"));
+        assert!(!is_prerelease("1.0.0+20130313144700"));
+    }
+
+    /// PEP 440 attaches its marker with no separator, so both previous rules
+    /// called these releases (§4.5 says so and stops there).
+    #[test]
+    fn pep440_suffixes_are_prereleases() {
+        for v in ["1.0.0rc1", "2.1b2", "3.0a1", "1.0.0.dev4", "13.0.3rc1"] {
+            assert!(is_prerelease(v), "{v}");
+        }
+    }
+
+    /// …and the rule stays narrow. A letter after the core is not by itself a
+    /// pre-release marker, or every Debian-style rebuild would become one.
+    #[test]
+    fn a_trailing_word_that_is_not_a_pep440_marker_is_a_release() {
+        for v in ["1.0.0", "1.0.0ubuntu1", "1.0.0final", "2.10", "1.0.0.1"] {
+            assert!(!is_prerelease(v), "{v}");
+        }
+    }
+
+    /// Ordinary semver, both ways.
+    #[test]
+    fn semver_prereleases_are_prereleases_and_releases_are_not() {
+        assert!(is_prerelease("1.0.0-beta.1"));
+        assert!(is_prerelease("v1.0.0-alpha"));
+        assert!(!is_prerelease("1.0.0"));
+        assert!(!is_prerelease("v1.2.3"));
+    }
+
+    /// Composer's dev-branch aliases are not semver in any reading.
+    #[test]
+    fn composer_dev_aliases_are_prereleases() {
+        assert!(is_prerelease("dev-main"));
+        assert!(is_prerelease("1.x-dev"));
+    }
+
+    /// The predicate agrees with the order it is derived from: a pre-release of
+    /// a release sorts below it, and this says which one is which.
+    ///
+    /// Pinned because the two are separately maintainable and a divergence would
+    /// be invisible — a resolver would order the list one way and the visibility
+    /// filter would cut it the other, which is the failure this module's own
+    /// header describes for `capped`.
+    #[test]
+    fn the_predicate_and_the_order_agree() {
+        for (pre, release) in [
+            ("1.0-SNAPSHOT", "1.0.0"),
+            ("1.0.0-rc1", "1.0.0"),
+            ("1.0.0rc1", "1.0.0"),
+        ] {
+            assert!(is_prerelease(pre), "{pre}");
+            assert!(!is_prerelease(release), "{release}");
+            assert_eq!(
+                newest_first(pre, release),
+                Ordering::Greater,
+                "{pre} must sort below {release}"
+            );
+        }
+    }
 
     /// The case a lexicographic sort gets backwards, and the reason this exists.
     #[test]

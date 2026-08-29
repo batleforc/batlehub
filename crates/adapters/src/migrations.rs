@@ -166,6 +166,13 @@ pub fn embedded_migrator() -> Migrator {
             "retention keep pin",
             "../migrations/040_retention_keep.sql"
         ),
+        mig!(41, "grants", "../migrations/041_grants.sql"),
+        mig!(
+            42,
+            "ownership to grants",
+            "../migrations/042_ownership_to_grants.sql"
+        ),
+        mig!(43, "policy", "../migrations/043_policy.sql"),
     ])
 }
 

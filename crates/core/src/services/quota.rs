@@ -80,7 +80,32 @@ impl QuotaService {
         registry: &str,
         bytes: u64,
     ) -> Result<QuotaCheck, CoreError> {
-        let config = match self.configs.get(registry) {
+        self.check_and_record_publish_at_tier(identity, registry, bytes, None)
+            .await
+    }
+
+    /// [`Self::check_and_record_publish`], with the quota a deeper tier declared.
+    ///
+    /// RFC 0015 §4.5 attaches `quota` to the resource hierarchy: a namespace or
+    /// package may declare its own, and composition is **wholesale** — the
+    /// deeper block replaces the registry's rather than merging with it, because
+    /// the motivating case is a *narrower* limit deeper down and a field merge
+    /// could only ever raise one.
+    ///
+    /// `None` means no tier below the registry declared a quota, which is every
+    /// publish before phase 4 and most of them after it. The accounting is
+    /// unchanged either way: §4.5 notes that per-subject limits resolved per tier
+    /// *"need no new accounting — the same counter `check_and_record_publish`
+    /// already maintains, with the limit looked up at the deepest tier that
+    /// declares one"*. This is that lookup, and nothing else moves.
+    pub async fn check_and_record_publish_at_tier(
+        &self,
+        identity: &Identity,
+        registry: &str,
+        bytes: u64,
+        tier_quota: Option<&RegistryQuotaConfig>,
+    ) -> Result<QuotaCheck, CoreError> {
+        let config = match tier_quota.or_else(|| self.configs.get(registry)) {
             Some(c) => c,
             None => {
                 // No quota configured for this registry — pass through.

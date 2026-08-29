@@ -2,6 +2,7 @@ use super::{
     artifact_storage_key, build_metadata_xml, content_type_for, maven_artifact_storage_key,
     AppError, AuthIdentity, HttpResponse, LocalRegistryService, MavenPathKind, RegistryMode,
 };
+use batlehub_core::entities::Action;
 
 /// Try to serve a Maven request from local/hybrid storage.
 /// Returns `Ok(Some(response))` on a local hit, `Ok(None)` to fall through to proxy.
@@ -89,12 +90,7 @@ pub async fn handle_maven_artifact(
     let pkg =
         batlehub_core::entities::PackageId::new(registry, name, version).with_artifact(filename);
     match local_svc
-        .get_artifact_at_key(
-            &pkg,
-            &storage_key,
-            batlehub_core::rules::resource_type::RELEASES_READ,
-            identity,
-        )
+        .get_artifact_at_key(&pkg, &storage_key, Action::ReleasesRead, identity)
         .await
     {
         Ok(Some(buf)) => Ok(Some(

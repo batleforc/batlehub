@@ -10,7 +10,6 @@ use utoipa::ToSchema;
 use batlehub_core::ports::RecentErrorRecord;
 use batlehub_core::services::{AdminService, ProxyService};
 
-use crate::handlers::back_office::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
 #[derive(Serialize, ToSchema)]
@@ -89,7 +88,7 @@ pub struct ClearCacheResponse {
     tag = "back-office",
     responses(
         (status = 200, description = "Registry health for all registries", body = Vec<RegistryHealthDto>),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`system:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -101,8 +100,15 @@ pub async fn registry_health(
     access_config: web::Data<crate::AccessConfigLock>,
     admin_svc: web::Data<Arc<AdminService>>,
     proxy_svc: web::Data<Arc<ProxyService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::SystemRead,
+        None,
+        &hot,
+    )
+    .await?;
 
     let repo = &admin_svc.repo;
 

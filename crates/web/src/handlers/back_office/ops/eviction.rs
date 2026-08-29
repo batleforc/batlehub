@@ -7,7 +7,6 @@ use utoipa::ToSchema;
 
 use batlehub_core::services::{validate_path_safe, EvictionService, ProxyService};
 
-use super::super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
 /// Map of registry name → `EvictionService`, injected as app data.
@@ -32,7 +31,7 @@ pub struct EvictResponse {
     ),
     responses(
         (status = 200, description = "Eviction completed", body = EvictResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`cache:evict` required"),
         (status = 404, description = "Registry not found or eviction not configured"),
     ),
     security(("bearer_token" = [])),
@@ -43,10 +42,16 @@ pub async fn evict_registry(
     identity: AuthIdentity,
     registry_map: web::Data<RegistryMap>,
     eviction_map: web::Data<EvictionServiceMap>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
-
     let registry = path.into_inner();
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::CacheEvict,
+        Some(&registry),
+        &hot,
+    )
+    .await?;
 
     if !registry_map.contains(&registry) {
         return Err(AppError::not_found("registry not found"));
@@ -103,7 +108,7 @@ pub struct DeleteCacheResponse {
     responses(
         (status = 200, description = "Cache entry deleted (or was not present)", body = DeleteCacheResponse),
         (status = 400, description = "Invalid or missing name/version/path"),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`cache:evict` required"),
         (status = 404, description = "Registry not found"),
     ),
     security(("bearer_token" = [])),
@@ -115,10 +120,16 @@ pub async fn delete_cached_artifact(
     body: web::Json<DeleteCacheRequest>,
     registry_map: web::Data<RegistryMap>,
     proxy_svc: web::Data<Arc<ProxyService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
-
     let registry = path.into_inner();
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::CacheEvict,
+        Some(&registry),
+        &hot,
+    )
+    .await?;
 
     if !registry_map.contains(&registry) {
         return Err(AppError::not_found("registry not found"));
@@ -181,31 +192,4 @@ pub async fn delete_cached_artifact(
         deleted,
         artifact_key,
     }))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::extractors::AuthIdentity;
-    use batlehub_core::entities::{Identity, Role};
-
-    fn id(role: Role) -> AuthIdentity {
-        AuthIdentity(Identity {
-            user_id: Some("u".into()),
-            role,
-            auth_provider: None,
-            groups: vec![],
-        })
-    }
-
-    #[test]
-    fn require_admin_passes_for_admin() {
-        assert!(require_admin(&id(Role::Admin)).is_ok());
-    }
-
-    #[test]
-    fn require_admin_fails_for_non_admin() {
-        assert!(require_admin(&id(Role::User)).is_err());
-        assert!(require_admin(&id(Role::Anonymous)).is_err());
-    }
 }

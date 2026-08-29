@@ -522,6 +522,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
         back_office::{
             access_check::admin_access_check,
             audit::{audit_log, export_audit_log, purge_audit_log},
+            authz_explain::admin_authz_explain,
+            authz_shadow::authz_shadow,
             bulk::{
                 bulk_delete, bulk_unyank, bulk_yank as bulk_yank_handler, deprecate, relist,
                 undeprecate, unlist,
@@ -535,6 +537,11 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             governance::{
                 beta_channel::{add_beta_member, list_beta_members, remove_beta_member},
                 ownership::{add_package_owner, list_package_owners, remove_package_owner},
+                policy::{
+                    delete_gate_exemption, delete_package_policy, delete_version_policy,
+                    get_package_policy, get_version_policy, list_exemptions, put_package_policy,
+                    put_version_policy, set_gate_exemption,
+                },
                 subjects::list_subjects,
                 team_namespaces::{
                     claim_namespace, list_namespaces, my_namespace_packages, my_namespaces,
@@ -987,6 +994,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(admin_stats_history);
     cfg.service(admin_stats);
     cfg.service(admin_access_check);
+    cfg.service(admin_authz_explain);
+    cfg.service(authz_shadow);
     // Quota admin (specific user route before registry-level route)
     cfg.service(reset_quota_for_user);
     cfg.service(get_quota_for_user);
@@ -999,6 +1008,25 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     // Package visibility admin (wildcard {name:.*} — registered after literal-suffix /owners routes)
     cfg.service(get_package_visibility);
     cfg.service(set_package_visibility);
+    // RFC 0015 §6.3 — the package and version policy tiers.
+    //
+    // The version routes go first: both families end in a wildcard
+    // (`{package:.*}`), and a package route registered before them would swallow
+    // `…/policy/version/pkg/1.0.0` as a package named `version/pkg/1.0.0` —
+    // the same ordering hazard the visibility routes above carry a note about.
+    // The exemption routes are more specific than the version-policy ones they
+    // sit under (`…/{version}/rules/{gate}`), so they go first — actix matches
+    // in registration order and `{version}` would otherwise be free to swallow
+    // the remaining segments.
+    cfg.service(list_exemptions);
+    cfg.service(set_gate_exemption);
+    cfg.service(delete_gate_exemption);
+    cfg.service(get_version_policy);
+    cfg.service(put_version_policy);
+    cfg.service(delete_version_policy);
+    cfg.service(get_package_policy);
+    cfg.service(put_package_policy);
+    cfg.service(delete_package_policy);
     // Team namespace admin
     cfg.service(list_namespaces);
     cfg.service(claim_namespace);
@@ -1392,6 +1420,14 @@ pub fn configure_app(
             .get_or_init(|| Arc::new(handlers::auth::oidc::RefreshRateLimiter::default())),
     );
     move |cfg| {
+        // RFC 0015 §4.2 — the control-surface verbs are resolved by the engine,
+        // and the engine needs the grant hierarchy. Registered once as app data
+        // rather than reached through whichever service a handler happens to
+        // hold: `require_verb` is now on about thirty admin handlers, and making
+        // each of them depend on `ProxyService` to borrow its `hot` field would
+        // be a dependency invented by the authorization check rather than by the
+        // handler's own work.
+        cfg.app_data(web::Data::new(proxy_svc.hot.clone()));
         cfg.app_data(web::Data::new(proxy_svc.clone()));
         cfg.app_data(web::Data::new(admin_svc.clone()));
         cfg.app_data(web::Data::new(token_repo.clone()));

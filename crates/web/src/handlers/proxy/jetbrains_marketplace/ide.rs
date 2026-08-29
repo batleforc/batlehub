@@ -11,7 +11,6 @@ use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
     entities::{Identity, PackageId, RegistryKind},
     error::CoreError,
-    rules::resource_type::RELEASES_READ,
     services::{
         validate_package_name, JetbrainsPluginVersion, LocalRegistryService, ProxyRequest,
         ProxyService,
@@ -26,6 +25,7 @@ use super::render::{plugin_json, search_hit_json, update_json, ExtraMeta, Render
 use super::{require_jbm, require_single_segment, STABLE_CHANNEL};
 use crate::handlers::schemas::UpstreamDocument;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
+use batlehub_core::entities::Action;
 
 const DEFAULT_SEARCH_MAX: usize = 50;
 
@@ -376,7 +376,7 @@ async fn plugin_entries(
     let proxy_req = ProxyRequest {
         package_id: PackageId::new(registry, xml_id, "latest"),
         identity: identity.0,
-        resource_type: RELEASES_READ.to_owned(),
+        action: Action::ReleasesRead.to_owned(),
         ip_address: None,
         user_agent: None,
     };

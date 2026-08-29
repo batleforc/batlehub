@@ -613,7 +613,7 @@ Dynamic groups enable wildcard grants. To allow all CI tokens from `batleforc`'s
 "forgejo-action/*" = ["releases:read"]
 
 # Grant specific per-repo CI full publish access
-"forgejo-action/batleforc-batlehub/*" = ["releases:read", "releases:write"]
+"forgejo-action/batleforc-batlehub/*" = ["releases:read", "releases:publish"]
 ```
 
 **GitHub Actions workflow snippet:**

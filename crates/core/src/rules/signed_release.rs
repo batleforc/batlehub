@@ -78,6 +78,7 @@ fn deny(bypassed: bool) -> RuleDecision {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entities::Action;
     use crate::entities::{Identity, PackageId, PackageMetadata, Role};
     use crate::rules::RuleContext;
 
@@ -106,7 +107,7 @@ mod tests {
         RuleContext {
             identity,
             package: meta,
-            resource_type: "releases:read",
+            action: Action::ReleasesRead,
             cache_entry: None,
             requested_version: Some("1.0.0"),
         }

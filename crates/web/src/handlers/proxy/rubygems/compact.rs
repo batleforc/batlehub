@@ -54,6 +54,7 @@ use super::{
 use crate::handlers::schemas::ProtocolDocument;
 use crate::RegistryModeMap;
 use batlehub_config::schema::RegistryMode;
+use batlehub_core::entities::Action;
 use batlehub_core::services::LocalRegistryService;
 
 /// Render a text document as the compact index expects it.
@@ -142,7 +143,7 @@ async fn serve_compact(
     let req = batlehub_core::services::ProxyRequest {
         package_id: PackageId::new(&registry, which.coordinate(), "__compact__"),
         identity: identity.0,
-        resource_type: batlehub_core::rules::resource_type::RELEASES_READ.to_owned(),
+        action: Action::ReleasesRead.to_owned(),
         ip_address: None,
         user_agent: None,
     };
@@ -331,7 +332,7 @@ pub async fn gem_compact_info(
     let req = batlehub_core::services::ProxyRequest {
         package_id: PackageId::new(&registry, &gem, "__compact__"),
         identity: identity.0,
-        resource_type: batlehub_core::rules::resource_type::RELEASES_READ.to_owned(),
+        action: Action::ReleasesRead.to_owned(),
         ip_address: None,
         user_agent: None,
     };

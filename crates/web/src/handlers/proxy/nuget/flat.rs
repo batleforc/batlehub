@@ -17,6 +17,7 @@ use super::super::common::{
 use super::nuspec::{content_type_for, extract_nuspec_from_nupkg};
 use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+use batlehub_core::entities::Action;
 
 // ── Flat container — version list ─────────────────────────────────────────────
 
@@ -59,7 +60,7 @@ pub async fn nuget_flat_versions(
         svc.authorize_read(
             &PackageId::new(&registry, &id, "__index__"),
             &identity.0,
-            batlehub_core::rules::resource_type::RELEASES_READ,
+            Action::ReleasesRead,
         )
         .await
         .map_err(AppError::from)?;
@@ -94,7 +95,7 @@ pub async fn nuget_flat_versions(
         svc,
         PackageId::new(&registry, &id, "__index__"),
         identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         DocumentKind::Versions,
         String::new(),
     )
@@ -153,12 +154,7 @@ pub async fn nuget_flat_download(
         let pkg = batlehub_core::entities::PackageId::new(&registry, &id, &version)
             .with_artifact(&filename);
         match local_svc
-            .get_artifact_at_key(
-                &pkg,
-                &storage_key,
-                batlehub_core::rules::resource_type::RELEASES_READ,
-                &identity,
-            )
+            .get_artifact_at_key(&pkg, &storage_key, Action::ReleasesRead, &identity)
             .await
         {
             Ok(Some(buf)) => {
@@ -193,7 +189,7 @@ pub async fn nuget_flat_download(
         svc,
         PackageId::new(&registry, &id, &version).with_artifact(&filename),
         identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         Some(content_type_for(&filename)),
     )
     .await

@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod auth;
+pub mod authz;
 pub mod config_cmd;
 pub mod download;
 pub mod owner;
@@ -73,6 +74,11 @@ pub enum Command {
     Auth {
         #[command(subcommand)]
         cmd: auth::AuthCommand,
+    },
+    /// Explain authorization decisions and inspect shadow mode (RFC 0015 §4.8)
+    Authz {
+        #[command(subcommand)]
+        cmd: authz::AuthzCommand,
     },
     /// Admin operations (quota, ip-block, config, cache, banner, audit)
     Admin {

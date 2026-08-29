@@ -1,11 +1,26 @@
 use super::{
-    map_bulk_failures, post, require_admin, web, AdminService, AppError, Arc, AuthIdentity,
-    BulkActionResponse, BulkBlockItem, Deserialize, PackageId, ProxyService, Responder, ToSchema,
+    map_bulk_failures, post, web, AdminService, AppError, Arc, AuthIdentity, BulkActionResponse,
+    BulkBlockItem, Deserialize, PackageId, ProxyService, Responder, ToSchema,
 };
+
+/// Every distinct registry a bulk request names.
+///
+/// Sorted and deduplicated so the authorization check runs once per registry
+/// rather than once per item — a 500-item request naming two registries asks two
+/// questions, not five hundred.
+macro_rules! registries_named {
+    ($body:expr) => {{
+        let mut regs: Vec<String> = $body.items.iter().map(|i| i.registry.clone()).collect();
+        regs.sort();
+        regs.dedup();
+        regs
+    }};
+}
 
 // ── Bulk block / unblock ──────────────────────────────────────────────────────
 
 #[derive(Deserialize, ToSchema)]
+
 pub struct BulkBlockRequestItem {
     pub registry: String,
     pub name: String,
@@ -40,7 +55,7 @@ pub struct BulkUnblockRequest {
     request_body = BulkBlockRequest,
     responses(
         (status = 200, description = "Bulk block result", body = BulkActionResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`packages:block` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -49,8 +64,41 @@ pub async fn bulk_block_packages(
     identity: AuthIdentity,
     body: web::Json<BulkBlockRequest>,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    // A bulk request may name several registries, so the verb is checked on
+    // **every one of them** rather than on the instance tier alone. Checking
+    // once at the top would let a delegate holding `{verb}` on one registry
+    // mutate packages in another by putting both in the same request — the
+    // bulk endpoint's version of a predicate that is vacuous rather than
+    // absent. All-or-nothing, before anything is written: a partial bulk
+    // mutation is worse than a refused one.
+    // An **empty** request must still be authorized. The first version of
+    // this looped over the registries the body named and checked nothing
+    // when it named none — so `{"items": []}` reached the handler with no
+    // authorization at all, which the pre-existing `non_admin_returns_403`
+    // row caught. A check that a caller can skip by sending less is not a
+    // check; the empty case falls back to the instance tier, which is the
+    // node that speaks for "any registry".
+    let named = registries_named!(body);
+    if named.is_empty() {
+        crate::handlers::back_office::require_verb(
+            &identity,
+            batlehub_core::entities::Action::PackagesBlock,
+            None,
+            &hot,
+        )
+        .await?;
+    }
+    for registry in named {
+        crate::handlers::back_office::require_verb(
+            &identity,
+            batlehub_core::entities::Action::PackagesBlock,
+            Some(&registry),
+            &hot,
+        )
+        .await?;
+    }
 
     let items = body
         .into_inner()
@@ -84,7 +132,7 @@ pub async fn bulk_block_packages(
     request_body = BulkUnblockRequest,
     responses(
         (status = 200, description = "Bulk unblock result", body = BulkActionResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`packages:block` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -93,8 +141,41 @@ pub async fn bulk_unblock_packages(
     identity: AuthIdentity,
     body: web::Json<BulkUnblockRequest>,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    // A bulk request may name several registries, so the verb is checked on
+    // **every one of them** rather than on the instance tier alone. Checking
+    // once at the top would let a delegate holding `{verb}` on one registry
+    // mutate packages in another by putting both in the same request — the
+    // bulk endpoint's version of a predicate that is vacuous rather than
+    // absent. All-or-nothing, before anything is written: a partial bulk
+    // mutation is worse than a refused one.
+    // An **empty** request must still be authorized. The first version of
+    // this looped over the registries the body named and checked nothing
+    // when it named none — so `{"items": []}` reached the handler with no
+    // authorization at all, which the pre-existing `non_admin_returns_403`
+    // row caught. A check that a caller can skip by sending less is not a
+    // check; the empty case falls back to the instance tier, which is the
+    // node that speaks for "any registry".
+    let named = registries_named!(body);
+    if named.is_empty() {
+        crate::handlers::back_office::require_verb(
+            &identity,
+            batlehub_core::entities::Action::PackagesBlock,
+            None,
+            &hot,
+        )
+        .await?;
+    }
+    for registry in named {
+        crate::handlers::back_office::require_verb(
+            &identity,
+            batlehub_core::entities::Action::PackagesBlock,
+            Some(&registry),
+            &hot,
+        )
+        .await?;
+    }
 
     let items = body
         .into_inner()
@@ -140,7 +221,7 @@ pub struct BulkDeleteRequest {
     request_body = BulkDeleteRequest,
     responses(
         (status = 200, description = "Bulk delete result", body = BulkActionResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`releases:delete` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -150,8 +231,40 @@ pub async fn bulk_delete_packages(
     body: web::Json<BulkDeleteRequest>,
     admin_svc: web::Data<Arc<AdminService>>,
     proxy_svc: web::Data<Arc<ProxyService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    // A bulk request may name several registries, so the verb is checked on
+    // **every one of them** rather than on the instance tier alone. Checking
+    // once at the top would let a delegate holding `{verb}` on one registry
+    // mutate packages in another by putting both in the same request — the
+    // bulk endpoint's version of a predicate that is vacuous rather than
+    // absent. All-or-nothing, before anything is written: a partial bulk
+    // mutation is worse than a refused one.
+    // An **empty** request must still be authorized. The first version of
+    // this looped over the registries the body named and checked nothing
+    // when it named none — so `{"items": []}` reached the handler with no
+    // authorization at all, which the pre-existing `non_admin_returns_403`
+    // row caught. A check that a caller can skip by sending less is not a
+    // check; the empty case falls back to the instance tier, which is the
+    // node that speaks for "any registry".
+    // **Instance tier, not the registry.** §10 rule 5 grants `releases:delete` to
+    // `role:user` on every local and hybrid registry, because that is what
+    // `has_role_at_least(&Role::User)` meant on the per-package lifecycle path.
+    // This is not that path: it is the administrative bulk surface, which mutates
+    // many packages at once and bypasses the ownership check the per-package
+    // route applies. Resolving it against the registry tier would hand every
+    // `role:user` an endpoint `require_admin` reserved — the widening §7 calls
+    // the migration's central risk, and a pre-existing test caught it.
+    //
+    // One check rather than one per named registry: the instance node is the same
+    // node whatever the body names, so asking it repeatedly asks nothing new.
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::ReleasesDelete,
+        None,
+        &hot,
+    )
+    .await?;
 
     let items: Vec<PackageId> = body
         .into_inner()

@@ -23,6 +23,7 @@ use crate::ports::DocumentKind;
 use crate::services::upstream_detail::{self, UpstreamDetail, UpstreamVersion};
 
 use super::{Freshness, ProxyRequest, ProxyService};
+use crate::entities::Action;
 
 /// How long a reader waits for another reader's in-flight fetch before giving
 /// up and doing its own.
@@ -81,7 +82,7 @@ impl ProxyService {
         let req = ProxyRequest {
             package_id: PackageId::new(registry, name, "__listing__"),
             identity: identity.clone(),
-            resource_type: "releases:read".to_owned(),
+            action: Action::ReleasesRead,
             ip_address: None,
             user_agent: None,
         };
@@ -230,7 +231,7 @@ impl ProxyService {
         let req = ProxyRequest {
             package_id: PackageId::new(registry, name, version),
             identity: identity.clone(),
-            resource_type: "releases:read".to_owned(),
+            action: Action::ReleasesRead,
             ip_address: None,
             user_agent: None,
         };

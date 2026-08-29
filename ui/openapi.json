@@ -64,7 +64,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`authz:read` required"
           },
           "404": {
             "description": "Registry not configured"
@@ -175,7 +175,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`audit:read` required"
           }
         },
         "security": [
@@ -213,7 +213,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`audit:read` required"
           }
         },
         "security": [
@@ -316,7 +316,139 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`audit:read` required"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/authz/explain": {
+      "get": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "Resolve a subject's permissions on a resource, without performing anything.",
+        "operationId": "admin_authz_explain",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "query",
+            "description": "The registry to resolve against.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "subject",
+            "in": "query",
+            "description": "The subject to resolve *as*, in grant spelling: `*`, `role:user`,\n`group:oidc1:eng`, `group:*:eng`, `user:alice`.\n\nA real caller matches several subject forms at once — a user is also a\nrole and several groups — so this answers about **one** form. For a\nwhole identity, `POST /api/v1/admin/access-check` takes `user_id`,\n`role` and `groups` together and runs the block layers too.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "The permission to ask about, e.g. `releases:read`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "package",
+            "in": "query",
+            "description": "The package, when asking about one. Omit for a registry-tier question.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "description": "The version, when asking about one.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The resolved permission set, with provenance",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExplainResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unparseable subject or action"
+          },
+          "403": {
+            "description": "`authz:read` required"
+          },
+          "404": {
+            "description": "Registry not configured"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/authz/shadow": {
+      "get": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "What shadow mode has served that enforcement would have refused.",
+        "operationId": "authz_shadow",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "How many individual entries to return. Defaults to 100.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recent would-have-beens, and a summary per node",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShadowResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`authz:read` required"
           }
         },
         "security": [
@@ -355,7 +487,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`config:write` required"
           }
         },
         "security": [
@@ -375,7 +507,7 @@
             "description": "Banner cleared"
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`config:write` required"
           }
         },
         "security": [
@@ -427,7 +559,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`config:read` required"
           }
         },
         "security": [
@@ -456,7 +588,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`config:read` required"
           },
           "500": {
             "description": "Config file could not be read"
@@ -502,7 +634,7 @@
             "description": "Validation failure"
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`config:write` required"
           },
           "503": {
             "description": "Hot reload disabled"
@@ -534,7 +666,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`config:read` required"
           },
           "404": {
             "description": "No pending reload"
@@ -560,7 +692,7 @@
             "description": "Pending reload discarded"
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`config:write` required"
           },
           "404": {
             "description": "No pending reload"
@@ -595,7 +727,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`config:write` required"
           },
           "404": {
             "description": "No pending reload"
@@ -636,7 +768,7 @@
             "description": "Validation or probe failure"
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`config:write` required"
           },
           "503": {
             "description": "Hot reload disabled"
@@ -682,7 +814,7 @@
             "description": "Validation failure"
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`config:read` required"
           },
           "503": {
             "description": "Hot reload disabled"
@@ -715,7 +847,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`config:read` required"
           }
         },
         "security": [
@@ -755,7 +887,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`system:write` required"
           }
         },
         "security": [
@@ -787,7 +919,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`system:read` required"
           }
         },
         "security": [
@@ -819,7 +951,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`blocks:read` required"
           }
         },
         "security": [
@@ -852,7 +984,7 @@
             "description": "Invalid IP address or duration"
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`blocks:write` required"
           }
         },
         "security": [
@@ -885,7 +1017,7 @@
             "description": "IP unblocked"
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`blocks:write` required"
           }
         },
         "security": [
@@ -917,7 +1049,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`system:read` required"
           },
           "503": {
             "description": "Notifications not configured"
@@ -949,7 +1081,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`system:read` required"
           }
         },
         "security": [
@@ -981,7 +1113,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`system:read` required"
           },
           "503": {
             "description": "Notifications not configured"
@@ -1024,7 +1156,7 @@
             "description": "Invalid request"
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`system:write` required"
           },
           "503": {
             "description": "Notifications not configured"
@@ -1068,7 +1200,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`system:read` required"
           },
           "404": {
             "description": "Not found"
@@ -1126,7 +1258,7 @@
             "description": "Invalid request"
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`system:write` required"
           },
           "404": {
             "description": "Not found"
@@ -1164,7 +1296,7 @@
             "description": "Deleted"
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`system:write` required"
           },
           "404": {
             "description": "Not found"
@@ -1214,7 +1346,7 @@
             "description": "Dispatch failed"
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`system:write` required"
           },
           "404": {
             "description": "Not found"
@@ -1301,7 +1433,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`packages:read` required"
           }
         },
         "security": [
@@ -1340,7 +1472,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`packages:block` required"
           }
         },
         "security": [
@@ -1379,7 +1511,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`packages:block` required"
           }
         },
         "security": [
@@ -1418,7 +1550,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`releases:delete` required"
           }
         },
         "security": [
@@ -1457,7 +1589,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`packages:block` required"
           }
         },
         "security": [
@@ -1497,7 +1629,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`releases:delete` required"
           }
         },
         "security": [
@@ -1544,7 +1676,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`packages:read` required"
           }
         },
         "security": [
@@ -1584,7 +1716,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`cache:evict` required"
           }
         },
         "security": [
@@ -1623,7 +1755,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`packages:block` required"
           }
         },
         "security": [
@@ -1655,7 +1787,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`quota:read` required"
           }
         },
         "security": [
@@ -1698,7 +1830,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`quota:read` required"
           }
         },
         "security": [
@@ -1747,7 +1879,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`quota:read` required"
           }
         },
         "security": [
@@ -1794,7 +1926,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`quota:read` required"
           }
         },
         "security": [
@@ -1837,7 +1969,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`owners:read` required"
           }
         },
         "security": [
@@ -1881,7 +2013,7 @@
             "description": "Invalid principal_type"
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`owners:write` required"
           },
           "409": {
             "description": "Already a member"
@@ -1935,7 +2067,7 @@
             "description": "Member removed"
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`owners:write` required"
           }
         },
         "security": [
@@ -1986,7 +2118,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`releases:delete` required"
           }
         },
         "security": [
@@ -2036,7 +2168,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`releases:yank` required"
           }
         },
         "security": [
@@ -2086,7 +2218,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`releases:yank` required"
           }
         },
         "security": [
@@ -2140,7 +2272,7 @@
             "description": "Invalid or missing name/version/path"
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`cache:evict` required"
           },
           "404": {
             "description": "Registry not found"
@@ -2183,7 +2315,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`cache:evict` required"
           },
           "404": {
             "description": "Registry not found"
@@ -2236,7 +2368,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`releases:yank` required"
           }
         },
         "security": [
@@ -2276,10 +2408,53 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`cache:evict` required"
           },
           "404": {
             "description": "Registry not found or eviction not configured"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/registries/{registry}/exemptions": {
+      "get": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "Every gate exemption written in a registry.",
+        "operationId": "list_exemptions",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Live and expired exemptions, soonest expiry first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ExemptionListEntry"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`owners:read` required"
           }
         },
         "security": [
@@ -2322,7 +2497,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`owners:read` required"
           }
         },
         "security": [
@@ -2363,7 +2538,7 @@
             "description": "Namespace claimed"
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`owners:write` required"
           },
           "409": {
             "description": "Prefix already claimed"
@@ -2409,7 +2584,7 @@
             "description": "Namespace released (or did not exist)"
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`owners:write` required"
           }
         },
         "security": [
@@ -2461,7 +2636,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`owners:read` required"
           },
           "503": {
             "description": "Ownership not configured"
@@ -2514,7 +2689,7 @@
             "description": "Owner added"
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`owners:write` required"
           },
           "409": {
             "description": "Already an owner"
@@ -2580,7 +2755,7 @@
             "description": "Owner removed"
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`owners:write` required"
           },
           "503": {
             "description": "Ownership not configured"
@@ -2697,6 +2872,464 @@
         ]
       }
     },
+    "/api/v1/admin/registries/{registry}/policy/package/{package}": {
+      "get": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "Read the policy written on a package.",
+        "operationId": "get_package_policy",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "package",
+            "in": "path",
+            "description": "Package name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The node's policy; every absent field inherits",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`owners:read` required"
+          },
+          "404": {
+            "description": "No policy is written on this node"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "Write the policy on a package, replacing whatever was there.",
+        "description": "Replaces **this node's** declaration; what it inherits is unaffected. An\nempty body clears the node.",
+        "operationId": "put_package_policy",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "package",
+            "in": "path",
+            "description": "Package name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Policy written"
+          },
+          "400": {
+            "description": "A field this tier may not carry"
+          },
+          "403": {
+            "description": "`owners:write` required"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "Clear the policy written on a package.",
+        "operationId": "delete_package_policy",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "package",
+            "in": "path",
+            "description": "Package name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Policy cleared; absent is not an error"
+          },
+          "403": {
+            "description": "`owners:write` required"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/registries/{registry}/policy/version/{package}/{version}": {
+      "get": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "Read the policy written on one version.",
+        "operationId": "get_version_policy",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "package",
+            "in": "path",
+            "description": "Package name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The node's policy; every absent field inherits",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`owners:read` required"
+          },
+          "404": {
+            "description": "No policy is written on this node"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "Write the policy on one version.",
+        "description": "§4.1 limits what this tier may carry, and the port rejects the rest with a\n`400`: the naming half of `versioning` governs what a version may be\n*called*, and here the name already exists; `quota` stops at the package\ntier, because a per-version quota limits a thing published exactly once.\n`immutable` is the field the tier exists for — one golden build frozen inside\na namespace that otherwise permits replacement.",
+        "operationId": "put_version_policy",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "package",
+            "in": "path",
+            "description": "Package name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Policy written"
+          },
+          "400": {
+            "description": "A field the version tier may not carry"
+          },
+          "403": {
+            "description": "`owners:write` required"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "Clear the policy written on one version.",
+        "operationId": "delete_version_policy",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "package",
+            "in": "path",
+            "description": "Package name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Policy cleared; absent is not an error"
+          },
+          "403": {
+            "description": "`owners:write` required"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/registries/{registry}/policy/version/{package}/{version}/rules/{gate}": {
+      "put": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "Exempt one version from one gate.",
+        "description": "Only `cve_gate` and `license_gate` may be exempted, and the line is not\narbitrary: an exemptible gate reports an **assessable finding**, a\nnon-exemptible one establishes an **invariant**. Any other gate is a `400`.",
+        "operationId": "set_gate_exemption",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "package",
+            "in": "path",
+            "description": "Package name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gate",
+            "in": "path",
+            "description": "cve_gate or license_gate",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetExemptionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The exemption as stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExemptionDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not an exemptible gate, or a missing/past exempt_until"
+          },
+          "403": {
+            "description": "gates:exempt required on this coordinate"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "Remove a gate exemption.",
+        "operationId": "delete_gate_exemption",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "package",
+            "in": "path",
+            "description": "Package name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gate",
+            "in": "path",
+            "description": "cve_gate or license_gate",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Exemption removed; absent is not an error"
+          },
+          "403": {
+            "description": "gates:exempt required on this coordinate"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
     "/api/v1/admin/registries/{registry}/relist": {
       "post": {
         "tags": [
@@ -2737,7 +3370,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`releases:yank` required"
           }
         },
         "security": [
@@ -2790,7 +3423,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`retention:run` required"
           },
           "409": {
             "description": "No retention keep condition configured for this registry"
@@ -2844,7 +3477,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`retention:run` required"
           }
         },
         "security": [
@@ -2897,7 +3530,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`tombstones:read` required"
           }
         },
         "security": [
@@ -2950,7 +3583,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`tombstones:read` required"
           },
           "409": {
             "description": "No tombstone_detail_for_days configured for this registry"
@@ -3003,7 +3636,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`releases:yank` required"
           }
         },
         "security": [
@@ -3053,7 +3686,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`releases:yank` required"
           }
         },
         "security": [
@@ -3103,7 +3736,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`cache:warm` required"
           },
           "404": {
             "description": "Registry not found or warming not configured"
@@ -3135,7 +3768,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`stats:read` required"
           }
         },
         "security": [
@@ -3179,7 +3812,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`stats:read` required"
           }
         },
         "security": [
@@ -3235,7 +3868,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`system:read` required"
           }
         },
         "security": [
@@ -3267,7 +3900,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`blocks:read` required"
           }
         },
         "security": [
@@ -3310,7 +3943,7 @@
             "description": "User blocked"
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`blocks:write` required"
           }
         },
         "security": [
@@ -3341,7 +3974,7 @@
             "description": "User unblocked"
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`blocks:write` required"
           }
         },
         "security": [
@@ -3370,7 +4003,7 @@
             }
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`cache:warm` required"
           }
         },
         "security": [
@@ -4711,7 +5344,7 @@
             "description": "Unknown format"
           },
           "403": {
-            "description": "Admin role required"
+            "description": "`system:read` required"
           }
         },
         "security": [
@@ -13822,7 +14455,8 @@
             "type": "string"
           },
           "resource_type": {
-            "type": "string"
+            "type": "string",
+            "description": "The permission to simulate, e.g. `releases:read`.\n\nParsed into [`Action`] rather than compared as a string. Before RFC 0015\nphase 1 an unknown value here was answered rather than refused: the rule\nchain compared it to the config's strings, nothing matched, and the\nsimulator returned **deny** with a rule name attached — a confident\nanswer about a permission that does not exist. The page whose whole\npurpose is \"would this identity be allowed\" is the worst possible place\nfor a typo to look like a policy decision."
           },
           "role": {
             "type": [
@@ -14167,6 +14801,47 @@
         "format": "binary",
         "description": "Raw artifact bytes — a tarball, wheel, `.crate`, `.nupkg`, `.gem`, `.vsix`,\npackage archive or signature — streamed from cache storage or from the\nconfigured upstream.\n\nThe `Content-Type` is the one the registry protocol calls for; the payload is\nnever parsed by this server on the read path.",
         "example": "<binary artifact>"
+      },
+      "Attributes": {
+        "type": "object",
+        "description": "The resource attributes §4.8 shows beside the resolved verbs.\n\nEvery field is what the *tiers* composed to, not what a particular version\nrow holds: a per-package `visibility` override lives in the `policy` table\nand is composed in here, while the legacy per-package visibility on the\npackage row is one of the layers `not_covered` names.",
+        "required": [
+          "visibility",
+          "prerelease_visibility",
+          "immutable",
+          "monotonic",
+          "versioning_dry_run",
+          "exempt_gates"
+        ],
+        "properties": {
+          "exempt_gates": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The gates a live exemption is silencing on this coordinate (§4.5).\n\nEmpty for almost every coordinate. Present here because an `allow` on a\nversion whose `cve_gate` is exempt is a materially different answer from\nan `allow` on one that passed it."
+          },
+          "immutable": {
+            "type": "string",
+            "description": "Whether these bytes may be replaced (§4.5)."
+          },
+          "monotonic": {
+            "type": "boolean",
+            "description": "Whether a new version must sort above the newest existing one."
+          },
+          "prerelease_visibility": {
+            "type": "string",
+            "description": "The audience for a pre-release, which follows `visibility` when no tier\ndeclared its own."
+          },
+          "versioning_dry_run": {
+            "type": "boolean",
+            "description": "Whether the versioning policy here evaluates and does not enforce (§4.7)."
+          },
+          "visibility": {
+            "type": "string",
+            "description": "How wide the audience is (§4.5) — the model's one narrowing dimension."
+          }
+        }
       },
       "AuditLogResponse": {
         "type": "object",
@@ -15156,6 +15831,142 @@
           }
         }
       },
+      "ExemptionDto": {
+        "type": "object",
+        "description": "The exemption as it is read back, carrying the self-approval marker.",
+        "required": [
+          "gate",
+          "exempt_until",
+          "reason",
+          "self_approved"
+        ],
+        "properties": {
+          "exempt_until": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "gate": {
+            "type": "string"
+          },
+          "granted_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "self_approved": {
+            "type": "boolean",
+            "description": "Set when the principal that granted the exemption also published the\nversion. **A marker, not a refusal** — see [`GateExemption`]."
+          }
+        }
+      },
+      "ExemptionListEntry": {
+        "type": "object",
+        "description": "One live exemption, with everything the panel filters on.",
+        "required": [
+          "package",
+          "version",
+          "gate",
+          "exempt_until",
+          "reason",
+          "self_approved",
+          "expired"
+        ],
+        "properties": {
+          "exempt_until": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expired": {
+            "type": "boolean",
+            "description": "Already past. Listed anyway: an expired exemption silences nothing, and a\npage whose subject is *what has been weakened and when it lapses* is\nexactly where the difference belongs."
+          },
+          "gate": {
+            "type": "string"
+          },
+          "granted_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "package": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "self_approved": {
+            "type": "boolean",
+            "description": "The principal that granted it also published the version.\n\n**The filter §4.8 asks the panel for**: *show me every exemption nobody\nelse looked at.* A marker rather than a refusal, because four-eyes\nenforced by the tool is friction a small team routes around — most often\nby granting `gates:exempt` more widely, which is strictly worse."
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "ExplainResponse": {
+        "type": "object",
+        "required": [
+          "decision",
+          "resolved",
+          "tiers_walked",
+          "not_covered",
+          "attributes"
+        ],
+        "properties": {
+          "attributes": {
+            "$ref": "#/components/schemas/Attributes",
+            "description": "The resource attributes that apply here, composed across the tiers\n(§4.1, §4.8).\n\n§4.8 puts these on the response beside the resolved verbs, and the pair\nis the point: **a caller needs both** — a grant for the verb and\nmembership of the audience (§4.5). A resolved set that showed\n`releases:read` without saying the package is `team`-visible answers half\nthe question and reads as the whole one."
+          },
+          "decision": {
+            "type": "string",
+            "description": "`\"allow\"` or `\"deny\"`."
+          },
+          "not_covered": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What this answer does **not** account for.\n\nThe same discipline `access-check`'s `covers` field carries, and for the\nsame reason (RFC 0004-bis B4): a bare verdict is ambiguous between\n\"nothing denies this\" and \"nothing I looked at denies this\". Grants are\nthe first gate, not the only one — the artifact gates, per-package\nvisibility and the block layers all sit behind them."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why, when the answer is deny."
+          },
+          "resolved": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResolvedVerb"
+            },
+            "description": "Every verb this subject holds on this resource, with provenance."
+          },
+          "shadowed_by": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ShadowNote",
+                "description": "Set when a node on this path is in **shadow** (§4.7), meaning a `deny`\nhere is *not* what the request would receive — it would be served, and\nthe refusal only recorded.\n\nReported rather than folded into `decision`, and the distinction is the\none this endpoint exists to make. Answering `allow` would hide that the\ngrants refuse; answering a bare `deny` would contradict what the server\nactually does, and §11.6 is explicit that *\"a diagnostic that can\ndisagree with reality is worse than none, because it is trusted.\"* So it\nsays both: the grants refuse, and the shadow serves it anyway."
+              }
+            ]
+          },
+          "tiers_walked": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The nodes walked, outermost first.\n\nIncludes the ones that granted nothing. A tier missing from this list is\na tier the resolver did not consider, which is a different diagnosis from\na tier that considered the subject and matched no grant."
+          }
+        }
+      },
       "ExploreEntryDto": {
         "type": "object",
         "required": [
@@ -15697,6 +16508,15 @@
             "description": "user_id of the admin who set the banner, or `\"system\"` for auto-set messages."
           }
         }
+      },
+      "Immutable": {
+        "type": "string",
+        "description": "Whether published bytes may be replaced — RFC 0015 §4.5.\n\n# Why this is not a verb\n\n**Immutability is a property of the resource, the verb is a property of the\nsubject, and a replace needs both.** That split is what lets a namespace be\nappend-only for *everyone, including admins*, which no role-based model can\nsay. Adding a `releases:overwrite`-style exception here would make it a rule\nan admin can step over, and a rule an admin can step over is not an\ninvariant.",
+        "enum": [
+          "never",
+          "released",
+          "always"
+        ]
       },
       "InboundEventsResponse": {
         "type": "object",
@@ -16759,6 +17579,59 @@
           }
         }
       },
+      "PolicyDto": {
+        "type": "object",
+        "description": "One node's policy, on the wire.\n\nEvery field is optional and **absent means inherit** — the same distinction\nthe stored row makes, carried onto the API so a client can express it. A\nclient that sent `visibility: \"public\"` where it meant \"leave it alone\" would\nbe writing an override with a default value, which stops the tier above from\napplying.",
+        "properties": {
+          "prerelease_visibility": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Visibility"
+              }
+            ]
+          },
+          "quota": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/QuotaDto"
+              }
+            ]
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuleOverrideDto"
+            },
+            "description": "Gate overrides, one entry per gate. Composes **per gate** (§4.1), so an\nentry here replaces that gate's settings and leaves every other gate\nrunning — sending an empty list does not disable anything, it declares no\noverrides."
+          },
+          "versioning": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/VersioningDto"
+              }
+            ]
+          },
+          "visibility": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Visibility"
+              }
+            ]
+          }
+        }
+      },
       "ProtocolDocument": {
         "type": "string",
         "description": "A non-JSON registry protocol document — `maven-metadata.xml`,\n`updatePlugins.xml`, a PyPI simple-index HTML page, an APT `Release` file, a\nGo `go.mod`, a plain-text token or version list.\n\nAs with [`UpstreamDocument`], the format belongs to the registry protocol.\nThe `Content-Type` header identifies which one.",
@@ -16828,6 +17701,38 @@
             "type": "integer",
             "format": "int32",
             "default": 0,
+            "minimum": 0
+          }
+        }
+      },
+      "QuotaDto": {
+        "type": "object",
+        "properties": {
+          "block": {
+            "type": "boolean"
+          },
+          "max_bytes_per_user": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "max_packages_per_user": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "warn_threshold_pct": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
             "minimum": 0
           }
         }
@@ -17353,6 +18258,28 @@
           "admin_request"
         ]
       },
+      "ResolvedVerb": {
+        "type": "object",
+        "description": "One verb, and where it came from.",
+        "required": [
+          "action",
+          "granted_by",
+          "subject"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "granted_by": {
+            "type": "string",
+            "description": "The node that granted it — `registry:npm1`, `namespace:@acme/billing`."
+          },
+          "subject": {
+            "type": "string",
+            "description": "The subject form that matched."
+          }
+        }
+      },
       "RetentionDecisionDto": {
         "type": "object",
         "required": [
@@ -17470,6 +18397,22 @@
           "admin"
         ]
       },
+      "RuleOverrideDto": {
+        "type": "object",
+        "required": [
+          "gate",
+          "settings"
+        ],
+        "properties": {
+          "gate": {
+            "type": "string",
+            "description": "The gate's name, spelled as `[[registries.rules]]`'s `kind` tag does."
+          },
+          "settings": {
+            "description": "The gate's settings, in the same shape the config block uses."
+          }
+        }
+      },
       "SbomDocument": {
         "type": "object",
         "description": "An SPDX 2.3 or CycloneDX 1.5 document.\n\nThe shape is the SBOM standard's, not this API's — which format you get is\ndecided by the `format` query parameter, and each is specified elsewhere."
@@ -17510,6 +18453,23 @@
           }
         }
       },
+      "SetExemptionRequest": {
+        "type": "object",
+        "description": "The request body for setting an exemption.\n\n`exempt_until` and `reason` are **required by the type**, not merely\nvalidated — the same discipline §4.7 gives `grants.dry_run`, because the\nrealistic failure is not a wrong assessment but a right assessment nobody\nrevisited.",
+        "required": [
+          "exempt_until",
+          "reason"
+        ],
+        "properties": {
+          "exempt_until": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
       "SetVisibilityRequest": {
         "type": "object",
         "required": [
@@ -17531,6 +18491,147 @@
           "high",
           "critical"
         ]
+      },
+      "ShadowNote": {
+        "type": "object",
+        "description": "A node whose shadow is currently serving what its grants refuse.",
+        "required": [
+          "node",
+          "until"
+        ],
+        "properties": {
+          "node": {
+            "type": "string"
+          },
+          "until": {
+            "type": "string",
+            "format": "date"
+          }
+        }
+      },
+      "ShadowResponse": {
+        "type": "object",
+        "required": [
+          "by_node",
+          "recent",
+          "kept",
+          "no_shadow_configured"
+        ],
+        "properties": {
+          "by_node": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ShadowSummaryDto"
+            },
+            "description": "Per node, busiest first — an operator triaging a migration reads\ntop-down."
+          },
+          "kept": {
+            "type": "integer",
+            "description": "How many entries the buffer keeps at most.\n\nReported rather than assumed, because `recent.len() == kept` is the one\nstate where an operator must not read the list as complete — a bounded\nbuffer that looked exhaustive would understate what a shadow is serving,\nwhich is the wrong direction for this page.",
+            "minimum": 0
+          },
+          "no_shadow_configured": {
+            "type": "boolean",
+            "description": "`true` when nothing is being shadowed at all — no node in the loaded\nconfig carries a `grants_shadow` block.\n\nDistinguishes \"the shadow is quiet\" from \"there is no shadow\", which look\nidentical in an empty list and mean opposite things: the first says\nenforcing is safe, the second says nothing was measured."
+          },
+          "recent": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ShadowedDenialDto"
+            },
+            "description": "The individual entries, newest first."
+          }
+        }
+      },
+      "ShadowSummaryDto": {
+        "type": "object",
+        "description": "One node's shadow, summarised.\n\nThe shape the question actually has. *\"Can I enforce this namespace yet?\"* is\nanswered by which verbs are still missing and for whom, not by a list of\nrequests — and a busy registry produces thousands of the latter for a handful\nof the former.",
+        "required": [
+          "node",
+          "shadow_until",
+          "count",
+          "actions",
+          "subjects",
+          "last_seen"
+        ],
+        "properties": {
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The distinct verbs that were missing, in the order first seen."
+          },
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many requests this node's shadow has served.",
+            "minimum": 0
+          },
+          "last_seen": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "node": {
+            "type": "string"
+          },
+          "shadow_until": {
+            "type": "string",
+            "format": "date"
+          },
+          "subjects": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The distinct subjects that lacked them."
+          }
+        }
+      },
+      "ShadowedDenialDto": {
+        "type": "object",
+        "description": "One request shadow mode served that enforcement would have refused.",
+        "required": [
+          "at",
+          "registry",
+          "package",
+          "version",
+          "action",
+          "subject",
+          "node",
+          "shadow_until"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "The verb the caller did not hold."
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "node": {
+            "type": "string",
+            "description": "The node whose shadow served the request."
+          },
+          "package": {
+            "type": "string"
+          },
+          "registry": {
+            "type": "string"
+          },
+          "shadow_until": {
+            "type": "string",
+            "format": "date"
+          },
+          "subject": {
+            "type": "string",
+            "description": "The subject, in the spelling a grant would be written in — so it can be\npasted into the block that would fix this."
+          },
+          "version": {
+            "type": "string"
+          }
+        }
       },
       "SimulationCoverage": {
         "type": "object",
@@ -18099,13 +19200,41 @@
           }
         }
       },
+      "VersioningDto": {
+        "type": "object",
+        "properties": {
+          "allow_prerelease": {
+            "type": "boolean"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "RFC 0015 §4.7 — evaluate, record, refuse nothing."
+          },
+          "enforce_semver": {
+            "type": "boolean"
+          },
+          "immutable": {
+            "$ref": "#/components/schemas/Immutable"
+          },
+          "monotonic": {
+            "type": "boolean"
+          },
+          "version_pattern": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "Visibility": {
         "type": "string",
-        "description": "Visibility level for a locally published package.",
+        "description": "How wide the audience for a resource is — RFC 0015 §4.5's one *narrowing*\ndimension.\n\nGrants and visibility answer the same question from opposite directions, and\nthe model ships both deliberately: a grant says *this subject may* and\ncomposes by union, so it can only ever widen; visibility says *the audience\nis this wide*, is a single scalar, and composes deepest-wins, so it can only\never narrow. **A caller needs both** — a grant for the verb and membership of\nthe audience — which is an AND, not a fallback. A `releases:read` grant does\nnot make a `team` package public, and a `public` namespace does not serve a\ncaller no grant matches.\n\nThe variants are ordered widest to narrowest, and [`Self::narrower_of`]\ndepends on that order.",
         "enum": [
           "public",
           "internal",
-          "team"
+          "team",
+          "private"
         ]
       },
       "VisibilityResponse": {

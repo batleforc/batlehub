@@ -7,6 +7,7 @@ use crate::ports::{DocumentKind, VersionDocument};
 use crate::rules::{evaluate_rules, RuleContext, RuleDecision};
 
 use super::{ProxyRequest, ProxyResponse, ProxyService, RequestTiming};
+use crate::entities::Action;
 
 /// Largest artifact that re-serve verification (`verify_on_serve`) will retain in
 /// memory so it can be hashed and served from the same buffer in a single read.
@@ -191,6 +192,21 @@ impl ProxyService {
             .await?
         };
 
+        // Grants first, then the gates — RFC 0015 §5.1 and §5.2. The proxy path
+        // has to resolve them itself: `RbacRule` is no longer in the chain, so
+        // the rules below judge only the artifact, and a route that reaches this
+        // without going through a `chain::*` funnel would otherwise be
+        // ungated. Two were, until the authorization matrix said so — the
+        // RubyGems gemspec route and the `generic` path mirror, both of which
+        // have no local branch at all.
+        crate::services::authz::authorize_grants_public(
+            &self.hot,
+            &req.package_id,
+            &req.identity,
+            req.action,
+        )
+        .await?;
+
         let empty: Vec<Box<dyn crate::rules::Rule>> = vec![];
         let rules = prelude
             .policy
@@ -200,7 +216,7 @@ impl ProxyService {
         let ctx = RuleContext {
             identity: &req.identity,
             package: &metadata,
-            resource_type: &req.resource_type,
+            action: req.action,
             cache_entry: None,
             requested_version: Some(&req.package_id.version),
         };
@@ -229,7 +245,37 @@ impl ProxyService {
             .resolve_metadata_cached(&client, &policy, &req, &cache_key, ttl, &registry_label)
             .await?;
 
-        // ── 2. Evaluate rules ──────────────────────────────────────────────────
+        // ── 2. Evaluate grants, then rules ─────────────────────────────────────
+        //
+        // A grant denial is a denial, so it takes the same exit as a rule
+        // denial: the audit record, the `denied` metric, and `ProxyResponse::Denied`
+        // rather than an error. Returning `?` here instead skipped all three —
+        // the caller still got a 403, and the access log had no row for it,
+        // which is precisely the state `audit:read` exists to make readable.
+        if let Err(e) = crate::services::authz::authorize_grants_public(
+            &self.hot,
+            &req.package_id,
+            &req.identity,
+            req.action,
+        )
+        .await
+        {
+            let reason = e.to_string();
+            super::warn_if_audit_failed(
+                self.repo
+                    .record_access(AccessEvent::denied_download(
+                        req.package_id,
+                        req.identity.user_id,
+                        req.identity.role,
+                        reason.clone(),
+                    ))
+                    .await,
+                "denied download",
+            );
+            super::finish_request(&registry_label, "denied", start);
+            return Ok(ProxyResponse::Denied { reason });
+        }
+
         let empty: Vec<Box<dyn crate::rules::Rule>> = vec![];
         let rules = policy
             .as_ref()
@@ -239,7 +285,7 @@ impl ProxyService {
         let ctx = RuleContext {
             identity: &req.identity,
             package: &metadata,
-            resource_type: &req.resource_type,
+            action: req.action,
             cache_entry: None,
             requested_version: Some(&req.package_id.version),
         };
@@ -334,27 +380,21 @@ impl ProxyService {
     /// builds the same synthetic `repo` coordinate and runs the full rule chain).
     /// Returns `AccessDenied` when the policy denies the read.
     ///
-    /// The chain itself lives in [`crate::services::registry_authz`] so that
+    /// The chain itself lives in [`crate::services::authz`] so that
     /// `LocalRegistryService` can run the same evaluation from its own read
     /// funnels — see that module for why it is not a method here.
     pub async fn authorize_read(
         &self,
         package_id: &crate::entities::PackageId,
         identity: &crate::entities::Identity,
-        resource_type: &str,
+        action: Action,
     ) -> Result<(), CoreError> {
-        crate::services::registry_authz::authorize_read(
-            &self.hot,
-            package_id,
-            identity,
-            resource_type,
-        )
-        .await
+        crate::services::authz::authorize_read(&self.hot, package_id, identity, action).await
     }
 
     /// Authorize a *listing* — a request for a whole package's version document,
     /// not for one version of it. Only the identity-keyed `rbac` rule runs; see
-    /// [`crate::services::registry_authz::authorize_listing`] for why the rest
+    /// [`crate::services::authz::authorize_listing`] for why the rest
     /// of the chain would blank the document rather than gate it.
     ///
     /// Public because the web layer needs it for the routes that are listings by
@@ -369,15 +409,9 @@ impl ProxyService {
         &self,
         package_id: &crate::entities::PackageId,
         identity: &crate::entities::Identity,
-        resource_type: &str,
+        action: Action,
     ) -> Result<(), CoreError> {
-        crate::services::registry_authz::authorize_listing(
-            &self.hot,
-            package_id,
-            identity,
-            resource_type,
-        )
-        .await
+        crate::services::authz::authorize_listing(&self.hot, package_id, identity, action).await
     }
     /// Authorise a listing read, filing a denial as its own audit event.
     ///
@@ -395,7 +429,7 @@ impl ProxyService {
         what: &'static str,
     ) -> Result<(), CoreError> {
         let Err(e) = self
-            .authorize_listing(&req.package_id, &req.identity, &req.resource_type)
+            .authorize_listing(&req.package_id, &req.identity, req.action)
             .await
         else {
             return Ok(());

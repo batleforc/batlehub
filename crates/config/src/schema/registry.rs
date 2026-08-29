@@ -1,7 +1,115 @@
+use std::collections::HashMap;
+
 use serde::Deserialize;
 
 use super::network::{RateLimitConfig, UpstreamAuthConfig, UpstreamProxyConfig, UpstreamTlsConfig};
 use super::rules::{RbacConfig, RuleConfig};
+pub use batlehub_core::entities::Immutable;
+use batlehub_core::entities::Visibility;
+
+/// RFC 0015 §4.7 — this node's grants are in **shadow**: they resolve, the
+/// would-have-been is recorded, and nothing is refused because of them.
+///
+/// # Why a block rather than `grants.dry_run`
+///
+/// §4.9 spells the flag `grants.dry_run`, which puts it inside `[…grants]`. That
+/// block is a `subject → [verb]` **map**, so it can hold neither a boolean nor a
+/// date — the reserved-key reading is unambiguous (no subject can be spelled
+/// `dry_run`) and still does not typecheck.
+///
+/// A sibling block is better than the workarounds, and not only because it
+/// compiles: **`until` is a required field**, so a shadow with no expiry cannot
+/// be written at all. §4.7 asks config load to reject the flag without a
+/// companion date, and *"a shadow mode that cannot be forgotten is the entire
+/// point"* — a rejection the type performs is stronger than one a validator
+/// remembers to.
+///
+/// ```toml
+/// [registries.namespaces.grants_shadow]
+/// until = "2026-12-01"
+/// ```
+///
+/// Presence is the flag. There is deliberately no `enabled = false` spelling: a
+/// block that says it does nothing is one more thing to misread on the page
+/// listing everything currently failing open.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrantsShadowConfig {
+    /// The date the shadow stops applying. **Required**, and config load refuses
+    /// a date already past.
+    pub until: chrono::NaiveDate,
+}
+
+/// One `[[registries.namespaces]]` block.
+///
+/// A namespace is **matched, not enumerated**: `match = "@acme/billing"` covers
+/// `@acme/billing/cards` and `@acme/billing/ledger`. Matching is on segment
+/// boundaries using the ecosystem's own separator, so `@acme/billing` never
+/// matches `@acme/billing-internal` — the bug RFC 0011-bis §4.2 records for
+/// `digital` versus `digital.pipeline-tools`.
+///
+/// RFC 0015 §4.1 gives the namespace tier `visibility`, `versioning`, `quota`
+/// and `rules` beside its `grants`, and phase 4 adds them here. `retention` is
+/// [RFC 0016](/rfc/0016-retention-and-the-permanence-of-a-published-name)'s
+/// block and is not declared on this struct.
+///
+/// `deny_unknown_fields` stays, and is now what stops a `retention` block from
+/// being silently ignored — an operator who writes a policy and gets no error
+/// concludes it is in force.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NamespaceConfig {
+    /// The namespace prefix, in the ecosystem's own spelling.
+    #[serde(rename = "match")]
+    pub match_prefix: String,
+    /// See [`RegistryConfig::grants`] — absent inherits, empty seals.
+    #[serde(default)]
+    pub grants: Option<HashMap<String, Vec<String>>>,
+    /// Default visibility for a version published into this namespace
+    /// (RFC 0015 §4.5), replacing "public unless someone sets it".
+    ///
+    /// Composes **deepest wins** — it is a single value, so there is nothing to
+    /// merge — and a per-package override remains (RFC 0011-bis §4.3).
+    #[serde(default)]
+    pub visibility: Option<Visibility>,
+    /// A different default visibility for **pre-releases** published here
+    /// (RFC 0015 §4.5), replacing `[registries.beta_channel]`.
+    ///
+    /// `beta_channel` existed because "pre-releases are for members only" could
+    /// not be said any other way. As a conditional visibility default it is one
+    /// line at the tier that owns the packages, it composes with everything else
+    /// by §4.1's rules, and a version-tier `visibility` overrides it for the one
+    /// build you want to show someone.
+    #[serde(default)]
+    pub prerelease_visibility: Option<Visibility>,
+    /// What a version may be called here, and whether it may change.
+    ///
+    /// Composes **wholesale**, not per field: the motivating case is a narrower
+    /// policy on a deeper tier, and a per-field merge cannot express dropping an
+    /// inherited constraint. Wholesale is also greppable — what is on the node
+    /// is what runs.
+    #[serde(default)]
+    pub versioning: Option<VersioningPolicy>,
+    /// How much may be published here. Composes wholesale, like `versioning`.
+    #[serde(default)]
+    pub quota: Option<QuotaConfig>,
+    /// Gate overrides for this namespace only.
+    ///
+    /// Composes **deepest wins, per rule** — each gate is independently
+    /// configured, and a wholesale override would force redeclaring `cve_gate`
+    /// and `license_gate` to change `release_age`. A forgotten one would then be
+    /// a gate silently switched off, which is the fail-open direction.
+    ///
+    /// This is the piece that answers the standing `release_age` finding:
+    /// `min_age_secs = 0` on the namespace your CI publishes to states the
+    /// intent directly, instead of choosing between quarantining your own builds
+    /// and turning the gate off everywhere.
+    #[serde(default)]
+    pub rules: Option<Vec<RuleConfig>>,
+    /// RFC 0015 §4.7 — put this namespace's grants in shadow.
+    #[serde(default)]
+    pub grants_shadow: Option<GrantsShadowConfig>,
+}
 
 // ── Registry mode ─────────────────────────────────────────────────────────────
 
@@ -42,6 +150,36 @@ pub struct RegistryConfig {
     #[serde(rename = "type")]
     pub registry_type: String,
     pub name: String,
+    /// RFC 0015 §4.3 — grants written on this registry.
+    ///
+    /// `subject → [verb]`, unioned with whatever `[registries.rbac]` translates
+    /// to (§10: the old block "remains accepted indefinitely and is documented
+    /// as the shorthand it becomes. There is no flag day.").
+    ///
+    /// **`Option` is load-bearing.** An absent block inherits — which at
+    /// registry tier means "only the rbac translation applies" — and a block
+    /// written as `grants = {}` is a *seal*: it grants nothing and stops
+    /// inheritance. Those are different states, and collapsing them is the
+    /// modelling rule survey finding 2 broke, where an empty accessible-registry
+    /// list read as *every* registry.
+    ///
+    /// ```toml
+    /// [registries.grants]
+    /// "*"                = ["releases:read"]
+    /// "group:*:engineer" = ["releases:read", "source:read"]
+    /// ```
+    #[serde(default)]
+    pub grants: Option<HashMap<String, Vec<String>>>,
+    /// RFC 0015 §4.1 — namespace nodes beneath this registry.
+    #[serde(default)]
+    pub namespaces: Vec<NamespaceConfig>,
+    /// RFC 0015 §4.7 — put this **registry's** grants in shadow, which covers
+    /// every namespace and package beneath it.
+    ///
+    /// The shape §10's migration needs: enable the new model in shadow, watch a
+    /// week of real traffic, then enforce.
+    #[serde(default)]
+    pub grants_shadow: Option<GrantsShadowConfig>,
     /// Upstream URLs tried in order; if a registry returns 404 the next one is tried.
     /// When empty the adapter's built-in default (e.g. registry.npmjs.org) is used.
     #[serde(default)]
@@ -145,6 +283,23 @@ pub struct RegistryConfig {
     /// Optional versioning policy enforced at publish time (local/hybrid mode only).
     #[serde(default)]
     pub versioning: Option<VersioningPolicy>,
+    /// RFC 0015 §4.1 — the registry-tier default visibility, inherited by every
+    /// namespace and package beneath it that does not set its own.
+    ///
+    /// Visibility is one of the policies §4.1 notes has "no registry-level
+    /// expression at all" today; the tier system regularises what is there
+    /// rather than inventing it. Absent means `public`, which is the behaviour
+    /// on every existing instance.
+    #[serde(default)]
+    pub visibility: Option<Visibility>,
+    /// RFC 0015 §4.5 — the registry-tier default visibility for pre-releases.
+    ///
+    /// This is what `[registries.beta_channel]` translates to (§10 rule 6), and
+    /// it is accepted on proxy-mode registries — where it is inert — because
+    /// `beta_channel` carries no mode restriction today and refusing it would
+    /// stop such an instance booting on upgrade. §4.9 warns instead.
+    #[serde(default)]
+    pub prerelease_visibility: Option<Visibility>,
     /// Optional artifact signing configuration (local/hybrid mode only).
     #[serde(default)]
     pub signing: Option<SigningConfig>,
@@ -461,7 +616,12 @@ impl Default for FeatureFlagsConfig {
 
 // ── Versioning policy ─────────────────────────────────────────────────────────
 
-/// Per-registry versioning policy enforced at publish time.
+/// Versioning policy: what a version may be called, and whether it may change.
+///
+/// Registry-level today and namespace-level as of RFC 0015 phase 4 — which is
+/// most of the value on its own, since a policy that is right for
+/// `com.acme.internal` is rarely right for the vendored third-party namespace
+/// beside it, and one setting per registry forces the looser of the two.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct VersioningPolicy {
     /// Reject publish if the version string is not a valid semver (e.g. `1.2.3`, `1.0.0-beta.1`).
@@ -474,6 +634,49 @@ pub struct VersioningPolicy {
     /// Reject publish if the version string does not match this regex.
     #[serde(default)]
     pub version_pattern: Option<String>,
+    /// Whether these bytes may be replaced (RFC 0015 §4.5).
+    ///
+    /// The one field of this block honoured at **version** tier, where freezing
+    /// a single golden build inside a namespace that otherwise permits
+    /// replacement is the motivating case (§4.1).
+    #[serde(default)]
+    pub immutable: Immutable,
+    /// Refuse a publish whose version does not sort strictly above the newest
+    /// existing one for that package (RFC 0015 §4.5).
+    ///
+    /// Catches what `immutable` cannot: republishing an *older* number after a
+    /// bad release, which leaves a resolver picking a version that was never
+    /// meant to come back. Ordered by
+    /// [`version_order::newest_first`](batlehub_core::services::version_order::newest_first),
+    /// already the single ordering function in the tree.
+    ///
+    /// Three consequences, each stated in §4.5 rather than left to be
+    /// discovered:
+    ///
+    /// - **A yanked or deleted version still counts** as the newest, which RFC
+    ///   0016's soft delete is what makes possible. Otherwise deleting `2.0.0`
+    ///   would let `1.9.9` be re-taken.
+    /// - **Pre-releases fall out correctly** with no special case: `1.3.0-rc1`
+    ///   sorts above `1.2.0` and is accepted, while `1.2.0-rc1` after `1.2.0`
+    ///   sorts below and is refused.
+    /// - **Bulk import is incompatible with it** by construction, since a
+    ///   package's history publishes oldest-first. Import with `monotonic =
+    ///   false` and turn it on afterwards; there is deliberately no bypass verb.
+    #[serde(default)]
+    pub monotonic: bool,
+    /// Evaluate fully, record what would have been refused, refuse nothing
+    /// (RFC 0015 §4.7).
+    ///
+    /// **Direction: mixed.** A badly-named or duplicate version is accepted, so
+    /// bad data lands — but nothing leaks. That is why this one has no expiry
+    /// requirement while `grants.dry_run` does: forgetting it costs a messy
+    /// registry, where forgetting the other one is an authorization bypass.
+    ///
+    /// Defaults to `false`, as §4.7 requires. Only `retention.dry_run` defaults
+    /// to `true`, and RFC 0016 argues that from the fact that it is the only one
+    /// of the three whose dry-run direction is unambiguously safe.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 pub fn default_true() -> bool {

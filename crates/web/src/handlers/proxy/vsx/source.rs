@@ -19,6 +19,7 @@ use batlehub_core::{
 use super::protocol::GalleryQuery;
 use super::render::GalleryEntry;
 use crate::{error::AppError, extractors::AuthIdentity};
+use batlehub_core::entities::Action;
 
 /// Everything one extension's documents are rendered from.
 ///
@@ -70,7 +71,7 @@ pub async fn extension_entry(
     let req = ProxyRequest {
         package_id: PackageId::new(registry, extension_id, "latest"),
         identity: identity.0.clone(),
-        resource_type: batlehub_core::rules::resource_type::SOURCE_READ.to_owned(),
+        action: Action::SourceRead.to_owned(),
         ip_address: None,
         user_agent: None,
     };
@@ -186,7 +187,7 @@ async fn authorize_gallery_read(
     svc.authorize_read(
         &PackageId::new(registry, coordinate, "latest"),
         &identity.0,
-        batlehub_core::rules::resource_type::SOURCE_READ,
+        Action::SourceRead,
     )
     .await
     .map_err(AppError::from)

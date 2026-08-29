@@ -1,0 +1,97 @@
+# RFC 0015 §11.7 — the whole-registry document measurement (phase 0b).
+#
+# Start with:
+#   task perf:authz:server
+#
+# Two registries, one per arm, over the *same* corpus size so the two numbers
+# describe the same document:
+#
+#   perf-gems        local mode  — arm 2, "filtered, uncached". The local
+#                                  compact-index build loops over every package
+#                                  name calling `load_visible_versions(…,
+#                                  identity)`, so the document is rebuilt and
+#                                  re-filtered on every request. This is not a
+#                                  prototype of the naive implementation, it is
+#                                  the naive implementation, shipping today.
+#
+#   perf-gems-proxy  proxy mode  — arm 1, "today, unfiltered, shared cache".
+#                                  `multi_package_document` caches the upstream
+#                                  document under an identity-blind key and
+#                                  applies only the block set per request. The
+#                                  floor any filtered arm is judged against.
+#
+# The mock upstream generates its compact index to the same shape `corpus-seed`
+# writes, so `--gems`/`--gem-versions` must match `corpus-seed --size`:
+#
+#   S   --gems 1000   --gem-versions 5
+#   M   --gems 25000  --gem-versions 10
+#   L   --gems 200000 --gem-versions 10
+
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[database]
+type = "postgresql"
+url = "postgresql://batlehub:changeme@localhost:5432/batlehub"
+# Deliberately generous. The question is what the *document build* costs, and a
+# pool that queues would measure the pool instead.
+max_connections = 50
+
+[storage]
+type = "filesystem"
+path = "./tmp/perf-authz-storage"
+
+# ── Token auth ────────────────────────────────────────────────────────────────
+#
+# Three identities, because arm 2's cost is per-identity by construction and a
+# single caller would let a per-identity cache that does not exist look like one
+# that does.
+
+[[auth]]
+type = "token"
+
+[[auth.tokens]]
+value = "perf-admin-token"
+role = "admin"
+user_id = "perf-admin"
+
+[[auth.tokens]]
+value = "perf-user-token"
+role = "user"
+user_id = "perf-user"
+
+[[auth.tokens]]
+value = "perf-user2-token"
+role = "user"
+user_id = "perf-user2"
+
+# ── Arm 2 — local mode, filtered per identity, no document cache ──────────────
+
+[[registries]]
+type = "rubygems"
+name = "perf-gems"
+mode = "local"
+
+[registries.rbac]
+anonymous = []
+user = ["releases:read", "source:read"]
+admin = ["*"]
+
+# ── Arm 1 — proxy mode, one cached document for everyone ──────────────────────
+
+[[registries]]
+type = "rubygems"
+name = "perf-gems-proxy"
+upstreams = ["http://localhost:9999/gems"]
+
+[registries.rbac]
+anonymous = []
+user = ["releases:read", "source:read"]
+admin = ["*"]
+
+# An hour, so the measurement window never sees a refetch. Arm 1 is the cost of
+# *serving* a cached document; the cost of filling the cache is arm 2's problem
+# in a different shape and is measured separately by the first request.
+[registries.cache]
+metadata_ttl_secs = 3600

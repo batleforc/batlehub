@@ -1,9 +1,10 @@
 use chrono::{DateTime, Utc};
 
 use super::{
-    map_explore_entry, prepare_registries_param, sort_order_for, str_to_action, str_to_role,
-    AccessEvent, AccessResult, CoreError, DbResultExt, EventFilter, ExploreEntry, ExploreFilter,
-    PackageId, PgPool, RegistryStat, Row, LOCAL_VISIBILITY_PREDICATE,
+    local_visibility_predicate, local_visibility_predicate_at, map_explore_entry,
+    prepare_registries_param, sort_order_for, str_to_action, str_to_role,
+    visible_package_predicate, AccessEvent, AccessResult, CoreError, DbResultExt, EventFilter,
+    ExploreEntry, ExploreFilter, ExploreViewer, PackageId, PgPool, RegistryStat, Row,
 };
 
 pub(super) async fn list_events_impl(
@@ -169,7 +170,7 @@ pub(super) async fn count_events_impl(
 /// Separate from [`explore_packages_impl`] so the tests at the bottom of this
 /// file can inspect the SQL without a database. Both spliced fragments are
 /// trusted, statically-known strings — `visibility` is
-/// [`LOCAL_VISIBILITY_PREDICATE`] and `order` comes from [`sort_order_for`]'s
+/// [`local_visibility_predicate`](super::local_visibility_predicate) and `order` comes from [`sort_order_for`]'s
 /// closed match — which is what makes the `AssertSqlSafe` at the call site true.
 ///
 /// **Every literal brace in this string must be doubled**, comments included: a
@@ -355,7 +356,10 @@ pub(super) async fn explore_packages_impl(
 ) -> Result<Vec<ExploreEntry>, CoreError> {
     let registries = prepare_registries_param(&filter.registries);
     let groups = filter.viewer.normalised_groups();
-    let sql = explore_sql(sort_order_for(&filter.sort_by), LOCAL_VISIBILITY_PREDICATE);
+    let sql = explore_sql(
+        sort_order_for(&filter.sort_by),
+        &local_visibility_predicate(),
+    );
 
     // $4/$5/$6 are the viewer parameters consumed by LOCAL_VISIBILITY_PREDICATE.
     // They sit before limit/offset so the same fragment can be spliced into this
@@ -427,7 +431,7 @@ pub(super) async fn count_explore_packages_impl(
 ) -> Result<u64, CoreError> {
     let registries = prepare_registries_param(&filter.registries);
     let groups = filter.viewer.normalised_groups();
-    let sql = count_explore_sql(LOCAL_VISIBILITY_PREDICATE);
+    let sql = count_explore_sql(&local_visibility_predicate());
 
     let row = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(&filter.registry)
@@ -445,45 +449,106 @@ pub(super) async fn count_explore_packages_impl(
     Ok(count as u64)
 }
 
+/// Per-registry package counts, download totals and cached bytes — RFC 0015 §4.4.
+///
+/// > An aggregate is a listing that has been counted. Every one of those tiles
+/// > is a query over packages, and it is filtered by the caller's grants exactly
+/// > like a version index — a number computed over rows the caller may not see
+/// > is a disclosure whether or not the rows themselves are returned.
+///
+/// This query used to do neither half of that, and §4.4 predicted both:
+///
+/// - **It had no visibility predicate at all**, so `package_count` and
+///   `total_downloads` were computed over `internal`, `team` and `private`
+///   packages alike. *"You have 47 packages"* over a set the caller can see three
+///   of discloses the other 44 exist — survey finding 12, one abstraction level
+///   up, on the surface §4.4 says it *"will arrive a fourth time"*.
+/// - **An empty `accessible_registries` bound `NULL`**, and `$1 IS NULL OR …`
+///   reads that as *every* registry. That is survey finding 2 verbatim: a caller
+///   with no browsable registry at all was handed the whole estate's numbers by
+///   the one query whose job is to scope them. `explore_packages` refuses this
+///   case in its handler; the aggregate beside it did not.
+///
+/// Both are closed here rather than in the caller: an empty list now binds an
+/// empty array, so the predicate is `= ANY('{}')` and matches nothing by
+/// construction — *"a predicate that is vacuous rather than absent"* is the shape
+/// finding 2 came in on, and the fix is to make the vacuous reading
+/// unrepresentable.
+///
+/// # Grants are deliberately not part of this filter
+///
+/// §4.4 asks for grants as well as visibility, and the aggregate must agree with
+/// the listing it summarises — so it filters on exactly what
+/// `explore_packages`/`count_explore_packages` filter on, which today is registry
+/// access plus visibility. Grants do not yet filter the explore catalogue at all,
+/// and an aggregate stricter than its own listing would be the same disagreement
+/// in the opposite direction: the tile says 0 and the page beside it shows three.
+/// The two have to move together, and that is one change rather than this one.
 pub(super) async fn registry_explore_stats_impl(
     pool: &PgPool,
     accessible_registries: &[String],
+    viewer: &ExploreViewer,
 ) -> Result<Vec<RegistryStat>, CoreError> {
-    let registries = if accessible_registries.is_empty() {
-        None
-    } else {
-        Some(accessible_registries.to_vec())
-    };
+    // No `Option`, and no `IS NULL` arm to read as "everything": an empty scope
+    // is an empty result. See the doc comment.
+    let registries = accessible_registries.to_vec();
+    if registries.is_empty() {
+        return Ok(Vec::new());
+    }
+    let groups = viewer.normalised_groups();
 
-    let rows = sqlx::query(
+    // $1 registries, $2 is_admin, $3 is_authenticated, $4 groups.
+    let local_visibility = local_visibility_predicate_at("$2", "$3", "$4");
+    // The same rule, correlated on each table that feeds a tile. One body, three
+    // call sites: a disclosure boundary written out three times is one that will
+    // disagree with itself.
+    let statuses_visible =
+        visible_package_predicate("ps.registry", "ps.package_name", &local_visibility);
+    let events_visible =
+        visible_package_predicate("ae.registry", "ae.package_name", &local_visibility);
+    let cached_visible =
+        visible_package_predicate("acm.registry", "acm.package_name", &local_visibility);
+
+    let sql = format!(
         r#"
         WITH pkg_counts AS (
             SELECT registry, COUNT(DISTINCT package_name)::bigint AS package_count
             FROM (
-                SELECT registry, package_name FROM package_statuses
-                WHERE ($1::text[] IS NULL OR registry = ANY($1::text[]))
+                SELECT ps.registry, ps.package_name FROM package_statuses ps
+                WHERE ps.registry = ANY($1::text[])
+                  {statuses_visible}
                 UNION
-                SELECT registry, name AS package_name FROM local_packages
-                WHERE status = 'published'
-                  AND ($1::text[] IS NULL OR registry = ANY($1::text[]))
+                SELECT lp.registry, lp.name AS package_name FROM local_packages lp
+                WHERE lp.status = 'published'
+                  AND lp.registry = ANY($1::text[])
+                  {local_visibility}
             ) combined
             GROUP BY registry
         ),
+        -- The `SUM`'s sibling, and the shape §4.4 calls the dangerous one:
+        -- "a count taken first and trimmed afterwards" is impossible here
+        -- because the filter is inside the aggregation, which is the whole
+        -- requirement.
         download_counts AS (
-            SELECT registry, COUNT(*)::bigint AS total_downloads
-            FROM access_events
-            WHERE ($1::text[] IS NULL OR registry = ANY($1::text[]))
-            GROUP BY registry
+            SELECT ae.registry, COUNT(*)::bigint AS total_downloads
+            FROM access_events ae
+            WHERE ae.registry = ANY($1::text[])
+              {events_visible}
+            GROUP BY ae.registry
         ),
         -- SUM over all-NULL sizes is NULL, which is how "we hold artifacts but
         -- recorded no sizes for them" stays distinguishable from "we hold
         -- nothing". A registry with no cached artifacts at all has no row here
         -- and the LEFT JOIN leaves it NULL too — both are honestly unknown.
+        --
+        -- §4.4: "A `SUM` cannot be trimmed at all, which is what makes this the
+        -- version of rule 1 that fails silently." So it is filtered in place.
         cached_sizes AS (
-            SELECT registry, SUM(size_bytes)::bigint AS cached_bytes
-            FROM artifact_cache_meta
-            WHERE ($1::text[] IS NULL OR registry = ANY($1::text[]))
-            GROUP BY registry
+            SELECT acm.registry, SUM(acm.size_bytes)::bigint AS cached_bytes
+            FROM artifact_cache_meta acm
+            WHERE acm.registry = ANY($1::text[])
+              {cached_visible}
+            GROUP BY acm.registry
         )
         SELECT
             pc.registry,
@@ -494,12 +559,20 @@ pub(super) async fn registry_explore_stats_impl(
         LEFT JOIN download_counts dc ON dc.registry = pc.registry
         LEFT JOIN cached_sizes cs ON cs.registry = pc.registry
         ORDER BY pc.package_count DESC
-        "#,
-    )
-    .bind(registries)
-    .fetch_all(pool)
-    .await
-    .db_err()?;
+        "#
+    );
+
+    // `AssertSqlSafe`, as the sibling queries above: every interpolated fragment
+    // is a compile-time constant assembled by `local_visibility_predicate_at` and
+    // `visible_package_predicate`, and every value is a bind parameter.
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(&registries)
+        .bind(viewer.is_admin)
+        .bind(viewer.is_authenticated)
+        .bind(&groups)
+        .fetch_all(pool)
+        .await
+        .db_err()?;
 
     let stats = rows
         .into_iter()
@@ -601,7 +674,7 @@ pub(super) async fn distinct_event_subjects_impl(
 ///
 /// A comment reading ``-- The same `{visibility}` predicate …`` was added to
 /// `explore_sql`'s format string. `format!` expanded it like any other
-/// placeholder, and since `LOCAL_VISIBILITY_PREDICATE` is multi-line, only its
+/// placeholder, and since `local_visibility_predicate()` is multi-line, only its
 /// first line stayed behind the `--`; the remainder landed directly after a
 /// `UNION ALL` as live SQL. The result compiled, type-checked, and failed every
 /// pg_explore test with `syntax error at or near "AND"`.
@@ -749,12 +822,12 @@ mod tests {
     #[test]
     fn every_union_is_followed_by_a_select() {
         for sort in ALL_SORTS {
-            let sql = explore_sql(sort_order_for(sort), LOCAL_VISIBILITY_PREDICATE);
+            let sql = explore_sql(sort_order_for(sort), &local_visibility_predicate());
             for follower in union_followers(&sql) {
                 assert_eq!(follower, "SELECT", "malformed UNION in the explore query");
             }
         }
-        for follower in union_followers(&count_explore_sql(LOCAL_VISIBILITY_PREDICATE)) {
+        for follower in union_followers(&count_explore_sql(&local_visibility_predicate())) {
             assert_eq!(follower, "SELECT", "malformed UNION in the count query");
         }
     }
@@ -766,9 +839,9 @@ mod tests {
         // Postgres can see it.
         let mut queries: Vec<String> = ALL_SORTS
             .iter()
-            .map(|sort| explore_sql(sort_order_for(sort), LOCAL_VISIBILITY_PREDICATE))
+            .map(|sort| explore_sql(sort_order_for(sort), &local_visibility_predicate()))
             .collect();
-        queries.push(count_explore_sql(LOCAL_VISIBILITY_PREDICATE));
+        queries.push(count_explore_sql(&local_visibility_predicate()));
         for sql in queries {
             let live = live_sql(&sql);
             assert!(

@@ -20,7 +20,6 @@ use batlehub_core::{
     services::LocalRegistryService,
 };
 
-use super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity};
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -97,7 +96,7 @@ pub struct TombstoneListResponse {
     responses(
         (status = 200, description = "Deleted coordinates, newest deletion first",
             body = TombstoneListResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`tombstones:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -107,9 +106,16 @@ pub async fn list_tombstones(
     query: web::Query<TombstoneQuery>,
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let registry = path.into_inner();
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::TombstonesRead,
+        Some(&registry),
+        &hot,
+    )
+    .await?;
     let tombstones = local_svc
         .backend
         .list_tombstones(&registry, query.name.as_deref())
@@ -183,7 +189,7 @@ impl CompactionResponse {
     responses(
         (status = 200, description = "What was stripped, or would be under dry_run",
             body = CompactionResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`tombstones:read` required"),
         (status = 409, description = "No tombstone_detail_for_days configured for this registry"),
     ),
     security(("bearer_token" = [])),
@@ -194,9 +200,16 @@ pub async fn compact_tombstones(
     query: web::Query<CompactQuery>,
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let registry = path.into_inner();
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::TombstonesRead,
+        Some(&registry),
+        &hot,
+    )
+    .await?;
 
     // Through the service's own lock rather than a separate `Data<HotConfigLock>`
     // extractor: it is the same `Arc`, and taking it from the service means the

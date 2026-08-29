@@ -40,6 +40,18 @@ async fn make_app_with_user_block_repo(
     } = empty_app_parts();
 
     let (app, _) = App::new()
+        // RFC 0015 §4.2 — this app registers only the handlers under test, so the
+        // hot lock the control-verb check reads has to be registered with them.
+        .app_data(actix_web::web::Data::new(
+            batlehub_core::services::hot_config::new_hot_lock(
+                batlehub_core::services::hot_config::HotConfig {
+                    instance: Some(std::sync::Arc::new(
+                        batlehub_core::services::authz::translate::instance_node(None),
+                    )),
+                    ..Default::default()
+                },
+            ),
+        ))
         .into_utoipa_app()
         .configure(configure_test_app(
             proxy_svc,

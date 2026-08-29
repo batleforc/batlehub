@@ -19,7 +19,8 @@ pub use auth::{
 pub use banner::BannerPort;
 pub use config_change::{ConfigChangeRecord, ConfigChangeRepository};
 pub use governance::{
-    BetaChannelEntry, BetaChannelPort, OwnerEntry, OwnershipPort, TeamNamespacePort, UserBlock,
+    version_node_key, BetaChannelEntry, BetaChannelPort, GrantRepository, NodeKind, OwnerEntry,
+    OwnershipPort, PolicyRepository, StoredGrant, StoredPolicy, TeamNamespacePort, UserBlock,
     UserBlockRepository,
 };
 pub use notification::NotificationPort;

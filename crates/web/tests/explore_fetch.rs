@@ -202,7 +202,10 @@ async fn a_caller_the_rules_would_refuse_is_refused_with_the_rules_reason() {
                 firewall_only: false,
                 serve_stale_metadata: false,
                 artifact_ttl: None,
-                rules: vec![Box::new(batlehub_core::rules::RbacRule::new(perms))],
+                rules: vec![Box::new(
+                    batlehub_core::rules::RbacRule::from_patterns(perms)
+                        .expect("fixture rbac patterns are valid"),
+                )],
             }),
         );
     }

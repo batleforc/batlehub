@@ -6,7 +6,6 @@ use uuid::Uuid;
 
 use batlehub_core::entities::NotificationSubscription;
 
-use crate::handlers::back_office::require_admin;
 use crate::handlers::schemas::OkResponse;
 use crate::{error::AppError, extractors::AuthIdentity, services::NotificationService};
 
@@ -21,7 +20,7 @@ use super::{
     tag = "back-office",
     responses(
         (status = 200, description = "Channel list", body = Vec<ChannelInfo>),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`system:read` required"),
         (status = 503, description = "Notifications not configured"),
     ),
     security(("bearer_token" = [])),
@@ -30,8 +29,15 @@ use super::{
 pub async fn list_notification_channels(
     identity: AuthIdentity,
     notification_svc: web::Data<Option<Arc<NotificationService>>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::SystemRead,
+        None,
+        &hot,
+    )
+    .await?;
     let svc = require_notifications(&notification_svc)?;
     let channels: Vec<ChannelInfo> = svc
         .channel_names()
@@ -48,7 +54,7 @@ pub async fn list_notification_channels(
     tag = "back-office",
     responses(
         (status = 200, description = "Subscription list", body = Vec<NotificationSubscription>),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`system:read` required"),
         (status = 503, description = "Notifications not configured"),
     ),
     security(("bearer_token" = [])),
@@ -57,8 +63,15 @@ pub async fn list_notification_channels(
 pub async fn list_subscriptions(
     identity: AuthIdentity,
     notification_svc: web::Data<Option<Arc<NotificationService>>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::SystemRead,
+        None,
+        &hot,
+    )
+    .await?;
     let svc = require_notifications(&notification_svc)?;
     let subs = svc.list_subscriptions().await?;
     Ok(web::Json(subs))
@@ -73,7 +86,7 @@ pub async fn list_subscriptions(
     responses(
         (status = 201, description = "Subscription created", body = NotificationSubscription),
         (status = 400, description = "Invalid request"),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`system:write` required"),
         (status = 503, description = "Notifications not configured"),
     ),
     security(("bearer_token" = [])),
@@ -83,8 +96,15 @@ pub async fn create_subscription(
     identity: AuthIdentity,
     body: web::Json<CreateSubscriptionRequest>,
     notification_svc: web::Data<Option<Arc<NotificationService>>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::SystemWrite,
+        None,
+        &hot,
+    )
+    .await?;
     let svc = require_notifications(&notification_svc)?;
     if body.event_types.is_empty() {
         return Err(AppError::bad_request("event_types must not be empty"));
@@ -122,7 +142,7 @@ pub async fn create_subscription(
     params(("id" = Uuid, Path, description = "Subscription ID")),
     responses(
         (status = 200, description = "Subscription", body = NotificationSubscription),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`system:read` required"),
         (status = 404, description = "Not found"),
         (status = 503, description = "Notifications not configured"),
     ),
@@ -133,8 +153,15 @@ pub async fn get_subscription(
     path: web::Path<Uuid>,
     identity: AuthIdentity,
     notification_svc: web::Data<Option<Arc<NotificationService>>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::SystemRead,
+        None,
+        &hot,
+    )
+    .await?;
     let svc = require_notifications(&notification_svc)?;
     let id = path.into_inner();
     let sub = svc
@@ -154,7 +181,7 @@ pub async fn get_subscription(
     responses(
         (status = 200, description = "Updated", body = NotificationSubscription),
         (status = 400, description = "Invalid request"),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`system:write` required"),
         (status = 404, description = "Not found"),
         (status = 503, description = "Notifications not configured"),
     ),
@@ -166,8 +193,15 @@ pub async fn update_subscription(
     identity: AuthIdentity,
     body: web::Json<UpdateSubscriptionRequest>,
     notification_svc: web::Data<Option<Arc<NotificationService>>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::SystemWrite,
+        None,
+        &hot,
+    )
+    .await?;
     let svc = require_notifications(&notification_svc)?;
     let id = path.into_inner();
     if body.event_types.is_empty() {
@@ -206,7 +240,7 @@ pub async fn update_subscription(
     params(("id" = Uuid, Path, description = "Subscription ID")),
     responses(
         (status = 204, description = "Deleted"),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`system:write` required"),
         (status = 404, description = "Not found"),
         (status = 503, description = "Notifications not configured"),
     ),
@@ -217,8 +251,15 @@ pub async fn delete_subscription(
     path: web::Path<Uuid>,
     identity: AuthIdentity,
     notification_svc: web::Data<Option<Arc<NotificationService>>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::SystemWrite,
+        None,
+        &hot,
+    )
+    .await?;
     let svc = require_notifications(&notification_svc)?;
     let id = path.into_inner();
     svc.get_subscription(id)
@@ -237,7 +278,7 @@ pub async fn delete_subscription(
     responses(
         (status = 200, description = "Test sent", body = OkResponse),
         (status = 400, description = "Dispatch failed"),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`system:write` required"),
         (status = 404, description = "Not found"),
         (status = 503, description = "Notifications not configured"),
     ),
@@ -248,8 +289,15 @@ pub async fn test_subscription(
     path: web::Path<Uuid>,
     identity: AuthIdentity,
     notification_svc: web::Data<Option<Arc<NotificationService>>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::SystemWrite,
+        None,
+        &hot,
+    )
+    .await?;
     let svc = require_notifications(&notification_svc)?;
     let id = path.into_inner();
     let sub = svc

@@ -21,6 +21,7 @@ use crate::handlers::schemas::ArtifactBytes;
 use crate::{
     error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, RepoSignerMap,
 };
+use batlehub_core::entities::Action;
 
 pub mod publish;
 
@@ -117,13 +118,9 @@ async fn repo_get(
         // no per-package model, so authorization is keyed on the synthetic `repo`
         // coordinate the proxy path also uses.
         let auth_pkg = PackageId::new(registry, "repo", "_").with_artifact(path);
-        svc.authorize_read(
-            &auth_pkg,
-            &identity.0,
-            batlehub_core::rules::resource_type::RELEASES_READ,
-        )
-        .await
-        .map_err(AppError::from)?;
+        svc.authorize_read(&auth_pkg, &identity.0, Action::ReleasesRead)
+            .await
+            .map_err(AppError::from)?;
 
         let key = repo_storage_key(registry, path);
         match local_svc.storage.retrieve(&key).await {
@@ -143,14 +140,7 @@ async fn repo_get(
     }
 
     let pkg = PackageId::new(registry, "repo", "_").with_artifact(path);
-    proxy_stream(
-        svc,
-        pkg,
-        identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
-        Some(ct),
-    )
-    .await
+    proxy_stream(svc, pkg, identity, Action::ReleasesRead, Some(ct)).await
 }
 
 /// Serve a file from a Debian APT repository (`/proxy/{registry}/deb/{path}`).

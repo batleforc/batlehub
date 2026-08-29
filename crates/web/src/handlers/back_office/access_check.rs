@@ -5,13 +5,14 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use batlehub_core::{
-    entities::{Identity, PackageId, PackageMetadata, Role},
+    entities::{
+        resolve, Action, ActionParseError, Identity, PackageId, PackageMetadata, Role, Subject,
+    },
     ports::{IpBlockStore, UserBlockRepository},
     rules::{Rule, RuleContext, RuleDecision},
     services::ProxyService,
 };
 
-use super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity};
 
 #[derive(Deserialize, ToSchema)]
@@ -19,6 +20,15 @@ pub struct AccessCheckRequest {
     pub registry: String,
     pub package_name: String,
     pub version: String,
+    /// The permission to simulate, e.g. `releases:read`.
+    ///
+    /// Parsed into [`Action`] rather than compared as a string. Before RFC 0015
+    /// phase 1 an unknown value here was answered rather than refused: the rule
+    /// chain compared it to the config's strings, nothing matched, and the
+    /// simulator returned **deny** with a rule name attached — a confident
+    /// answer about a permission that does not exist. The page whose whole
+    /// purpose is "would this identity be allowed" is the worst possible place
+    /// for a typo to look like a policy decision.
     pub resource_type: String,
     /// Simulated user id (optional).
     pub user_id: Option<String>,
@@ -101,7 +111,7 @@ fn parse_role(s: Option<&str>) -> Result<Role, AppError> {
     request_body = AccessCheckRequest,
     responses(
         (status = 200, description = "Simulation result", body = AccessSimulationResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`authz:read` required"),
         (status = 404, description = "Registry not configured"),
     ),
     security(("bearer_token" = [])),
@@ -113,8 +123,15 @@ pub async fn admin_access_check(
     user_blocks: web::Data<Arc<dyn UserBlockRepository>>,
     ip_blocks: web::Data<Arc<dyn IpBlockStore>>,
     body: web::Json<AccessCheckRequest>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::AuthzRead,
+        None,
+        &hot,
+    )
+    .await?;
 
     let policy = {
         let hot = proxy_svc.hot.read().await;
@@ -177,10 +194,55 @@ pub async fn admin_access_check(
         cache_control: None,
     };
 
+    let action: Action = body
+        .resource_type
+        .parse()
+        .map_err(|e: ActionParseError| AppError::bad_request(format!("resource_type: {e}")))?;
+
+    // Grants first, exactly as a real request meets them.
+    //
+    // Not optional, and not cosmetic. `RbacRule` left the chain in RFC 0015
+    // phase 3 (§5.1), so a simulator that evaluates `policy.rules` alone no
+    // longer sees the layer that answers "may this caller do this at all" — it
+    // reported **allow** for a caller grants refuse. That is the same defect
+    // RFC 0004-bis B4 records one layer down, on the same endpoint: the page
+    // whose entire purpose is "would this identity be allowed" contradicting the
+    // system it describes.
+    let grants = {
+        let hot = proxy_svc.hot.read().await;
+        hot.grants.get(body.registry.as_str()).cloned()
+    };
+    if let Some(grants) = grants {
+        let subject = Subject::Identity(sim_identity.clone());
+        // The whole path, instance tier included — see `authz_explain`. This is
+        // the endpoint RFC 0004-bis B4 records for answering *allow* where the
+        // system answered *deny*; resolving against a partial hierarchy is the
+        // same defect from the other direction.
+        let path = batlehub_core::services::authz::resolution_path(
+            &proxy_svc.hot,
+            &grants,
+            &body.package_name,
+        )
+        .await;
+        let resolved = resolve(&path, &subject);
+        if !resolved.holds(action) {
+            return Ok(web::Json(AccessSimulationResponse {
+                decision: "deny".to_owned(),
+                reason: Some(format!(
+                    "no grant for '{action}' on registry '{}'",
+                    body.registry
+                )),
+                rule_matched: Some("grants".to_owned()),
+                blocked_by: Some(BlockedBy::Rule),
+                covers,
+            }));
+        }
+    }
+
     let ctx = RuleContext {
         identity: &sim_identity,
         package: &metadata,
-        resource_type: &body.resource_type,
+        action,
         cache_entry: None,
         requested_version: Some(&body.version),
     };
@@ -202,13 +264,6 @@ pub async fn admin_access_check(
             blocked_by: Some(BlockedBy::Rule),
             covers,
         },
-        RuleDecision::RequireRole { minimum } => AccessSimulationResponse {
-            decision: "deny".to_owned(),
-            reason: Some(format!("requires role '{minimum}' or higher")),
-            rule_matched,
-            blocked_by: Some(BlockedBy::Rule),
-            covers,
-        },
     };
 
     Ok(web::Json(response))
@@ -220,7 +275,7 @@ async fn evaluate_and_trace(
     ctx: &RuleContext<'_>,
 ) -> (RuleDecision, Option<String>) {
     for rule in rules {
-        let decision = rule.evaluate(ctx).await.resolve(ctx.identity);
+        let decision = rule.evaluate(ctx).await;
         if decision.is_deny() {
             return (decision, Some(rule.name().to_owned()));
         }

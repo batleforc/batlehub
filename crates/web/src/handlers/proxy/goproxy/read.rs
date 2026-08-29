@@ -17,6 +17,7 @@ use crate::handlers::proxy::common::{
 };
 use crate::handlers::schemas::{ArtifactBytes, ProtocolDocument, UpstreamDocument};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+use batlehub_core::entities::Action;
 
 /// Dispatch a local/hybrid goproxy file request.
 ///
@@ -52,13 +53,7 @@ async fn local_goproxy_file(
             // the same way. A registry that grants a role releases-only must not
             // hand it the source because the module happens to be local.
             local_svc
-                .get_artifact(
-                    registry,
-                    module,
-                    version,
-                    batlehub_core::rules::resource_type::SOURCE_READ,
-                    identity,
-                )
+                .get_artifact(registry, module, version, Action::SourceRead, identity)
                 .await
                 .map(|bytes| {
                     HttpResponse::Ok()
@@ -137,13 +132,9 @@ pub async fn goproxy_latest(
     let mode = mode_map.get(&registry);
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        svc.authorize_read(
-            &pkg,
-            &identity.0,
-            batlehub_core::rules::resource_type::RELEASES_READ,
-        )
-        .await
-        .map_err(AppError::from)?;
+        svc.authorize_read(&pkg, &identity.0, Action::ReleasesRead)
+            .await
+            .map_err(AppError::from)?;
         match local_svc.get_go_latest(&registry, module, &identity).await {
             Ok(json) => {
                 return Ok(HttpResponse::Ok()
@@ -181,7 +172,7 @@ async fn proxy_go_latest(
         svc.clone(),
         PackageId::new(&registry, &module, "latest"),
         AuthIdentity(identity.0.clone()),
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         DocumentKind::LATEST,
         String::new(),
     )
@@ -191,7 +182,7 @@ async fn proxy_go_latest(
         svc,
         PackageId::new(&registry, &module, "latest"),
         identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         DocumentKind::Versions,
         String::new(),
     )
@@ -277,7 +268,7 @@ pub async fn goproxy_list(
         svc,
         PackageId::new(&registry, module, "latest"),
         identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         DocumentKind::Versions,
         String::new(),
     )
@@ -329,21 +320,21 @@ pub async fn goproxy_file(
         }
     }
 
-    let (pkg, content_type, resource_type) = match ext {
+    let (pkg, content_type, action) = match ext {
         "info" => (
             PackageId::new(&registry, module, version),
             "application/json",
-            batlehub_core::rules::resource_type::RELEASES_READ,
+            Action::ReleasesRead,
         ),
         "mod" => (
             PackageId::new(&registry, module, version).with_artifact("mod"),
             "text/plain",
-            batlehub_core::rules::resource_type::RELEASES_READ,
+            Action::ReleasesRead,
         ),
         "zip" => (
             PackageId::new(&registry, module, version).with_artifact("zip"),
             "application/zip",
-            batlehub_core::rules::resource_type::SOURCE_READ,
+            Action::SourceRead,
         ),
         _ => {
             return Err(AppError::not_found(format!(
@@ -352,7 +343,7 @@ pub async fn goproxy_file(
         }
     };
 
-    proxy_stream(svc, pkg, identity, resource_type, Some(content_type)).await
+    proxy_stream(svc, pkg, identity, action, Some(content_type)).await
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────

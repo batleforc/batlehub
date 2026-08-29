@@ -10,7 +10,6 @@ use batlehub_core::{
     services::AdminService,
 };
 
-use super::super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity};
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -45,7 +44,7 @@ pub struct AddBetaMemberRequest {
     params(("registry" = String, Path, description = "Registry name")),
     responses(
         (status = 200, description = "Member list", body = Vec<BetaChannelMemberDto>),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`owners:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -54,9 +53,16 @@ pub async fn list_beta_members(
     path: web::Path<(String,)>,
     identity: AuthIdentity,
     store: web::Data<Arc<dyn BetaChannelPort>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let (registry,) = path.into_inner();
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::OwnersRead,
+        Some(&registry),
+        &hot,
+    )
+    .await?;
     let members: Vec<BetaChannelMemberDto> = store
         .list_members(&registry)
         .await
@@ -77,7 +83,7 @@ pub async fn list_beta_members(
     responses(
         (status = 204, description = "Member added"),
         (status = 400, description = "Invalid principal_type"),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`owners:write` required"),
         (status = 409, description = "Already a member"),
     ),
     security(("bearer_token" = [])),
@@ -89,9 +95,16 @@ pub async fn add_beta_member(
     identity: AuthIdentity,
     store: web::Data<Arc<dyn BetaChannelPort>>,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let (registry,) = path.into_inner();
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::OwnersWrite,
+        Some(&registry),
+        &hot,
+    )
+    .await?;
     if body.principal_type != "user" && body.principal_type != "group" {
         return Err(AppError::bad_request(
             "principal_type must be 'user' or 'group'",
@@ -128,7 +141,7 @@ pub async fn add_beta_member(
     ),
     responses(
         (status = 204, description = "Member removed"),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`owners:write` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -138,9 +151,16 @@ pub async fn remove_beta_member(
     identity: AuthIdentity,
     store: web::Data<Arc<dyn BetaChannelPort>>,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let (registry, principal_type, principal_id) = path.into_inner();
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::OwnersWrite,
+        Some(&registry),
+        &hot,
+    )
+    .await?;
     store
         .remove_member(&registry, &principal_type, &principal_id)
         .await

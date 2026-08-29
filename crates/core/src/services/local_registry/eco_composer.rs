@@ -95,12 +95,38 @@ impl LocalRegistryService {
         }))
     }
 
-    /// Return all distinct package names published in `registry`.
+    /// Return the distinct package names in `registry` this caller may read.
     /// Used to populate `available-packages` in `packages.json`.
+    ///
+    /// RFC 0015 §4.4: this is the one Composer document that is a complete
+    /// inventory, so it is the one where an unfiltered name list is an
+    /// enumeration of the registry's private packages. `authorize_listing` on
+    /// the handler decides whether the caller gets a document at all; this
+    /// decides what goes in it.
     pub async fn get_composer_packages_list(
         &self,
         registry: &str,
+        identity: &Identity,
     ) -> Result<Vec<String>, CoreError> {
-        self.backend.list_package_names(registry).await
+        let names = self.backend.list_package_names(registry).await?;
+        let readable = self.readable_packages(registry, identity).await?;
+        let mut out = Vec::with_capacity(names.len());
+        for name in names {
+            if !readable.contains(&name) {
+                continue;
+            }
+            // `available-packages` asserts the list is complete, so a name in it
+            // that the caller cannot then fetch is worse than an absent one:
+            // Composer would resolve against a package it is about to be
+            // refused. Visibility decides, exactly as it does per package.
+            if self
+                .check_visibility(registry, &name, identity)
+                .await
+                .is_ok()
+            {
+                out.push(name);
+            }
+        }
+        Ok(out)
     }
 }

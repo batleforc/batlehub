@@ -1,10 +1,380 @@
+---
+reference: true
+---
+
 # Access Control
 
-BatleHub provides three complementary access-control features for private and hybrid registries:
+Two layers, and they answer different questions.
 
-- **Beta/Pre-Release Channel** — restrict pre-release package versions to approved users or groups
-- **IP-Based Blocking** — automatically block abusive IPs (fail2ban-style) and manage manual bans
-- **Team Namespaces & Package Visibility** — assign package name prefixes to auth-provider groups and control per-package download visibility
+**[The authorization model](#authorization)** decides whether a caller may
+perform an action on a resource at all: one vocabulary of verbs, granted to
+subjects, on a four-tier hierarchy. Everything routes through it.
+
+**Three narrower features** sit alongside it, each older than the model and each
+still doing a job the model does not:
+[pre-release gating](#beta-channel), [IP blocking](#ip-blocking), and
+[team namespaces and per-package visibility](#team-namespaces).
+
+---
+
+
+Every request to BatleHub is answered by one model: a **subject** asks to perform
+an **action** on a **resource**, and the answer is yes or no.
+
+This page is the operator's reference for that model — the verbs, who you grant
+them to, where you write them, and how to find out why something was refused.
+
+For the design reasoning behind any of it, see
+[RFC 0015](/rfc/0015-grants-on-the-resource-hierarchy).
+
+## The authorization model {#authorization}
+
+### The shape of a decision {#shape}
+
+A caller needs **two** things, and they run in opposite directions:
+
+| | Says | Composes | Direction |
+| --- | --- | --- | --- |
+| **grants** | *this subject may* | union over the path | only widens |
+| **visibility** | *the audience is this wide* | deepest wins | only narrows |
+
+Both must pass. A `releases:read` grant does not make a `team` package public,
+and a `public` namespace does not serve a caller no grant matches.
+
+There is deliberately **no deny rule**. A grant can never be revoked by a deeper
+node, only unmatched — which means a mistake in a grant block fails *closed*,
+because a union of nothing grants nothing.
+
+### The verbs {#verbs}
+
+The set is closed. A verb not on this list is a startup error, not a permission
+granted to nobody.
+
+| Verb | What it authorises |
+| --- | --- |
+| `releases:read` | download an artifact |
+| `releases:list` | read a version listing or index document |
+| `releases:publish` | publish a new version |
+| `releases:overwrite` | replace an existing version's bytes |
+| `releases:yank` | yank and unyank |
+| `releases:delete` | delete a version |
+| `source:read` | download a source archive |
+| `catalogue:browse` | use the console's package explorer |
+| `owners:read` | see a package's owners |
+| `owners:write` | change them |
+| `packages:block` | block a package or version administratively |
+| `gates:exempt` | exempt a version from a gate ([below](#exemptions)) |
+| `stats:read` | read the dashboard's aggregates |
+| `audit:read` | read the audit log |
+
+Four more are ecosystem-scoped and only grantable on the registry types that
+implement them: `npm:dist-tags:write`, `cargo:owners:write`,
+`nuget:symbols:push`, `maven:metadata:write`.
+
+`releases:*` expands to every `releases:` verb; `*` expands to everything the
+registry's ecosystem defines. **Expansion happens at config load**, so what a
+subject holds is a fact about the loaded model rather than something recomputed
+per request — and `task config:explain` prints it.
+
+::: warning `releases:*` does not reach `gates:exempt`
+Silencing a security finding is not a release operation. `gates:exempt` is
+granted deliberately or not at all.
+:::
+
+### Who you grant to {#subjects}
+
+Five subject forms:
+
+| Form | Matches |
+| --- | --- |
+| `*` | everyone, including anonymous callers |
+| `role:anonymous`, `role:user`, `role:admin` | callers at that role or above |
+| `group:<provider>:<name>` | members of that group from that auth provider |
+| `group:*:<name>` | that group name from **any** provider |
+| `group::<name>` | that group name with no provider prefix |
+| `user:<id>` | one principal |
+
+Repeating a subject is a **union**, not a second opinion: two blocks granting
+`role:user` different verbs give `role:user` both.
+
+### Where you write them {#tiers}
+
+Four tiers, outermost first:
+
+```
+registry            npm1
+  └── namespace     @acme/billing        (matched, not enumerated)
+        └── package @acme/billing/cards
+              └── version 1.4.2
+```
+
+The first two live in the config file. The last two cannot — a registry with
+200 000 packages will not enumerate them in TOML — and are written through the
+admin API instead.
+
+```toml
+[[registries]]
+type = "npm"
+name = "npm1"
+mode = "local"
+
+# Registry tier: the default for everything beneath.
+[registries.grants]
+"*"                = ["releases:read", "releases:list"]
+"group:*:engineer" = ["releases:publish"]
+
+[[registries.namespaces]]
+match      = "@acme/billing"
+visibility = "team"
+
+[registries.namespaces.grants]
+"group:oidc1:platform" = ["releases:*", "owners:write"]
+```
+
+A namespace is **matched on segment boundaries** using the ecosystem's own
+separator, so `@acme/billing` never matches `@acme/billing-internal`. The
+separator is `/` for npm scopes and Go modules, `.` for OpenVSX publishers and
+NuGet ids, `:` for Maven groupIds, the channel for conda, the namespace segment
+for Terraform, the component for deb.
+
+#### Sealing {#sealing}
+
+`grants = {}` on a namespace **seals** it: nothing is inherited from above, and
+only what is written on that node or below applies.
+
+An absent block inherits. An empty block seals. They are different states, and
+the difference is the whole reason the key is optional rather than defaulted.
+
+Sealing is the one construct in the model that takes access away, so it is
+confined to the config file — there is no way to seal a package through the API.
+An **administrative floor** survives every seal: `owners:read`, `owners:write`
+and `audit:read` held at registry tier still apply, so a sealed subtree is never
+one an administrator cannot reopen.
+
+### The other policies {#policies}
+
+Grants are one of six things a tier carries. The rest:
+
+| Policy | What it says | Composes |
+| --- | --- | --- |
+| `grants` | who may do what | **union** over the path |
+| `visibility` / `prerelease_visibility` | how wide the audience is | deepest wins |
+| `versioning` | what a version may be called, and whether it may change | deepest wins, **wholesale** |
+| `quota` | how much may be published | deepest wins, wholesale |
+| `rules` | which gates judge the artifact | deepest wins, **per gate** |
+| `retention` | what is kept ([RFC 0016](/rfc/0016-retention-and-the-permanence-of-a-published-name)) | deepest wins, wholesale |
+
+::: warning `versioning` and `quota` compose wholesale
+A deeper block **replaces** its parent's entirely. A namespace that omits
+`enforce_semver` drops it rather than inheriting it.
+
+That is what makes "this one package follows a different release convention"
+expressible, and it is a sharp edge: every reload warns about a constraint a
+deeper tier dropped.
+:::
+
+`rules` is the exception and composes **per gate**, so a namespace can re-tune
+`release_age` without redeclaring `cve_gate`. A wholesale override there would
+make a forgotten gate a silently disabled one.
+
+```toml
+[[registries.namespaces]]
+match = "@acme/ci"
+
+# First-party CI builds need no quarantine. The registry's other gates keep
+# running — only `release_age_gate` is replaced.
+[[registries.namespaces.rules]]
+kind = "release_age_gate"
+min_age_secs = 0
+```
+
+#### Visibility {#visibility}
+
+Four values, widest to narrowest:
+
+| Value | Audience |
+| --- | --- |
+| `public` | anyone, including anonymous |
+| `internal` | any authenticated caller |
+| `team` | members of the owning group |
+| `private` | **only grants written on this node or below** — inherited grants do not apply |
+
+`private` is a package- and version-tier value. Higher up it either says nothing
+or duplicates a seal, and config load rejects it there.
+
+`prerelease_visibility` is the same setting for pre-releases only, and is what
+`[registries.beta_channel]` becomes. When it is not declared it **follows**
+`visibility` — setting a package to `team` does not leave its pre-releases
+public.
+
+#### Immutability and ordering {#versioning}
+
+```toml
+[registries.namespaces.versioning]
+enforce_semver = true
+immutable      = "released"   # never | released | always
+monotonic      = true
+```
+
+`immutable` decides whether published bytes may be replaced. `released` is the
+Maven shape: a SNAPSHOT churns, a release does not.
+
+::: tip Immutability is a property of the resource, not of the caller
+A replace needs both a mutable resource **and** `releases:overwrite`. That split
+is what lets a namespace be append-only for *everyone, including
+administrators* — there is no bypass role, deliberately.
+:::
+
+`monotonic` refuses a publish whose version does not sort strictly above the
+newest existing one, which catches republishing an *older* number after a bad
+release. A yanked or deleted version still counts as the newest, so deleting
+`2.0.0` does not free `1.9.9` to be re-taken.
+
+Bulk import is incompatible with `monotonic` by construction, since a history
+publishes oldest-first. Import with it off and turn it on afterwards.
+
+### Gate exemptions {#exemptions}
+
+"This CVE does not apply to how we use this library" is a real judgement, and
+without a way to record it the only option is turning the gate off for the whole
+registry.
+
+```http
+PUT /api/v1/admin/registries/{registry}/policy/version/{package}/{version}/rules/cve_gate
+```
+
+```json
+{
+  "exempt_until": "2026-12-01T00:00:00Z",
+  "reason": "GHSA-… — the affected code path is not reachable from our usage"
+}
+```
+
+**Only `cve_gate` and `license_gate` are exemptible**, and the line is not
+arbitrary: an exemptible gate reports a finding a human can *assess*, while every
+other gate establishes an *invariant*. A quarantine a version can skip is not a
+quarantine, and an unsigned artifact is an absence of evidence rather than a
+finding to accept.
+
+Writing one requires **`gates:exempt`**, which nothing grants by default. Both
+`exempt_until` and `reason` are required, so an exemption expires on its own —
+the realistic failure is not a wrong assessment, it is a right assessment nobody
+revisited.
+
+Where the principal granting an exemption also published the version, it is
+accepted and **flagged** `self_approved` rather than refused. Four-eyes enforced
+by the tool is friction a small team routes around, most often by granting the
+verb more widely.
+
+### Shadow mode {#shadow}
+
+The migration setting, and the most dangerous one on this page.
+
+```toml
+[registries.grants_shadow]
+until = "2026-12-01"
+```
+
+A node in shadow-mode resolves its grants, records what it **would** have
+refused, and refuses nothing. That is what makes adopting the model survivable:
+enable it, watch a week of real traffic, then enforce.
+
+::: danger Shadow-mode on grants fails open
+A request that would be refused is **served**. Forgotten, this is an
+authorization bypass configured on purpose.
+
+`until` is required — a shadow with no expiry cannot be written — and config load
+refuses to start with a date already past. An expired shadow **enforces**.
+:::
+
+Every reload warns, naming each node and its expiry, and the warning appears on
+the Config Reload page rather than only in a log. What a shadow has served is on
+the [authorization page](#watching) and in `batlehub authz shadow`.
+
+`versioning` takes a `dry_run = true` too. Its direction is milder — a
+badly-named or duplicate version is accepted, so bad data lands but nothing leaks
+— which is why it needs no expiry.
+
+### Watching it {#watching}
+
+**`/admin/security/authorization`** gathers the five things that are otherwise
+scattered:
+
+| Panel | Answers |
+| --- | --- |
+| **Shadow** | what is being served that grants would refuse, per node, with each expiry |
+| **Exemptions** | live gate exemptions, their expiry and reason, filterable to the self-approved ones |
+| **Explain** | resolve any subject against any coordinate, with provenance |
+| **Recent denials** | what has actually been refused |
+| **Retention** | where to review what a live run would reclaim |
+
+Three of those five are the fail-open or destructive directions of features
+decided elsewhere. They are on one page on purpose: individually each is easy to
+forget, and collectively they are the list of everything currently trusting you
+to remember.
+
+#### From a terminal {#cli}
+
+```bash
+batlehub authz explain npm1 --subject role:user --action releases:read \
+  --package @acme/billing/cards
+
+batlehub authz shadow --detail
+```
+
+`explain` answers with **which tier granted each verb**, which is the difference
+between knowing what a subject holds and knowing which line to edit. It also
+reports what it did *not* consider — per-package visibility, the artifact gates
+and the block layers all sit behind grants — because a bare verdict is ambiguous
+between "nothing denies this" and "nothing I looked at denies this".
+
+::: tip A denial under a shadow says so
+`explain` reports `deny` *and* names the node serving the request anyway. Without
+that, the diagnostic would contradict the server on exactly the configuration
+where being wrong matters most.
+:::
+
+For the config-file half — what a block expands to before any request — use
+`task config:explain`.
+
+### Upgrading from `[registries.rbac]` {#migrating}
+
+`[registries.rbac]` is still read and always will be. There is no flag day.
+
+It translates to registry-tier grants: `anonymous`, `user` and `admin` become
+`*`, `role:user` and `role:admin`; `groups` entries become `group:*:<name>`
+subjects. Your existing config keeps its exact meaning — the translation is
+checked against the previous evaluator over every fixture, subject shape and verb
+rather than trusted to review.
+
+Two things worth knowing when you migrate:
+
+- A `"*"` in `[registries.rbac]` means *today's two read verbs*, not the new
+  wildcard. It expands to `releases:read`, `releases:list`, `source:read` and
+  `catalogue:browse` — never to publish or delete.
+- `[registries.beta_channel]` becomes `prerelease_visibility = "team"`, and its
+  member group becomes a registry-tier grant.
+
+Start with [shadow-mode](#shadow) if you are rewriting grants by hand.
+
+---
+
+## The three narrower features {#features}
+
+Each of these predates the model above and each still does a job it does not:
+
+- **[Beta/Pre-Release Channel](#beta-channel)** — restrict pre-release versions
+  to approved users or groups. Superseded in expression by
+  `prerelease_visibility` ([above](#visibility)), which is what a
+  `[registries.beta_channel]` block now translates to; the block and its member
+  list keep working and are still the way to manage membership.
+- **[IP-Based Blocking](#ip-blocking)** — block abusive addresses fail2ban-style.
+  Orthogonal to the model: it judges *where a request came from*, which is not a
+  subject, an action or a resource.
+- **[Team Namespaces & Package Visibility](#team-namespaces)** — assign name
+  prefixes to auth-provider groups and set per-package visibility. The claim is
+  what `visibility = "team"` resolves *against*, so the two are halves of one
+  mechanism rather than alternatives.
 
 ---
 
@@ -12,14 +382,31 @@ BatleHub provides three complementary access-control features for private and hy
 
 ### How it works {#beta-how-it-works}
 
-BatleHub determines whether a version is a pre-release by parsing its version string as [semver](https://semver.org/). Any version with a pre-release component (the hyphenated suffix) is treated as a pre-release:
+BatleHub determines whether a version is a pre-release from the version string
+itself. The rule is [semver](https://semver.org/), after the same normalisations
+the server's version *ordering* applies — so a two-component core is padded and a
+leading `v` is dropped before the parse:
 
-| Version | Pre-release? |
-|---------|-------------|
-| `1.0.0` | No |
-| `1.0.0-beta.1` | **Yes** |
-| `1.0.0-rc.2` | **Yes** |
-| `1.0.0-alpha` | **Yes** |
+| Version | Pre-release? | |
+|---------|-------------|---|
+| `1.0.0` | No | |
+| `1.0.0-beta.1` | **Yes** | |
+| `1.0.0-rc.2` | **Yes** | |
+| `1.0.0-alpha` | **Yes** | |
+| `1.0-SNAPSHOT` | **Yes** | Maven's spelling; padded to `1.0.0-SNAPSHOT` before the parse |
+| `1.0.0rc1` | **Yes** | PEP 440 attaches its marker with no separator |
+| `dev-main`, `1.x-dev` | **Yes** | Composer dev-branch aliases |
+| `2.0.0+build-1` | No | build metadata is not a pre-release |
+
+::: warning This changed in RFC 0015 phase 4
+There used to be two definitions of "pre-release" in the codebase and they
+disagreed — one called `1.0-SNAPSHOT` a release, the other called
+`2.0.0+build-1` a pre-release. They are now one, which is the definition above.
+
+Two consequences on upgrade: a SNAPSHOT-shaped version becomes gated by the beta
+channel where it previously was not, and the console's version table labels those
+rows correctly. Nothing becomes *more* visible.
+:::
 
 There is **no separate flag or publish step** — the version string itself determines gating. Publish `mylib@1.0.0-beta.1` the same way as any other version; BatleHub infers it is a pre-release from the `-beta.1` suffix.
 

@@ -280,4 +280,4 @@ sparse+https://batlehub.example.com/proxy/internal/registry/
 
 **Go: `disabled by GOPROXY=...off`:** The proxy can't reach the upstream or the module doesn't exist there. Remove `,off` from `GOPROXY` to allow direct fallback, or check that the upstream is reachable from the BatleHub server.
 
-**`dotnet nuget push` returns 401:** BatleHub accepts the `--api-key` value as a Bearer token (the `X-NuGet-ApiKey` header is transparently normalised to `Authorization: Bearer`). Make sure the token has `releases:write` or admin permissions on the registry.
+**`dotnet nuget push` returns 401:** BatleHub accepts the `--api-key` value as a Bearer token (the `X-NuGet-ApiKey` header is transparently normalised to `Authorization: Bearer`). Make sure the token has `releases:publish` or admin permissions on the registry.

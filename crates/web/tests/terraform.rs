@@ -966,7 +966,10 @@ fn closed_policy(repo: Arc<dyn batlehub_core::ports::PackageRepository>) -> Regi
         serve_stale_metadata: false,
         artifact_ttl: None,
         rules: vec![
-            Box::new(batlehub_core::rules::RbacRule::new(perms)),
+            Box::new(
+                batlehub_core::rules::RbacRule::from_patterns(perms)
+                    .expect("fixture rbac patterns are valid"),
+            ),
             Box::new(batlehub_core::rules::BlockListRule::new(repo)),
         ],
     }

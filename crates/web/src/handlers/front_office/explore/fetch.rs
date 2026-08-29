@@ -33,6 +33,7 @@ use batlehub_core::{
 };
 
 use crate::RegistryMap;
+use batlehub_core::entities::Action;
 
 /// A rule refused the download. The body carries the rule's own reason.
 pub const FETCH_DENIED: &str = "fetch.denied";
@@ -272,7 +273,7 @@ pub async fn explore_fetch_version(
         .handle(ProxyRequest {
             package_id,
             identity: identity.0.clone(),
-            resource_type: "source:read".to_owned(),
+            action: Action::SourceRead,
             ip_address: None,
             user_agent: None,
         })

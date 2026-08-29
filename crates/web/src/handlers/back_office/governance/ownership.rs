@@ -10,7 +10,6 @@ use batlehub_core::{
     services::{AdminService, LocalRegistryService},
 };
 
-use super::super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity};
 
 fn require_ownership(
@@ -56,32 +55,8 @@ fn default_role() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_role, require_admin, OwnerEntryDto};
-    use crate::extractors::AuthIdentity;
-    use batlehub_core::{
-        entities::{Identity, Role},
-        ports::OwnerEntry,
-    };
-
-    fn id(role: Role) -> AuthIdentity {
-        AuthIdentity(Identity {
-            user_id: Some("u".into()),
-            role,
-            auth_provider: None,
-            groups: vec![],
-        })
-    }
-
-    #[test]
-    fn require_admin_passes_for_admin() {
-        assert!(require_admin(&id(Role::Admin)).is_ok());
-    }
-
-    #[test]
-    fn require_admin_fails_for_non_admin() {
-        assert!(require_admin(&id(Role::User)).is_err());
-        assert!(require_admin(&id(Role::Anonymous)).is_err());
-    }
+    use super::{default_role, OwnerEntryDto};
+    use batlehub_core::ports::OwnerEntry;
 
     #[test]
     fn default_role_is_maintainer() {
@@ -127,7 +102,7 @@ mod tests {
     ),
     responses(
         (status = 200, description = "Owner list", body = Vec<OwnerEntryDto>),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`owners:read` required"),
         (status = 503, description = "Ownership not configured"),
     ),
     security(("bearer_token" = [])),
@@ -137,9 +112,16 @@ pub async fn list_package_owners(
     path: web::Path<(String, String)>,
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let (registry, name) = path.into_inner();
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::OwnersRead,
+        Some(&registry),
+        &hot,
+    )
+    .await?;
     let ownership = require_ownership(&local_svc)?;
     let owners: Vec<OwnerEntryDto> = ownership
         .list_owners(&registry, &name)
@@ -163,7 +145,7 @@ pub async fn list_package_owners(
     request_body = AddOwnerRequest,
     responses(
         (status = 204, description = "Owner added"),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`owners:write` required"),
         (status = 409, description = "Already an owner"),
         (status = 503, description = "Ownership not configured"),
     ),
@@ -176,9 +158,16 @@ pub async fn add_package_owner(
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let (registry, name) = path.into_inner();
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::OwnersWrite,
+        Some(&registry),
+        &hot,
+    )
+    .await?;
     let ownership = require_ownership(&local_svc)?;
     ownership
         .add_owner(
@@ -223,7 +212,7 @@ pub async fn add_package_owner(
     ),
     responses(
         (status = 204, description = "Owner removed"),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`owners:write` required"),
         (status = 503, description = "Ownership not configured"),
     ),
     security(("bearer_token" = [])),
@@ -236,9 +225,16 @@ pub async fn remove_package_owner(
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let (registry, name, principal_type, principal_id) = path.into_inner();
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::OwnersWrite,
+        Some(&registry),
+        &hot,
+    )
+    .await?;
     let ownership = require_ownership(&local_svc)?;
     ownership
         .remove_owner(&registry, &name, &principal_type, &principal_id)

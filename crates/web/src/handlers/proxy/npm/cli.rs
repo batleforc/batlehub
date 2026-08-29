@@ -31,6 +31,7 @@ use super::require_npm;
 use crate::handlers::proxy::common::{local_or_proxy_document_value, registry_public_base};
 use crate::handlers::schemas::{MessageResponse, ProtocolDocument};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+use batlehub_core::entities::Action;
 
 /// `npm ping`.
 ///
@@ -157,7 +158,7 @@ pub async fn npm_dist_tags(
         },
         format!("package '{package}' not found"),
         pkg,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         batlehub_core::ports::DocumentKind::Versions,
         public_base,
     )

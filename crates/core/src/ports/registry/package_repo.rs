@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::entities::{
-    AccessEvent, EventFilter, ExploreEntry, ExploreFilter, PackageFilter, PackageId, PackageStatus,
-    PackageSummary, RegistryStat,
+    AccessEvent, EventFilter, ExploreEntry, ExploreFilter, ExploreViewer, PackageFilter, PackageId,
+    PackageStatus, PackageSummary, RegistryStat,
 };
 use crate::error::CoreError;
 
@@ -236,11 +236,18 @@ pub trait PackageRepository: Send + Sync {
     }
 
     /// Explorer: per-registry package counts and download totals.
+    ///
+    /// `viewer` is not optional and not cosmetic (RFC 0015 §4.4): every number
+    /// here is an aggregate over packages, so one computed without it discloses
+    /// the set it was computed over. An empty `accessible_registries` means
+    /// **nothing**, never "all" — survey finding 2's reading is what this
+    /// signature exists to make unavailable.
     async fn registry_explore_stats(
         &self,
         accessible_registries: &[String],
+        viewer: &ExploreViewer,
     ) -> Result<Vec<RegistryStat>, CoreError> {
-        let _ = accessible_registries;
+        let _ = (accessible_registries, viewer);
         Ok(vec![])
     }
 

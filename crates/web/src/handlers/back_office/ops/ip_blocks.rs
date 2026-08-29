@@ -12,7 +12,7 @@ use batlehub_core::{
     services::AdminService,
 };
 
-use super::super::{now_unix, require_admin};
+use super::super::now_unix;
 use crate::{error::AppError, extractors::AuthIdentity};
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -51,7 +51,7 @@ pub struct BlockIpRequest {
     tag = "back-office",
     responses(
         (status = 200, description = "List of blocked IPs", body = Vec<BlockedIpDto>),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`blocks:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -59,8 +59,15 @@ pub struct BlockIpRequest {
 pub async fn list_blocked_ips(
     identity: AuthIdentity,
     store: web::Data<Arc<dyn IpBlockStore>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::BlocksRead,
+        None,
+        &hot,
+    )
+    .await?;
     let blocked: Vec<BlockedIpDto> = store
         .list_blocked()
         .await
@@ -80,7 +87,7 @@ pub async fn list_blocked_ips(
     responses(
         (status = 204, description = "IP blocked"),
         (status = 400, description = "Invalid IP address or duration"),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`blocks:write` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -90,8 +97,15 @@ pub async fn block_ip(
     identity: AuthIdentity,
     store: web::Data<Arc<dyn IpBlockStore>>,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::BlocksWrite,
+        None,
+        &hot,
+    )
+    .await?;
     IpAddr::from_str(&body.ip)
         .map_err(|_| AppError::bad_request(format!("'{}' is not a valid IP address", body.ip)))?;
     let duration = body.duration_secs.unwrap_or(3600);
@@ -124,7 +138,7 @@ pub async fn block_ip(
     params(("ip" = String, Path, description = "IP address to unblock")),
     responses(
         (status = 204, description = "IP unblocked"),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`blocks:write` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -134,8 +148,15 @@ pub async fn unblock_ip(
     identity: AuthIdentity,
     store: web::Data<Arc<dyn IpBlockStore>>,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::BlocksWrite,
+        None,
+        &hot,
+    )
+    .await?;
     let (ip,) = path.into_inner();
     IpAddr::from_str(&ip)
         .map_err(|_| AppError::bad_request(format!("'{}' is not a valid IP address", ip)))?;

@@ -7,7 +7,6 @@ use utoipa::ToSchema;
 
 use batlehub_core::services::WarmingService;
 
-use super::super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
 /// Map of registry name → WarmingService, injected as app data.
@@ -77,7 +76,7 @@ pub struct WarmingStatusResponse {
     tag = "back-office",
     responses(
         (status = 200, description = "Warmable registries", body = WarmingStatusResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`cache:warm` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -85,8 +84,15 @@ pub struct WarmingStatusResponse {
 pub async fn get_warming_status(
     identity: AuthIdentity,
     warming_map: web::Data<WarmingServiceMap>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::CacheWarm,
+        None,
+        &hot,
+    )
+    .await?;
     let mut registries: Vec<WarmableRegistry> = warming_map
         .iter()
         .map(|(name, svc)| WarmableRegistry {
@@ -110,7 +116,7 @@ pub async fn get_warming_status(
     request_body = WarmRequest,
     responses(
         (status = 200, description = "Warming completed", body = WarmResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`cache:warm` required"),
         (status = 404, description = "Registry not found or warming not configured"),
     ),
     security(("bearer_token" = [])),
@@ -122,10 +128,16 @@ pub async fn warm_registry(
     body: web::Json<WarmRequest>,
     registry_map: web::Data<RegistryMap>,
     warming_map: web::Data<WarmingServiceMap>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
-
     let registry = path.into_inner();
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::CacheWarm,
+        Some(&registry),
+        &hot,
+    )
+    .await?;
 
     if !registry_map.contains(&registry) {
         return Err(AppError::not_found("registry not found"));
@@ -171,31 +183,4 @@ pub async fn warm_registry(
             })
             .collect(),
     }))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::extractors::AuthIdentity;
-    use batlehub_core::entities::{Identity, Role};
-
-    fn id(role: Role) -> AuthIdentity {
-        AuthIdentity(Identity {
-            user_id: Some("u".into()),
-            role,
-            auth_provider: None,
-            groups: vec![],
-        })
-    }
-
-    #[test]
-    fn require_admin_passes_for_admin() {
-        assert!(require_admin(&id(Role::Admin)).is_ok());
-    }
-
-    #[test]
-    fn require_admin_fails_for_non_admin() {
-        assert!(require_admin(&id(Role::User)).is_err());
-        assert!(require_admin(&id(Role::Anonymous)).is_err());
-    }
 }

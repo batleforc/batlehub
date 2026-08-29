@@ -22,9 +22,10 @@ pub use notifications::{
     SlackChannelConfig, TeamsChannelConfig, WebhookChannelConfig,
 };
 pub use registry::{
-    default_true, BetaChannelConfig, CachePolicy, FeatureFlagsConfig, IntegrityConfig, QuotaConfig,
-    QuotaEnforcement, ReadmeConfig, RegistryConfig, RegistryMode, RepoSigningConfig,
-    RetentionConfig, SbomConfig, SigningConfig, UpstreamDetailConfig, VersioningPolicy,
+    default_true, BetaChannelConfig, CachePolicy, FeatureFlagsConfig, GrantsShadowConfig,
+    Immutable, IntegrityConfig, NamespaceConfig, QuotaConfig, QuotaEnforcement, ReadmeConfig,
+    RegistryConfig, RegistryMode, RepoSigningConfig, RetentionConfig, SbomConfig, SigningConfig,
+    UpstreamDetailConfig, VersioningPolicy,
 };
 pub use routing::{
     is_dns_label, normalise_host, validate_host_entry, wildcard_host, HostSyntaxError,
@@ -75,6 +76,18 @@ pub struct AppConfig {
     pub cache: CacheConfig,
     #[serde(default)]
     pub registries: Vec<RegistryConfig>,
+    /// RFC 0015 §4.1's instance tier — grants that apply above every registry.
+    ///
+    /// Where the control-surface verbs are delegated: `config:read`,
+    /// `system:read`, `blocks:write` and the rest guard endpoints that name no
+    /// registry, so a registry-tier block cannot express them. §10 rule 5 already
+    /// grants all of them to `role:admin`, so this block is only ever needed to
+    /// give one of them to somebody *else*.
+    ///
+    /// Unioned on top of that translation, never replacing it — a grant only ever
+    /// adds (§4.3).
+    #[serde(default)]
+    pub grants: Option<std::collections::HashMap<String, Vec<String>>>,
     #[serde(default)]
     pub otel: Option<OtelConfig>,
     #[serde(default)]
@@ -490,7 +503,231 @@ impl AppConfig {
         self.retention_warnings(&mut out);
         self.signed_url_warnings(&mut out);
         self.require_signed_release_warnings(&mut out);
+        self.tiered_policy_warnings(&mut out);
+        self.dry_run_warnings(&mut out);
         out
+    }
+
+    /// RFC 0015 §4.7's shadow warnings, on **every** reload.
+    ///
+    /// Unlike [`Self::tiered_policy_warnings`], whose entries are legal configs
+    /// that do nothing, every entry here is a legal config that is *actively
+    /// not enforcing something*. §4.7 asks for it by name: "every reload logs a
+    /// warning naming each node in grant dry-run and its expiry, and the
+    /// config-warnings endpoint carries it, so it appears on the Config Reload
+    /// page rather than only in a log nobody tails".
+    fn dry_run_warnings(&self, out: &mut Vec<ConfigWarning>) {
+        for (index, registry) in self.registries.iter().enumerate() {
+            if let Some(shadow) = &registry.grants_shadow {
+                out.push(ConfigWarning::new(
+                    warnings::GRANTS_IN_SHADOW,
+                    format!("registries[{index}].grants_shadow"),
+                    format!(
+                        "registry '{}' has its grants in SHADOW until {}: every request its \
+                         grants would refuse is being served, and the refusal is only recorded. \
+                         This is an authorization bypass with an expiry date — check the \
+                         authorization page's Shadow panel before it lapses, because on {} it \
+                         starts enforcing.",
+                        registry.name, shadow.until, shadow.until,
+                    ),
+                ));
+            }
+            for (n, ns) in registry.namespaces.iter().enumerate() {
+                if let Some(shadow) = &ns.grants_shadow {
+                    out.push(ConfigWarning::new(
+                        warnings::GRANTS_IN_SHADOW,
+                        format!("registries[{index}].namespaces[{n}].grants_shadow"),
+                        format!(
+                            "registry '{}', namespace \"{}\" has its grants in SHADOW until {}: \
+                             every request they would refuse is being served, and the refusal is \
+                             only recorded.",
+                            registry.name, ns.match_prefix, shadow.until,
+                        ),
+                    ));
+                }
+                if ns.versioning.as_ref().is_some_and(|v| v.dry_run) {
+                    out.push(ConfigWarning::new(
+                        warnings::VERSIONING_IN_DRY_RUN,
+                        format!("registries[{index}].namespaces[{n}].versioning"),
+                        format!(
+                            "registry '{}', namespace \"{}\" evaluates its versioning policy and \
+                             does not enforce it: a badly-named, duplicate or out-of-order \
+                             version is accepted and only recorded.",
+                            registry.name, ns.match_prefix,
+                        ),
+                    ));
+                }
+            }
+            if registry.versioning.as_ref().is_some_and(|v| v.dry_run) {
+                out.push(ConfigWarning::new(
+                    warnings::VERSIONING_IN_DRY_RUN,
+                    format!("registries[{index}].versioning"),
+                    format!(
+                        "registry '{}' evaluates its versioning policy and does not enforce it: \
+                         a badly-named, duplicate or out-of-order version is accepted and only \
+                         recorded.",
+                        registry.name,
+                    ),
+                ));
+            }
+        }
+    }
+
+    /// RFC 0015 §4.9's warnings for the tiered-policy blocks.
+    ///
+    /// Every one of these is a **legal configuration that does nothing**, which
+    /// is the category §4.9 reserves warnings for: a rejection would break an
+    /// upgrade or refuse a config that is merely redundant, while silence leaves
+    /// an operator believing a setting is in force. The rejections live at
+    /// config load in `server/src/grants.rs`, beside the namespace checks they
+    /// extend.
+    fn tiered_policy_warnings(&self, out: &mut Vec<ConfigWarning>) {
+        use batlehub_core::entities::Visibility;
+
+        for (index, registry) in self.registries.iter().enumerate() {
+            let path = |suffix: &str| format!("registries[{index}].{suffix}");
+            let registry_visibility = registry.visibility.unwrap_or_default();
+
+            // `prerelease_visibility` on a registry that publishes nothing.
+            if registry.prerelease_visibility.is_some() && registry.mode == RegistryMode::Proxy {
+                out.push(ConfigWarning::new(
+                    warnings::PRERELEASE_VISIBILITY_PROXY_MODE,
+                    path("prerelease_visibility"),
+                    format!(
+                        "registry '{}' is in proxy mode and publishes nothing, so \
+                         prerelease_visibility has no versions of its own to apply to. Accepted \
+                         rather than refused because [registries.beta_channel] carries no mode \
+                         restriction today and translates into this setting — refusing it would \
+                         stop an existing instance from booting.",
+                        registry.name,
+                    ),
+                ));
+            }
+
+            // A pre-release audience wider than the release audience.
+            if let (Some(pre), vis) = (registry.prerelease_visibility, registry_visibility) {
+                if pre < vis {
+                    out.push(ConfigWarning::new(
+                        warnings::PRERELEASE_VISIBILITY_WIDER,
+                        path("prerelease_visibility"),
+                        format!(
+                            "registry '{}' shows pre-releases to a WIDER audience ({pre}) than \
+                             releases ({vis}). Legal, and almost always a typo: the setting \
+                             exists to do the opposite.",
+                            registry.name,
+                        ),
+                    ));
+                }
+            }
+
+            if let Some(versioning) = &registry.versioning {
+                Self::versioning_warnings(
+                    versioning,
+                    registry.grants.as_ref(),
+                    &path("versioning"),
+                    &format!("registry '{}'", registry.name),
+                    out,
+                );
+            }
+
+            for (n, ns) in registry.namespaces.iter().enumerate() {
+                let ns_path =
+                    |suffix: &str| format!("registries[{index}].namespaces[{n}].{suffix}");
+                let node = format!(
+                    "registry '{}', namespace \"{}\"",
+                    registry.name, ns.match_prefix
+                );
+
+                // Grants decided who; nothing decided how wide.
+                let has_grants = ns.grants.as_ref().is_some_and(|g| !g.is_empty());
+                if has_grants
+                    && ns.visibility.is_none()
+                    && registry_visibility == Visibility::Public
+                {
+                    out.push(ConfigWarning::new(
+                        warnings::NAMESPACE_GRANTS_WITHOUT_VISIBILITY,
+                        ns_path("grants"),
+                        format!(
+                            "{node} names who may reach it but leaves its packages readable by \
+                             everyone: the registry default is public and this namespace sets no \
+                             visibility. Grants only widen (§4.3) — they cannot narrow the \
+                             audience a package already has. Set visibility on the namespace if \
+                             the grants were meant to be the whole answer.",
+                        ),
+                    ));
+                }
+
+                let ns_visibility = ns.visibility.unwrap_or(registry_visibility);
+                if let Some(pre) = ns.prerelease_visibility {
+                    if pre < ns_visibility {
+                        out.push(ConfigWarning::new(
+                            warnings::PRERELEASE_VISIBILITY_WIDER,
+                            ns_path("prerelease_visibility"),
+                            format!(
+                                "{node} shows pre-releases to a WIDER audience ({pre}) than \
+                                 releases ({ns_visibility}). Legal, and almost always a typo.",
+                            ),
+                        ));
+                    }
+                }
+
+                if let Some(versioning) = &ns.versioning {
+                    Self::versioning_warnings(
+                        versioning,
+                        ns.grants.as_ref(),
+                        &ns_path("versioning"),
+                        &node,
+                        out,
+                    );
+                }
+            }
+        }
+    }
+
+    /// The two `versioning` warnings, at whichever tier declared the block.
+    fn versioning_warnings(
+        versioning: &VersioningPolicy,
+        grants: Option<&std::collections::HashMap<String, Vec<String>>>,
+        path: &str,
+        node: &str,
+        out: &mut Vec<ConfigWarning>,
+    ) {
+        // An `always` node whose grants hand out a verb it makes inert.
+        if versioning.immutable == Immutable::Always {
+            let overwrites = grants.is_some_and(|g| {
+                g.values()
+                    .flatten()
+                    .any(|v| v == "releases:overwrite" || v == "releases:*" || v == "*")
+            });
+            if overwrites {
+                out.push(ConfigWarning::new(
+                    warnings::IMMUTABLE_ALWAYS_WITH_OVERWRITE_GRANT,
+                    path.to_owned(),
+                    format!(
+                        "{node} sets immutable = \"always\" and also grants \
+                         releases:overwrite. Not a contradiction — immutability is a property of \
+                         the resource and the verb is a property of the subject, and a replace \
+                         needs both — but the grant is inert here. Whoever holds it cannot \
+                         replace anything on this node.",
+                    ),
+                ));
+            }
+        }
+
+        // `released` on a node that refuses pre-releases can never take its
+        // second branch, so it is `always` written in two words.
+        if versioning.immutable == Immutable::Released && !versioning.allow_prerelease {
+            out.push(ConfigWarning::new(
+                warnings::IMMUTABLE_RELEASED_WITHOUT_PRERELEASES,
+                path.to_owned(),
+                format!(
+                    "{node} sets immutable = \"released\" beside allow_prerelease = false. \
+                     `released` means a release is immutable and a pre-release may be replaced, \
+                     and this node publishes no pre-releases — so the second branch can never be \
+                     taken. This is immutable = \"always\", written in two settings.",
+                ),
+            ));
+        }
     }
 
     /// `require_signed_release` on a registry that also accepts publishes,

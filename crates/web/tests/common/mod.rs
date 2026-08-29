@@ -492,7 +492,7 @@ pub async fn assert_content_type<S: TestService>(app: &S, uri: &str, prefix: &st
 pub fn one_registry_proxy(
     name: &str,
     kind: &str,
-    policy: impl FnOnce(Arc<dyn PackageRepository>) -> RegistryPolicy,
+    policy: impl FnOnce(Arc<dyn PackageRepository>) -> (RegistryPolicy, RbacFixture),
 ) -> (
     Arc<ProxyService>,
     Arc<dyn PackageRepository>,
@@ -507,10 +507,27 @@ pub fn one_registry_proxy(
     )]
     .into();
     let policies: HashMap<String, Arc<RegistryPolicy>> =
-        [(name.to_owned(), Arc::new(policy(repo.clone())))].into();
+        [(name.to_owned(), Arc::new(policy(repo.clone()).0))].into();
+    // Permissive, and safe *here* specifically: `one_registry_proxy` takes a
+    // closure rather than a named fixture, so its permissions cannot be
+    // recovered — and its only user (`vuln_proxy_endpoints.rs`) asserts no
+    // denial at all. Anywhere that does assert one uses
+    // `local_only_app_parts_with_policy`, which derives grants from the same
+    // permissions its rule chain was built from.
+    let grants = [(name.to_owned(), Arc::new(permissive_grants(name, kind)))].into();
     let hot = new_hot_lock(HotConfig {
+        // RFC 0015 §4.2's instance tier, wired exactly as production wires it:
+        // `instance_node` is §10 rule 5's own translation, so the fixture's admin
+        // holds the control verbs and nobody else does. Without it every
+        // `require_verb` on a control endpoint refuses, including the admin the
+        // suite is asserting about — a fixture that does not build the model
+        // tests a server nobody runs (§13.5).
+        instance: Some(std::sync::Arc::new(
+            batlehub_core::services::authz::translate::instance_node(None),
+        )),
         registries,
         policies,
+        grants,
         ..Default::default()
     });
     let local_svc = make_local_svc(hot.clone(), storage.clone());
@@ -537,7 +554,7 @@ pub async fn upstream_forwarding_app(
     name: &str,
     kind: &str,
     upstream_url: String,
-    policy: impl FnOnce(Arc<dyn PackageRepository>) -> RegistryPolicy,
+    policy: impl FnOnce(Arc<dyn PackageRepository>) -> (RegistryPolicy, RbacFixture),
 ) -> impl TestService {
     let (proxy_svc, repo, local_svc) = one_registry_proxy(name, kind, policy);
     let upstream_map =
@@ -771,76 +788,193 @@ pub fn make_local_svc_with_readme(
         readme,
     })
 }
-pub fn rbac_policy(repo: Arc<dyn PackageRepository>) -> RegistryPolicy {
-    let perms = HashMap::from([
-        (Role::Anonymous, vec!["releases:read".to_owned()]),
-        (
-            Role::User,
-            vec!["releases:read".to_owned(), "source:read".to_owned()],
+
+/// The permissions a fixture policy was built from.
+///
+/// Returned alongside the policy so the grant hierarchy can be derived from the
+/// **same** source rather than restated. RFC 0015 phase 3 took `RbacRule` out of
+/// the chain that production assembles (§5.1) and put grant resolution in its
+/// place — so a fixture that kept building the rule while production resolved
+/// grants would go on passing while testing a path nobody runs. That is not a
+/// hypothetical: it is what this suite did for the length of one commit, and
+/// `authz_matrix.rs` was green throughout.
+#[derive(Clone, Default)]
+pub struct RbacFixture {
+    pub roles: HashMap<Role, Vec<String>>,
+    pub groups: HashMap<String, Vec<String>>,
+}
+
+/// A registry that grants every verb to everyone.
+///
+/// For fixtures whose subject is not authorization. Never for one that asserts a
+/// denial — under RFC 0015 phase 3 the grant hierarchy is what refuses, so a
+/// permissive one turns an authorization test into a test of nothing.
+pub fn permissive_grants(name: &str, kind: &str) -> batlehub_core::entities::RegistryGrants {
+    use batlehub_core::entities::{
+        Action, GrantMap, Node, RegistryGrants, RegistryKind, SubjectMatcher, Tier,
+    };
+    RegistryGrants {
+        kind: kind
+            .parse::<RegistryKind>()
+            .unwrap_or(RegistryKind::Generic),
+        registry: Node::new(
+            Tier::Registry,
+            format!("registry:{name}"),
+            Some(GrantMap::new().grant(SubjectMatcher::Anyone, Action::ALL.to_vec())),
         ),
-        (Role::Admin, vec!["*".to_owned()]),
-    ]);
-    RegistryPolicy {
+        namespaces: Vec::new(),
+    }
+}
+
+/// The registry-tier grant hierarchy a fixture's permissions imply.
+///
+/// The same `build_grants` production calls, so the two cannot drift.
+pub fn fixture_grants(
+    name: &str,
+    kind: &str,
+    mode: &RegistryMode,
+    fixture: &RbacFixture,
+) -> batlehub_core::entities::RegistryGrants {
+    use batlehub_core::entities::{expand_patterns, RegistryKind, WildcardScope};
+    use batlehub_core::services::authz::translate::{
+        build_grants, ExploreFlags, RbacSnapshot, WriteMode,
+    };
+
+    let expand = |v: &Vec<String>| {
+        expand_patterns(v, WildcardScope::Legacy).expect("fixture patterns are valid")
+    };
+    let get = |r: &Role| fixture.roles.get(r).map(&expand).unwrap_or_default();
+
+    let snapshot = RbacSnapshot {
+        anonymous: get(&Role::Anonymous),
+        user: get(&Role::User),
+        admin: get(&Role::Admin),
+        groups: fixture
+            .groups
+            .iter()
+            .map(|(k, v)| (k.clone(), expand(v)))
+            .collect(),
+        // The fixtures never set `[registries.rbac.explore]`, and its config
+        // default is "on for any role with proxy access" — which is what
+        // `build_grants`'s conjunction then narrows.
+        explore: ExploreFlags {
+            anonymous: true,
+            user: true,
+            admin: true,
+        },
+    };
+    let write_mode = match mode {
+        RegistryMode::Proxy => WriteMode::Refuses,
+        _ => WriteMode::Accepts,
+    };
+    build_grants(
+        name,
+        kind.parse::<RegistryKind>()
+            .unwrap_or(RegistryKind::Generic),
+        &snapshot,
+        None,
+        &[],
+        write_mode,
+        // No shadow: a fixture that served what it should refuse would make
+        // every denial assertion in the matrix pass for the wrong reason.
+        None,
+    )
+    .expect("fixture grants build")
+}
+
+/// The permissions [`rbac_policy`] builds its rule from.
+pub fn rbac_policy_perms() -> RbacFixture {
+    let own = |v: &[&str]| -> Vec<String> { v.iter().map(|s| (*s).to_owned()).collect() };
+    RbacFixture {
+        roles: HashMap::from([
+            (Role::Anonymous, own(&["releases:read"])),
+            (Role::User, own(&["releases:read", "source:read"])),
+            (Role::Admin, vec!["*".to_owned()]),
+        ]),
+        groups: HashMap::new(),
+    }
+}
+
+pub fn rbac_policy(repo: Arc<dyn PackageRepository>) -> (RegistryPolicy, RbacFixture) {
+    let policy = RegistryPolicy {
         metadata_ttl: Some(Duration::from_secs(300)),
         firewall_only: false,
         serve_stale_metadata: false,
         artifact_ttl: None,
-        rules: vec![
-            Box::new(RbacRule::new(perms)),
-            Box::new(BlockListRule::new(repo)),
-        ],
-    }
+        // No `RbacRule`, mirroring `build_policy`: RFC 0015 §5.1 replaced it
+        // with grant resolution, and a fixture that kept it would let the chain
+        // supply a denial production gets from grants — so every negative
+        // assertion in this suite would pass without testing the new path.
+        // `perms` is still what `fixture_grants` derives the hierarchy from.
+        rules: vec![Box::new(BlockListRule::new(repo))],
+    };
+    (policy, rbac_policy_perms())
 }
 
 /// Like [`rbac_policy`] but also grants anonymous `source:read`. Use this for
 /// tests that isolate the per-package *visibility* axis (public/internal/team)
 /// on registries whose reads require `source:read` (e.g. cargo `download`): the
 /// registry RBAC then allows the read so visibility is the only gate under test.
-pub fn rbac_policy_anon_source(repo: Arc<dyn PackageRepository>) -> RegistryPolicy {
-    let perms = HashMap::from([
-        (
-            Role::Anonymous,
-            vec!["releases:read".to_owned(), "source:read".to_owned()],
-        ),
-        (
-            Role::User,
-            vec!["releases:read".to_owned(), "source:read".to_owned()],
-        ),
-        (Role::Admin, vec!["*".to_owned()]),
-    ]);
-    RegistryPolicy {
+/// The permissions [`rbac_policy_anon_source`] builds its rule from.
+pub fn rbac_policy_anon_source_perms() -> RbacFixture {
+    let own = |v: &[&str]| -> Vec<String> { v.iter().map(|s| (*s).to_owned()).collect() };
+    RbacFixture {
+        roles: HashMap::from([
+            (Role::Anonymous, own(&["releases:read", "source:read"])),
+            (Role::User, own(&["releases:read", "source:read"])),
+            (Role::Admin, vec!["*".to_owned()]),
+        ]),
+        groups: HashMap::new(),
+    }
+}
+
+pub fn rbac_policy_anon_source(repo: Arc<dyn PackageRepository>) -> (RegistryPolicy, RbacFixture) {
+    let policy = RegistryPolicy {
         metadata_ttl: Some(Duration::from_secs(300)),
         firewall_only: false,
         serve_stale_metadata: false,
         artifact_ttl: None,
-        rules: vec![
-            Box::new(RbacRule::new(perms)),
-            Box::new(BlockListRule::new(repo)),
-        ],
-    }
+        // No `RbacRule`, mirroring `build_policy`: RFC 0015 §5.1 replaced it
+        // with grant resolution, and a fixture that kept it would let the chain
+        // supply a denial production gets from grants — so every negative
+        // assertion in this suite would pass without testing the new path.
+        // `perms` is still what `fixture_grants` derives the hierarchy from.
+        rules: vec![Box::new(BlockListRule::new(repo))],
+    };
+    (policy, rbac_policy_anon_source_perms())
 }
 /// Like [`rbac_policy`] but grants anonymous **nothing**. Use this for tests
 /// that isolate the *rule chain* axis: the package stays at the default `Public`
 /// visibility, so `[registries.rbac]` is the only thing that can refuse.
-pub fn rbac_policy_deny_anonymous(repo: Arc<dyn PackageRepository>) -> RegistryPolicy {
-    let perms = HashMap::from([
-        (Role::Anonymous, vec![]),
-        (
-            Role::User,
-            vec!["releases:read".to_owned(), "source:read".to_owned()],
-        ),
-        (Role::Admin, vec!["*".to_owned()]),
-    ]);
-    RegistryPolicy {
+/// The permissions [`rbac_policy_deny_anonymous`] builds its rule from.
+pub fn rbac_policy_deny_anonymous_perms() -> RbacFixture {
+    let own = |v: &[&str]| -> Vec<String> { v.iter().map(|s| (*s).to_owned()).collect() };
+    RbacFixture {
+        roles: HashMap::from([
+            (Role::Anonymous, own(&[])),
+            (Role::User, own(&["releases:read", "source:read"])),
+            (Role::Admin, vec!["*".to_owned()]),
+        ]),
+        groups: HashMap::new(),
+    }
+}
+
+pub fn rbac_policy_deny_anonymous(
+    repo: Arc<dyn PackageRepository>,
+) -> (RegistryPolicy, RbacFixture) {
+    let policy = RegistryPolicy {
         metadata_ttl: Some(Duration::from_secs(300)),
         firewall_only: false,
         serve_stale_metadata: false,
         artifact_ttl: None,
-        rules: vec![
-            Box::new(RbacRule::new(perms)),
-            Box::new(BlockListRule::new(repo)),
-        ],
-    }
+        // No `RbacRule`, mirroring `build_policy`: RFC 0015 §5.1 replaced it
+        // with grant resolution, and a fixture that kept it would let the chain
+        // supply a denial production gets from grants — so every negative
+        // assertion in this suite would pass without testing the new path.
+        // `perms` is still what `fixture_grants` derives the hierarchy from.
+        rules: vec![Box::new(BlockListRule::new(repo))],
+    };
+    (policy, rbac_policy_deny_anonymous_perms())
 }
 pub struct ConfigureAppDefaults {
     pub upstream_map: batlehub_web::UpstreamMap,
@@ -970,6 +1104,13 @@ pub async fn finish_test_app(
         // which is the contract a registry with no checksum database wants
         // (RFC 0009 §7.4). A test that needs one passes it as `extra`.
         .app_data(actix_web::web::Data::new(batlehub_web::SumDbMap::default()))
+        // RFC 0015 §6.3's policy store. Present by default rather than
+        // opt-in: without it the policy routes answer `500` for a missing
+        // extractor, which a test asserting a `403` would read as a pass.
+        .app_data(actix_web::web::Data::new(
+            batlehub_adapters::in_memory::InMemoryPolicyRepository::new()
+                as Arc<dyn batlehub_core::ports::PolicyRepository>,
+        ))
         .app_data(actix_web::web::Data::new(
             InMemoryStatsHistory::new() as Arc<dyn StatsHistoryRepository>
         ));
@@ -1019,6 +1160,13 @@ pub async fn finish_test_app_with_extra<E: 'static>(
         // which is the contract a registry with no checksum database wants
         // (RFC 0009 §7.4). A test that needs one passes it as `extra`.
         .app_data(actix_web::web::Data::new(batlehub_web::SumDbMap::default()))
+        // RFC 0015 §6.3's policy store. Present by default rather than
+        // opt-in: without it the policy routes answer `500` for a missing
+        // extractor, which a test asserting a `403` would read as a pass.
+        .app_data(actix_web::web::Data::new(
+            batlehub_adapters::in_memory::InMemoryPolicyRepository::new()
+                as Arc<dyn batlehub_core::ports::PolicyRepository>,
+        ))
         .app_data(actix_web::web::Data::new(extra));
 
     init_service(app.wrap(AuthMiddlewareFactory::new(auth_providers))).await
@@ -1163,30 +1311,71 @@ pub async fn make_app_with_defaults_and_access(
     .into();
 
     let policies: HashMap<String, Arc<RegistryPolicy>> = [
-        ("github".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
-        ("npm".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
-        ("cargo".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
+        (
+            "github".to_owned(),
+            Arc::new(rbac_policy(repo_dyn.clone()).0),
+        ),
+        ("npm".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()).0)),
+        (
+            "cargo".to_owned(),
+            Arc::new(rbac_policy(repo_dyn.clone()).0),
+        ),
         (
             "openvsx".to_owned(),
-            Arc::new(rbac_policy(repo_dyn.clone())),
+            Arc::new(rbac_policy(repo_dyn.clone()).0),
         ),
-        ("go".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
-        ("vscode".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
-        ("fj".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
-        ("gl".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
-        ("jb".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
-        ("jbm".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
-        ("nuget".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
+        ("go".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()).0)),
+        (
+            "vscode".to_owned(),
+            Arc::new(rbac_policy(repo_dyn.clone()).0),
+        ),
+        ("fj".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()).0)),
+        ("gl".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()).0)),
+        ("jb".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()).0)),
+        ("jbm".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()).0)),
+        (
+            "nuget".to_owned(),
+            Arc::new(rbac_policy(repo_dyn.clone()).0),
+        ),
         (
             "composer".to_owned(),
-            Arc::new(rbac_policy(repo_dyn.clone())),
+            Arc::new(rbac_policy(repo_dyn.clone()).0),
         ),
     ]
     .into();
-
+    // Every fixture registry gets a hierarchy, derived from the same
+    // permissions `rbac_policy` was built from. Not `permissive_grants`: this
+    // app backs `admin_access_check.rs`, which asserts that the simulator
+    // *denies* — and a permissive hierarchy would make it answer "allow" for
+    // every caller, which is the defect RFC 0004-bis B4 records on this exact
+    // endpoint.
+    let grants = policies
+        .keys()
+        .map(|n| {
+            (
+                n.clone(),
+                Arc::new(fixture_grants(
+                    n,
+                    "generic",
+                    &RegistryMode::Hybrid,
+                    &rbac_policy_perms(),
+                )),
+            )
+        })
+        .collect();
     let hot = new_hot_lock(HotConfig {
+        // RFC 0015 §4.2's instance tier, wired exactly as production wires it:
+        // `instance_node` is §10 rule 5's own translation, so the fixture's admin
+        // holds the control verbs and nobody else does. Without it every
+        // `require_verb` on a control endpoint refuses, including the admin the
+        // suite is asserting about — a fixture that does not build the model
+        // tests a server nobody runs (§13.5).
+        instance: Some(std::sync::Arc::new(
+            batlehub_core::services::authz::translate::instance_node(None),
+        )),
         registries,
         policies,
+        grants,
         ..Default::default()
     });
     let local_svc = make_local_svc_with_repo(hot.clone(), storage.clone(), Some(repo_dyn.clone()));
@@ -1280,11 +1469,30 @@ pub fn local_registry_app_parts_with_readme(
     )]
     .into();
     let policies: HashMap<String, Arc<RegistryPolicy>> =
-        [(name.to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
-
+        [(name.to_owned(), Arc::new(rbac_policy(repo_dyn.clone()).0))].into();
+    let grants = [(
+        name.to_owned(),
+        Arc::new(fixture_grants(
+            name,
+            registry_type,
+            &mode,
+            &rbac_policy_perms(),
+        )),
+    )]
+    .into();
     let hot = new_hot_lock(HotConfig {
+        // RFC 0015 §4.2's instance tier, wired exactly as production wires it:
+        // `instance_node` is §10 rule 5's own translation, so the fixture's admin
+        // holds the control verbs and nobody else does. Without it every
+        // `require_verb` on a control endpoint refuses, including the admin the
+        // suite is asserting about — a fixture that does not build the model
+        // tests a server nobody runs (§13.5).
+        instance: Some(std::sync::Arc::new(
+            batlehub_core::services::authz::translate::instance_node(None),
+        )),
         registries,
         policies,
+        grants,
         ..Default::default()
     });
     let local_svc = make_local_svc_with_readme(
@@ -1349,11 +1557,25 @@ pub fn local_only_app_parts(
         );
     }
     let policies: HashMap<String, Arc<RegistryPolicy>> =
-        [(name.to_owned(), Arc::new(rbac_policy(repo.clone())))].into();
-
+        [(name.to_owned(), Arc::new(rbac_policy(repo.clone()).0))].into();
+    let grants = [(
+        name.to_owned(),
+        Arc::new(fixture_grants(name, kind, &mode, &rbac_policy_perms())),
+    )]
+    .into();
     let hot = new_hot_lock(HotConfig {
+        // RFC 0015 §4.2's instance tier, wired exactly as production wires it:
+        // `instance_node` is §10 rule 5's own translation, so the fixture's admin
+        // holds the control verbs and nobody else does. Without it every
+        // `require_verb` on a control endpoint refuses, including the admin the
+        // suite is asserting about — a fixture that does not build the model
+        // tests a server nobody runs (§13.5).
+        instance: Some(std::sync::Arc::new(
+            batlehub_core::services::authz::translate::instance_node(None),
+        )),
         registries,
         policies,
+        grants,
         ..Default::default()
     });
     let local_svc = make_local_svc(hot.clone(), storage.clone());
@@ -1398,15 +1620,71 @@ pub async fn local_only_app_parts_with_policy(
     kind: &str,
     mode: RegistryMode,
     upstream: bool,
-    policy: fn(Arc<dyn PackageRepository>) -> RegistryPolicy,
+    policy: fn(Arc<dyn PackageRepository>) -> (RegistryPolicy, RbacFixture),
 ) -> LocalRegistryAppParts {
-    let mut parts = local_only_app_parts(name, kind, mode, upstream);
+    let mut parts = local_only_app_parts(name, kind, mode.clone(), upstream);
     let repo: Arc<dyn PackageRepository> = InMemoryRepo::new();
+    // One call, both halves: the rule chain and the permissions its grant
+    // hierarchy is derived from. Deriving them separately is how the two drift.
+    let (policy, perms) = policy(repo);
     let policies: HashMap<String, Arc<RegistryPolicy>> =
-        [(name.to_owned(), Arc::new(policy(repo)))].into();
-    parts.proxy_svc.hot.write().await.policies = policies;
+        [(name.to_owned(), Arc::new(policy))].into();
+    {
+        let mut hot = parts.proxy_svc.hot.write().await;
+        hot.policies = policies;
+        hot.grants = [(
+            name.to_owned(),
+            Arc::new(fixture_grants(name, kind, &mode, &perms)),
+        )]
+        .into();
+    }
     parts.access_config = access_config_for(&[name]);
     parts
+}
+
+/// Install RFC 0015 §4.1 policy tiers on an app's shared `HotConfig`.
+///
+/// The config-declared half — registry and namespace nodes — which is what
+/// `server/src/grants.rs::build_policy_tiers` produces from TOML. A test that
+/// needs the *stored* half (package and version) calls
+/// [`with_policy_repo`] as well and writes through the port.
+///
+/// Goes into the one `HotConfig` both services share, exactly as
+/// `local_only_app_parts_with_policy` does for grants, so the policy governs the
+/// local publish path and the proxy fall-through alike.
+pub async fn with_policy_tiers(
+    parts: &LocalRegistryAppParts,
+    registry: &str,
+    tiers: batlehub_core::entities::RegistryPolicyTiers,
+) {
+    let mut hot = parts.proxy_svc.hot.write().await;
+    hot.policy_tiers = [(registry.to_owned(), Arc::new(tiers))].into();
+}
+
+/// Give an app the package/version policy store, and hand it back so the test
+/// can write rows.
+///
+/// Separate from [`with_policy_tiers`] because the two halves come from
+/// different places by design: the config file cannot enumerate packages (§4.1),
+/// so those tiers are a repository rather than a block.
+pub async fn with_policy_repo(
+    parts: &LocalRegistryAppParts,
+) -> Arc<batlehub_adapters::in_memory::InMemoryPolicyRepository> {
+    let repo = batlehub_adapters::in_memory::InMemoryPolicyRepository::new();
+    let mut hot = parts.proxy_svc.hot.write().await;
+    hot.policy_repo = Some(Arc::clone(&repo) as Arc<dyn batlehub_core::ports::PolicyRepository>);
+    repo
+}
+
+/// A registry-tier policy node with `versioning` set, for the enforcement tests.
+pub fn versioning_tiers(
+    registry: &str,
+    kind: batlehub_core::entities::RegistryKind,
+    versioning: batlehub_core::entities::VersioningRules,
+) -> batlehub_core::entities::RegistryPolicyTiers {
+    let mut tiers = batlehub_core::entities::RegistryPolicyTiers::open(kind, registry);
+    tiers.registry.versioning = Some(versioning);
+    tiers
 }
 
 /// Finish wiring a `make_local_<type>_app` factory: configure the routes from `parts`
@@ -1524,7 +1802,17 @@ pub fn empty_app_parts() -> EmptyAppParts {
     let repo_dyn: Arc<dyn PackageRepository> = repo.clone();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let hot = new_hot_lock(HotConfig::default());
+    // RFC 0015 §4.2's instance tier, as production wires it. `HotConfig::default()`
+    // leaves it `None`, which is the right default for the type — a deployment
+    // that has written no instance grant grants none — and the wrong fixture for
+    // any suite that calls a control endpoint, because every one of them would
+    // refuse the admin it is asserting about.
+    let hot = new_hot_lock(HotConfig {
+        instance: Some(std::sync::Arc::new(
+            batlehub_core::services::authz::translate::instance_node(None),
+        )),
+        ..Default::default()
+    });
     let local_svc = make_local_svc_with_repo(hot.clone(), storage.clone(), Some(repo_dyn.clone()));
     let proxy_svc = Arc::new(ProxyService {
         hot: hot.clone(),
@@ -1569,6 +1857,30 @@ pub async fn make_app_with_stats_history(
         cargo_indexes,
         local_svc,
     } = empty_app_parts();
+
+    // RFC 0015 §4.2 — `/admin/stats/history` is gated on `stats:read` now, and a
+    // gate is only assertable against a hierarchy that grants it to somebody. The
+    // rollup rows this fixture's callers seed name `npm` and `cargo`, so those are
+    // the registries whose grants have to exist; `fixture_grants` derives them
+    // from the same permissions production derives them from, which is what stops
+    // this from becoming a fixture that tests a path nobody runs (§13.5).
+    {
+        let mut hot = proxy_svc.hot.write().await;
+        hot.grants = ["npm", "cargo"]
+            .into_iter()
+            .map(|name| {
+                (
+                    name.to_owned(),
+                    Arc::new(fixture_grants(
+                        name,
+                        name,
+                        &RegistryMode::Proxy,
+                        &rbac_policy_perms(),
+                    )),
+                )
+            })
+            .collect();
+    }
 
     finish_test_app_with_extra(
         proxy_svc,
@@ -1635,7 +1947,13 @@ pub async fn make_app_with_eviction(
     let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let hot = new_hot_lock(HotConfig::default());
+    let hot = new_hot_lock(HotConfig {
+        // §4.2's instance tier, as production wires it — see `empty_app_parts`.
+        instance: Some(std::sync::Arc::new(
+            batlehub_core::services::authz::translate::instance_node(None),
+        )),
+        ..Default::default()
+    });
     let local_svc = make_local_svc_with_repo(hot.clone(), storage.clone(), Some(repo_dyn.clone()));
     let proxy_svc = Arc::new(ProxyService {
         hot: hot.clone(),
@@ -1690,7 +2008,13 @@ pub async fn make_app_with_warming(
     let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
-    let hot = new_hot_lock(HotConfig::default());
+    let hot = new_hot_lock(HotConfig {
+        // §4.2's instance tier, as production wires it — see `empty_app_parts`.
+        instance: Some(std::sync::Arc::new(
+            batlehub_core::services::authz::translate::instance_node(None),
+        )),
+        ..Default::default()
+    });
     let local_svc = make_local_svc_with_repo(hot.clone(), storage.clone(), Some(repo_dyn.clone()));
     let proxy_svc = Arc::new(ProxyService {
         hot: hot.clone(),
@@ -1875,9 +2199,20 @@ pub async fn make_local_cargo_ownership_app(
         Error = actix_web::Error,
     >,
     Arc<batlehub_adapters::in_memory::InMemoryOwnershipStore>,
+    Arc<batlehub_adapters::in_memory::InMemoryGrantRepository>,
 ) {
     let mut parts = local_registry_app_parts("local-cargo", "cargo", mode, None);
     let ownership = batlehub_adapters::in_memory::InMemoryOwnershipStore::new();
+    // RFC 0015 §10 rule 9 — the same wrapper production wires, for the same
+    // reason `fixture_grants` calls the same `build_grants`: a fixture that
+    // talked to the bare port would test a path nobody runs, and the projection
+    // this covers is one that already went four call sites without being
+    // noticed.
+    let grant_repo = batlehub_adapters::in_memory::InMemoryGrantRepository::new();
+    let owner_port = batlehub_core::services::ownership_grants::OwnershipGrants::wrap(
+        ownership.clone() as Arc<dyn batlehub_core::ports::OwnershipPort>,
+        grant_repo.clone() as Arc<dyn batlehub_core::ports::GrantRepository>,
+    );
 
     let cur = parts.local_svc.clone();
     parts.local_svc = Arc::new(LocalRegistryService {
@@ -1885,7 +2220,7 @@ pub async fn make_local_cargo_ownership_app(
         storage: cur.storage.clone(),
         hot: cur.hot.clone(),
         quota: cur.quota.clone(),
-        ownership: Some(ownership.clone() as Arc<dyn batlehub_core::ports::OwnershipPort>),
+        ownership: Some(owner_port),
         team_namespace: cur.team_namespace.clone(),
         sbom: cur.sbom.clone(),
         explore_cache: cur.explore_cache.clone(),
@@ -1894,7 +2229,7 @@ pub async fn make_local_cargo_ownership_app(
     });
 
     let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
-    (app, ownership)
+    (app, ownership, grant_repo)
 }
 
 pub async fn make_local_composer_app(
@@ -1960,13 +2295,42 @@ pub async fn make_local_nuget_app(
     }
     let policies: HashMap<String, Arc<RegistryPolicy>> = [(
         "local-nuget".to_owned(),
-        Arc::new(rbac_policy(repo_dyn.clone())),
+        Arc::new(rbac_policy(repo_dyn.clone()).0),
     )]
     .into();
-
+    // Every fixture registry gets a hierarchy, derived from the same
+    // permissions `rbac_policy` was built from. Not `permissive_grants`: this
+    // app backs `admin_access_check.rs`, which asserts that the simulator
+    // *denies* — and a permissive hierarchy would make it answer "allow" for
+    // every caller, which is the defect RFC 0004-bis B4 records on this exact
+    // endpoint.
+    let grants = policies
+        .keys()
+        .map(|n| {
+            (
+                n.clone(),
+                Arc::new(fixture_grants(
+                    n,
+                    "generic",
+                    &RegistryMode::Hybrid,
+                    &rbac_policy_perms(),
+                )),
+            )
+        })
+        .collect();
     let hot = new_hot_lock(HotConfig {
+        // RFC 0015 §4.2's instance tier, wired exactly as production wires it:
+        // `instance_node` is §10 rule 5's own translation, so the fixture's admin
+        // holds the control verbs and nobody else does. Without it every
+        // `require_verb` on a control endpoint refuses, including the admin the
+        // suite is asserting about — a fixture that does not build the model
+        // tests a server nobody runs (§13.5).
+        instance: Some(std::sync::Arc::new(
+            batlehub_core::services::authz::translate::instance_node(None),
+        )),
         registries,
         policies,
+        grants,
         ..Default::default()
     });
     let local_svc = make_local_svc_with_repo(hot.clone(), storage.clone(), Some(repo_dyn.clone()));

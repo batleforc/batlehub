@@ -10,7 +10,6 @@ use batlehub_core::{
     services::LocalRegistryService,
 };
 
-use super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity, handlers::schemas::OkResponse};
 
 /// Flatten a `BulkPackageRequest` into the `(name, version)` pairs expected by
@@ -102,7 +101,7 @@ pub struct BulkPackageResponse {
     request_body = BulkPackageRequest,
     responses(
         (status = 200, description = "Bulk yank result", body = BulkPackageResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`releases:yank` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -112,9 +111,25 @@ pub async fn bulk_yank(
     body: web::Json<BulkPackageRequest>,
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let registry = path.into_inner();
+    // **Instance tier, not the registry.** §10 rule 5 grants `releases:yank`
+    // and `releases:delete` to `role:user` on every local and hybrid registry,
+    // because that is what `has_role_at_least(&Role::User)` meant on the
+    // per-package lifecycle path. This is not that path: it is the
+    // administrative bulk surface, which mutates many packages at once and
+    // bypasses the ownership check the per-package route applies. Resolving it
+    // against the registry tier would hand every `role:user` an endpoint
+    // `require_admin` reserved — which a pre-existing test caught, and which is
+    // exactly the widening §7 calls the migration's central risk.
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::ReleasesYank,
+        None,
+        &hot,
+    )
+    .await?;
     let items = bulk_items(body);
     let result = local_svc
         .backend
@@ -142,7 +157,7 @@ pub async fn bulk_yank(
     request_body = BulkPackageRequest,
     responses(
         (status = 200, description = "Bulk unyank result", body = BulkPackageResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`releases:yank` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -152,9 +167,25 @@ pub async fn bulk_unyank(
     body: web::Json<BulkPackageRequest>,
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let registry = path.into_inner();
+    // **Instance tier, not the registry.** §10 rule 5 grants `releases:yank`
+    // and `releases:delete` to `role:user` on every local and hybrid registry,
+    // because that is what `has_role_at_least(&Role::User)` meant on the
+    // per-package lifecycle path. This is not that path: it is the
+    // administrative bulk surface, which mutates many packages at once and
+    // bypasses the ownership check the per-package route applies. Resolving it
+    // against the registry tier would hand every `role:user` an endpoint
+    // `require_admin` reserved — which a pre-existing test caught, and which is
+    // exactly the widening §7 calls the migration's central risk.
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::ReleasesYank,
+        None,
+        &hot,
+    )
+    .await?;
     let items = bulk_items(body);
     let result = local_svc
         .backend
@@ -194,7 +225,7 @@ pub async fn bulk_unyank(
         (status = 200, description = "Bulk delete result; deleted coordinates are \
                                       permanently spent and cannot be republished",
             body = BulkPackageResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`releases:delete` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -204,9 +235,25 @@ pub async fn bulk_delete(
     body: web::Json<BulkPackageRequest>,
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let registry = path.into_inner();
+    // **Instance tier, not the registry.** §10 rule 5 grants `releases:yank`
+    // and `releases:delete` to `role:user` on every local and hybrid registry,
+    // because that is what `has_role_at_least(&Role::User)` meant on the
+    // per-package lifecycle path. This is not that path: it is the
+    // administrative bulk surface, which mutates many packages at once and
+    // bypasses the ownership check the per-package route applies. Resolving it
+    // against the registry tier would hand every `role:user` an endpoint
+    // `require_admin` reserved — which a pre-existing test caught, and which is
+    // exactly the widening §7 calls the migration's central risk.
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::ReleasesDelete,
+        None,
+        &hot,
+    )
+    .await?;
     let items = bulk_items(body);
 
     let mut result = BulkResult {
@@ -266,7 +313,7 @@ pub struct DeprecateRequest {
     request_body = DeprecateRequest,
     responses(
         (status = 200, description = "Version deprecated", body = OkResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`releases:yank` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -276,9 +323,25 @@ pub async fn deprecate(
     body: web::Json<DeprecateRequest>,
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let registry = path.into_inner();
+    // **Instance tier, not the registry.** §10 rule 5 grants `releases:yank`
+    // and `releases:delete` to `role:user` on every local and hybrid registry,
+    // because that is what `has_role_at_least(&Role::User)` meant on the
+    // per-package lifecycle path. This is not that path: it is the
+    // administrative bulk surface, which mutates many packages at once and
+    // bypasses the ownership check the per-package route applies. Resolving it
+    // against the registry tier would hand every `role:user` an endpoint
+    // `require_admin` reserved — which a pre-existing test caught, and which is
+    // exactly the widening §7 calls the migration's central risk.
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::ReleasesYank,
+        None,
+        &hot,
+    )
+    .await?;
     let body = body.into_inner();
     local_svc
         .deprecate(
@@ -302,7 +365,7 @@ pub async fn deprecate(
     request_body = PackageVersionRequest,
     responses(
         (status = 200, description = "Version undeprecated", body = OkResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`releases:yank` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -312,9 +375,25 @@ pub async fn undeprecate(
     body: web::Json<PackageVersionRequest>,
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let registry = path.into_inner();
+    // **Instance tier, not the registry.** §10 rule 5 grants `releases:yank`
+    // and `releases:delete` to `role:user` on every local and hybrid registry,
+    // because that is what `has_role_at_least(&Role::User)` meant on the
+    // per-package lifecycle path. This is not that path: it is the
+    // administrative bulk surface, which mutates many packages at once and
+    // bypasses the ownership check the per-package route applies. Resolving it
+    // against the registry tier would hand every `role:user` an endpoint
+    // `require_admin` reserved — which a pre-existing test caught, and which is
+    // exactly the widening §7 calls the migration's central risk.
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::ReleasesYank,
+        None,
+        &hot,
+    )
+    .await?;
     let body = body.into_inner();
     local_svc
         .undeprecate(&registry, &body.name, &body.version, &identity.0)
@@ -333,7 +412,7 @@ pub async fn undeprecate(
     request_body = PackageVersionRequest,
     responses(
         (status = 200, description = "Version unlisted", body = OkResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`releases:yank` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -343,9 +422,25 @@ pub async fn unlist(
     body: web::Json<PackageVersionRequest>,
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let registry = path.into_inner();
+    // **Instance tier, not the registry.** §10 rule 5 grants `releases:yank`
+    // and `releases:delete` to `role:user` on every local and hybrid registry,
+    // because that is what `has_role_at_least(&Role::User)` meant on the
+    // per-package lifecycle path. This is not that path: it is the
+    // administrative bulk surface, which mutates many packages at once and
+    // bypasses the ownership check the per-package route applies. Resolving it
+    // against the registry tier would hand every `role:user` an endpoint
+    // `require_admin` reserved — which a pre-existing test caught, and which is
+    // exactly the widening §7 calls the migration's central risk.
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::ReleasesYank,
+        None,
+        &hot,
+    )
+    .await?;
     let body = body.into_inner();
     local_svc
         .unlist(&registry, &body.name, &body.version, &identity.0)
@@ -363,7 +458,7 @@ pub async fn unlist(
     request_body = PackageVersionRequest,
     responses(
         (status = 200, description = "Version relisted", body = OkResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`releases:yank` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -373,44 +468,29 @@ pub async fn relist(
     body: web::Json<PackageVersionRequest>,
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let registry = path.into_inner();
+    // **Instance tier, not the registry.** §10 rule 5 grants `releases:yank`
+    // and `releases:delete` to `role:user` on every local and hybrid registry,
+    // because that is what `has_role_at_least(&Role::User)` meant on the
+    // per-package lifecycle path. This is not that path: it is the
+    // administrative bulk surface, which mutates many packages at once and
+    // bypasses the ownership check the per-package route applies. Resolving it
+    // against the registry tier would hand every `role:user` an endpoint
+    // `require_admin` reserved — which a pre-existing test caught, and which is
+    // exactly the widening §7 calls the migration's central risk.
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::ReleasesYank,
+        None,
+        &hot,
+    )
+    .await?;
     let body = body.into_inner();
     local_svc
         .relist(&registry, &body.name, &body.version, &identity.0)
         .await
         .map_err(AppError::from)?;
     Ok(HttpResponse::Ok().json(OkResponse::new()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::require_admin;
-    use crate::extractors::AuthIdentity;
-    use batlehub_core::entities::{Identity, Role};
-
-    fn id(role: Role) -> AuthIdentity {
-        AuthIdentity(Identity {
-            user_id: Some("u".into()),
-            role,
-            auth_provider: None,
-            groups: vec![],
-        })
-    }
-
-    #[test]
-    fn require_admin_passes_for_admin() {
-        assert!(require_admin(&id(Role::Admin)).is_ok());
-    }
-
-    #[test]
-    fn require_admin_fails_for_user() {
-        assert!(require_admin(&id(Role::User)).is_err());
-    }
-
-    #[test]
-    fn require_admin_fails_for_anonymous() {
-        assert!(require_admin(&id(Role::Anonymous)).is_err());
-    }
 }

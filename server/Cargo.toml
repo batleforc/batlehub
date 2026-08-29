@@ -51,6 +51,14 @@ notify.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 regex.workspace = true
+# §4.9 rejects an `enforce_semver` + `version_pattern` pair no semver string can
+# satisfy, which needs to know which of the probe versions are semver.
+semver.workspace = true
+# §4.7 rejects a `grants_shadow.until` already past, which needs today's date.
+chrono.workspace = true
+# RFC 0015 §4.1 carries a composed gate override as its own serialised form, so
+# the rule that consumes one reads the shape it already knows.
+serde_json.workspace = true
 
 [dev-dependencies]
 toml.workspace = true

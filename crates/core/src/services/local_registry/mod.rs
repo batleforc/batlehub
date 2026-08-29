@@ -24,7 +24,7 @@ use futures::StreamExt;
 
 use crate::{
     entities::{
-        AccessAction, AccessEvent, AccessResult, Identity, PackageId, PublishedPackage,
+        AccessAction, AccessEvent, AccessResult, Action, Identity, PackageId, PublishedPackage,
         ReadmeFormat, Role, SbomFormat, Visibility,
     },
     error::CoreError,
@@ -144,7 +144,7 @@ pub fn validate_coordinate(
     Ok(())
 }
 
-pub(super) async fn check_team_visibility(
+pub async fn check_team_visibility(
     ns_port: &dyn TeamNamespacePort,
     registry: &str,
     package: &str,
@@ -277,3 +277,16 @@ pub fn terraform_provider_binary_storage_key(
 
 #[cfg(test)]
 mod tests;
+
+/// Returns `true` when `version` is a pre-release.
+///
+/// Re-exported from [`version_order::is_prerelease`](crate::services::version_order::is_prerelease),
+/// which is where the definition lives as of RFC 0015 phase 4. It used to be
+/// implemented here, on a strict semver parse whose `unwrap_or(false)` called
+/// `1.0-SNAPSHOT` a release — see §4.5, and the doc comment on the function this
+/// now points at.
+///
+/// Kept as a re-export rather than deleted because this module and its callers
+/// name it in a dozen places, and the point of the convergence is that there is
+/// one implementation, not that there is one path to it.
+pub use crate::services::version_order::is_prerelease;

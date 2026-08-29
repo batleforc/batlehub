@@ -176,7 +176,7 @@ pub fn packages_cache_key(filter: &ExploreFilter) -> String {
         filter.limit,
         filter.offset,
         regs.join(","),
-        viewer_key_part(filter),
+        viewer_key_part(&filter.viewer),
         names.join(","),
     )
 }
@@ -192,16 +192,16 @@ pub fn packages_cache_key(filter: &ExploreFilter) -> String {
 ///
 /// Groups are sorted so membership order (which varies between tokens from the
 /// same provider) does not fragment the cache.
-fn viewer_key_part(filter: &ExploreFilter) -> String {
-    if filter.viewer.is_admin {
+fn viewer_key_part(viewer: &crate::entities::ExploreViewer) -> String {
+    if viewer.is_admin {
         // Admins bypass visibility entirely, so every admin shares one entry
         // regardless of group membership.
         return "admin".to_owned();
     }
-    if !filter.viewer.is_authenticated && filter.viewer.groups.is_empty() {
+    if !viewer.is_authenticated && viewer.groups.is_empty() {
         return "anon".to_owned();
     }
-    let mut groups = filter.viewer.normalised_groups();
+    let mut groups = viewer.normalised_groups();
     groups.sort();
     groups.dedup();
     format!("u:{}", groups.join(","))
@@ -218,10 +218,21 @@ pub fn packages_entry_registries(filter: &ExploreFilter) -> Vec<String> {
     regs
 }
 
-pub fn stats_cache_key(accessible_registries: &[String]) -> String {
+/// The key a per-registry stats entry is cached under.
+///
+/// **The viewer is part of it**, exactly as it is for `packages_cache_key`, and
+/// for the reason RFC 0015 §4.4 rule 3 gives: these numbers are computed over the
+/// packages this caller may see, so an identity-blind key replays one caller's
+/// view to the next. That is survey finding 11 — *"the search cache held merged
+/// local hits under a key that named no identity"* — arriving on the surface
+/// §4.4 warns is easiest to forget, because a tile reads as presentation.
+pub fn stats_cache_key(
+    accessible_registries: &[String],
+    viewer: &crate::entities::ExploreViewer,
+) -> String {
     let mut regs = accessible_registries.to_vec();
     regs.sort();
-    format!("exp:stats:{}", regs.join(","))
+    format!("exp:stats:{}:{}", regs.join(","), viewer_key_part(viewer))
 }
 
 #[cfg(test)]
@@ -480,8 +491,8 @@ mod tests {
 
     #[test]
     fn stats_cache_key_sorts_registries() {
-        let k1 = stats_cache_key(&["npm".into(), "cargo".into()]);
-        let k2 = stats_cache_key(&["cargo".into(), "npm".into()]);
+        let k1 = stats_cache_key(&["npm".into(), "cargo".into()], &Default::default());
+        let k2 = stats_cache_key(&["cargo".into(), "npm".into()], &Default::default());
         assert_eq!(k1, k2);
     }
 

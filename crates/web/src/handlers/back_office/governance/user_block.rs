@@ -11,7 +11,6 @@ use batlehub_core::{
     services::AdminService,
 };
 
-use super::super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity};
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -46,7 +45,7 @@ pub struct BlockUserRequest {
     tag = "back-office",
     responses(
         (status = 200, description = "List of blocked users", body = Vec<UserBlockDto>),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`blocks:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -54,8 +53,15 @@ pub struct BlockUserRequest {
 pub async fn list_blocked_users(
     identity: AuthIdentity,
     repo: web::Data<Arc<dyn UserBlockRepository>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::BlocksRead,
+        None,
+        &hot,
+    )
+    .await?;
     let blocked: Vec<UserBlockDto> = repo
         .list()
         .await
@@ -75,7 +81,7 @@ pub async fn list_blocked_users(
     request_body = BlockUserRequest,
     responses(
         (status = 204, description = "User blocked"),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`blocks:write` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -86,8 +92,15 @@ pub async fn block_user(
     identity: AuthIdentity,
     repo: web::Data<Arc<dyn UserBlockRepository>>,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::BlocksWrite,
+        None,
+        &hot,
+    )
+    .await?;
     let (raw_id,) = path.into_inner();
     let user_id = raw_id.trim().to_owned();
     if user_id.is_empty() {
@@ -113,7 +126,7 @@ pub async fn block_user(
     params(("user_id" = String, Path, description = "User ID to unblock")),
     responses(
         (status = 204, description = "User unblocked"),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`blocks:write` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -123,8 +136,15 @@ pub async fn unblock_user(
     identity: AuthIdentity,
     repo: web::Data<Arc<dyn UserBlockRepository>>,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::BlocksWrite,
+        None,
+        &hot,
+    )
+    .await?;
     let (raw_id,) = path.into_inner();
     let user_id = raw_id.trim().to_owned();
     if user_id.is_empty() {
@@ -142,31 +162,6 @@ pub async fn unblock_user(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use batlehub_core::entities::{Identity, Role};
-
-    fn admin_id() -> AuthIdentity {
-        AuthIdentity(Identity {
-            user_id: Some("admin".into()),
-            role: Role::Admin,
-            auth_provider: None,
-            groups: vec![],
-        })
-    }
-
-    fn user_id_identity() -> AuthIdentity {
-        AuthIdentity(Identity {
-            user_id: Some("user".into()),
-            role: Role::User,
-            auth_provider: None,
-            groups: vec![],
-        })
-    }
-
-    #[test]
-    fn non_admin_is_rejected() {
-        assert!(require_admin(&user_id_identity()).is_err());
-        assert!(require_admin(&admin_id()).is_ok());
-    }
 
     #[test]
     fn block_request_reason_is_optional() {

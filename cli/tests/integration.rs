@@ -130,7 +130,10 @@ impl TestServer {
                         serve_stale_metadata: false,
                         artifact_ttl: None,
                         rules: vec![
-                            Box::new(RbacRule::new(perms)),
+                            Box::new(
+                                RbacRule::from_patterns(perms)
+                                    .expect("fixture rbac patterns are valid"),
+                            ),
                             Box::new(BlockListRule::new(repo.clone())),
                         ],
                     }),
@@ -162,10 +165,55 @@ impl TestServer {
         });
 
         let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
+        // RFC 0015 §4.1's grant hierarchy, granting everything to everyone.
+        //
+        // Present rather than absent because `authz explain` answers `404
+        // registry not configured` for a registry with no entry, which a test
+        // asserting a verdict would read as a broken command rather than a
+        // missing fixture.
+        //
+        // **Permissive rather than `RegistryGrants::empty()`**, and the
+        // difference is the whole of §4.3: an *empty* hierarchy grants nobody
+        // anything, because grants only widen and a union of nothing is nothing.
+        // Wiring one closed this server to its own tests — publish, version and
+        // access-check all started refusing. This suite exercises CLI plumbing
+        // rather than authorization (`crates/web/tests/authz_matrix.rs` is where
+        // that is measured), so what it needs from the model is that it never
+        // gets in the way.
+        let grants: HashMap<String, Arc<batlehub_core::entities::RegistryGrants>> = {
+            use batlehub_core::entities::{
+                Action, GrantMap, Node, RegistryGrants, RegistryKind, SubjectMatcher, Tier,
+            };
+            [(
+                REGISTRY.to_owned(),
+                Arc::new(RegistryGrants {
+                    kind: RegistryKind::Nuget,
+                    registry: Node::new(
+                        Tier::Registry,
+                        format!("registry:{REGISTRY}"),
+                        Some(GrantMap::new().grant(SubjectMatcher::Anyone, Action::ALL.to_vec())),
+                    ),
+                    namespaces: Vec::new(),
+                }),
+            )]
+            .into()
+        };
         let proxy_svc = Arc::new(ProxyService {
             hot: new_hot_lock(HotConfig {
                 registries,
                 policies,
+                grants,
+                // RFC 0015 §4.2's instance tier. Wired for the same reason the
+                // registry hierarchy above is permissive rather than empty: the
+                // control-surface verbs live here now, and a fixture with no
+                // instance node grants nobody `config:read` — so every admin
+                // command in this suite would `403` on a server that is not the
+                // one production runs. `instance_node` is rule 5's own
+                // translation, so what the fixture grants is what a real
+                // deployment grants.
+                instance: Some(Arc::new(
+                    batlehub_core::services::authz::translate::instance_node(None),
+                )),
                 ..Default::default()
             }),
             storage,
@@ -2819,4 +2867,116 @@ fn package_readme_no_upstream_still_answers_from_what_is_held() {
     );
     assert!(ok, "package readme --no-upstream should succeed");
     assert!(stdout.contains("# held here"), "{stdout}");
+}
+
+// ── Tests: authz (RFC 0015 §4.8) ─────────────────────────────────────────────
+
+/// `authz explain` answers, and the answer carries provenance.
+///
+/// §4.8: *"`granted_by` is the point. A resolved set without provenance tells an
+/// operator what they have; naming the tier and the subject form that produced
+/// each verb tells them which line to edit."* A `--json` shape without it would
+/// be a permission dump rather than a diagnostic.
+#[test]
+fn authz_explain_json_carries_provenance() {
+    let srv = TestServer::start();
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "authz",
+            "explain",
+            REGISTRY,
+            "--subject",
+            "role:user",
+            "--action",
+            "releases:read",
+        ],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "authz explain should succeed: {stderr}");
+    assert!(
+        stdout.contains("ALLOW") || stdout.contains("DENY"),
+        "the verdict must lead: {stdout}"
+    );
+    assert!(
+        stdout.contains("Not covered by this answer"),
+        "a bare verdict is ambiguous between 'nothing denies this' and 'nothing I looked at \
+         denies this': {stdout}"
+    );
+    assert!(
+        stdout.contains("Tiers walked"),
+        "a tier missing from the list reads as 'not considered': {stdout}"
+    );
+}
+
+/// The `--json` form is the same data, for scripting.
+#[test]
+fn authz_explain_json() {
+    let srv = TestServer::start();
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "authz",
+            "explain",
+            REGISTRY,
+            "--subject",
+            "role:user",
+            "--action",
+            "releases:read",
+            "--json",
+        ],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "authz explain --json should succeed: {stderr}");
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert!(v["decision"].is_string());
+    assert!(v["tiers_walked"].is_array());
+    assert!(
+        v["attributes"]["visibility"].is_string(),
+        "§4.8 puts the attributes beside the verbs: {v}"
+    );
+}
+
+/// A subject the resolver cannot answer about is an error, not a confident
+/// verdict.
+///
+/// `token:` is the case §4.3 names: no principal is a machine token yet, so
+/// answering would mean inventing a caller. A `deny` here would be a diagnostic
+/// stating something false about a subject that matches nobody.
+#[test]
+fn authz_explain_refuses_a_subject_it_cannot_answer_about() {
+    let srv = TestServer::start();
+    let (ok, _stdout, stderr) = cli_cmd(
+        &[
+            "authz",
+            "explain",
+            REGISTRY,
+            "--subject",
+            "token:release-bot",
+            "--action",
+            "releases:read",
+        ],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(!ok, "a token subject must not produce a confident verdict");
+    assert!(
+        stderr.contains("token") || stderr.contains("400"),
+        "{stderr}"
+    );
+}
+
+/// `authz shadow` distinguishes "no shadow" from "a quiet shadow".
+///
+/// The two look identical in an empty list and mean opposite things: the first
+/// says enforcing is safe, the second says nothing was measured.
+#[test]
+fn authz_shadow_says_when_nothing_is_shadowed() {
+    let srv = TestServer::start();
+    let (ok, stdout, stderr) = cli_cmd(&["authz", "shadow"], &srv.base_url(), AUTH_TOKEN);
+    assert!(ok, "authz shadow should succeed: {stderr}");
+    assert!(
+        stdout.contains("No node is in shadow"),
+        "an empty list must not read as 'the shadow found nothing': {stdout}"
+    );
 }

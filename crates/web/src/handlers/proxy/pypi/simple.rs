@@ -17,6 +17,7 @@ use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryMode
 
 use super::parse_pypi_filename;
 use crate::handlers::schemas::{ArtifactBytes, ProtocolDocument, UpstreamDocument};
+use batlehub_core::entities::Action;
 
 // ── Proxy routes ──────────────────────────────────────────────────────────────
 
@@ -44,14 +45,7 @@ pub async fn pypi_simple_root(
 
     // Represent the root index as a special sentinel PackageId.
     let pkg = PackageId::new(&registry, "__simple__", "__root__");
-    proxy_stream(
-        svc,
-        pkg,
-        identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
-        Some("text/html"),
-    )
-    .await
+    proxy_stream(svc, pkg, identity, Action::ReleasesRead, Some("text/html")).await
 }
 
 /// Proxy the PyPI Simple Repository API for a specific package, rewriting file
@@ -141,7 +135,7 @@ pub async fn pypi_simple_package(
         svc,
         PackageId::new(&registry, &normalized, "__simple__"),
         identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         doc_kind,
         proxy_base.clone(),
     )
@@ -213,7 +207,7 @@ pub async fn pypi_json(
     let proxy_req = batlehub_core::services::ProxyRequest {
         package_id: pkg,
         identity: identity.0,
-        resource_type: batlehub_core::rules::resource_type::RELEASES_READ.to_owned(),
+        action: Action::ReleasesRead.to_owned(),
         ip_address: None,
         user_agent: None,
     };
@@ -311,7 +305,7 @@ pub async fn pypi_file_download(
             artifact_suffix: &filename,
             local_content_type: "application/octet-stream",
             proxy_content_type: Some("application/octet-stream"),
-            resource_type: batlehub_core::rules::resource_type::RELEASES_READ,
+            action: Action::ReleasesRead,
             check_prerelease: false,
             append_signature: false,
         },

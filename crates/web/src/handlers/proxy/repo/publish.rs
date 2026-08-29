@@ -174,6 +174,7 @@ pub async fn deb_publish(
                 artifact_len,
                 signature_bytes: None,
                 signature_type: None,
+                artifact_key: None,
             },
             &identity.0,
         )
@@ -391,6 +392,7 @@ pub async fn rpm_publish(
                 artifact_len,
                 signature_bytes: None,
                 signature_type: None,
+                artifact_key: None,
             },
             &identity.0,
         )
@@ -564,6 +566,7 @@ pub async fn pacman_publish(
                 artifact_len,
                 signature_bytes: None,
                 signature_type: None,
+                artifact_key: None,
             },
             &identity.0,
         )

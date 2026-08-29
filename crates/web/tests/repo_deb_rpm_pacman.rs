@@ -776,7 +776,9 @@ async fn deb_local_read_enforces_registry_rbac() {
                 firewall_only: false,
                 serve_stale_metadata: false,
                 artifact_ttl: None,
-                rules: vec![Box::new(RbacRule::new(perms))],
+                rules: vec![Box::new(
+                    RbacRule::from_patterns(perms).expect("fixture rbac patterns are valid"),
+                )],
             }),
         );
     }

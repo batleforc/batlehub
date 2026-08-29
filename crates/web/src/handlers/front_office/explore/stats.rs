@@ -45,8 +45,24 @@ pub async fn explore_registry_stats(
         .into_iter()
         .collect();
 
+    // An empty accessible set is **nothing**, not "no restriction" — the same
+    // rule `explore_packages` states at length beside its own scope. The
+    // repository closes this too, so neither layer is the only thing standing
+    // between a caller with no browsable registry and the whole estate's
+    // numbers; survey finding 2 shipped because one layer was.
+    if accessible.is_empty() {
+        return Ok(web::Json(ExploreRegistryStatsResponse {
+            registries: vec![],
+            upstream_unavailable: false,
+        }));
+    }
+
+    // RFC 0015 §4.4 — every number below is an aggregate over packages, so it is
+    // computed over the ones this caller may see. The same viewer the listing
+    // beside it uses, so the tile and the page agree.
+    let viewer = crate::handlers::explore_viewer_for(&identity);
     let (stats, upstream_unavailable) = admin_svc
-        .registry_explore_stats(&accessible)
+        .registry_explore_stats(&accessible, &viewer)
         .await
         .map_err(AppError::from)?;
 

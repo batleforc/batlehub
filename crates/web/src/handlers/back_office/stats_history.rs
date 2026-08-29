@@ -8,7 +8,6 @@ use utoipa::{IntoParams, ToSchema};
 
 use batlehub_core::ports::StatsHistoryRepository;
 
-use super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity};
 
 const DEFAULT_WINDOW_DAYS: i64 = 30;
@@ -102,7 +101,7 @@ fn hit_rate(hits: u64, misses: u64) -> Option<f64> {
     params(StatsHistoryQuery),
     responses(
         (status = 200, description = "Persisted cache statistics for the window, with the trend against the previous one", body = StatsHistoryResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`stats:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -111,9 +110,12 @@ pub async fn admin_stats_history(
     identity: AuthIdentity,
     query: web::Query<StatsHistoryQuery>,
     history: web::Data<Arc<dyn StatsHistoryRepository>>,
+    proxy_svc: web::Data<Arc<batlehub_core::services::ProxyService>>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
-
+    // RFC 0015 §4.2 — `stats:read` in place of `require_admin`. Computed from the
+    // **configured** registries rather than from the rows that came back: a
+    // window with no traffic in it has no rows, and deriving the gate from those
+    // would refuse a caller who simply asked about a quiet week.
     let days = window_days(query.window.as_deref());
     let to = Utc::now();
     let from = to - Duration::days(days);
@@ -127,6 +129,33 @@ pub async fn admin_stats_history(
         .read_window(previous_from, from)
         .await
         .map_err(AppError::from)?;
+
+    // The candidate universe is the **configured hierarchy**, not the rows that
+    // came back. A window with no traffic in it has no rows, and a gate derived
+    // from those would refuse a caller who simply asked about a quiet week —
+    // while a registry that has rows and no hierarchy is one whose numbers
+    // nobody has been granted, so it drops out either way (see
+    // `registries_with_stats_read`, which fails closed on exactly that).
+    let candidates: Vec<String> = {
+        let hot = proxy_svc.hot.read().await;
+        hot.grants.keys().cloned().collect()
+    };
+    let permitted =
+        super::stats::registries_with_stats_read(&identity, &candidates, &proxy_svc.hot).await?;
+
+    // §4.4 — applied **before** the sums below rather than to the series
+    // afterwards. A trend computed over a registry this caller may not read is
+    // the same disclosure as a count over packages they may not see, and it is
+    // the shape §4.4 calls the one that fails silently: nothing about a summed
+    // number says which rows went into it.
+    let rows: Vec<_> = rows
+        .into_iter()
+        .filter(|r| permitted.contains(&r.registry))
+        .collect();
+    let previous: Vec<_> = previous
+        .into_iter()
+        .filter(|r| permitted.contains(&r.registry))
+        .collect();
 
     let mut by_registry: BTreeMap<String, Vec<StatsHistoryPointDto>> = BTreeMap::new();
     let (mut hits, mut misses) = (0_u64, 0_u64);

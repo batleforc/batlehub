@@ -128,12 +128,27 @@ impl LocalRegistryService {
     ) -> Result<String, CoreError> {
         use md5::{Digest as _, Md5};
 
+        // §11.7 arm 3: one entry per *grant set*, not per caller. Phase 0b
+        // found this key load-bearing rather than optional.
+        let cache_slot = self.cached_document(registry, "versions", identity).await?;
+        let (cache_key, generation) = match cache_slot {
+            Ok(body) => return Ok(body.to_string()),
+            Err(slot) => slot,
+        };
+
         let names = self.backend.list_package_names(registry).await?;
+        let readable = self.readable_packages(registry, identity).await?;
         // A fixed epoch rather than "now": Bundler treats this header as the
         // point its incremental fetches start from, and a timestamp that moves
         // on every request invalidates every cache on every request.
         let mut out = String::from("created_at: 1970-01-01T00:00:00Z\n---\n");
         for name in &names {
+            // RFC 0015 §4.4 — the document lists what this caller may see. The
+            // check is free for a caller whose broad tiers grant the read, which
+            // is almost all of them; see `Readable`.
+            if !readable.contains(name) {
+                continue;
+            }
             let Ok(versions) = self.load_visible_versions(registry, name, identity).await else {
                 // Not visible to this identity is not an error here — it is a
                 // gem this caller does not get to see, like every other listing.
@@ -155,6 +170,7 @@ impl LocalRegistryService {
                 hex::encode(digest)
             ));
         }
+        self.store_document(cache_key, &out, generation).await;
         Ok(out)
     }
 
@@ -168,9 +184,22 @@ impl LocalRegistryService {
         registry: &str,
         identity: &Identity,
     ) -> Result<String, CoreError> {
+        // §11.7 arm 3, as `/versions` above.
+        let cache_slot = self.cached_document(registry, "names", identity).await?;
+        let (cache_key, generation) = match cache_slot {
+            Ok(body) => return Ok(body.to_string()),
+            Err(slot) => slot,
+        };
+
         let names = self.backend.list_package_names(registry).await?;
+        let readable = self.readable_packages(registry, identity).await?;
         let mut out = String::from("---\n");
         for name in &names {
+            // §4.4, same as `/versions`: this document names every gem in the
+            // registry, so a caller who may not read one must not see it here.
+            if !readable.contains(name) {
+                continue;
+            }
             let Ok(versions) = self.load_visible_versions(registry, name, identity).await else {
                 continue;
             };
@@ -179,6 +208,7 @@ impl LocalRegistryService {
                 out.push('\n');
             }
         }
+        self.store_document(cache_key, &out, generation).await;
         Ok(out)
     }
 }

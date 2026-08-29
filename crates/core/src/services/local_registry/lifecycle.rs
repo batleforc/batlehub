@@ -1,5 +1,31 @@
+//! Lifecycle mutations of an already-published version.
+//!
+//! # Which verb each of these is (RFC 0015 §4.2)
+//!
+//! The vocabulary has **one** verb for this whole family — `releases:yank`,
+//! documented as *"yank and unyank"* — and §4.2 rule 3 is explicit that a new
+//! action spelled differently is the shared verb rather than a new one: *"A new
+//! ecosystem's 'hide this version from resolution' is `releases:yank`, not
+//! `myeco:unlist:write`. The test is whether an operator reading a grant on a
+//! mixed estate would expect them to mean the same thing."*
+//!
+//! Unlist, relist, deprecate and undeprecate all pass that test. Each is a
+//! reversible mark on a version that already exists, none adds or destroys bytes,
+//! and an operator granting `releases:yank` to a release engineer plainly means
+//! them to be able to hide a bad build whichever of the four spellings their
+//! ecosystem uses. §10 rule 5 enumerates "yank, unyank, unlist and delete" as
+//! today's role-checked sites for the same reason.
+//!
+//! `delete_version` is the exception and takes `releases:delete`, because it is
+//! the one that destroys bytes.
+//!
+//! `set_retention_pin` and `compact_tombstone_detail` deliberately take neither.
+//! They are RFC 0016's surface, retention is a **policy** in §4.1's tier table
+//! rather than a verb in §4.2's vocabulary, and inventing a verb for it here
+//! would settle by implementation a question §3 hands to that document.
+
 use super::{
-    artifact_storage_key, AccessAction, AccessEvent, AccessResult, CoreError, Identity,
+    artifact_storage_key, AccessAction, AccessEvent, AccessResult, Action, CoreError, Identity,
     LocalRegistryService, PackageId, PublishRequest, ReadmeFormat, Role, SbomFormat,
     SbomPublishOptions,
 };
@@ -12,16 +38,14 @@ impl LocalRegistryService {
         version: &str,
         identity: &Identity,
     ) -> Result<(), CoreError> {
-        if !identity.has_role_at_least(&Role::User) {
-            return Err(CoreError::AccessDenied(
-                "yank requires at least User role".into(),
-            ));
-        }
+        self.authorize_write(registry, name, version, identity, Action::ReleasesYank)
+            .await?;
         self.check_namespace_membership(registry, name, identity)
             .await?;
         self.check_ownership_lifecycle_access(registry, name, identity)
             .await?;
         self.backend.yank(registry, name, version).await?;
+        self.invalidate_documents(registry).await;
         self.record_lifecycle_action(registry, name, version, AccessAction::Yank, identity)
             .await;
         Ok(())
@@ -34,16 +58,14 @@ impl LocalRegistryService {
         version: &str,
         identity: &Identity,
     ) -> Result<(), CoreError> {
-        if !identity.has_role_at_least(&Role::User) {
-            return Err(CoreError::AccessDenied(
-                "unyank requires at least User role".into(),
-            ));
-        }
+        self.authorize_write(registry, name, version, identity, Action::ReleasesYank)
+            .await?;
         self.check_namespace_membership(registry, name, identity)
             .await?;
         self.check_ownership_lifecycle_access(registry, name, identity)
             .await?;
         self.backend.unyank(registry, name, version).await?;
+        self.invalidate_documents(registry).await;
         self.record_lifecycle_action(registry, name, version, AccessAction::Unyank, identity)
             .await;
         Ok(())
@@ -57,11 +79,8 @@ impl LocalRegistryService {
         message: Option<&str>,
         identity: &Identity,
     ) -> Result<(), CoreError> {
-        if !identity.has_role_at_least(&Role::User) {
-            return Err(CoreError::AccessDenied(
-                "deprecate requires at least User role".into(),
-            ));
-        }
+        self.authorize_write(registry, name, version, identity, Action::ReleasesYank)
+            .await?;
         self.check_namespace_membership(registry, name, identity)
             .await?;
         self.check_ownership_lifecycle_access(registry, name, identity)
@@ -81,11 +100,8 @@ impl LocalRegistryService {
         version: &str,
         identity: &Identity,
     ) -> Result<(), CoreError> {
-        if !identity.has_role_at_least(&Role::User) {
-            return Err(CoreError::AccessDenied(
-                "undeprecate requires at least User role".into(),
-            ));
-        }
+        self.authorize_write(registry, name, version, identity, Action::ReleasesYank)
+            .await?;
         self.check_namespace_membership(registry, name, identity)
             .await?;
         self.check_ownership_lifecycle_access(registry, name, identity)
@@ -103,11 +119,8 @@ impl LocalRegistryService {
         version: &str,
         identity: &Identity,
     ) -> Result<(), CoreError> {
-        if !identity.has_role_at_least(&Role::User) {
-            return Err(CoreError::AccessDenied(
-                "unlist requires at least User role".into(),
-            ));
-        }
+        self.authorize_write(registry, name, version, identity, Action::ReleasesYank)
+            .await?;
         self.check_namespace_membership(registry, name, identity)
             .await?;
         self.check_ownership_lifecycle_access(registry, name, identity)
@@ -125,11 +138,8 @@ impl LocalRegistryService {
         version: &str,
         identity: &Identity,
     ) -> Result<(), CoreError> {
-        if !identity.has_role_at_least(&Role::User) {
-            return Err(CoreError::AccessDenied(
-                "relist requires at least User role".into(),
-            ));
-        }
+        self.authorize_write(registry, name, version, identity, Action::ReleasesYank)
+            .await?;
         self.check_namespace_membership(registry, name, identity)
             .await?;
         self.check_ownership_lifecycle_access(registry, name, identity)
@@ -167,14 +177,12 @@ impl LocalRegistryService {
         version: &str,
         identity: &Identity,
     ) -> Result<bool, CoreError> {
-        // Same gate as yank/unyank. Authorization proper is RFC 0015's `releases:delete`
-        // and explicitly not this document's (RFC 0016 §3); until it lands, delete is
-        // reachable only through the admin-gated handler, and this is the floor under it.
-        if !identity.has_role_at_least(&Role::User) {
-            return Err(CoreError::AccessDenied(
-                "delete requires at least User role".into(),
-            ));
-        }
+        // `releases:delete` is the whole of the authorization decision. RFC 0016
+        // §3 hands the verb to RFC 0015 and this is where it is consumed; the
+        // handler in front of this is still `require_admin`, so the grant narrows
+        // an already-narrow surface rather than opening one.
+        self.authorize_write(registry, name, version, identity, Action::ReleasesDelete)
+            .await?;
         self.check_namespace_membership(registry, name, identity)
             .await?;
         // Admins bypass the ownership check, as they already do the namespace

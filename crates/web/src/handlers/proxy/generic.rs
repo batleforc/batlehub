@@ -33,6 +33,7 @@ use batlehub_core::{entities::PackageId, services::ProxyService};
 use super::common::{proxy_stream, require_registry_type};
 use crate::handlers::schemas::ArtifactBytes;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
+use batlehub_core::entities::Action;
 
 /// Serve a file from a generic upstream file tree
 /// (`GET /proxy/{registry}/generic/{path}`).
@@ -74,7 +75,7 @@ pub async fn generic_get(
         svc,
         pkg,
         identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         Some("application/octet-stream"),
     )
     .await

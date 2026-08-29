@@ -56,10 +56,22 @@ async fn make_generic_app(
         Arc::new(client) as Arc<dyn RegistryClient>,
     )]
     .into();
-    let policies: HashMap<String, Arc<RegistryPolicy>> =
-        [("files".to_owned(), Arc::new(rbac_policy(repo_dyn.clone())))].into();
+    let policies: HashMap<String, Arc<RegistryPolicy>> = [(
+        "files".to_owned(),
+        Arc::new(rbac_policy(repo_dyn.clone()).0),
+    )]
+    .into();
 
     let hot = new_hot_lock(HotConfig {
+        // RFC 0015 §4.2's instance tier, wired exactly as production wires it:
+        // `instance_node` is §10 rule 5's own translation, so the fixture's admin
+        // holds the control verbs and nobody else does. Without it every
+        // `require_verb` on a control endpoint refuses, including the admin the
+        // suite is asserting about — a fixture that does not build the model
+        // tests a server nobody runs (§13.5).
+        instance: Some(std::sync::Arc::new(
+            batlehub_core::services::authz::translate::instance_node(None),
+        )),
         registries,
         policies,
         ..Default::default()

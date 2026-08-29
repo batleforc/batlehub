@@ -115,10 +115,24 @@ async fn make_host_routed_app(
     let policies: HashMap<String, Arc<RegistryPolicy>> = spec
         .registries
         .iter()
-        .map(|(name, _)| ((*name).to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))))
+        .map(|(name, _)| {
+            (
+                (*name).to_owned(),
+                Arc::new(rbac_policy(repo_dyn.clone()).0),
+            )
+        })
         .collect();
 
     let hot = new_hot_lock(HotConfig {
+        // RFC 0015 §4.2's instance tier, wired exactly as production wires it:
+        // `instance_node` is §10 rule 5's own translation, so the fixture's admin
+        // holds the control verbs and nobody else does. Without it every
+        // `require_verb` on a control endpoint refuses, including the admin the
+        // suite is asserting about — a fixture that does not build the model
+        // tests a server nobody runs (§13.5).
+        instance: Some(std::sync::Arc::new(
+            batlehub_core::services::authz::translate::instance_node(None),
+        )),
         registries,
         policies,
         ..Default::default()
@@ -151,6 +165,18 @@ async fn make_host_routed_app(
     };
 
     let (app, _) = App::new()
+        // RFC 0015 §4.2 — this app registers only the handlers under test, so the
+        // hot lock the control-verb check reads has to be registered with them.
+        .app_data(actix_web::web::Data::new(
+            batlehub_core::services::hot_config::new_hot_lock(
+                batlehub_core::services::hot_config::HotConfig {
+                    instance: Some(std::sync::Arc::new(
+                        batlehub_core::services::authz::translate::instance_node(None),
+                    )),
+                    ..Default::default()
+                },
+            ),
+        ))
         .into_utoipa_app()
         .configure(configure_test_app(
             proxy_svc,

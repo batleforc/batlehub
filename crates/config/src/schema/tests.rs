@@ -2297,3 +2297,377 @@ fn a_dry_run_policy_does_not_warn_about_reclamation() {
         "{codes:?}"
     );
 }
+
+// ── RFC 0015 §4.9 — tiered-policy warnings ───────────────────────────────────
+//
+// Every case here is a **legal config that does nothing**, which is the whole
+// category §4.9 reserves warnings for. Each test asserts the config still
+// validates before asserting the warning, because a warning that fires on a
+// config the loader would have rejected anyway is not doing any work.
+
+fn codes(cfg: &AppConfig) -> Vec<String> {
+    cfg.warnings().into_iter().map(|w| w.code).collect()
+}
+
+/// `prerelease_visibility` on a registry that publishes nothing.
+///
+/// The one warning §4.9 argues for at length: it is a warning rather than a
+/// rejection because `[registries.beta_channel]` carries no mode restriction
+/// today and translates into this setting, so refusing it would stop an existing
+/// instance from booting on upgrade — the one thing §10 forbids.
+#[test]
+fn prerelease_visibility_on_a_proxy_registry_warns_rather_than_failing() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "proxy"
+        prerelease_visibility = "team""#,
+    );
+    cfg.validate()
+        .expect("must not fail: an upgraded beta_channel config lands exactly here");
+    let c = codes(&cfg);
+    assert!(
+        c.iter()
+            .any(|x| x == warnings::PRERELEASE_VISIBILITY_PROXY_MODE),
+        "{c:?}"
+    );
+}
+
+/// Pre-releases visible to a wider audience than releases is legal and is
+/// almost always a typo, since the setting exists to do the opposite.
+#[test]
+fn a_wider_prerelease_audience_warns() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+        visibility = "team"
+        prerelease_visibility = "public""#,
+    );
+    cfg.validate().expect("legal");
+    let c = codes(&cfg);
+    assert!(
+        c.iter().any(|x| x == warnings::PRERELEASE_VISIBILITY_WIDER),
+        "{c:?}"
+    );
+}
+
+/// …and the ordinary direction — pre-releases narrower than releases — is
+/// silent. Without this the test above would pass on a warning that fires on
+/// every configuration.
+#[test]
+fn a_narrower_prerelease_audience_is_silent() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+        visibility = "public"
+        prerelease_visibility = "team""#,
+    );
+    cfg.validate().expect("legal");
+    let c = codes(&cfg);
+    assert!(
+        !c.iter().any(|x| x == warnings::PRERELEASE_VISIBILITY_WIDER),
+        "the intended direction must not warn: {c:?}"
+    );
+}
+
+/// Grants decided *who*; nothing decided *how wide*. §4.5's two directions, met
+/// one at a time.
+#[test]
+fn a_namespace_with_grants_and_no_visibility_warns() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+
+        [[registries.namespaces]]
+        match = "@acme/billing"
+
+        [registries.namespaces.grants]
+        "group:*:platform" = ["releases:read"]"#,
+    );
+    cfg.validate().expect("legal");
+    let c = codes(&cfg);
+    assert!(
+        c.iter()
+            .any(|x| x == warnings::NAMESPACE_GRANTS_WITHOUT_VISIBILITY),
+        "{c:?}"
+    );
+}
+
+/// The same namespace, with visibility set, is silent — so the warning is about
+/// the missing half rather than about having grants at all.
+#[test]
+fn a_namespace_with_grants_and_visibility_is_silent() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+
+        [[registries.namespaces]]
+        match = "@acme/billing"
+        visibility = "team"
+
+        [registries.namespaces.grants]
+        "group:*:platform" = ["releases:read"]"#,
+    );
+    cfg.validate().expect("legal");
+    let c = codes(&cfg);
+    assert!(
+        !c.iter()
+            .any(|x| x == warnings::NAMESPACE_GRANTS_WITHOUT_VISIBILITY),
+        "{c:?}"
+    );
+}
+
+/// `immutable = "always"` makes `releases:overwrite` inert. Not a
+/// contradiction — a replace needs the verb *and* a mutable resource — but the
+/// operator who wrote both believes one of them is doing something.
+#[test]
+fn immutable_always_beside_an_overwrite_grant_warns() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+
+        [registries.grants]
+        "role:user" = ["releases:overwrite"]
+
+        [registries.versioning]
+        immutable = "always""#,
+    );
+    cfg.validate().expect("legal");
+    let c = codes(&cfg);
+    assert!(
+        c.iter()
+            .any(|x| x == warnings::IMMUTABLE_ALWAYS_WITH_OVERWRITE_GRANT),
+        "{c:?}"
+    );
+}
+
+/// `released` on a node that publishes no pre-releases can never take its second
+/// branch: it is `always`, written in two settings.
+#[test]
+fn immutable_released_without_prereleases_warns() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+
+        [registries.versioning]
+        immutable = "released"
+        allow_prerelease = false"#,
+    );
+    cfg.validate().expect("legal");
+    let c = codes(&cfg);
+    assert!(
+        c.iter()
+            .any(|x| x == warnings::IMMUTABLE_RELEASED_WITHOUT_PRERELEASES),
+        "{c:?}"
+    );
+}
+
+/// An ordinary tiered-policy config warns about nothing, which is what makes
+/// every assertion above meaningful.
+#[test]
+fn an_ordinary_namespace_policy_is_silent() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+        visibility = "public"
+
+        [[registries.namespaces]]
+        match = "@acme/billing"
+        visibility = "team"
+        prerelease_visibility = "team"
+
+        [registries.namespaces.grants]
+        "group:*:platform" = ["releases:read", "releases:publish"]
+
+        [registries.namespaces.versioning]
+        enforce_semver = true
+        immutable = "released"
+        monotonic = true"#,
+    );
+    cfg.validate().expect("legal");
+    let c = codes(&cfg);
+    for code in [
+        warnings::PRERELEASE_VISIBILITY_PROXY_MODE,
+        warnings::PRERELEASE_VISIBILITY_WIDER,
+        warnings::NAMESPACE_GRANTS_WITHOUT_VISIBILITY,
+        warnings::IMMUTABLE_ALWAYS_WITH_OVERWRITE_GRANT,
+        warnings::IMMUTABLE_RELEASED_WITHOUT_PRERELEASES,
+    ] {
+        assert!(!c.iter().any(|x| x == code), "{code} fired: {c:?}");
+    }
+}
+
+// ── RFC 0015 §4.7 — shadow mode ──────────────────────────────────────────────
+
+/// The warning §4.7 asks for on **every** reload, not once at the edit.
+///
+/// This is the most dangerous setting in RFC 0015: a request that would be
+/// refused is served. The warning names the expiry because the countdown is the
+/// point — a shadow that cannot be forgotten is what the required `until` buys.
+#[test]
+fn a_registry_in_shadow_warns_on_every_reload() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+
+        [registries.grants_shadow]
+        until = "2099-12-01""#,
+    );
+    cfg.validate().expect("legal — that is the whole problem");
+    let w = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::GRANTS_IN_SHADOW)
+        .expect("must warn");
+    assert!(
+        w.message.contains("2099-12-01"),
+        "the expiry is the point: {}",
+        w.message
+    );
+    assert!(
+        w.message.contains("bypass"),
+        "and the message must name the consequence, not the setting: {}",
+        w.message
+    );
+}
+
+/// A namespace shadow warns too, and names the namespace.
+#[test]
+fn a_namespace_in_shadow_warns() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+
+        [[registries.namespaces]]
+        match = "@acme"
+
+        [registries.namespaces.grants_shadow]
+        until = "2099-12-01""#,
+    );
+    cfg.validate().expect("legal");
+    let w = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::GRANTS_IN_SHADOW)
+        .expect("must warn");
+    assert!(w.message.contains("@acme"), "{}", w.message);
+}
+
+/// A config with no shadow is silent, which is what makes the two above
+/// meaningful.
+#[test]
+fn no_shadow_is_silent() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local""#,
+    );
+    cfg.validate().expect("legal");
+    assert!(!cfg
+        .warnings()
+        .iter()
+        .any(|w| w.code == warnings::GRANTS_IN_SHADOW));
+}
+
+/// `until` is **required by the type**, so a shadow with no expiry cannot be
+/// written at all.
+///
+/// §4.7 asks config load to reject the flag without a companion date. A
+/// rejection the type performs is stronger than one a validator remembers to,
+/// and this is the assertion that it is the type doing it.
+#[test]
+fn a_shadow_without_an_expiry_does_not_parse() {
+    let err = toml::from_str::<AppConfig>(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+
+        [registries.grants_shadow]"#,
+    )
+    .expect_err("a shadow with no expiry must not parse");
+    assert!(
+        err.to_string().contains("until"),
+        "the error must name the missing field: {err}"
+    );
+}
+
+/// `versioning.dry_run` warns, more quietly.
+///
+/// §4.7's table calls this direction **mixed** rather than fail-open: bad data
+/// lands, nothing leaks. It still warns, because the operator who sets it during
+/// an import is the operator who forgets to unset it afterwards.
+#[test]
+fn versioning_in_dry_run_warns() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+
+        [registries.versioning]
+        enforce_semver = true
+        dry_run = true"#,
+    );
+    cfg.validate().expect("legal");
+    assert!(cfg
+        .warnings()
+        .iter()
+        .any(|w| w.code == warnings::VERSIONING_IN_DRY_RUN));
+}
+
+/// …and `dry_run` defaults to `false` on `versioning`, as §4.7 requires.
+///
+/// Only `retention.dry_run` defaults to `true`, and RFC 0016 argues that from
+/// the fact that it is the only one of the three whose dry-run direction is
+/// unambiguously safe.
+#[test]
+fn versioning_dry_run_defaults_to_false() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+
+        [registries.versioning]
+        enforce_semver = true"#,
+    );
+    assert!(!cfg.registries[0].versioning.as_ref().unwrap().dry_run);
+    assert!(!cfg
+        .warnings()
+        .iter()
+        .any(|w| w.code == warnings::VERSIONING_IN_DRY_RUN));
+}

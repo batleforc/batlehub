@@ -148,3 +148,58 @@ tasks:
     desc: Run the full S3+Redis perf suite in sequence; threshold violations are reported but do not stop the suite
     cmds:
       - task: perf:run:all
+
+  # ── RFC 0015 §11.7 — the whole-registry document measurement (phase 0b) ──────
+  #
+  # Four steps, in order. SIZE is s, m or l and must be the same for the corpus
+  # and the upstream, or the two arms describe different documents:
+  #
+  #   task perf:authz:corpus SIZE=m     # seed local_packages
+  #   task perf:authz:upstream SIZE=m   # (separate shell) the arm-1 upstream
+  #   task perf:authz:server            # (separate shell)
+  #   task perf:authz:run SIZE=m
+
+  perf:authz:corpus:
+    desc: "Seed the RFC 0015 §11.7 corpus into local_packages (SIZE=s|m|l)"
+    cmds:
+      - cargo build --release --manifest-path perf/corpus-seed/Cargo.toml
+      - ./perf/corpus-seed/target/release/corpus-seed
+        --registry perf-gems
+        --size {{.SIZE | default "s"}}
+        --private-fraction {{.PRIVATE | default "0.10"}}
+
+  perf:authz:upstream:
+    desc: "Mock upstream serving a compact index the size of the corpus (SIZE=s|m|l)"
+    cmds:
+      - cargo build --release --manifest-path perf/mock-upstream/Cargo.toml
+      # The generator mirrors `corpus-seed --size`; see config.perf-authz.toml.
+      - ./perf/mock-upstream/target/release/mock-upstream --port 9999
+        {{if eq (.SIZE | default "s") "l"}}--gems 200000 --gem-versions 10{{else if eq (.SIZE | default "s") "m"}}--gems 25000 --gem-versions 10{{else}}--gems 1000 --gem-versions 5{{end}}
+
+  perf:authz:server:
+    desc: "Run BatleHub with the §11.7 config (needs postgres and perf:authz:upstream)"
+    env:
+      BATLEHUB_CONFIG: perf/config.perf-authz.toml
+    cmds:
+      - cargo run -p batlehub-server --release
+
+  perf:authz:run:
+    desc: "k6 scenario 08 — arm 1 (cached) vs arm 2 (filtered) on the whole-registry documents"
+    env:
+      BATLEHUB_SIZE: "{{.SIZE | default \"s\"}}"
+      BATLEHUB_DURATION: "{{.DURATION | default \"60s\"}}"
+      BATLEHUB_VUS: "{{.VUS | default \"4\"}}"
+    cmds:
+      - mkdir -p perf/results
+      - k6 run perf/k6/scenarios/08_whole_registry_documents.js
+
+  perf:authz:resolution:
+    desc: "k6 scenario 09 — §11.7's resolution number: what authorize costs on one coordinate"
+    env:
+      BATLEHUB_SIZE: "{{.SIZE | default \"s\"}}"
+      BATLEHUB_DURATION: "{{.DURATION | default \"60s\"}}"
+      BATLEHUB_VUS: "{{.VUS | default \"8\"}}"
+      BATLEHUB_PACKAGES: "{{if eq (.SIZE | default \"s\") \"l\"}}200000{{else if eq (.SIZE | default \"s\") \"m\"}}25000{{else}}1000{{end}}"
+    cmds:
+      - mkdir -p perf/results
+      - k6 run perf/k6/scenarios/09_authorize_resolution.js

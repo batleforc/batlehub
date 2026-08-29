@@ -22,7 +22,6 @@ use batlehub_core::services::{
     AdminService, LocalRegistryService, RetentionReport, RetentionService,
 };
 
-use super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity, handlers::schemas::OkResponse};
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -123,7 +122,7 @@ impl RetentionResponse {
     responses(
         (status = 200, description = "What was reclaimed, or would be under dry_run",
             body = RetentionResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`retention:run` required"),
         (status = 409, description = "No retention keep condition configured for this registry"),
     ),
     security(("bearer_token" = [])),
@@ -135,9 +134,16 @@ pub async fn run_retention(
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let registry = path.into_inner();
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::RetentionRun,
+        Some(&registry),
+        &hot,
+    )
+    .await?;
 
     // Through the service's own lock rather than a separate extractor: it is the
     // same `Arc`, and taking it from the service means the policy this handler
@@ -208,7 +214,7 @@ pub struct RetentionPinRequest {
     request_body = RetentionPinRequest,
     responses(
         (status = 200, description = "Pin set or released", body = OkResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`retention:run` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -218,9 +224,16 @@ pub async fn set_retention_pin(
     body: web::Json<RetentionPinRequest>,
     identity: AuthIdentity,
     local_svc: web::Data<Arc<LocalRegistryService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let registry = path.into_inner();
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::RetentionRun,
+        Some(&registry),
+        &hot,
+    )
+    .await?;
     let body = body.into_inner();
     local_svc
         .set_retention_pin(&registry, &body.name, &body.version, body.keep, &identity.0)

@@ -397,3 +397,183 @@ async fn a_public_local_package_keeps_its_proxied_row() {
 
     assert_eq!(f.visible_to(anonymous()).await, vec!["both-pkg"]);
 }
+
+// ── RFC 0015 §4.4 — an aggregate is a listing that has been counted ──────────
+//
+// > Every one of those tiles is a query over packages, and it is filtered by the
+// > caller's grants exactly like a version index, for the reason §4.4 rule 1
+// > already gives: a number computed over rows the caller may not see is a
+// > disclosure whether or not the rows themselves are returned.
+//
+// `registry_explore_stats` had **no** visibility predicate, so `package_count`
+// and `total_downloads` were computed over `internal`, `team` and `private`
+// packages alike — survey finding 12 one abstraction level up, on the surface
+// §4.4 says it "will arrive a fourth time". Asserted against real Postgres for
+// the reason §11.4 gives about the pagination tests: an in-memory repository
+// agrees with an incorrect query, and here it agrees by returning nothing at
+// all.
+
+impl Fixture {
+    /// The one registry's stats row for this viewer, or `None` when the
+    /// aggregate reports nothing for it.
+    async fn stats_for(
+        &self,
+        viewer: ExploreViewer,
+    ) -> Option<batlehub_core::entities::RegistryStat> {
+        self.repo
+            .registry_explore_stats(std::slice::from_ref(&self.registry), &viewer)
+            .await
+            .expect("registry_explore_stats")
+            .into_iter()
+            .find(|s| s.registry == self.registry)
+    }
+
+    async fn package_count(&self, viewer: ExploreViewer) -> u64 {
+        self.stats_for(viewer).await.map_or(0, |s| s.package_count)
+    }
+}
+
+/// §11.4: *"a caller who can see 3 of 50 packages gets counts, sums and top-N
+/// lists over those 3"*.
+///
+/// The count and the listing agree by construction, and the test asserts both so
+/// a future change that fixes one and not the other is a failure rather than a
+/// quiet disagreement between a page and the tile above it.
+#[tokio::test]
+async fn the_package_count_is_computed_over_what_the_viewer_may_see() {
+    let url = require_db!();
+    let f = fixture(&url).await;
+    f.publish("open", Visibility::Public).await;
+    f.publish("staff", Visibility::Internal).await;
+    f.publish("secret", Visibility::Team).await;
+
+    // The control: an admin sees all three, so a smaller number below is the
+    // predicate and not an empty fixture.
+    assert_eq!(f.package_count(admin()).await, 3);
+    assert_eq!(f.visible_to(admin()).await.len(), 3);
+
+    // An anonymous caller sees one, and the tile says one.
+    assert_eq!(
+        f.package_count(anonymous()).await,
+        1,
+        "a count over packages this caller cannot see discloses that they exist"
+    );
+    assert_eq!(f.visible_to(anonymous()).await, vec!["open"]);
+
+    // An authenticated non-member sees the internal one too, and no more.
+    assert_eq!(f.package_count(user(&[])).await, 2);
+    assert_eq!(f.visible_to(user(&[])).await.len(), 2);
+}
+
+/// §11.4 asks for this *"on a `SUM` as well as a `count(*)`, because a sum is the
+/// one that cannot be trimmed after the fact and so fails silently"*.
+///
+/// `total_downloads` is that sum. A download recorded against a package the
+/// viewer may not see must not reach their number — and unlike a row set, there
+/// is nothing about the total that says which events went into it.
+#[tokio::test]
+async fn the_download_sum_is_computed_over_what_the_viewer_may_see() {
+    let url = require_db!();
+    let f = fixture(&url).await;
+    f.publish("open", Visibility::Public).await;
+    f.publish("secret", Visibility::Team).await;
+
+    f.record_download("open").await;
+    for _ in 0..4 {
+        f.record_download("secret").await;
+    }
+
+    let admin_total = f
+        .stats_for(admin())
+        .await
+        .expect("the registry has rows")
+        .total_downloads;
+    assert_eq!(admin_total, 5, "the control: every event is recorded");
+
+    let anon_total = f
+        .stats_for(anonymous())
+        .await
+        .expect("the public package keeps the registry in the result")
+        .total_downloads;
+    assert_eq!(
+        anon_total, 1,
+        "a sum over a package this caller cannot see is the disclosure §4.4 calls \
+         the one that fails silently; got {anon_total}"
+    );
+}
+
+/// A team member's numbers include their own team's package and nobody else's.
+///
+/// The `team` arm is the one that needs a *group* rather than a role, and it is
+/// the arm an `internal`-only test waves through.
+#[tokio::test]
+async fn a_team_members_aggregate_includes_their_own_namespace() {
+    let url = require_db!();
+    let f = fixture(&url).await;
+    f.publish("acme/lib", Visibility::Team).await;
+    f.publish("other/lib", Visibility::Team).await;
+    f.claim("acme", "team-acme").await;
+    f.claim("other", "team-other").await;
+    f.record_download("acme/lib").await;
+    f.record_download("other/lib").await;
+
+    let member = f
+        .stats_for(user(&["team-acme"]))
+        .await
+        .expect("their own package keeps the registry in the result");
+    assert_eq!(member.package_count, 1);
+    assert_eq!(member.total_downloads, 1);
+
+    // A user in neither team sees nothing here, and the registry drops out of
+    // the aggregate entirely rather than appearing with a wrong number.
+    assert_eq!(f.package_count(user(&["team-nobody"])).await, 0);
+}
+
+/// **Survey finding 2, in the aggregate.** An empty scope is nothing, not
+/// everything.
+///
+/// The query used to bind `NULL` for an empty `accessible_registries` and read
+/// it as `$1 IS NULL OR …` — so a caller with no browsable registry at all was
+/// handed every registry's counts by the one query whose job is to scope them.
+/// *"A predicate that is vacuous rather than absent"* is the shape that finding
+/// came in on, and the fix is to make the vacuous reading unrepresentable.
+#[tokio::test]
+async fn an_empty_registry_scope_aggregates_nothing() {
+    let url = require_db!();
+    let f = fixture(&url).await;
+    f.publish("open", Visibility::Public).await;
+
+    // The control: named, the registry is there.
+    assert_eq!(f.package_count(admin()).await, 1);
+
+    let none = f
+        .repo
+        .registry_explore_stats(&[], &admin())
+        .await
+        .expect("registry_explore_stats");
+    assert!(
+        none.is_empty(),
+        "an empty scope must aggregate nothing, not every registry; got {} rows",
+        none.len()
+    );
+}
+
+/// A package that only ever came from upstream stays counted.
+///
+/// The other direction of the same rule, and the reason the predicate is written
+/// as *"no local row → visible"* rather than as a join: a proxied name came from
+/// upstream and was never a secret, so hiding it would be a narrowing nobody
+/// asked for — and would make an admin's own storage total wrong.
+#[tokio::test]
+async fn a_proxied_only_package_stays_in_the_aggregate() {
+    let url = require_db!();
+    let f = fixture(&url).await;
+    f.record_download("upstream-pkg").await;
+
+    assert_eq!(f.package_count(anonymous()).await, 1);
+    assert_eq!(
+        f.stats_for(anonymous()).await.unwrap().total_downloads,
+        1,
+        "an upstream package's downloads belong in everyone's total"
+    );
+}

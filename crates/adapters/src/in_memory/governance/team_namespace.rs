@@ -156,7 +156,7 @@ impl TeamNamespacePort for InMemoryTeamNamespaceStore {
                 matching.push(NamespacePackage {
                     name: pkg.name,
                     version: pkg.version,
-                    visibility: vis.clone(),
+                    visibility: vis,
                     published_by: pkg.published_by.unwrap_or_default(),
                     published_at: pkg.published_at,
                     yanked: pkg.yanked,

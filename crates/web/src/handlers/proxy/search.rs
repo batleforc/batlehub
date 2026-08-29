@@ -21,6 +21,7 @@ use batlehub_core::services::{LocalRegistryService, ProxyService, SearchMode, Se
 use crate::handlers::proxy::common::require_registry_type;
 use crate::handlers::schemas::ProtocolDocument;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+use batlehub_core::entities::Action;
 
 /// Map a registry mode onto the search sources it may use.
 pub(crate) fn search_mode(mode: RegistryMode) -> SearchMode {
@@ -104,7 +105,7 @@ pub(crate) async fn resolve_and_search(
     svc.authorize_listing(
         &PackageId::new(registry, "_search", "latest"),
         &identity.0,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
     )
     .await
     .map_err(AppError::from)?;

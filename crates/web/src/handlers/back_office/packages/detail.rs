@@ -15,7 +15,6 @@ use batlehub_core::{
     services::{AdminService, ProxyService, SbomService},
 };
 
-use super::require_admin;
 use crate::{badges::socket_badge_url, error::AppError, extractors::AuthIdentity, RegistryMap};
 
 // ── Vulnerability finding ─────────────────────────────────────────────────────
@@ -122,11 +121,16 @@ pub struct PackageDetailResponse {
     params(PackageDetailQuery),
     responses(
         (status = 200, description = "Package detail", body = PackageDetailResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`packages:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
 #[get("/api/v1/admin/packages/detail")]
+// Eight extractors: the six this handler already had, plus `hot` for the
+// `packages:read` check that replaced `require_admin`. The alternative is a
+// bundle struct whose only purpose is to satisfy a lint about a signature actix
+// generates the wiring for.
+#[allow(clippy::too_many_arguments)]
 pub async fn package_detail(
     query: web::Query<PackageDetailQuery>,
     identity: AuthIdentity,
@@ -135,8 +139,15 @@ pub async fn package_detail(
     registry_map: web::Data<RegistryMap>,
     storage_admin_repo: Option<web::Data<Arc<dyn StorageAdminRepository>>>,
     sbom_svc: Option<web::Data<Arc<SbomService>>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::PackagesRead,
+        None,
+        &hot,
+    )
+    .await?;
 
     // socket.dev badge: enabled per registry via feature flag, mapped by type.
     let socket_badge_enabled = proxy_svc

@@ -19,6 +19,7 @@ use crate::{
     error::AppError, extractors::AuthIdentity, services::NotificationService, RegistryMap,
     RegistryModeMap,
 };
+use batlehub_core::entities::Action;
 
 // ── Proxy routes ──────────────────────────────────────────────────────────────
 
@@ -92,7 +93,7 @@ async fn repodata_bytes(
 ) -> Result<Vec<u8>, AppError> {
     if mode == RegistryMode::Local {
         let repodata = local_svc
-            .get_conda_repodata(registry, platform)
+            .get_conda_repodata(registry, platform, &identity.0)
             .await
             .map_err(AppError::from)?;
         return Ok(serde_json::to_vec(&repodata).unwrap_or_default());
@@ -106,11 +107,16 @@ async fn repodata_bytes(
     // Its blocked set comes from a 30-second snapshot rather than a per-request
     // query; see `ProxyService::blocked_in_registry_snapshot` for why, and the
     // admin guide for the operator-facing statement of the delay.
+    //
+    // Kept rather than moved: the Hybrid branch below needs the same identity to
+    // filter the local half, and the two halves must be filtered for the *same*
+    // caller or the merge describes a channel no one is entitled to.
+    let caller = identity.0.clone();
     let upstream = fetch_conda_index(svc, registry, platform, identity, kind).await?;
 
     if mode == RegistryMode::Hybrid {
         let local_repodata = local_svc
-            .get_conda_repodata(registry, platform)
+            .get_conda_repodata(registry, platform, &caller)
             .await
             .map_err(AppError::from)?;
         return Ok(merge_repodata(&upstream, &local_repodata));
@@ -135,7 +141,7 @@ async fn fetch_conda_index(
     let req = batlehub_core::services::ProxyRequest {
         package_id: PackageId::new(registry, platform, "__repodata__"),
         identity: identity.0,
-        resource_type: batlehub_core::rules::resource_type::RELEASES_READ.to_owned(),
+        action: Action::ReleasesRead.to_owned(),
         ip_address: None,
         user_agent: None,
     };
@@ -574,13 +580,7 @@ pub async fn conda_file_download(
             .map_err(AppError::from)?
             .ok_or_else(|| AppError::not_found(format!("conda package not found: {filename}")))?;
         let bytes = local_svc
-            .get_artifact(
-                &registry,
-                &name,
-                &version,
-                batlehub_core::rules::resource_type::RELEASES_READ,
-                &identity,
-            )
+            .get_artifact(&registry, &name, &version, Action::ReleasesRead, &identity)
             .await
             .map_err(AppError::from)?;
         return Ok(HttpResponse::Ok()
@@ -595,13 +595,7 @@ pub async fn conda_file_download(
             .map_err(AppError::from)?
         {
             match local_svc
-                .get_artifact(
-                    &registry,
-                    &name,
-                    &version,
-                    batlehub_core::rules::resource_type::RELEASES_READ,
-                    &identity,
-                )
+                .get_artifact(&registry, &name, &version, Action::ReleasesRead, &identity)
                 .await
             {
                 Ok(bytes) => {
@@ -632,7 +626,7 @@ pub async fn conda_file_download(
         svc,
         pkg,
         identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         Some("application/octet-stream"),
     )
     .await

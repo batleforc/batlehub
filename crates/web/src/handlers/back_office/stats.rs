@@ -7,8 +7,80 @@ use utoipa::ToSchema;
 
 use batlehub_core::services::{ProxyMetrics, ProxyService};
 
-use super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
+
+/// The registries this caller holds `stats:read` on (RFC 0015 §4.2), or a `403`
+/// when that is none of them.
+///
+/// # Refuse at nothing, filter at some
+///
+/// `stats:read` is one of the three disclosure verbs §4.2 splits out of
+/// `require_admin`, and §7 is explicit that doing so *"is a reduction in
+/// privilege for existing admins and must not be applied silently"*. §10 rule 5
+/// is what makes that safe: the verb goes to `role:admin` on every registry, so
+/// an administrator's dashboard is unchanged on upgrade and the verb becomes
+/// **grantable** rather than newly required.
+///
+/// The boundary is §4.4 rule 2 applied one level up, and it has two sides that
+/// are easy to collapse into one:
+///
+/// - **Held nowhere → `403`.** The caller asserted nothing and is told so. This
+///   is what `require_admin` answered before, so an anonymous or ordinary-user
+///   request to this endpoint is refused exactly as it is today — which is
+///   §10's whole promise, and what the pre-existing tests pin.
+/// - **Held somewhere → filter.** *"`stats:read` without any package grants
+///   therefore resolves to a dashboard of zeroes rather than a `403` … the
+///   caller asked for their own view, and their own view is empty."* An operator
+///   who grants it on one registry gets that registry's numbers and nothing for
+///   the rest, not a refusal for the whole page.
+///
+/// Reading the second rule as covering the first would turn an admin-only
+/// endpoint into one that answers `200` to anonymous. It would disclose nothing
+/// — the filtered result is empty — but a surface that answers everybody is a
+/// different surface, and this document does not widen one by accident.
+pub(super) async fn registries_with_stats_read(
+    identity: &batlehub_core::entities::Identity,
+    registries: &[String],
+    hot: &batlehub_core::services::hot_config::HotConfigLock,
+) -> Result<Vec<String>, AppError> {
+    use batlehub_core::entities::{Action, PackageId};
+
+    // A registry with no configured hierarchy is **not** permitted here, which
+    // is the opposite of what `authorize_grants` answers for one. That is not an
+    // inconsistency: its permissive reading exists because an unknown registry
+    // is a routing question the handler answers `404`, and there is no `404` to
+    // fall through to inside an aggregate. A number is either included or it is
+    // not, so the absent case has to pick a side, and §4.3 says which one.
+    let configured: std::collections::HashSet<String> =
+        hot.read().await.grants.keys().cloned().collect();
+
+    let mut out = Vec::new();
+    for registry in registries {
+        if !configured.contains(registry) {
+            continue;
+        }
+        // The registry tier names no package, which is the coordinate a
+        // registry-wide verb is asked about.
+        let id = PackageId::new(registry, "", "");
+        if batlehub_core::services::authz::authorize_grants_public(
+            hot,
+            &id,
+            identity,
+            Action::StatsRead,
+        )
+        .await
+        .is_ok()
+        {
+            out.push(registry.clone());
+        }
+    }
+    if out.is_empty() {
+        return Err(AppError::forbidden(
+            "reading statistics requires 'stats:read'",
+        ));
+    }
+    Ok(out)
+}
 
 fn hit_rate(hits: u64, misses: u64) -> Option<f64> {
     let total = hits + misses;
@@ -58,7 +130,7 @@ pub struct StatsResponse {
     tag = "back-office",
     responses(
         (status = 200, description = "Cache statistics", body = StatsResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`stats:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -69,8 +141,6 @@ pub async fn admin_stats(
     proxy_svc: web::Data<Arc<ProxyService>>,
     proxy_metrics: web::Data<Arc<ProxyMetrics>>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
-
     let mut per_registry: Vec<RegistryStatsDto> = Vec::new();
     let mut total_hits: u64 = 0;
     let mut total_misses: u64 = 0;
@@ -78,6 +148,11 @@ pub async fn admin_stats(
 
     let mut registries: Vec<String> = registry_map.keys();
     registries.sort();
+    // RFC 0015 §4.2 — `stats:read`, in place of `require_admin`. Filtered rather
+    // than refused, and the aggregate below is summed over what survives, so a
+    // total is never taken over a registry this caller may not read: §4.4 rule 1
+    // applied to the one number on this page that is a sum.
+    let registries = registries_with_stats_read(&identity, &registries, &proxy_svc.hot).await?;
 
     for registry in registries {
         let (hits, misses, degraded, error_rate, latency_ms) =

@@ -474,7 +474,7 @@ async fn hybrid_cargo_download_prefers_local_artifact() {
 
 #[actix_web::test]
 async fn cargo_add_owners_unauthenticated_is_refused() {
-    let (app, ownership) = make_local_cargo_ownership_app(RegistryMode::Local).await;
+    let (app, ownership, _grants) = make_local_cargo_ownership_app(RegistryMode::Local).await;
 
     // No Authorization header, and a crate nobody owns.
     let req = TestRequest::put()
@@ -500,7 +500,7 @@ async fn cargo_add_owners_unauthenticated_is_refused() {
 
 #[actix_web::test]
 async fn cargo_add_owners_on_unowned_crate_is_refused_even_when_authenticated() {
-    let (app, ownership) = make_local_cargo_ownership_app(RegistryMode::Local).await;
+    let (app, ownership, _grants) = make_local_cargo_ownership_app(RegistryMode::Local).await;
 
     let req = TestRequest::put()
         .uri("/proxy/local-cargo/api/v1/crates/never-published/owners")
@@ -523,7 +523,7 @@ async fn cargo_add_owners_on_unowned_crate_is_refused_even_when_authenticated() 
 
 #[actix_web::test]
 async fn cargo_first_publish_registers_the_publisher_as_owner() {
-    let (app, ownership) = make_local_cargo_ownership_app(RegistryMode::Local).await;
+    let (app, ownership, _grants) = make_local_cargo_ownership_app(RegistryMode::Local).await;
 
     let req = TestRequest::put()
         .uri("/proxy/local-cargo/api/v1/crates/new")
@@ -547,7 +547,7 @@ async fn cargo_first_publish_registers_the_publisher_as_owner() {
 
 #[actix_web::test]
 async fn cargo_add_owners_lets_an_existing_owner_delegate() {
-    let (app, ownership) = make_local_cargo_ownership_app(RegistryMode::Local).await;
+    let (app, ownership, _grants) = make_local_cargo_ownership_app(RegistryMode::Local).await;
 
     // Publish first: that is what makes user-1 the owner.
     let req = TestRequest::put()
@@ -574,7 +574,7 @@ async fn cargo_add_owners_lets_an_existing_owner_delegate() {
 
 #[actix_web::test]
 async fn cargo_add_owners_refuses_a_non_owner_of_an_owned_crate() {
-    let (app, _ownership) = make_local_cargo_ownership_app(RegistryMode::Local).await;
+    let (app, _ownership, _grants) = make_local_cargo_ownership_app(RegistryMode::Local).await;
 
     // user-1 publishes and therefore owns it.
     let req = TestRequest::put()
@@ -597,7 +597,7 @@ async fn cargo_add_owners_refuses_a_non_owner_of_an_owned_crate() {
 
 #[actix_web::test]
 async fn cargo_remove_owners_unauthenticated_is_refused() {
-    let (app, ownership) = make_local_cargo_ownership_app(RegistryMode::Local).await;
+    let (app, ownership, _grants) = make_local_cargo_ownership_app(RegistryMode::Local).await;
 
     let req = TestRequest::put()
         .uri("/proxy/local-cargo/api/v1/crates/new")
@@ -621,5 +621,171 @@ async fn cargo_remove_owners_unauthenticated_is_refused() {
             .len(),
         1,
         "the owner must survive an unauthenticated removal attempt"
+    );
+}
+
+// ── RFC 0015 §10 rule 9 — ownership and its grants stay in step ──────────────
+//
+// Ownership rows *are* package-tier grants: `releases:publish`, `owners:read`
+// and `owners:write` on the one package. Migration 042 moved the rows that
+// existed and a first publish wrote the grant for new ones — and nothing else
+// did, so `cargo owner --add` and `cargo owner --remove` wrote `package_owners`
+// alone and the two stores diverged from the first owner change on any estate.
+// A removed owner kept `releases:publish` and `owners:write` on the package
+// permanently, and `explain` reported it as live.
+//
+// Asserted through the real routes rather than on the projection alone, because
+// what went wrong was never the arithmetic — it was that four call sites did not
+// perform it.
+
+/// The verbs written for `subject` on a package's node, if any.
+async fn owner_grant(
+    grants: &batlehub_adapters::in_memory::InMemoryGrantRepository,
+    package: &str,
+    subject: &str,
+) -> Option<Vec<batlehub_core::entities::Action>> {
+    use batlehub_core::entities::SubjectMatcher;
+    use batlehub_core::ports::{GrantRepository, NodeKind};
+
+    let want = SubjectMatcher::parse(subject).expect("a subject form");
+    GrantRepository::grants_on_node(grants, "local-cargo", NodeKind::Package, package)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|g| g.subject == want)
+        .map(|g| g.actions)
+}
+
+/// Publish `name` as `user-1`, which is what makes them its owner.
+async fn publish_owned<S: TestService>(app: &S, name: &str) {
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/new")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_payload(make_publish_payload(name, "0.1.0"))
+        .to_request();
+    assert_eq!(
+        call_service(app, req).await.status(),
+        200,
+        "{name} must publish, or the ownership assertions below are vacuous"
+    );
+}
+
+/// `cargo owner --add` writes the delegate's package-tier grant.
+#[actix_web::test]
+async fn cargo_add_owners_writes_the_package_tier_grant() {
+    let (app, ownership, grants) = make_local_cargo_ownership_app(RegistryMode::Local).await;
+    publish_owned(&app, "delegating").await;
+
+    // The control: the publisher's own grant is there, so a missing one below is
+    // the delegation and not the fixture.
+    assert!(owner_grant(&grants, "delegating", "user:user-1")
+        .await
+        .is_some());
+    assert!(
+        owner_grant(&grants, "delegating", "user:colleague")
+            .await
+            .is_none(),
+        "nobody has delegated yet"
+    );
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/delegating/owners")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_json(serde_json::json!({ "users": ["colleague"] }))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    let actions = owner_grant(&grants, "delegating", "user:colleague")
+        .await
+        .expect("the delegate's grant must follow the owner row");
+    for verb in batlehub_core::services::ownership_grants::OWNERSHIP_ACTIONS {
+        assert!(
+            actions.contains(verb),
+            "{verb} must be projected: {actions:?}"
+        );
+    }
+    // …and the owner row and the grant agree about who is an owner.
+    let owners = ownership
+        .list_owners("local-cargo", "delegating")
+        .await
+        .unwrap();
+    assert!(owners.iter().any(|o| o.principal_id == "colleague"));
+}
+
+/// `cargo owner --remove` takes it back.
+///
+/// The half that was missing for longest, and the one with a consequence: a
+/// removed owner whose grant outlives them holds `releases:publish` and
+/// `owners:write` on the package for good.
+#[actix_web::test]
+async fn cargo_remove_owners_takes_the_package_tier_grant_back() {
+    let (app, ownership, grants) = make_local_cargo_ownership_app(RegistryMode::Local).await;
+    publish_owned(&app, "revoking").await;
+
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/revoking/owners")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_json(serde_json::json!({ "users": ["colleague"] }))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+    assert!(
+        owner_grant(&grants, "revoking", "user:colleague")
+            .await
+            .is_some(),
+        "the control: the grant has to exist before removing it can prove anything"
+    );
+
+    let req = TestRequest::delete()
+        .uri("/proxy/local-cargo/api/v1/crates/revoking/owners")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_json(serde_json::json!({ "users": ["colleague"] }))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    assert!(
+        owner_grant(&grants, "revoking", "user:colleague")
+            .await
+            .is_none(),
+        "a removed owner must not keep releases:publish and owners:write on the package"
+    );
+    assert!(
+        ownership
+            .list_owners("local-cargo", "revoking")
+            .await
+            .unwrap()
+            .iter()
+            .all(|o| o.principal_id != "colleague"),
+        "…and the two stores must agree about it"
+    );
+    // The remaining owner is untouched: removal is per subject, not per node.
+    assert!(owner_grant(&grants, "revoking", "user:user-1")
+        .await
+        .is_some());
+}
+
+/// A refused `--add` writes no grant either.
+///
+/// The projection runs after the inner store, so a call the store refuses never
+/// reaches it — asserted rather than assumed, because "the mutation happened"
+/// and "the request returned 200" are different facts and the write half of
+/// §11.1 exists because a handler can do one without the other.
+#[actix_web::test]
+async fn a_refused_owner_change_writes_no_grant() {
+    let (app, _ownership, grants) = make_local_cargo_ownership_app(RegistryMode::Local).await;
+    publish_owned(&app, "guarded").await;
+
+    // The admin token is a different principal, and ownership is not role-based.
+    let req = TestRequest::put()
+        .uri("/proxy/local-cargo/api/v1/crates/guarded/owners")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({ "users": ["mallory"] }))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
+
+    assert!(
+        owner_grant(&grants, "guarded", "user:mallory")
+            .await
+            .is_none(),
+        "a refused request must leave no trace in either store"
     );
 }

@@ -96,6 +96,13 @@ tasks:
         vars:
           TEST: pg_cache
 
+  test:pg-grants:
+    desc: Run GrantRepository integration tests (starts a temporary Postgres container via Podman)
+    cmds:
+      - task: pg
+        vars:
+          TEST: pg_grants
+
   test:pg-vulnerability:
     desc: Run PgVulnerabilityRepository integration tests (starts a temporary Postgres container via Podman)
     cmds:

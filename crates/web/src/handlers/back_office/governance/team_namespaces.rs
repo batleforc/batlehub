@@ -11,7 +11,6 @@ use batlehub_core::{
     services::AdminService,
 };
 
-use super::super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity};
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -81,7 +80,7 @@ pub struct ClaimNamespaceRequest {
     params(("registry" = String, Path, description = "Registry name")),
     responses(
         (status = 200, description = "Namespace list", body = Vec<TeamNamespaceDto>),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`owners:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -90,9 +89,16 @@ pub async fn list_namespaces(
     path: web::Path<(String,)>,
     identity: AuthIdentity,
     store: web::Data<Arc<dyn TeamNamespacePort>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let (registry,) = path.into_inner();
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::OwnersRead,
+        Some(&registry),
+        &hot,
+    )
+    .await?;
     let namespaces = store
         .list_namespaces(&registry)
         .await
@@ -109,7 +115,7 @@ pub async fn list_namespaces(
     request_body = ClaimNamespaceRequest,
     responses(
         (status = 204, description = "Namespace claimed"),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`owners:write` required"),
         (status = 409, description = "Prefix already claimed"),
     ),
     security(("bearer_token" = [])),
@@ -121,9 +127,16 @@ pub async fn claim_namespace(
     identity: AuthIdentity,
     store: web::Data<Arc<dyn TeamNamespacePort>>,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let (registry,) = path.into_inner();
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::OwnersWrite,
+        Some(&registry),
+        &hot,
+    )
+    .await?;
     if body.prefix.is_empty() {
         return Err(AppError::bad_request("prefix must not be empty"));
     }
@@ -161,7 +174,7 @@ pub async fn claim_namespace(
     ),
     responses(
         (status = 204, description = "Namespace released (or did not exist)"),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`owners:write` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -171,9 +184,16 @@ pub async fn release_namespace(
     identity: AuthIdentity,
     store: web::Data<Arc<dyn TeamNamespacePort>>,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let (registry, prefix) = path.into_inner();
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::OwnersWrite,
+        Some(&registry),
+        &hot,
+    )
+    .await?;
     store
         .release_namespace(&registry, &prefix)
         .await
@@ -314,7 +334,7 @@ pub async fn my_namespace_packages(
         .map(|p| NamespacePackageDto {
             name: p.name,
             version: p.version,
-            visibility: p.visibility.clone(),
+            visibility: p.visibility,
             published_by: p.published_by,
             published_at: p.published_at,
             yanked: p.yanked,

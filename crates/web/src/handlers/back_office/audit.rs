@@ -12,7 +12,6 @@ use batlehub_core::{
     services::AdminService,
 };
 
-use super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity, handlers::schemas::ProtocolDocument};
 
 #[derive(Deserialize, IntoParams)]
@@ -51,7 +50,7 @@ pub struct AuditLogResponse {
     params(AuditQuery),
     responses(
         (status = 200, description = "Paginated access events", body = AuditLogResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`audit:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -60,8 +59,15 @@ pub async fn audit_log(
     query: web::Query<AuditQuery>,
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::AuditRead,
+        None,
+        &hot,
+    )
+    .await?;
 
     let (page, per_page) = crate::handlers::clamp_pagination(query.page, query.per_page);
     let filter = EventFilter {
@@ -139,7 +145,7 @@ fn default_export_format(fmt: &str) -> &'static str {
             (Vec<AccessEvent> = "application/json"),
             (ProtocolDocument = "text/csv"),
         )),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`audit:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -148,8 +154,15 @@ pub async fn export_audit_log(
     query: web::Query<ExportQuery>,
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<HttpResponse, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::AuditRead,
+        None,
+        &hot,
+    )
+    .await?;
 
     let filter = EventFilter {
         registry: query.registry.clone(),
@@ -249,7 +262,7 @@ pub struct PurgeResponse {
     params(PurgeQuery),
     responses(
         (status = 200, description = "Number of rows deleted", body = PurgeResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`audit:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -258,8 +271,15 @@ pub async fn purge_audit_log(
     query: web::Query<PurgeQuery>,
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::AuditRead,
+        None,
+        &hot,
+    )
+    .await?;
     let deleted = admin_svc
         .purge_events_before(query.before, &identity.0)
         .await

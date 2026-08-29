@@ -13,6 +13,7 @@ use crate::RegistryModeMap;
 use crate::badges::socket_badge_url;
 use crate::handlers::back_office::packages::detail::VulnerabilityDto;
 use crate::RegistryMap;
+use batlehub_core::entities::Action;
 
 /// Which SBOM formats a version actually has here, so the console can say *no
 /// SBOM* instead of offering a download that can only 404.
@@ -599,7 +600,7 @@ pub async fn explore_package_detail(
         // coordinate and snapshots the hot config and does **not** evaluate the
         // registry's rules — `RbacRule` is applied in `handle`/
         // `resolve_metadata_for`, neither of which is on this path. So the
-        // `resource_type: "releases:read"` and the identity it threads through
+        // `action: "releases:read"` and the identity it threads through
         // are never consulted, and an anonymous `GET` against a registry with
         // `rbac.anonymous = []` made this server fetch upstream on their behalf
         // and hand back the full version list, publish dates and deprecation
@@ -820,7 +821,15 @@ fn held_version_rows(
             // Graded in `enrich_page`, the one funnel every rendered row passes
             // through — see `version_state`.
             state: String::new(),
-            is_prerelease: summary.package_id.version.contains('-'),
+            // RFC 0015 §4.5's one definition, not `contains('-')`. The crude
+            // rule was defended by this table's own consistency — two lists in
+            // one table must grade a row the same way — and one shared function
+            // serves that better than two matching approximations do. It is a
+            // visible change: `1.0-SNAPSHOT` is now labelled a pre-release,
+            // correctly, and `2.0.0+build-1` stops being one.
+            is_prerelease: batlehub_core::services::version_order::is_prerelease(
+                &summary.package_id.version,
+            ),
             version: summary.package_id.version.clone(),
             source: "proxied".to_string(),
             firewall,
@@ -848,7 +857,9 @@ fn held_version_rows(
             readme: readme_state(&pkg.version),
             vulnerabilities_scanned: true,
             state: String::new(),
-            is_prerelease: pkg.version.contains('-'),
+            // The same definition as the proxied rows above, which is the
+            // property this table needed all along.
+            is_prerelease: batlehub_core::services::version_order::is_prerelease(&pkg.version),
             version: pkg.version,
             source: "local".to_string(),
             firewall,
@@ -1274,7 +1285,7 @@ async fn package_links(input: LinkInput<'_>) -> Option<PackageLinksDto> {
                 let req = batlehub_core::services::proxy::ProxyRequest {
                     package_id,
                     identity: identity.clone(),
-                    resource_type: batlehub_core::rules::resource_type::RELEASES_READ.to_owned(),
+                    action: Action::ReleasesRead.to_owned(),
                     ip_address: None,
                     user_agent: None,
                 };

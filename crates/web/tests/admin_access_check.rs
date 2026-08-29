@@ -18,12 +18,12 @@ use batlehub_core::{
     ports::{IpBlockStore, PackageRepository, UserBlockRepository},
 };
 
-fn access_check_body(resource_type: &str, role: &str, package_name: &str) -> Value {
+fn access_check_body(action: &str, role: &str, package_name: &str) -> Value {
     json!({
         "registry": "npm",
         "package_name": package_name,
         "version": "1.0.0",
-        "resource_type": resource_type,
+        "resource_type": action,
         "role": role,
     })
 }
@@ -132,8 +132,8 @@ async fn denies_anonymous_read_of_user_only_resource() {
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
     assert_eq!(body["decision"], "deny");
-    assert!(body["reason"].as_str().unwrap().contains("not permitted"));
-    assert_eq!(body["rule_matched"], "rbac");
+    assert!(body["reason"].as_str().unwrap().contains("no grant"));
+    assert_eq!(body["rule_matched"], "grants");
 }
 
 #[actix_web::test]
@@ -297,9 +297,15 @@ async fn reports_the_ip_layer_when_both_would_block() {
     assert_eq!(resp["blocked_by"], "ip");
 }
 
-/// A rule deny still reads as a rule deny, and still names the rule.
+/// A grant deny reads as a rule-layer deny, and names the layer that refused.
+///
+/// `rule_matched` was `"rbac"` until RFC 0015 phase 3 replaced that rule with
+/// grant resolution (§5.1). The layer is `"grants"` now — and the change is
+/// visible on purpose: the simulator's whole value is naming *which line to
+/// edit*, and pointing at a rule that no longer exists would be worse than
+/// saying nothing.
 #[actix_web::test]
-async fn a_rule_deny_is_attributed_to_the_rule_layer() {
+async fn a_grant_deny_is_attributed_to_the_grant_layer() {
     let app = make_app(InMemoryRepo::new()).await;
     let resp = post_access_check(
         &app,
@@ -309,7 +315,7 @@ async fn a_rule_deny_is_attributed_to_the_rule_layer() {
 
     assert_eq!(resp["decision"], "deny");
     assert_eq!(resp["blocked_by"], "rule");
-    assert_eq!(resp["rule_matched"], "rbac");
+    assert_eq!(resp["rule_matched"], "grants");
 }
 
 #[actix_web::test]

@@ -23,6 +23,7 @@ use super::protocol::asset_type;
 use super::{archive, require_single_segment, require_vsx, VSIX_ARTIFACT};
 use crate::handlers::schemas::ArtifactBytes;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+use batlehub_core::entities::Action;
 
 /// `GET …/vscode/gallery/publishers/{publisher}/vsextensions/{name}/{version}/vspackage`
 ///
@@ -320,7 +321,7 @@ pub(super) async fn vsix_bytes(
                 registry,
                 extension_id,
                 version,
-                batlehub_core::rules::resource_type::SOURCE_READ,
+                Action::SourceRead,
                 &identity.0,
             )
             .await
@@ -339,7 +340,7 @@ pub(super) async fn vsix_bytes(
     let req = ProxyRequest {
         package_id: pkg.with_artifact(VSIX_ARTIFACT),
         identity: identity.0.clone(),
-        resource_type: batlehub_core::rules::resource_type::SOURCE_READ.to_owned(),
+        action: Action::SourceRead.to_owned(),
         ip_address: None,
         user_agent: None,
     };

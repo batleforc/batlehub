@@ -11,8 +11,8 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
-    error::AppError, extractors::AuthIdentity, handlers::back_office::require_admin,
-    handlers::schemas::OkResponse, services::verify_inbound_hmac,
+    error::AppError, extractors::AuthIdentity, handlers::schemas::OkResponse,
+    services::verify_inbound_hmac,
 };
 use batlehub_core::ports::NotificationPort;
 
@@ -137,7 +137,7 @@ pub struct InboundEventsResponse {
     tag = "back-office",
     responses(
         (status = 200, description = "Inbound events", body = InboundEventsResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`system:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -145,8 +145,15 @@ pub struct InboundEventsResponse {
 pub async fn list_inbound_events(
     identity: AuthIdentity,
     notification_store: web::Data<Arc<dyn NotificationPort>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::SystemRead,
+        None,
+        &hot,
+    )
+    .await?;
     let events = notification_store.list_inbound_events(100).await?;
     Ok(web::Json(InboundEventsResponse { events }))
 }

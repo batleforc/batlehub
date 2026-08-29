@@ -1,7 +1,6 @@
 use super::{
-    default_per_page, get, post, require_admin, web, ActionResponse, AdminService, AppError, Arc,
-    AuthIdentity, Deserialize, IntoParams, PackageFilter, PackageId, ProxyService, Responder,
-    ToSchema,
+    default_per_page, get, post, web, ActionResponse, AdminService, AppError, Arc, AuthIdentity,
+    Deserialize, IntoParams, PackageFilter, PackageId, ProxyService, Responder, ToSchema,
 };
 
 // ── List all packages ─────────────────────────────────────────────────────────
@@ -37,7 +36,7 @@ pub struct AdminPackageListResponse {
     params(AdminPackageQuery),
     responses(
         (status = 200, description = "Full package listing with statuses, paginated", body = AdminPackageListResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`packages:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -46,8 +45,18 @@ pub async fn list_packages(
     query: web::Query<AdminPackageQuery>,
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    // `packages:read`, and scoped to the registry when the query names one.
+    // A query that names none spans every registry, so it resolves at the
+    // instance tier — the only node that can speak for all of them.
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::PackagesRead,
+        query.registry.as_deref(),
+        &hot,
+    )
+    .await?;
 
     let (page, per_page) = crate::handlers::clamp_pagination(query.page, query.per_page);
     let filter = PackageFilter {
@@ -102,7 +111,7 @@ pub struct BlockRequest {
     request_body = BlockRequest,
     responses(
         (status = 200, description = "Package blocked", body = ActionResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`packages:block` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -111,8 +120,18 @@ pub async fn block_package(
     identity: AuthIdentity,
     body: web::Json<BlockRequest>,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    // The registry is named in the body rather than the path, so the
+    // check waits for it: a control verb resolves against the registry
+    // it is about, which is what makes it delegable per registry.
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::PackagesBlock,
+        Some(&body.registry),
+        &hot,
+    )
+    .await?;
 
     let pkg = PackageId {
         registry: body.registry.clone(),
@@ -148,7 +167,7 @@ pub struct UnblockRequest {
     request_body = UnblockRequest,
     responses(
         (status = 200, description = "Package unblocked", body = ActionResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`packages:block` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -157,8 +176,18 @@ pub async fn unblock_package(
     identity: AuthIdentity,
     body: web::Json<UnblockRequest>,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    // The registry is named in the body rather than the path, so the
+    // check waits for it: a control verb resolves against the registry
+    // it is about, which is what makes it delegable per registry.
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::PackagesBlock,
+        Some(&body.registry),
+        &hot,
+    )
+    .await?;
 
     let pkg = PackageId {
         registry: body.registry.clone(),
@@ -199,7 +228,7 @@ pub struct DeletePackageRequest {
     request_body = DeletePackageRequest,
     responses(
         (status = 200, description = "Package deleted", body = ActionResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`releases:delete` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -209,8 +238,27 @@ pub async fn delete_package(
     body: web::Json<DeletePackageRequest>,
     admin_svc: web::Data<Arc<AdminService>>,
     proxy_svc: web::Data<Arc<ProxyService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    // The registry is named in the body rather than the path, so the
+    // check waits for it: a control verb resolves against the registry
+    // it is about, which is what makes it delegable per registry.
+    // **Instance tier, not the registry.** §10 rule 5 grants `releases:yank`
+    // and `releases:delete` to `role:user` on every local and hybrid registry,
+    // because that is what `has_role_at_least(&Role::User)` meant on the
+    // per-package lifecycle path. This is not that path: it is the
+    // administrative bulk surface, which mutates many packages at once and
+    // bypasses the ownership check the per-package route applies. Resolving it
+    // against the registry tier would hand every `role:user` an endpoint
+    // `require_admin` reserved — which a pre-existing test caught, and which is
+    // exactly the widening §7 calls the migration's central risk.
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::ReleasesDelete,
+        None,
+        &hot,
+    )
+    .await?;
 
     let pkg = PackageId {
         registry: body.registry.clone(),
@@ -275,7 +323,7 @@ pub struct InvalidateRequest {
     request_body = InvalidateRequest,
     responses(
         (status = 200, description = "Cache purged", body = ActionResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`cache:evict` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -284,8 +332,18 @@ pub async fn invalidate_package(
     identity: AuthIdentity,
     body: web::Json<InvalidateRequest>,
     proxy_svc: web::Data<Arc<ProxyService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    // The registry is named in the body rather than the path, so the
+    // check waits for it: a control verb resolves against the registry
+    // it is about, which is what makes it delegable per registry.
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::CacheEvict,
+        Some(&body.registry),
+        &hot,
+    )
+    .await?;
 
     let pkg = PackageId {
         registry: body.registry.clone(),

@@ -176,8 +176,14 @@ impl LocalRegistryService {
         identity: &Identity,
     ) -> Result<Vec<Vec<OpenVsxExtensionVersion>>, CoreError> {
         let names = self.backend.list_package_names(registry).await?;
+        let readable = self.readable_packages(registry, identity).await?;
         let mut hits: Vec<Vec<OpenVsxExtensionVersion>> = Vec::new();
         for name in names {
+            // RFC 0015 §4.4, and finding 11's lesson one layer up: a search is a
+            // listing, and a listing shows what this caller may see.
+            if !readable.contains(&name) {
+                continue;
+            }
             let versions = match self.load_visible_versions(registry, &name, identity).await {
                 Ok(v) => v,
                 Err(CoreError::AccessDenied(_)) => continue,
