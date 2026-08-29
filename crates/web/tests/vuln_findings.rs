@@ -67,7 +67,26 @@ async fn make_vuln_app(
     ]
     .into();
 
+    // §4.2 — the explore routes resolve `catalogue:browse` from the hierarchy,
+    // so a fixture that only sets `access_config_with_explore` grants it to
+    // nobody and the detail page answers `404`.
+    let grants: HashMap<String, Arc<batlehub_core::entities::RegistryGrants>> = ["npm", "cargo"]
+        .into_iter()
+        .map(|n| {
+            (
+                n.to_owned(),
+                Arc::new(fixture_grants(
+                    n,
+                    n,
+                    &batlehub_config::schema::RegistryMode::Proxy,
+                    &rbac_policy_perms(),
+                )),
+            )
+        })
+        .collect();
+
     let hot = new_hot_lock(HotConfig {
+        grants,
         // RFC 0015 §4.2's instance tier, wired exactly as production wires it:
         // `instance_node` is §10 rule 5's own translation, so the fixture's admin
         // holds the control verbs and nobody else does. Without it every

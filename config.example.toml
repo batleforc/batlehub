@@ -268,16 +268,41 @@ path = "./tmp/storage-cache"
 
 # ── Registries ────────────────────────────────────────────────────────────────
 
-# Permissions available:
-#   releases:read  — list releases and download release assets
-#   source:read    — download source tarballs
-#   actions:read   — access Actions artifacts (future)
+# Permissions available — the set is CLOSED. A verb that is not one of these is
+# a startup error, not a permission granted to nobody. The full list of 31 is in
+# /guide/access-control#verbs; the ones a registry block usually wants:
+#   releases:read      — download an artifact
+#   releases:list      — read a version listing or index document
+#   source:read        — download source tarballs
+#   releases:publish   — publish a new version
+#   catalogue:browse   — use the console's package explorer
+#
+# (An earlier version of this comment offered `actions:read` "(future)". No such
+# verb has ever existed, and uncommenting it stopped the server from starting.)
 #
 # Dynamic groups (from OIDC providers like Authentik):
 #   [registries.rbac.groups]
 #   "team-a" = ["releases:read", "source:read"]
 #   "team-b" = ["releases:read"]
 # A user belonging to a group sees the union of their role's registries and all their groups'.
+
+# ── Grants: the hierarchy (RFC 0015) ─────────────────────────────────────────
+#
+# `[registries.rbac]` above still works exactly as it always did — it is
+# translated into grants at load, so nothing here needs changing. What the
+# hierarchy adds is the ability to say things `rbac` cannot: a verb for one
+# group, a policy on part of a registry, and the control surfaces.
+#
+# Five tiers: instance → registry → namespace → package → version. The first
+# three are written here; the last two go through the admin API, because a
+# registry with 200 000 packages will not enumerate them in TOML.
+
+# Instance tier — above every registry, and the only place that can reach an
+# endpoint naming no registry (health, metrics, config, the block lists).
+# `role:admin` already holds all of these; this block is for giving one to
+# somebody else.
+[grants]
+"group:*:sre" = ["system:read", "cache:evict"]
 
 [[registries]]
 type = "github"
@@ -288,6 +313,25 @@ name = "github"
 anonymous = []
 user = ["releases:read", "source:read"]
 admin = ["*"]
+
+# Registry tier — the default for everything beneath it. Unioned with whatever
+# the `rbac` block above translates to; a grant only ever adds.
+[registries.grants]
+"group:*:release-eng" = ["releases:publish", "owners:write"]
+
+# Namespace tier — matched on segment boundaries with the ecosystem's own
+# separator, so `acme/internal` never matches `acme/internal-tools`.
+[[registries.namespaces]]
+match      = "acme/internal"
+visibility = "team"
+
+# `grants = {}` SEALS: nothing is inherited from above, and only what is written
+# on this node or below applies. An absent block inherits; an empty one seals.
+# They are different states, which is why the key is optional rather than
+# defaulted. The administrative floor survives a seal, so a sealed subtree is
+# never one an administrator cannot reopen.
+[registries.namespaces.grants]
+"group:oidc1:platform" = ["releases:read", "releases:list", "releases:publish"]
 
 # Optional: grant access to this registry for specific OIDC groups.
 # [registries.rbac.groups]

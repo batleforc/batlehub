@@ -93,6 +93,44 @@ pub trait LocalRegistryBackend: Send + Sync {
     /// Returns `true` when a published version's pin changed. A no-op returns
     /// `false` rather than erroring, so setting a pin that is already set is
     /// safe to repeat.
+    /// Move a published version to a release channel (RFC 0015 §4.2).
+    ///
+    /// JetBrains Marketplace serves plugin builds on a channel — the empty string
+    /// is Stable, anything else (`eap`, `nightly`) is its own feed — and the
+    /// channel is read from `index_metadata.channel`, set once at publish. This
+    /// is what moves it afterwards.
+    ///
+    /// # A channel move is not a replacement, and `immutable` does not apply
+    ///
+    /// The question §4.5 raises is whether repointing a published version at
+    /// another channel counts as replacing it. §13.6 already answered the general
+    /// form: *"immutability is a question about **bytes**, not about a
+    /// coordinate"* — which is why `PublishPolicyRequest::artifact_key` exists and
+    /// why a Maven `.jar` is judged on its key rather than on its version row. A
+    /// channel move changes no byte: the artifact, its checksum and its signature
+    /// are untouched, and a client that already downloaded it is unaffected.
+    ///
+    /// So this is a narrow, purpose-named method rather than a general
+    /// `set_index_metadata`. The generic one would be a way to mutate anything on
+    /// a published version — including the checksum — behind a verb that names one
+    /// field, which is the shape `immutable` exists to prevent.
+    ///
+    /// Returns `true` when a row changed, `false` when the version is absent or
+    /// already on that channel.
+    /// **Required, not defaulted.** A default returning `false` compiled fine and
+    /// made every backend that had not implemented it into a silent no-op — which
+    /// is how the first version of this shipped, and what the tests caught: the
+    /// mock inherited the default and reported "nothing changed" for a move the
+    /// caller had been authorized to make. A port method whose default is a lie
+    /// about what happened is worse than a compile error.
+    async fn set_channel(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        channel: &str,
+    ) -> Result<bool, CoreError>;
+
     async fn set_retention_keep(
         &self,
         _registry: &str,

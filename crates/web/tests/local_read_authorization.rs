@@ -80,6 +80,7 @@ async fn make_team_only(ns_store: &InMemoryTeamNamespaceStore, registry: &str, p
             prefix: package.to_owned(),
             group_id: "team-nobody".to_owned(),
             claimed_by: Some("admin".to_owned()),
+            separator: '/',
         })
         .await
         .expect("claim namespace");
@@ -772,7 +773,19 @@ async fn a_namespace_grant_below_a_seal_reaches_available_packages() {
             &[Action::ReleasesRead, Action::ReleasesList],
             // Config order is path order, so the seal comes first and the
             // narrower block below it re-opens exactly what it names.
-            &[("acme", None), ("acme/lib", Some(&[Action::ReleasesRead]))],
+            // **Both verbs.** The seal removes everything the registry granted,
+            // `releases:list` included, and a listing's gate is `releases:list`
+            // now (§4.2) — so re-opening only the read verb serves the name in
+            // the inventory and then refuses the document it points at. §10
+            // rule 4 gives translated configs both together for exactly this
+            // reason; a hand-written grants block has to say so.
+            &[
+                ("acme", None),
+                (
+                    "acme/lib",
+                    Some(&[Action::ReleasesRead, Action::ReleasesList]),
+                ),
+            ],
         ),
     )
     .await;

@@ -20,8 +20,8 @@ pub use banner::BannerPort;
 pub use config_change::{ConfigChangeRecord, ConfigChangeRepository};
 pub use governance::{
     version_node_key, BetaChannelEntry, BetaChannelPort, GrantRepository, NodeKind, OwnerEntry,
-    OwnershipPort, PolicyRepository, StoredGrant, StoredPolicy, TeamNamespacePort, UserBlock,
-    UserBlockRepository,
+    OwnershipPort, PolicyRepository, SigningKeyPort, StoredGrant, StoredPolicy, TeamNamespacePort,
+    UserBlock, UserBlockRepository,
 };
 pub use notification::NotificationPort;
 pub use ops::{

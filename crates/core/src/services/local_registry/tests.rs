@@ -51,6 +51,36 @@ impl crate::ports::LocalRegistryBackend for InMemBackend {
     async fn undeprecate(&self, _: &str, _: &str, _: &str) -> Result<(), CoreError> {
         Ok(())
     }
+    async fn set_channel(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        channel: &str,
+    ) -> Result<bool, CoreError> {
+        let mut v = self.versions.lock().unwrap();
+        match v
+            .iter_mut()
+            .find(|p| p.registry == registry && p.name == name && p.version == version)
+        {
+            Some(p) => {
+                let current = p
+                    .index_metadata
+                    .get("channel")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or_default();
+                if current == channel {
+                    return Ok(false);
+                }
+                if let Some(obj) = p.index_metadata.as_object_mut() {
+                    obj.insert("channel".to_owned(), serde_json::json!(channel));
+                }
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     async fn unlist(&self, _: &str, _: &str, _: &str) -> Result<(), CoreError> {
         Ok(())
     }
@@ -984,6 +1014,7 @@ impl MockTeamNamespace {
                 prefix: prefix.to_owned(),
                 group_id: group.to_owned(),
                 claimed_by: None,
+                separator: '/',
             });
         s
     }
@@ -1004,15 +1035,17 @@ impl TeamNamespacePort for MockTeamNamespace {
         registry: &str,
         package: &str,
     ) -> Result<Option<crate::entities::TeamNamespace>, CoreError> {
+        // `TeamNamespace::covers`, not a fifth spelling of it.
+        //
+        // This mock carried its own matcher hardcoded to `/`, which made it agree
+        // with the three real ones by coincidence — and stop agreeing the moment
+        // migration 045 made the separator per-claim. §6.3 requires every copy of
+        // this rule to agree character for character; the way to get that is for
+        // there to be one copy.
         let ns = self.namespaces.lock().unwrap();
         let result = ns
             .iter()
-            .filter(|n| {
-                n.registry == registry
-                    && (package == n.prefix
-                        || (package.len() > n.prefix.len()
-                            && package[..n.prefix.len() + 1] == format!("{}/", n.prefix)))
-            })
+            .filter(|n| n.registry == registry && n.covers(package))
             .max_by_key(|n| n.prefix.len())
             .cloned();
         Ok(result)
@@ -1023,7 +1056,21 @@ impl TeamNamespacePort for MockTeamNamespace {
     ) -> Result<Vec<crate::entities::TeamNamespace>, CoreError> {
         Ok(vec![])
     }
-    async fn claim_namespace(&self, _: crate::entities::TeamNamespace) -> Result<(), CoreError> {
+    async fn claim_namespace(&self, ns: crate::entities::TeamNamespace) -> Result<(), CoreError> {
+        // Stores, and refuses a second claim — a mock that silently accepted one
+        // would let `a_second_claim_is_refused` pass against a store that takes
+        // over rather than conflicts, which is the behaviour that test exists for.
+        let mut all = self.namespaces.lock().unwrap();
+        if all
+            .iter()
+            .any(|n| n.registry == ns.registry && n.prefix == ns.prefix)
+        {
+            return Err(CoreError::Conflict(format!(
+                "namespace '{}' in registry '{}' is already claimed",
+                ns.prefix, ns.registry
+            )));
+        }
+        all.push(ns);
         Ok(())
     }
     async fn release_namespace(&self, _: &str, _: &str) -> Result<(), CoreError> {
@@ -2552,6 +2599,10 @@ impl crate::ports::LocalRegistryBackend for CommitFailBackend {
     ) -> Result<(), CoreError> {
         self.inner.undeprecate(registry, name, version).await
     }
+    async fn set_channel(&self, _: &str, _: &str, _: &str, _: &str) -> Result<bool, CoreError> {
+        Ok(false)
+    }
+
     async fn unlist(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError> {
         self.inner.unlist(registry, name, version).await
     }
@@ -3013,5 +3064,397 @@ mod write_verbs {
             s.publish(req).await.unwrap_err(),
             CoreError::AccessDenied(_)
         ));
+    }
+}
+
+// ── RFC 0015 §4.2/§4.4 — `releases:list` and `releases:read` are separable ────
+//
+// §4.4's opening sentence describes a caller *"holding `releases:list` on a
+// namespace but `releases:read` on only some of its packages"*, and until the
+// listing funnel requested `releases:list` that configuration was inexpressible:
+// both documents and artifacts asked for the same verb, so a grant naming one of
+// them either opened both or closed both.
+//
+// Asserted in both directions on one service, because an implementation that got
+// either backwards would pass the other.
+mod listing_verb {
+    use super::*;
+    use crate::entities::{
+        Action, GrantMap, Node, RegistryGrants, RegistryKind, SubjectMatcher, Tier,
+    };
+
+    fn svc_granting(verbs: &[Action]) -> (LocalRegistryService, Arc<InMemBackend>) {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("npm", "pkg", "1.0.0"));
+        let s = svc(
+            Arc::clone(&backend) as Arc<dyn crate::ports::LocalRegistryBackend>,
+            None,
+        );
+        futures::executor::block_on(async {
+            s.hot.write().await.grants.insert(
+                "npm".to_owned(),
+                Arc::new(RegistryGrants {
+                    kind: RegistryKind::Npm,
+                    registry: Node::new(
+                        Tier::Registry,
+                        "registry:npm",
+                        Some(GrantMap::new().grant(SubjectMatcher::Anyone, verbs.to_vec())),
+                    ),
+                    namespaces: Vec::new(),
+                }),
+            );
+        });
+        (s, backend)
+    }
+
+    /// `releases:list` alone serves the version document.
+    ///
+    /// The caller holds no `releases:read`, so before the funnel requested the
+    /// listing verb this was a refusal — the document and the bytes were one
+    /// permission.
+    #[tokio::test]
+    async fn list_without_read_serves_the_version_document() {
+        let (s, _b) = svc_granting(&[Action::ReleasesList]);
+        let doc = s
+            .get_npm_packument("npm", "pkg", "http://x", &user())
+            .await
+            .expect("a caller holding releases:list may read the version document");
+        assert!(doc["versions"].get("1.0.0").is_some());
+    }
+
+    /// …and does not serve the artifact.
+    ///
+    /// The half that makes the split worth having: §4.4's caller sees the index
+    /// and is refused the bytes, on the same coordinate.
+    #[tokio::test]
+    async fn list_without_read_is_refused_the_artifact() {
+        let (s, _b) = svc_granting(&[Action::ReleasesList]);
+        let err = s
+            .get_artifact("npm", "pkg", "1.0.0", Action::ReleasesRead, &user())
+            .await
+            .expect_err("releases:list must not carry the bytes");
+        assert!(matches!(err, CoreError::AccessDenied(_)), "{err:?}");
+    }
+
+    /// The inverse: `releases:read` alone is refused the document.
+    ///
+    /// Asserted because an implementation that requested `releases:list` for the
+    /// artifact *too* would pass the pair above and fail here — the two tests
+    /// together pin which verb goes where rather than that two verbs exist.
+    ///
+    /// Note this configuration cannot arise from `[registries.rbac]`: §10 rule 4
+    /// gives `releases:list` to anyone holding `releases:read`, precisely so no
+    /// migrated estate lands here. It takes a hand-written grants block, which is
+    /// what the verb is for.
+    #[tokio::test]
+    async fn read_without_list_is_refused_the_document() {
+        let (s, _b) = svc_granting(&[Action::ReleasesRead]);
+        let err = s
+            .get_npm_packument("npm", "pkg", "http://x", &user())
+            .await
+            .expect_err("releases:read must not carry the version document");
+        assert!(matches!(err, CoreError::AccessDenied(_)), "{err:?}");
+    }
+
+    /// §10 rule 4's guarantee, as a test: the translation gives both together, so
+    /// no config that reached a document yesterday is refused one today.
+    #[tokio::test]
+    async fn the_migration_grants_both_so_nothing_regresses() {
+        let (s, _b) = svc_granting(&[Action::ReleasesRead, Action::ReleasesList]);
+        assert!(s
+            .get_npm_packument("npm", "pkg", "http://x", &user())
+            .await
+            .is_ok());
+    }
+}
+
+// ── RFC 0015 §4.2 — `jetbrains:channel:assign` ───────────────────────────────
+//
+// The verb §13.13 listed as gating an unimplemented action. What made it
+// implementable in a day rather than a week is that the *read* side already
+// selected on `channel` (`eco_jetbrains.rs`) — only the write was missing.
+mod channel_assign {
+    use super::*;
+    use crate::entities::{
+        Action, GrantMap, Node, RegistryGrants, RegistryKind, SubjectMatcher, Tier,
+    };
+
+    fn plugin(channel: &str) -> PublishedPackage {
+        let mut p = pkg("jb", "com.acme.plugin", "1.0.0");
+        p.index_metadata = serde_json::json!({ "channel": channel });
+        p
+    }
+
+    fn svc_granting(verbs: &[Action], seed: PublishedPackage) -> LocalRegistryService {
+        let backend = InMemBackend::arc();
+        backend.seed(seed);
+        let s = svc(backend, None);
+        futures::executor::block_on(async {
+            s.hot.write().await.grants.insert(
+                "jb".to_owned(),
+                Arc::new(RegistryGrants {
+                    kind: RegistryKind::Jetbrains,
+                    registry: Node::new(
+                        Tier::Registry,
+                        "registry:jb",
+                        Some(GrantMap::new().grant(SubjectMatcher::Anyone, verbs.to_vec())),
+                    ),
+                    namespaces: Vec::new(),
+                }),
+            );
+        });
+        s
+    }
+
+    async fn channel_of(s: &LocalRegistryService) -> String {
+        s.backend
+            .get_versions("jb", "com.acme.plugin")
+            .await
+            .unwrap()
+            .first()
+            .and_then(|p| p.index_metadata.get("channel").cloned())
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default()
+    }
+
+    /// The verb moves a build between channels.
+    #[tokio::test]
+    async fn the_verb_moves_a_build_to_another_channel() {
+        let s = svc_granting(&[Action::JetbrainsChannelAssign], plugin(""));
+        assert_eq!(channel_of(&s).await, "", "the control: it starts on Stable");
+
+        let changed = s
+            .assign_channel("jb", "com.acme.plugin", "1.0.0", "eap", &user())
+            .await
+            .expect("the grant permits it");
+        assert!(changed);
+        assert_eq!(channel_of(&s).await, "eap");
+    }
+
+    /// …and nothing else does.
+    ///
+    /// §4.2's whole argument for an ecosystem verb: *"forcing it into an existing
+    /// verb makes the grant mean something different on npm than it does anywhere
+    /// else"*. A caller holding every shared write verb still cannot move a
+    /// channel.
+    #[tokio::test]
+    async fn no_shared_write_verb_carries_a_channel_move() {
+        let s = svc_granting(
+            &[
+                Action::ReleasesPublish,
+                Action::ReleasesOverwrite,
+                Action::ReleasesYank,
+                Action::ReleasesDelete,
+            ],
+            plugin(""),
+        );
+        let err = s
+            .assign_channel("jb", "com.acme.plugin", "1.0.0", "eap", &user())
+            .await
+            .expect_err("only jetbrains:channel:assign carries this");
+        assert!(
+            matches!(err, CoreError::AccessDenied(ref m) if m.contains("jetbrains:channel:assign")),
+            "{err:?}"
+        );
+        assert_eq!(channel_of(&s).await, "", "and nothing moved");
+    }
+
+    /// The empty string is Stable, not a missing value.
+    ///
+    /// JetBrains' own convention, and the one `eco_jetbrains.rs` already reads
+    /// when selecting builds — so moving *back* to Stable has to be expressible
+    /// rather than being indistinguishable from "no channel given".
+    #[tokio::test]
+    async fn the_empty_channel_is_stable_and_is_assignable() {
+        let s = svc_granting(&[Action::JetbrainsChannelAssign], plugin("eap"));
+        assert!(s
+            .assign_channel("jb", "com.acme.plugin", "1.0.0", "", &user())
+            .await
+            .unwrap());
+        assert_eq!(channel_of(&s).await, "");
+    }
+
+    /// A move to the channel it is already on reports `false` and writes nothing.
+    #[tokio::test]
+    async fn a_move_to_the_same_channel_changes_nothing() {
+        let s = svc_granting(&[Action::JetbrainsChannelAssign], plugin("eap"));
+        assert!(!s
+            .assign_channel("jb", "com.acme.plugin", "1.0.0", "eap", &user())
+            .await
+            .unwrap());
+    }
+
+    /// **The bytes are untouched**, which is why `immutable` does not apply.
+    ///
+    /// §4.5 asks whether repointing a published version counts as replacing it;
+    /// §13.6 answered the general form — *"immutability is a question about
+    /// **bytes**, not about a coordinate"*. This is that answer as an assertion:
+    /// the checksum a client verified against before the move is the checksum
+    /// after it.
+    #[tokio::test]
+    async fn a_channel_move_does_not_touch_the_artifact() {
+        let s = svc_granting(&[Action::JetbrainsChannelAssign], plugin(""));
+        let before = s
+            .backend
+            .get_versions("jb", "com.acme.plugin")
+            .await
+            .unwrap();
+        let checksum = before[0].checksum.clone();
+
+        s.assign_channel("jb", "com.acme.plugin", "1.0.0", "eap", &user())
+            .await
+            .unwrap();
+
+        let after = s
+            .backend
+            .get_versions("jb", "com.acme.plugin")
+            .await
+            .unwrap();
+        assert_eq!(after[0].checksum, checksum, "no byte of the artifact moved");
+        assert_eq!(after[0].version, "1.0.0", "and it is the same coordinate");
+    }
+}
+
+// ── RFC 0015 §4.2 — `openvsx:namespace:claim` ────────────────────────────────
+//
+// The last of the four, and the one that was **blocked rather than declined**:
+// `team_namespaces` was always the right store, and what stopped it was that
+// every matcher hardcoded `/` while OpenVSX namespaces are dotted (§4.1).
+// Migration 045 put the separator on the claim, which is what makes this a
+// lookup rather than a special case.
+mod openvsx_namespace_claim {
+    use super::*;
+    use crate::entities::{
+        Action, GrantMap, Node, RegistryGrants, RegistryKind, SubjectMatcher, Tier,
+    };
+
+    fn svc_granting(verbs: &[Action]) -> LocalRegistryService {
+        let mut s = svc(InMemBackend::arc(), None);
+        s.team_namespace = Some(MockTeamNamespace::arc());
+        futures::executor::block_on(async {
+            s.hot.write().await.grants.insert(
+                "vsx".to_owned(),
+                Arc::new(RegistryGrants {
+                    kind: RegistryKind::Openvsx,
+                    registry: Node::new(
+                        Tier::Registry,
+                        "registry:vsx",
+                        Some(GrantMap::new().grant(SubjectMatcher::Anyone, verbs.to_vec())),
+                    ),
+                    namespaces: Vec::new(),
+                }),
+            );
+        });
+        s
+    }
+
+    /// The verb claims a namespace, and the claim records the **ecosystem's**
+    /// separator.
+    ///
+    /// That last part is the whole blocker: with `/` the claim would cover
+    /// `digital` and nothing else, so every extension under it stayed outside any
+    /// claim and its team visibility was unenforceable.
+    #[tokio::test]
+    async fn a_claim_records_the_ecosystem_separator() {
+        let s = svc_granting(&[Action::OpenvsxNamespaceClaim]);
+        s.claim_openvsx_namespace("vsx", "digital", "team-digital", &user())
+            .await
+            .expect("the grant permits it");
+
+        let claim = s
+            .namespace_claim("vsx", "digital")
+            .await
+            .unwrap()
+            .expect("claimed");
+        assert_eq!(claim.separator, '.', "OpenVSX namespaces are dotted (§4.1)");
+        assert_eq!(claim.group_id, "team-digital");
+        assert_eq!(claim.claimed_by.as_deref(), Some("u1"));
+    }
+
+    /// …and the claim then covers the extensions beneath it.
+    ///
+    /// The property that was unreachable before: `find_namespace` answers for a
+    /// child, which is what makes `verified` meaningful and what lets
+    /// `check_team_visibility` enforce anything on this ecosystem.
+    #[tokio::test]
+    async fn the_claim_covers_the_extensions_under_it() {
+        let s = svc_granting(&[Action::OpenvsxNamespaceClaim]);
+        s.claim_openvsx_namespace("vsx", "digital", "team-digital", &user())
+            .await
+            .unwrap();
+
+        assert!(
+            s.namespace_claim("vsx", "digital.pipeline-tools")
+                .await
+                .unwrap()
+                .is_some(),
+            "a dotted child must fall under its publisher's claim"
+        );
+        assert!(
+            s.namespace_claim("vsx", "digitalpipeline")
+                .await
+                .unwrap()
+                .is_none(),
+            "and a name that merely starts with it must not — RFC 0011-bis §4.2"
+        );
+    }
+
+    /// No other verb carries it, including every shared write verb.
+    ///
+    /// §4.2's argument for an ecosystem verb, asserted rather than assumed: a
+    /// claim decides who may see every package beneath it once they are
+    /// `team`-visible, so acquiring it by being able to publish would be §4.3's
+    /// delegation bound broken by a spelling.
+    #[tokio::test]
+    async fn no_shared_write_verb_carries_a_namespace_claim() {
+        let s = svc_granting(&[
+            Action::ReleasesPublish,
+            Action::ReleasesOverwrite,
+            Action::ReleasesYank,
+            Action::ReleasesDelete,
+            Action::OwnersWrite,
+        ]);
+        let err = s
+            .claim_openvsx_namespace("vsx", "digital", "team-digital", &user())
+            .await
+            .expect_err("only openvsx:namespace:claim carries this");
+        assert!(
+            matches!(err, CoreError::AccessDenied(ref m) if m.contains("openvsx:namespace:claim")),
+            "{err:?}"
+        );
+        assert!(s.namespace_claim("vsx", "digital").await.unwrap().is_none());
+    }
+
+    /// An unclaimed namespace answers `None`, which is the protocol's
+    /// `verified: false`.
+    #[tokio::test]
+    async fn an_unclaimed_namespace_is_not_verified() {
+        let s = svc_granting(&[Action::OpenvsxNamespaceClaim]);
+        assert!(s.namespace_claim("vsx", "nobody").await.unwrap().is_none());
+    }
+
+    /// Claiming twice is a conflict, not a silent takeover.
+    ///
+    /// The one thing a self-service protocol gets right and this must not lose:
+    /// a namespace has one owner, and the second claimant is told so rather than
+    /// replacing the first.
+    #[tokio::test]
+    async fn a_second_claim_is_refused() {
+        let s = svc_granting(&[Action::OpenvsxNamespaceClaim]);
+        s.claim_openvsx_namespace("vsx", "digital", "team-a", &user())
+            .await
+            .unwrap();
+        assert!(s
+            .claim_openvsx_namespace("vsx", "digital", "team-b", &user())
+            .await
+            .is_err());
+        assert_eq!(
+            s.namespace_claim("vsx", "digital")
+                .await
+                .unwrap()
+                .unwrap()
+                .group_id,
+            "team-a"
+        );
     }
 }

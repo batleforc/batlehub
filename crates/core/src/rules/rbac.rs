@@ -228,15 +228,20 @@ mod tests {
         ));
     }
 
-    /// A legacy `"*"` covers every verb **that exists**, which is a smaller
-    /// claim than the one this test used to make.
+    /// A legacy `"*"` covers the **read** verbs, and `catalogue:browse` is not
+    /// one of them.
     ///
     /// It asserted `resource_type: "actions:read"` — a verb nothing defines and
     /// nothing ever asked for — and passed because `"*"` matched any string at
     /// evaluation time. RFC 0015 §10 rule 3 removes that reading: a legacy `"*"`
     /// expands at load to today's reachable read set, so the unspellable case is
-    /// now unconstructible rather than allowed. What survives is the property
-    /// the test was named for.
+    /// now unconstructible rather than allowed.
+    ///
+    /// It then asserted `catalogue:browse`, which rule 3 as written listed among
+    /// the four — and which §10 rule 2 says may only come from the conjunction of
+    /// the `explore` flag with proxy access. The two rules disagreed and rule 3
+    /// was wrong; see `LEGACY_WILDCARD_EXPANSION`. The verb this asserts is now
+    /// one the wildcard genuinely covers.
     #[tokio::test]
     async fn admin_wildcard_covers_the_read_verbs() {
         let rule = make_rule();
@@ -253,7 +258,7 @@ mod tests {
         let ctx = RuleContext {
             identity: &identity,
             package: &meta,
-            action: Action::CatalogueBrowse,
+            action: Action::SourceRead,
             cache_entry: None,
             requested_version: None,
         };

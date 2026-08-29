@@ -51,18 +51,32 @@ const REQUESTING: &[&str] = &[
     "crates/web/src",
     "crates/core/src/services/local_registry",
     "crates/core/src/services/proxy",
+    // The engine's own tree: `browsable_registries` resolves `catalogue:browse`
+    // on behalf of the explore routes, which is a request even though the call
+    // is factored into a shared helper. A scan that stopped at the handler would
+    // report the verb unreachable and be wrong — which is the mistake §11.5
+    // warns about for this exact verb, arriving through a refactor instead of
+    // through a scope.
+    "crates/core/src/services/authz",
     "cli/src",
 ];
 
-/// Files inside those trees that **grant** rather than request, and so must not
-/// count.
+/// Files inside those trees that name a verb without **requesting** one, and so
+/// must not count.
 ///
-/// `translate.rs` names most of the vocabulary while building §10 rule 5's grant
-/// maps; counting it would make every verb look requested and turn this file
-/// green for exactly the wrong reason.
-fn is_granting_side(path: &Path) -> bool {
+/// Three kinds. `translate.rs` and `grants.rs` *grant*, naming most of the
+/// vocabulary while building §10 rule 5's maps — counting them would make every
+/// verb look requested and turn this file green for exactly the wrong reason.
+/// `entities/` *defines*. And `differential.rs` is a **harness**: it names
+/// `releases:read` and `source:read` because those are the verbs it compares two
+/// evaluators on, which is a statement about the test corpus rather than about
+/// any route.
+fn is_not_a_requester(path: &Path) -> bool {
     let p = path.to_string_lossy();
-    p.contains("/entities/") || p.ends_with("translate.rs") || p.ends_with("grants.rs")
+    p.contains("/entities/")
+        || p.ends_with("translate.rs")
+        || p.ends_with("grants.rs")
+        || p.ends_with("differential.rs")
 }
 
 /// Verbs deliberately requested by nothing, each with the reason.
@@ -72,54 +86,25 @@ fn is_granting_side(path: &Path) -> bool {
 /// requested set without being added here, and `no_stale_exceptions` fails when
 /// an entry stops being true — so it cannot quietly become a list of everything.
 const DELIBERATELY_UNREQUESTED: &[(&str, &str)] = &[
-    // ── the four ecosystem verbs (§4.2) ──────────────────────────────────────
+    // ── one verb, and it is a decision rather than a backlog item ────────────
     //
-    // These name actions this server does not implement, rather than actions it
-    // implements without a gate. §13.1 records npm's `dist-tags` endpoints
-    // "declining unconditionally with `501`", and there is no OpenVSX namespace
-    // claim, Terraform signing-key registration or JetBrains channel assignment
-    // at all. §4.2 introduces them as the vocabulary's extensible tail — *"an
-    // ecosystem-specific verb is added as a variant like any other"* — and the
-    // variant landing before the feature is the order that section describes.
+    // Its three siblings were on this list and are not any more —
+    // `terraform:signing-keys:write` and `jetbrains:channel:assign` in §13.15,
+    // `openvsx:namespace:claim` in §13.16 once the team-namespace separator
+    // stopped being hardcoded to `/`. This one is not waiting on anything.
     //
-    // A verb for an unimplemented action is not the failure §11.5 is about: it
-    // grants nothing because there is nothing to grant, and the day the action
-    // ships the compiler has the verb waiting. The failure is a verb for an
-    // action that *is* implemented and ungated, which is what the rest of this
-    // list would be if it had any other entries of that kind.
+    // **`npm:dist-tags:write` is a decision, not a backlog item.** §4.2 carries
+    // the argument in full: dist-tags here are *derived* from the published
+    // version set so RFC 0006's block-repair can move `latest` the instant a
+    // version is blocked, and storing them forces a choice between a stored value
+    // that lies, a blocked version served, or a broken `npm install`. It should
+    // stay unrequested, and this entry is where somebody about to re-take that
+    // decision will meet it.
     (
         "npm:dist-tags:write",
-        "npm dist-tag moves are not implemented (501)",
-    ),
-    (
-        "openvsx:namespace:claim",
-        "namespace claiming is not implemented",
-    ),
-    (
-        "terraform:signing-keys:write",
-        "signing-key registration is not implemented",
-    ),
-    (
-        "jetbrains:channel:assign",
-        "channel assignment is not implemented",
-    ),
-    // ── two that are genuinely unfinished, and are not the same thing ────────
-    //
-    // Both gate an action this server *does* implement, so both are the failure
-    // §11.5 describes: a grant an operator can write that does nothing. They are
-    // listed rather than fixed here because each is a behaviour change with its
-    // own argument, and neither belongs in the commit that adds the check.
-    (
-        "releases:list",
-        "listing routes still request `releases:read`; §10 rule 4 exists because \
-         the split does not fall cleanly along today's two verbs, so moving them \
-         is a change with its own migration argument",
-    ),
-    (
-        "catalogue:browse",
-        "the console's explore routes are still gated by `hot_config`'s legacy \
-         access sets; §10 rule 2's conjunction reproduces them exactly, so the \
-         verb is correct and simply not yet the thing consulted",
+        "deliberate: dist-tags are derived so RFC 0006's block-repair can move \
+         `latest`; storing them has no good answer when the tagged version is \
+         withdrawn — see §4.2",
     ),
 ];
 
@@ -215,7 +200,7 @@ fn requested_verbs() -> BTreeSet<String> {
 
     let mut found = BTreeSet::new();
     for path in files {
-        if is_granting_side(&path) || is_test_file(&path) {
+        if is_not_a_requester(&path) || is_test_file(&path) {
             continue;
         }
         let Ok(source) = std::fs::read_to_string(&path) else {
@@ -343,4 +328,94 @@ fn a_route_cannot_request_a_verb_outside_the_vocabulary() {
             "'{verb}' was scanned as requested and is not a member of the enum"
         );
     }
+}
+
+// ── The published vocabulary ─────────────────────────────────────────────────
+//
+// The dead-end test above asks whether every verb is *requested*. This one asks
+// whether every verb is *documented*, and it exists because the answer was no in
+// the direction that hurts: `/guide/access-control` listed 14 of the 31 and
+// named three — `cargo:owners:write`, `nuget:symbols:push`,
+// `maven:metadata:write` — that have never existed in the enum. The same page
+// says "a verb not on this list is a startup error", so an operator copying one
+// out of the published documentation got a server that would not boot.
+//
+// That is §13.3's finding a second time (*"three permissions this repository had
+// been granting to nobody, one of them in the published docs"*), and it recurred
+// for the reason §11.5 gives about lists in prose: a closed set with a
+// hand-maintained copy has two definitions, and only one of them compiles.
+
+/// Every `` `verb` `` in a table row of the access-control guide.
+fn documented_verbs() -> BTreeSet<String> {
+    let doc = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/guide/access-control.md"),
+    )
+    .expect("the operator guide is part of the repository");
+
+    // Only the `### The verbs` section. The page has other tables — the subject
+    // forms, the policies — whose first cell is also a backticked token, and a
+    // scan that swept the whole file would report `user:<id>` as an invented
+    // verb. Bounded by the next `###`, so a table added to the section is
+    // covered and one added elsewhere is not.
+    let section = doc
+        .split_once("### The verbs")
+        .expect("the guide has a verbs section")
+        .1;
+    let section = section
+        .split_once("\n### ")
+        .map_or(section, |(before, _)| before);
+
+    // **Every** backticked `a:b` token in the section, not only table cells.
+    // The three invented verbs were in a prose sentence — "Four more are
+    // ecosystem-scoped: `npm:dist-tags:write`, `cargo:owners:write`, …" — so a
+    // scan of table rows would have read straight past the bug it exists to
+    // catch, and passed.
+    let mut found = BTreeSet::new();
+    for span in section.split('`').skip(1).step_by(2) {
+        // Verb-shaped only: `a:b`, lowercase, no spaces, not trailing. That
+        // excludes the expansions (`releases:*`), the subject forms
+        // (`group:<provider>:<name>`), the prefix written as `releases:` in
+        // prose, and commands like `task config:explain`.
+        let verb_shaped = span.contains(':')
+            && !span.starts_with(':')
+            && !span.ends_with(':')
+            && span
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == ':' || c == '-');
+        if verb_shaped {
+            found.insert(span.to_owned());
+        }
+    }
+    found
+}
+
+/// The guide's tables and `Action::ALL` are the same set.
+///
+/// Both directions matter and they fail differently. A verb in the enum and not
+/// in the guide is a capability an operator cannot discover; a verb in the guide
+/// and not in the enum is a config file that will not load — and that one was
+/// live, in the published site, for three verbs.
+#[test]
+fn the_guide_documents_exactly_the_vocabulary() {
+    let documented = documented_verbs();
+    let real: BTreeSet<String> = Action::ALL.iter().map(|a| a.as_str().to_owned()).collect();
+
+    assert!(
+        !documented.is_empty(),
+        "no verbs parsed out of the guide — the table format changed and this \
+         test silently stopped checking anything"
+    );
+
+    let undocumented: Vec<&String> = real.difference(&documented).collect();
+    let invented: Vec<&String> = documented.difference(&real).collect();
+
+    assert!(
+        undocumented.is_empty() && invented.is_empty(),
+        "the guide and the vocabulary disagree.\n\
+         \n\
+         In the enum, absent from /guide/access-control:\n  {undocumented:?}\n\
+         \n\
+         In the guide, absent from the enum — a config file copied from the docs \
+         fails at startup:\n  {invented:?}\n"
+    );
 }

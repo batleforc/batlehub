@@ -542,6 +542,9 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                     get_package_policy, get_version_policy, list_exemptions, put_package_policy,
                     put_version_policy, set_gate_exemption,
                 },
+                signing_keys::{
+                    assign_plugin_channel, delete_signing_key, list_signing_keys, set_signing_key,
+                },
                 subjects::list_subjects,
                 team_namespaces::{
                     claim_namespace, list_namespaces, my_namespace_packages, my_namespaces,
@@ -677,8 +680,8 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             },
             vsx::{
                 openvsx_extension, openvsx_extension_version, openvsx_file, openvsx_namespace,
-                openvsx_publish, openvsx_search, openvsx_version, vsx_asset, vsx_extension_query,
-                vsx_item, vsx_unpkg, vsx_vspackage,
+                openvsx_namespace_create, openvsx_publish, openvsx_search, openvsx_version,
+                vsx_asset, vsx_extension_query, vsx_item, vsx_unpkg, vsx_vspackage,
             },
         },
     };
@@ -1020,6 +1023,14 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     // the remaining segments.
     cfg.service(list_exemptions);
     cfg.service(set_gate_exemption);
+    // RFC 0015 §4.2 — `terraform:signing-keys:write`.
+    cfg.service(list_signing_keys);
+    cfg.service(set_signing_key);
+    cfg.service(delete_signing_key);
+    // RFC 0015 §4.2 — `jetbrains:channel:assign`.
+    cfg.service(assign_plugin_channel);
+    // RFC 0015 §4.2 — `openvsx:namespace:claim`.
+    cfg.service(openvsx_namespace_create);
     cfg.service(delete_gate_exemption);
     cfg.service(get_version_policy);
     cfg.service(put_version_policy);

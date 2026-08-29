@@ -429,7 +429,15 @@ impl ProxyService {
         what: &'static str,
     ) -> Result<(), CoreError> {
         let Err(e) = self
-            .authorize_listing(&req.package_id, &req.identity, req.action)
+            // `releases:list`, not `req.action`: this funnel is only reached for a
+            // document that names many versions or many packages, and §4.2 gives
+            // that its own verb. The handler's own action still judges the
+            // artifact read that follows.
+            .authorize_listing(
+                &req.package_id,
+                &req.identity,
+                crate::entities::Action::ReleasesList,
+            )
             .await
         else {
             return Ok(());

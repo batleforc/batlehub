@@ -295,6 +295,10 @@ fn build_sumdb_map(registries: &[RegistryConfig]) -> SumDbMap {
     SumDbMap::new(urls)
 }
 
+// Eight stores, one per thing `HotConfig` holds a handle to. A bundle struct
+// whose only purpose is to satisfy an arity lint would move the same eight
+// names one indirection away, and this function's whole job is to name them.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_hot_bundle(
     cfg: &AppConfig,
     beta_channel_store: &Arc<dyn BetaChannelPort>,
@@ -307,6 +311,7 @@ pub(super) fn build_hot_bundle(
     // worked until someone edited an unrelated setting.
     grant_repo: &Option<Arc<dyn batlehub_core::ports::GrantRepository>>,
     policy_repo: &Option<Arc<dyn batlehub_core::ports::PolicyRepository>>,
+    signing_keys: &Option<Arc<dyn batlehub_core::ports::SigningKeyPort>>,
 ) -> anyhow::Result<(
     HotConfig,
     AccessConfig,
@@ -406,6 +411,7 @@ pub(super) fn build_hot_bundle(
         policy_tiers: reg_policy,
         grant_repo: grant_repo.clone(),
         policy_repo: policy_repo.clone(),
+        signing_keys: signing_keys.clone(),
         // A fresh cache per reload. Config that changes what a grant resolves to
         // must not be answered from documents built under the old one — and a
         // reload is rare enough that rebuilding a handful of documents costs
@@ -676,6 +682,10 @@ pub(super) async fn settle_text_config(
     })
 }
 
+// Eight stores, one per thing `HotConfig` holds a handle to. A bundle struct
+// whose only purpose is to satisfy an arity lint would move the same eight
+// names one indirection away, and this function's whole job is to name them.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn make_hot_builder(
     beta_channel_store: Arc<dyn BetaChannelPort>,
     repo: Arc<dyn PackageRepository>,
@@ -683,6 +693,7 @@ pub(super) fn make_hot_builder(
     sbom_repo: Arc<dyn SbomRepository>,
     grant_repo: Option<Arc<dyn batlehub_core::ports::GrantRepository>>,
     policy_repo: Option<Arc<dyn batlehub_core::ports::PolicyRepository>>,
+    signing_keys: Option<Arc<dyn batlehub_core::ports::SigningKeyPort>>,
     text_config: SettledTextConfig,
 ) -> batlehub_web::services::HotConfigBuilder {
     Arc::new(move |cfg: &AppConfig| {
@@ -698,6 +709,7 @@ pub(super) fn make_hot_builder(
             &sbom_repo,
             &grant_repo,
             &policy_repo,
+            &signing_keys,
         )?;
         let mut cargo_map: HashMap<String, CargoIndexProxy> = HashMap::new();
         for reg in &cfg.registries {

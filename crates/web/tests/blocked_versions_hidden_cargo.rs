@@ -23,7 +23,6 @@ use std::sync::Arc;
 
 use actix_web::test::{call_service, TestRequest};
 use batlehub_config::schema::RegistryMode;
-use batlehub_core::{entities::Role, rules::RbacRule, services::RegistryPolicy};
 use serde_json::Value;
 
 /// `serde` sits at the four-plus-character layout, so its index path exercises
@@ -95,10 +94,27 @@ async fn proxy_index_content_type_is_plain_text() {
 #[actix_web::test]
 async fn the_sparse_index_refuses_an_identity_without_read_access() {
     let p = local_registry_app_parts("local-crates", "cargo", RegistryMode::Proxy, None);
-    p.proxy_svc.hot.write().await.policies.insert(
-        "local-crates".to_owned(),
-        Arc::new(anonymous_denied_policy()),
-    );
+    {
+        // Said in the **hierarchy**, not in an `RbacRule`.
+        //
+        // §5.1 took `RbacRule` out of the chain that `build_policy` assembles, so
+        // a fixture policy carrying one describes a mechanism production does not
+        // have — and the sparse index is a *listing*, whose gate is now
+        // `releases:list` resolved from grants (§4.2). `rbac_policy_deny_anonymous_perms`
+        // is the same permission set this file's own policy expressed, run through
+        // the translation the server uses.
+        let mut hot = p.proxy_svc.hot.write().await;
+        hot.grants = [(
+            "local-crates".to_owned(),
+            Arc::new(fixture_grants(
+                "local-crates",
+                "cargo",
+                &RegistryMode::Proxy,
+                &rbac_policy_deny_anonymous_perms(),
+            )),
+        )]
+        .into();
+    }
     let app = build_local_registry_app(p, cargo_index_map("local-crates"), None).await;
 
     let req = TestRequest::get()
@@ -121,21 +137,4 @@ async fn proxy_direct_download_of_a_blocked_version_is_still_denied() {
 
     let req = admin_get("/proxy/local-crates/serde/1.1.0/download");
     assert_eq!(call_service(&app, req).await.status(), 403);
-}
-
-/// A registry policy that grants anonymous callers nothing.
-fn anonymous_denied_policy() -> RegistryPolicy {
-    let perms = std::collections::HashMap::from([
-        (Role::Anonymous, Vec::new()),
-        (Role::Admin, vec!["*".to_owned()]),
-    ]);
-    RegistryPolicy {
-        metadata_ttl: None,
-        firewall_only: false,
-        serve_stale_metadata: false,
-        artifact_ttl: None,
-        rules: vec![Box::new(
-            RbacRule::from_patterns(perms).expect("fixture rbac patterns are valid"),
-        )],
-    }
 }

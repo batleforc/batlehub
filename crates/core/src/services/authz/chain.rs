@@ -374,6 +374,58 @@ pub async fn authorize_control(
     }))
 }
 
+/// The registries this caller may browse the catalogue of (RFC 0015 §4.2).
+///
+/// # This replaces a set, not a boolean
+///
+/// `AccessConfig::explore_accessible_registries_for` returned *proxy access
+/// intersected with the `explore` flags*, and the explore listing uses it to
+/// **scope its query** rather than to decide yes or no. So `catalogue:browse`
+/// could not be wired as a gate in front of it — the shape the handlers need is
+/// the set, and the verb has to produce one.
+///
+/// It does, because §10 rule 2 translates that same intersection into the grant:
+///
+/// ```text
+/// (has_anonymous || has_group) && rbac.explore.anonymous
+/// (has_user      || has_group) && rbac.explore.user
+/// (has_admin     || has_group) && rbac.explore.admin
+/// ```
+///
+/// That conjunction is not a guess. §13.5 records the naive reading — the flag
+/// alone — producing **19 disagreements** on the §11.3 harness's first run, and
+/// the corrected version is what `build_grants` emits. So this is a substitution
+/// between two computations already known to agree, which is why it can be one
+/// commit rather than a migration.
+///
+/// # Absence is still nothing
+///
+/// A registry with no configured hierarchy is **not** browsable. That differs
+/// from `authorize_grants`, which answers `Ok` for one because there an unknown
+/// registry is a routing question — here the answer is a scope, and a scope that
+/// grew by one on an unknown name is survey finding 2's shape.
+pub async fn browsable_registries(
+    hot: &HotConfigLock,
+    identity: &Identity,
+) -> std::collections::HashSet<String> {
+    let (instance, grants) = {
+        let hot = hot.read().await;
+        (hot.instance.clone(), hot.grants.clone())
+    };
+    let subject = crate::entities::Subject::Identity(identity.clone());
+
+    grants
+        .iter()
+        .filter(|(_, registry)| {
+            let mut path: Vec<crate::entities::Node> =
+                instance.iter().map(|n| (**n).clone()).collect();
+            path.push(registry.registry.clone());
+            crate::entities::resolve(&path, &subject).holds(Action::CatalogueBrowse)
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
 /// The first node on the path whose shadow is still in force today.
 fn active_shadow(path: &[crate::entities::Node]) -> Option<&crate::entities::Node> {
     let today = chrono::Utc::now().date_naive();
@@ -688,22 +740,25 @@ pub async fn authorize_listing(
     else {
         return Ok(());
     };
-    let metadata = synthetic_metadata(package_id);
-    // A filter this narrow is the kind that widens later, so the verdict it
-    // matches on has to stay total. It does: `RuleDecision` has exactly two
-    // variants (RFC 0015 §5.1), and a rule that wanted a third would not compile.
-    for rule in policy.rules.iter().filter(|r| r.name() == "rbac") {
-        let ctx = RuleContext {
-            identity,
-            package: &metadata,
-            action,
-            cache_entry: None,
-            requested_version: None,
-        };
-        if let RuleDecision::Deny { reason } = rule.evaluate(&ctx).await {
-            return Err(CoreError::AccessDenied(reason));
-        }
-    }
+    // **No rule runs here, and the `rbac` filter that used to is deleted.**
+    //
+    // It selected `r.name() == "rbac"` from the chain, which was right when
+    // `RbacRule` was in it. §5.1 took it out — grant resolution answers in its
+    // place — so in production the filter has matched nothing since phase 3.
+    //
+    // What it still matched was **test fixtures**, which is worse than dead code.
+    // `dynamic_groups.rs` builds its own policy with an `RbacRule` in it, and the
+    // moment this funnel began requesting `releases:list` (§4.2) that stale rule
+    // refused a group holding `releases:read` — a denial produced by a rule
+    // production does not have, on a path production reaches. §13.5 records the
+    // mirror image: *"a fixture that kept building the rule while production
+    // resolved grants would go on passing while testing a path nobody runs."*
+    // Here it went on failing.
+    //
+    // The grant check above is the whole of the gate. Every other rule in the
+    // chain judges a concrete version and a listing has none, which is why this
+    // funnel exists at all.
+    let _ = &policy;
     Ok(())
 }
 

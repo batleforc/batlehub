@@ -173,6 +173,16 @@ pub fn embedded_migrator() -> Migrator {
             "../migrations/042_ownership_to_grants.sql"
         ),
         mig!(43, "policy", "../migrations/043_policy.sql"),
+        mig!(
+            44,
+            "provider_signing_keys",
+            "../migrations/044_provider_signing_keys.sql"
+        ),
+        mig!(
+            45,
+            "team_namespace_separator",
+            "../migrations/045_team_namespace_separator.sql"
+        ),
     ])
 }
 

@@ -122,6 +122,7 @@ impl Fixture {
                 prefix: prefix.to_owned(),
                 group_id: group_id.to_owned(),
                 claimed_by: Some("test-admin".to_owned()),
+                separator: '/',
             })
             .await
             .expect("claim namespace");

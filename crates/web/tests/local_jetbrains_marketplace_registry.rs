@@ -884,3 +884,111 @@ async fn jbm_offline_forwarded_blob_serves_stale() {
     let second: Value = read_body_json(resp).await;
     assert_eq!(second, first);
 }
+
+// ── `jetbrains:channel:assign` ───────────────────────────────────────────────
+//
+// The one verb in RFC 0015 §4.2's ecosystem table whose action this server could
+// already perform on the read side and could not perform at all on the write
+// side: `updatePlugins.xml?channel=eap` has always selected on the field, and
+// nothing but a republish could set it. These rows cover the endpoint that
+// closes that, and the authorization it takes.
+//
+// The channel is observed through `updatePlugins.xml`, not through an admin
+// read-back, because the field only means anything if the *client* sees it move.
+
+/// Every plugin the given channel offers, as an IDE would ask.
+async fn channel_ids(
+    app: &impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+    channel: &str,
+) -> String {
+    let req = TestRequest::get()
+        .uri(&format!(
+            "/proxy/local-jbm/updatePlugins.xml?channel={channel}"
+        ))
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    let resp = call_service(app, req).await;
+    assert!(resp.status().is_success(), "channel = {channel}");
+    String::from_utf8(read_body(resp).await.to_vec()).expect("xml")
+}
+
+/// The positive control and the effect in one: an administrator moves a build
+/// from Stable to `eap`, and the two channels swap what they offer.
+#[actix_web::test]
+async fn jbm_channel_assign_moves_the_build_between_channels() {
+    let app = make_local_jbm_app(RegistryMode::Local).await;
+    let jar = make_plugin_jar(&plugin_xml("org.demo.chan", "1.0.0", "233.0", "241.*"));
+    assert_eq!(
+        publish_plugin(&app, &jar, Some("org.demo.chan"), false)
+            .await
+            .status(),
+        201
+    );
+
+    assert!(
+        channel_ids(&app, "").await.contains("org.demo.chan"),
+        "published without a channel field, so it starts in Stable"
+    );
+    assert!(
+        !channel_ids(&app, "eap").await.contains("org.demo.chan"),
+        "and the assertion below proves nothing unless eap starts without it"
+    );
+
+    let req = TestRequest::put()
+        .uri("/api/v1/admin/registries/local-jbm/plugins/org.demo.chan/1.0.0/channel")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({ "channel": "eap" }))
+        .to_request();
+    assert_eq!(
+        call_service(&app, req).await.status(),
+        200,
+        "the verb is on the administrative floor; no translation rule produces it"
+    );
+
+    assert!(
+        channel_ids(&app, "eap").await.contains("org.demo.chan"),
+        "eap must now offer the build"
+    );
+    assert!(
+        !channel_ids(&app, "").await.contains("org.demo.chan"),
+        "and Stable must stop offering it — a build in two channels at once is \
+         not a move, it is a duplicate"
+    );
+}
+
+/// A plain `USER` cannot repoint a published build.
+///
+/// This is the row that makes the verb worth having. Publishing is `role:user`
+/// work under rule 5, and a publisher who could reassign channels could push a
+/// build into Stable for every IDE on the estate without republishing it — the
+/// version set would look untouched while what Stable serves had changed.
+#[actix_web::test]
+async fn jbm_channel_assign_is_refused_for_a_user_and_moves_nothing() {
+    let app = make_local_jbm_app(RegistryMode::Local).await;
+    let jar = make_plugin_jar(&plugin_xml("org.demo.chan", "1.0.0", "233.0", "241.*"));
+    publish_plugin(&app, &jar, Some("org.demo.chan"), false).await;
+
+    for auth in [None, Some(USER_TOKEN)] {
+        let mut req = TestRequest::put()
+            .uri("/api/v1/admin/registries/local-jbm/plugins/org.demo.chan/1.0.0/channel")
+            .set_json(serde_json::json!({ "channel": "eap" }));
+        if let Some(token) = auth {
+            req = req.insert_header(("Authorization", bearer(token)));
+        }
+        assert_eq!(
+            call_service(&app, req.to_request()).await.status(),
+            403,
+            "auth = {auth:?}"
+        );
+    }
+
+    assert!(
+        channel_ids(&app, "").await.contains("org.demo.chan"),
+        "the build must still be where it was"
+    );
+    assert!(!channel_ids(&app, "eap").await.contains("org.demo.chan"));
+}

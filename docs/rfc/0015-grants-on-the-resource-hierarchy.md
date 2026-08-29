@@ -6,7 +6,7 @@ reference: true
 
 | Field       | Value                                                        |
 | ----------- | ------------------------------------------------------------ |
-| Status      | **Implemented** — **phase 0 has landed and is the only part built.** `crates/web/tests/authz_matrix.rs` now carries the write surface it could not previously see (40 route/verb pairs inventoried, 19 exercised, up from none) beside the read one (47 of 97, up from 43), and checks row coverage against the router instead of against a count — which found five routes claimed as covered with no row behind them and five exercised without the claim, a swap the old check could not detect. Nothing in §4–§6 exists: no `Action` enum, no grants, no decision function. **Phases 0b, 1 and 2 have landed and phase 3 is partly built.** Phase 0b: §11.7's document arms are measured at all three corpus sizes, and the naive filtered build is **806× slower** than the cached one at size M, scaling linearly in package count — so the grant-set cache key is load-bearing and phase 3 must be designed around it rather than retrofit it. Phase 1 shipped the closed `Action` vocabulary (18 verbs, four ecosystem-scoped), moved wildcard expansion to config load with §10 rule 3's legacy reading built in as a distinct type, made an unknown or wrongly-scoped verb a startup error, and added `task config:explain` — which immediately found three permissions this repository had been granting to nobody, one of them in the published docs. Phase 2 added `authorize(subject, action, resource)` in `crates/core/src/services/authz/` — `Subject`, `Resource`, `Tier` and `Decision` entities, `registry_authz.rs` absorbed, `check_visibility` and `check_prerelease_access` behind the same funnel — and deleted `RequireRole`, whose deferred comparison had silently turned every `bypass_roles` gate into a no-op at two call sites. Phase 3 has its model, its gate and its config surface — grants, subject matching, resolution with sealing and the administrative floor, the §10 translation, the §11.3 differential harness, a resolution fuzz target, and `[registries.grants]`/`[[registries.namespaces]]` built into node hierarchies and printed by `explain-config` — and **grants are on the request path**: `RbacRule` is out of the chain and resolution answers in its place, which the authorization matrix caught three ways before it was right. `explain` (§4.8) ships with its §11.6 oracle test, and §6.3's `grants` table supplies the package and version tiers. Ownership rows are migrated (§10 rule 9) and written through on publish — but **not** enforced from grants, because §5.1's claim that ownership becomes a package-level grant would *widen* every estate under §4.3's union: ownership narrows and grants only widen. Both §5.1 and rule 9 are corrected in place. **Phase 3 is complete.** §4.4's filtering is wired into every whole-registry document — the two RubyGems compact-index documents phase 0b measured, plus the JetBrains plugin list, the Open VSX search, Composer's `available-packages` and conda's `repodata.json` — each with a fast path that costs a caller holding a broad read grant nothing, and `DocumentCache` keying the measured pair by resolved grant set with generation-based invalidation. Wiring conda found a **disclosure that predates this RFC**: `repodata.json` was built from `backend.get_versions` with no visibility check at all, so a team-visible package was named to every caller who fetched the channel — which conda does on every `conda install`. Both halves of §11.7 have now run and **both pass**. *Resolution* is flat across a 250× estate-size difference, so it is bounded by hierarchy depth rather than estate size and phase 4 may build the `policy` table on this design. *Documents*: arm 3 lands within **1.0×** of arm 1's p99 against arm 2's 806×, a second caller sharing a grant set is served from the first one's entry, and arm 4 is therefore not built — §11.7 made it conditional on arm 3 missing. **Open question 5 is closed, and this document now has none.** The harness found a widening in **§10 rule 2 as this document originally wrote it**, which is corrected in place. **Phase 4 has landed.** The tier system carries all five remaining policies with §4.1's per-policy composition rules — `visibility` and `prerelease_visibility` deepest-wins, `versioning` and `quota` wholesale, `rules` per gate — plus the narrowing warnings that compensate for wholesale's sharp edge; §6.3's `policy` table and its admin API ship for the package and version tiers, which unblocks [RFC 0016](/rfc/0016-retention-and-the-permanence-of-a-published-name)'s retention tiers; `[[registries.namespaces]]` carries `visibility`, `versioning`, `quota` and `rules`, and `[registries.beta_channel]` translates to `prerelease_visibility` (§10 rule 6); §4.9's rejections and warnings are in; `immutable` and `monotonic` are enforced on the publish path; and gate exemptions ship with `gates:exempt`, the two-gate line, the required expiry and reason, and the self-approval marker. **The one user-visible change is the version table**: the two disagreeing definitions of "pre-release" are one, so `1.0-SNAPSHOT` is now labelled correctly and `2.0.0+build-1` stops being called one — and nothing broke, because nothing pinned the old behaviour at any of its three call sites. Two more of this document's own statements needed correcting in place: **§4.5's `immutable`** describes an overwrite capability that mostly does not exist (this server already refuses every republish except on Maven's multi-file path, and `releases:overwrite` is granted by rule 5 and consumed by nothing), and immutability turns out to be a question about *bytes* rather than about a coordinate — a Maven release is several files, so deciding on the version row made an `always` namespace refuse the jar of the publish that had just created it. **Phase 5 has landed, and with it every phase this document defines.** `batlehub authz explain` and `authz shadow` answer from a terminal; `/admin/security/authorization` gathers §4.8's five panels, with Shadow first because it is the only one that can be *currently wrong*; the operator documentation is merged into `/guide/access-control`. Building it required **§4.7, which no phase owned and nothing had implemented** — every `dry_run` in the tree was retention's — so shadow mode ships here with its counter, its structured line, its admin endpoint and the reload warning §4.7 asks for on every reload. Two of its details are decisions the section does not make: `grants.dry_run` cannot typecheck inside a `subject → [verb]` map, so it is a sibling `[…grants_shadow]` block whose **required `until` makes an expiry-less shadow unwritable**; and a shadow anywhere on the path covers the coordinate, because a denial is the absence of a grant rather than one node's decision. An **expired shadow enforces**. Phase 5 also found that `explain` could contradict the server — under a shadow the grants refuse and the request is served, and the §11.6 oracle could not catch it because no fixture had a shadow — so the answer now reports both facts rather than folding either into `decision`, and one shared `resolve_policy` serves the enforcement path and the diagnostic. **The write verbs are now on the request path too, and until they were, "every phase has landed" was not true.** `releases:publish`, `releases:overwrite`, `releases:yank` and `releases:delete` were translated by §10 rule 5, stored by migration 042 and reported by `explain` while being requested by *no route* — so a `[registries.grants]` block withholding publish, or a `grants = {}` seal on a namespace, changed nothing about who could publish there, and `explain` answered `deny` for a request the server served. §6.1's replacement of `has_role_at_least(&Role::User)` is what closes it — and *replacement* rather than addition, which took two passes: the first kept the role assertion as a floor, and a role assertion in front of the engine silently overrides the config it is supposed to enforce. All nine are deleted; publish keeps one **identified-principal** test, which is not a role question but survey finding 1's shape (an anonymous publish creates an owner-less package, and `can_publish` answers `true` for one). Roles still decide plenty — inside the engine, as one of §4.3's five subject forms (§8.3). The six hide-family mutations share `releases:yank` per §4.2 rule 3, and `releases:overwrite` is consumed at exactly `immutable`'s scope. **The three tests that would each have caught it independently — §11.5's dead-end check, §11.1's axis D and §11.6's oracle over write routes — none of them existed**, which is why a phase could report itself complete without them. `releases:list`, `catalogue:browse`, `stats:read`, `audit:read`, `packages:block`, the two `owners:` verbs and all four ecosystem verbs are **still granted and requested by nothing**, and §13.8 names them rather than leaving the next reader to find out. **Two more projections were one call site each rather than a rule.** §4.4's listing filter resolved the *registry node alone*, so `[[registries.namespaces]]` was invisible to all six whole-registry documents in both directions — a namespace grant did not widen (an empty index for the estate §1's example describes) and a namespace seal did not narrow (Composer's `available-packages`, the one document with no per-package fallback, enumerated a sealed namespace). And §10 rule 9's ownership projection covered **one of the five doors** ownership changes through, so `package_owners` and `grants` diverged from the first owner change on any estate and a removed owner kept `releases:publish` permanently; it is a decorator on `OwnershipPort` now, with the inline write on publish deleted rather than duplicated. Both are the same shape as the write verbs and as §13.5's 44 disclosing routes: **a funnel the callers do not all pass through is not a funnel.** **§4.2's deferred `require_admin` split is done too, and the helper is deleted**: thirteen new control verbs over 98 call sites in 28 files, every one granted to `role:admin` by §10 rule 5 so an administrator's reach is unchanged and each verb becomes delegable. It needed a **fifth tier** — about a dozen of those endpoints name no registry, and §4.1's hierarchy started at `registry`, so `instance` is added above it and prepended to every path; that is an extension of §4.1 rather than an application of it. Three bugs on the way, all caught by tests that already existed: an unknown registry refusing instead of contributing no node, a bulk request with **no items** skipping authorization entirely, and the admin bulk endpoints scoped to the registry — where rule 5 grants `releases:yank` to `role:user`, so a user reached an admin surface. `gates:exempt` is still granted to nobody, deliberately, including at the new tier. **A fourth bug was not caught by anything, because nothing was looking**: `explain`, `access-check` and the listing filter all built their path with `path_for`, which cannot see the instance tier — so both diagnostics answered `deny` where the server answered `allow`, §11.6's *"a diagnostic that can disagree with reality is worse than none"* arriving a second time after §13.7's shadow. One `resolution_path` builder now, and the tier is covered by direct `authorize_control` tests, an `explain` oracle fixture with an instance-only grant, config tests for `[grants]`, and a §11.3 assertion that the tier grants no verb the harness compares. **§4.4's aggregates are filtered too, and were the last part of this document with nothing behind it.** `registry_explore_stats` had no visibility predicate at all — so `package_count` and `total_downloads` were computed over `internal`, `team` and `private` packages alike, survey finding 12 one level up — and bound `NULL` for an empty scope, which `$1 IS NULL OR …` reads as *every* registry: **survey finding 2 verbatim, still live**, on an endpoint any browsing caller could reach. Both are closed, one visibility rule now serves all three tables that feed a tile, the stats cache key carries the viewer (finding 11, a third time), and `stats:read` replaces `require_admin` on the two admin endpoints with §4.4's boundary made explicit: **held nowhere is a `403`, held somewhere filters** — the reading that turns an admin-only surface into one answering `200` to anonymous is the one the two pre-existing tests caught. Grants are deliberately *not* in that filter: the aggregate must agree with the listing it summarises, and grants do not filter the explore catalogue yet, so closing that is one change covering both rather than a tile stricter than its own page. **§11.5's dead-end test is written** (§13.13), five phases after §13.3 deferred it: every verb in the enum is requested by some route, or is on a list with a reason that fails the day it stops being true. Six of 31 are on it — four name actions this server does not implement, and **two gate actions it does**: `releases:list` (every listing route still asks `releases:read`) and `catalogue:browse` (the explore routes still use the legacy access sets). Its own first two failures were bugs in the scan, one of them the dangerous direction — a test file read as a route. §13.1–§13.13 record what each phase found |
+| Status      | **Implemented** — **phase 0 has landed and is the only part built.** `crates/web/tests/authz_matrix.rs` now carries the write surface it could not previously see (40 route/verb pairs inventoried, 19 exercised, up from none) beside the read one (47 of 97, up from 43), and checks row coverage against the router instead of against a count — which found five routes claimed as covered with no row behind them and five exercised without the claim, a swap the old check could not detect. Nothing in §4–§6 exists: no `Action` enum, no grants, no decision function. **Phases 0b, 1 and 2 have landed and phase 3 is partly built.** Phase 0b: §11.7's document arms are measured at all three corpus sizes, and the naive filtered build is **806× slower** than the cached one at size M, scaling linearly in package count — so the grant-set cache key is load-bearing and phase 3 must be designed around it rather than retrofit it. Phase 1 shipped the closed `Action` vocabulary (18 verbs, four ecosystem-scoped), moved wildcard expansion to config load with §10 rule 3's legacy reading built in as a distinct type, made an unknown or wrongly-scoped verb a startup error, and added `task config:explain` — which immediately found three permissions this repository had been granting to nobody, one of them in the published docs. Phase 2 added `authorize(subject, action, resource)` in `crates/core/src/services/authz/` — `Subject`, `Resource`, `Tier` and `Decision` entities, `registry_authz.rs` absorbed, `check_visibility` and `check_prerelease_access` behind the same funnel — and deleted `RequireRole`, whose deferred comparison had silently turned every `bypass_roles` gate into a no-op at two call sites. Phase 3 has its model, its gate and its config surface — grants, subject matching, resolution with sealing and the administrative floor, the §10 translation, the §11.3 differential harness, a resolution fuzz target, and `[registries.grants]`/`[[registries.namespaces]]` built into node hierarchies and printed by `explain-config` — and **grants are on the request path**: `RbacRule` is out of the chain and resolution answers in its place, which the authorization matrix caught three ways before it was right. `explain` (§4.8) ships with its §11.6 oracle test, and §6.3's `grants` table supplies the package and version tiers. Ownership rows are migrated (§10 rule 9) and written through on publish — but **not** enforced from grants, because §5.1's claim that ownership becomes a package-level grant would *widen* every estate under §4.3's union: ownership narrows and grants only widen. Both §5.1 and rule 9 are corrected in place. **Phase 3 is complete.** §4.4's filtering is wired into every whole-registry document — the two RubyGems compact-index documents phase 0b measured, plus the JetBrains plugin list, the Open VSX search, Composer's `available-packages` and conda's `repodata.json` — each with a fast path that costs a caller holding a broad read grant nothing, and `DocumentCache` keying the measured pair by resolved grant set with generation-based invalidation. Wiring conda found a **disclosure that predates this RFC**: `repodata.json` was built from `backend.get_versions` with no visibility check at all, so a team-visible package was named to every caller who fetched the channel — which conda does on every `conda install`. Both halves of §11.7 have now run and **both pass**. *Resolution* is flat across a 250× estate-size difference, so it is bounded by hierarchy depth rather than estate size and phase 4 may build the `policy` table on this design. *Documents*: arm 3 lands within **1.0×** of arm 1's p99 against arm 2's 806×, a second caller sharing a grant set is served from the first one's entry, and arm 4 is therefore not built — §11.7 made it conditional on arm 3 missing. **Open question 5 is closed, and this document now has none.** The harness found a widening in **§10 rule 2 as this document originally wrote it**, which is corrected in place. **Phase 4 has landed.** The tier system carries all five remaining policies with §4.1's per-policy composition rules — `visibility` and `prerelease_visibility` deepest-wins, `versioning` and `quota` wholesale, `rules` per gate — plus the narrowing warnings that compensate for wholesale's sharp edge; §6.3's `policy` table and its admin API ship for the package and version tiers, which unblocks [RFC 0016](/rfc/0016-retention-and-the-permanence-of-a-published-name)'s retention tiers; `[[registries.namespaces]]` carries `visibility`, `versioning`, `quota` and `rules`, and `[registries.beta_channel]` translates to `prerelease_visibility` (§10 rule 6); §4.9's rejections and warnings are in; `immutable` and `monotonic` are enforced on the publish path; and gate exemptions ship with `gates:exempt`, the two-gate line, the required expiry and reason, and the self-approval marker. **The one user-visible change is the version table**: the two disagreeing definitions of "pre-release" are one, so `1.0-SNAPSHOT` is now labelled correctly and `2.0.0+build-1` stops being called one — and nothing broke, because nothing pinned the old behaviour at any of its three call sites. Two more of this document's own statements needed correcting in place: **§4.5's `immutable`** describes an overwrite capability that mostly does not exist (this server already refuses every republish except on Maven's multi-file path, and `releases:overwrite` is granted by rule 5 and consumed by nothing), and immutability turns out to be a question about *bytes* rather than about a coordinate — a Maven release is several files, so deciding on the version row made an `always` namespace refuse the jar of the publish that had just created it. **Phase 5 has landed, and with it every phase this document defines.** `batlehub authz explain` and `authz shadow` answer from a terminal; `/admin/security/authorization` gathers §4.8's five panels, with Shadow first because it is the only one that can be *currently wrong*; the operator documentation is merged into `/guide/access-control`. Building it required **§4.7, which no phase owned and nothing had implemented** — every `dry_run` in the tree was retention's — so shadow mode ships here with its counter, its structured line, its admin endpoint and the reload warning §4.7 asks for on every reload. Two of its details are decisions the section does not make: `grants.dry_run` cannot typecheck inside a `subject → [verb]` map, so it is a sibling `[…grants_shadow]` block whose **required `until` makes an expiry-less shadow unwritable**; and a shadow anywhere on the path covers the coordinate, because a denial is the absence of a grant rather than one node's decision. An **expired shadow enforces**. Phase 5 also found that `explain` could contradict the server — under a shadow the grants refuse and the request is served, and the §11.6 oracle could not catch it because no fixture had a shadow — so the answer now reports both facts rather than folding either into `decision`, and one shared `resolve_policy` serves the enforcement path and the diagnostic. **The write verbs are now on the request path too, and until they were, "every phase has landed" was not true.** `releases:publish`, `releases:overwrite`, `releases:yank` and `releases:delete` were translated by §10 rule 5, stored by migration 042 and reported by `explain` while being requested by *no route* — so a `[registries.grants]` block withholding publish, or a `grants = {}` seal on a namespace, changed nothing about who could publish there, and `explain` answered `deny` for a request the server served. §6.1's replacement of `has_role_at_least(&Role::User)` is what closes it — and *replacement* rather than addition, which took two passes: the first kept the role assertion as a floor, and a role assertion in front of the engine silently overrides the config it is supposed to enforce. All nine are deleted; publish keeps one **identified-principal** test, which is not a role question but survey finding 1's shape (an anonymous publish creates an owner-less package, and `can_publish` answers `true` for one). Roles still decide plenty — inside the engine, as one of §4.3's five subject forms (§8.3). The six hide-family mutations share `releases:yank` per §4.2 rule 3, and `releases:overwrite` is consumed at exactly `immutable`'s scope. **The three tests that would each have caught it independently — §11.5's dead-end check, §11.1's axis D and §11.6's oracle over write routes — none of them existed**, which is why a phase could report itself complete without them. `releases:list`, `catalogue:browse`, `stats:read`, `audit:read`, `packages:block`, the two `owners:` verbs and all four ecosystem verbs are **still granted and requested by nothing**, and §13.8 names them rather than leaving the next reader to find out. **Two more projections were one call site each rather than a rule.** §4.4's listing filter resolved the *registry node alone*, so `[[registries.namespaces]]` was invisible to all six whole-registry documents in both directions — a namespace grant did not widen (an empty index for the estate §1's example describes) and a namespace seal did not narrow (Composer's `available-packages`, the one document with no per-package fallback, enumerated a sealed namespace). And §10 rule 9's ownership projection covered **one of the five doors** ownership changes through, so `package_owners` and `grants` diverged from the first owner change on any estate and a removed owner kept `releases:publish` permanently; it is a decorator on `OwnershipPort` now, with the inline write on publish deleted rather than duplicated. Both are the same shape as the write verbs and as §13.5's 44 disclosing routes: **a funnel the callers do not all pass through is not a funnel.** **§4.2's deferred `require_admin` split is done too, and the helper is deleted**: thirteen new control verbs over 98 call sites in 28 files, every one granted to `role:admin` by §10 rule 5 so an administrator's reach is unchanged and each verb becomes delegable. It needed a **fifth tier** — about a dozen of those endpoints name no registry, and §4.1's hierarchy started at `registry`, so `instance` is added above it and prepended to every path; that is an extension of §4.1 rather than an application of it. Three bugs on the way, all caught by tests that already existed: an unknown registry refusing instead of contributing no node, a bulk request with **no items** skipping authorization entirely, and the admin bulk endpoints scoped to the registry — where rule 5 grants `releases:yank` to `role:user`, so a user reached an admin surface. `gates:exempt` is still granted to nobody, deliberately, including at the new tier. **A fourth bug was not caught by anything, because nothing was looking**: `explain`, `access-check` and the listing filter all built their path with `path_for`, which cannot see the instance tier — so both diagnostics answered `deny` where the server answered `allow`, §11.6's *"a diagnostic that can disagree with reality is worse than none"* arriving a second time after §13.7's shadow. One `resolution_path` builder now, and the tier is covered by direct `authorize_control` tests, an `explain` oracle fixture with an instance-only grant, config tests for `[grants]`, and a §11.3 assertion that the tier grants no verb the harness compares. **§4.4's aggregates are filtered too, and were the last part of this document with nothing behind it.** `registry_explore_stats` had no visibility predicate at all — so `package_count` and `total_downloads` were computed over `internal`, `team` and `private` packages alike, survey finding 12 one level up — and bound `NULL` for an empty scope, which `$1 IS NULL OR …` reads as *every* registry: **survey finding 2 verbatim, still live**, on an endpoint any browsing caller could reach. Both are closed, one visibility rule now serves all three tables that feed a tile, the stats cache key carries the viewer (finding 11, a third time), and `stats:read` replaces `require_admin` on the two admin endpoints with §4.4's boundary made explicit: **held nowhere is a `403`, held somewhere filters** — the reading that turns an admin-only surface into one answering `200` to anonymous is the one the two pre-existing tests caught. Grants are deliberately *not* in that filter: the aggregate must agree with the listing it summarises, and grants do not filter the explore catalogue yet, so closing that is one change covering both rather than a tile stricter than its own page. **§11.5's dead-end test is written** (§13.13), five phases after §13.3 deferred it: every verb in the enum is requested by some route, or is on a list with a reason that fails the day it stops being true. Six of 31 are on it — four name actions this server does not implement, and **two gate actions it does**: `releases:list` (every listing route still asks `releases:read`) and `catalogue:browse` (the explore routes still use the legacy access sets). Its own first two failures were bugs in the scan, one of them the dangerous direction — a test file read as a route. **Both of those two are wired now** (§13.14): `catalogue:browse` replaces `AccessConfig`'s explore *sets* rather than gating in front of them, and `releases:list` is requested at `authorize_listing` — five call sites, not 76, because the funnel already *is* the listing/artifact split. Wiring them found **§10 rule 3 contradicting rule 2**: a legacy `"*"` expanded to include `catalogue:browse`, handing the console to `admin = ["*"]` even where `explore.admin = false`, which the §11.3 harness could not see because it compares only the two read verbs. Rule 3 is corrected in place. It also retired `authorize_listing`'s `rbac` filter, dead in production since phase 3 and alive in five fixtures that were refusing what production serves. **Two of the four ecosystem verbs are built** (§13.15). `terraform:signing-keys:write` was a supply-chain hole rather than a missing feature: the read side already served `{"gpg_public_keys": []}`, so **no locally published provider could be verified by any client** — an empty list is not "unsigned, proceed". `jetbrains:channel:assign` was one decision, already answered by §13.6 (*immutability is about bytes*), so a channel move is not a replacement and the test asserts the checksum survives it. Building them found a **defaulted port method that lied**: `set_channel`'s `Ok(false)` default made every unimplemented backend a silent no-op. **All four ecosystem verbs are now settled** (§13.16): `openvsx:namespace:claim` shipped, and §4.2 records why **`npm:dist-tags:write` should never be built** — the one dead end left in the vocabulary, and a declined decision rather than a deferred one. Unblocking the claim found the separator hardcoded in **four production paths and a test double**, all saying `/` and therefore all agreeing while all being wrong: `TeamNamespace::covers` is the one matcher now and migration 045 stores the separator on the claim rather than deriving it, because a claim outlives the registry `kind` it would be derived from. The claim is **administrative, not self-service** — a namespace is a tier grants are written on, so upstream's first-come model would let a user mint the scope their own permissions are read from. And **all three new verbs shipped unreachable**: no §10 rule produces a verb that no legacy config means, so `terraform:signing-keys:write`, `jetbrains:channel:assign` and `openvsx:namespace:claim` were held by nobody and every one of those endpoints answered `403` to the administrator. Each had passing tests, because each granted its verb explicitly; what caught it was a single **positive control** asserting the identical request works for somebody — §11.1's write-row rule arriving from the other side. All three are on the instance-node floor now, and `gates:exempt` is still granted to nobody. **A closing audit for loose ends found two** (§13.17), neither in the code path the phases covered. Two of the thirteen control verbs — `retention:run` and `tombstones:read` — were documented as delegable and were not: a `has_role_at_least` assertion survived *inside* `set_retention_pin` and `compact_tombstone_detail`, behind handlers that already resolve the verb, so a delegation grant was refused by a line no diagnostic mentions while `explain` said `allow`. They were missed because they were filed as RFC 0016's methods rather than as this document's verbs, and the existing test could not see it — **a negative test cannot distinguish a correct denial from a denial for the wrong reason**. And `/guide/access-control`, under a heading saying the set is closed, listed **14 of 31** verbs and named three that have never existed, so an operator copying one from the published site got a server that would not boot — §13.3's finding recurring in the same file. Both are now held by `the_guide_documents_exactly_the_vocabulary`, confirmed red against a re-injected phantom verb. **And the file operators copy had the same defect as the page they read** (§13.18): `config.example.toml` offered `actions:read "(future)"`, a verb that has never existed and that stops the server booting, and showed **none** of the config surface five phases produced — no `[registries.grants]`, no `[[registries.namespaces]]`, no instance-tier `[grants]`. Both fixed, with the new blocks **live rather than commented** so the test that now covers this file actually validates them; it had none before, while the less-used `config.example-space.toml` did. That test then found a third thing: `config.s3.toml` is tracked and does not validate at all. **Three artifacts claimed to describe one closed set — the enum, the guide and the example config — and only the enum compiled.** §13.1–§13.18 record what each phase found |
 | Short       | Grants on the hierarchy                                       |
 | Settles     | How a request is authorized: one permission vocabulary with write verbs, grants that attach to a registry/namespace/package hierarchy, and namespaces that carry visibility, immutability and gate policy for everything beneath them |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                       |
@@ -212,6 +212,37 @@ The core above is what twenty-one ecosystems have in common. They also each have
 | JetBrains Marketplace | assigning a plugin build to the stable or EAP channel |
 | Maven | promoting a staged repository, if staging is ever supported |
 | deb / rpm | re-signing repository metadata, managing components |
+
+> **`npm:dist-tags:write` should not be implemented, and the reason is not
+> effort.** Recorded 2026-08-29, from §13.13's dead-end check.
+>
+> This server does not decline tag writes because nobody got to them. It declines
+> them because **dist-tags here are derived, not stored**: `latest` is recomputed
+> from the published version set on every read, so [RFC 0006](/rfc/0006-blocked-versions-hidden-everywhere)'s
+> block-repair moves it the instant a version is blocked. A stored tag would be
+> overwritten by the next request, and `npm dist-tag ls` would report something
+> the client never set — which is why `npm_dist_tag_add` answers `501` rather than
+> a `200` that does not hold.
+>
+> Implementing the verb therefore means introducing stored tags that **override**
+> the derivation, and that forces a choice with no good answer. When a stored tag
+> points at a version that is later blocked, yanked or deleted, the options are:
+> repair it silently, which makes the stored value a lie and returns us to
+> derivation; serve the blocked version, which defeats the mechanism RFC 0006
+> exists for; or refuse the read, which breaks `npm install` for every unpinned
+> consumer of that tag.
+>
+> So the verb stays in the enum and is granted to nobody, which costs nothing:
+> §4.2's own argument is that an ecosystem verb is *"added as a variant like any
+> other"*, and a verb for an action that does not exist grants nothing because
+> there is nothing to grant. `vocabulary_dead_ends.rs` carries it as an exception
+> with this reason attached, so the decision is visible at the point someone would
+> otherwise re-take it.
+>
+> If an estate ever needs stored tags, it is an RFC of its own — the question is
+> what a tag *means* when the thing it names is withdrawn, and that is a
+> supply-chain argument rather than a permission one.
+
 
 "Move `latest` to this version" is not `releases:publish` — the bytes already exist and nobody is adding any — and it is not `releases:read`. Forcing it into an existing verb makes the grant mean something different on npm than it does anywhere else, which is how a vocabulary stops being one.
 
@@ -2742,3 +2773,376 @@ Both are now **failing entries in a list with reasons** rather than facts
 recoverable only by grepping, and `no_stale_exceptions` deletes the excuse the day
 someone wires them.
 
+
+### 13.14 What wiring `catalogue:browse` and `releases:list` found
+
+The two verbs §13.13's dead-end check listed as *gating an action this server
+implements* are wired. Both were behaviour-preserving by construction — §10 rules
+2 and 4 exist to make them so — and both turned up something the rules
+themselves had wrong.
+
+#### `catalogue:browse` replaced a **set**, not a gate
+
+`AccessConfig::explore_accessible_registries_for` returns *proxy access
+intersected with the `explore` flags*, and the explore listing uses it to **scope
+its query** rather than to decide yes or no. So the verb could not be bolted on
+in front: the shape the handlers need is a set, and the verb had to produce one.
+`browsable_registries` does, resolving `catalogue:browse` per registry from the
+same conjunction §10 rule 2 translates — which §13.5 had already measured against
+the §11.3 harness, so the two computations were known to agree before either was
+swapped.
+
+**Rule 3 and rule 2 disagreed, and rule 3 was wrong.** §10 rule 3 expands a legacy
+`"*"` to *"today's reachable read set, written out"* and lists
+`catalogue:browse` among the four. Rule 2 says the console gate is a conjunction —
+the flag **and** the role's proxy access — and §13.5 corrected it there. Nobody
+went back to rule 3. So `admin = ["*"]` acquired the console **even where
+`explore.admin = false`**, which is not what the legacy evaluator did and not what
+rule 3's own sentence claims to preserve.
+
+It survived because the §11.3 harness compares `releases:read` and `source:read`
+only (§13.5's scope note): the one verb the two rules disagreed about was the one
+verb it never looked at. Wiring the routes is what surfaced it — an
+`explore = false` fixture kept serving the catalogue to an admin.
+`LEGACY_WILDCARD_EXPANSION` drops the verb, which **restores** the legacy meaning
+rather than narrowing anyone; §10 rule 3 is corrected in place.
+
+#### `releases:list` is requested at the funnel, not at 76 call sites
+
+§13.13 estimated this as the expensive one — 76 `Action::ReleasesRead` sites, and
+§10 rule 4 warning that the listing/artifact split does not fall cleanly along
+today's two verbs. It is five call sites, because the split already exists in the
+code: **`authorize_listing` is the funnel**, and it exists precisely because a
+listing names no concrete version (§5.1). Every path that reaches it is a listing
+and no path that is not reaches it. Classifying handlers by hand would have been
+restating the funnel's own definition 76 times, with 76 chances to disagree
+with it.
+
+Rule 4 is what makes it safe: both of today's read verbs gain `releases:list`
+together, so no translated config loses a document and the estates that change are
+the ones that wrote a grants block distinguishing the two.
+
+**§4.4's opening sentence is finally assertable.** *"A caller holding
+`releases:list` on a namespace but `releases:read` on only some of its
+packages"* was inexpressible while both documents and artifacts asked for one
+verb — a grant naming it opened both or closed both. Four tests now pin it in both
+directions on one service, including the inverse (`releases:read` without
+`releases:list` is refused the document), because an implementation that requested
+the listing verb for the artifact too would pass the first pair and fail that one.
+
+#### The dead `rbac` filter was not dead where it mattered
+
+`authorize_listing` filtered the chain for `r.name() == "rbac"`, which was right
+until §5.1 took `RbacRule` out of what `build_policy` assembles. In production it
+has matched nothing since phase 3.
+
+What it still matched was **fixtures**. Four suites build their own policy with an
+`RbacRule` in it, and the moment this funnel began requesting `releases:list` those
+stale rules refused callers holding `releases:read` — a denial produced by a rule
+production does not have, on a path production reaches. §13.5 records the mirror
+image and is worth reading beside it: *"a fixture that kept building the rule while
+production resolved grants would go on passing while testing a path nobody runs."*
+Here they went on failing, which is the luckier direction.
+
+The filter is deleted; the grant check is the whole gate. Five fixtures now derive
+their hierarchy from the same permissions their policies were built from, which is
+the rule §13.5 states and the only thing that keeps the two from drifting again.
+
+#### What is left
+
+Four verbs, all naming actions this server does not implement, and one of them
+now carries a recorded decision **not** to implement it: §4.2 explains why
+`npm:dist-tags:write` should stay unrequested — dist-tags here are derived so
+[RFC 0006](/rfc/0006-blocked-versions-hidden-everywhere)'s block-repair can move
+`latest`, and storing them forces a choice between a stored value that lies, a
+blocked version served, or a broken `npm install`. The other three are features
+with their own design questions, sketched in `docs/internal/rfc-0015-remaining-verbs.md`.
+
+### 13.15 What building two of the ecosystem verbs found
+
+`terraform:signing-keys:write` and `jetbrains:channel:assign` were two of the four
+verbs §13.13 recorded as gating actions this server does not implement. Both are
+implemented now, and the two turned out to be different kinds of thing.
+
+#### The Terraform one was a supply-chain hole wearing a missing feature's clothes
+
+`eco_terraform.rs` served `"signing_keys": {"gpg_public_keys": []}` — a hardcoded
+literal. Terraform verifies a provider's `SHASUMS` signature against whatever a
+registry puts there, and an **empty list is not "unsigned, proceed"**: it is the
+registry saying there is nothing to verify against. So no provider published to a
+local Terraform registry could be verified by anybody, and the verb was absent
+because the store was.
+
+That reframes it. §4.2 introduces ecosystem verbs as the vocabulary's extensible
+tail and is right that a verb may land before its feature — but here the *read*
+side had already shipped, with a placeholder standing in for data nobody could
+supply. The verb was not waiting on a feature; it was the missing half of one.
+
+Keyed by `(registry, namespace)`, because a publisher signs every provider under
+their namespace with one key — which is how the protocol is shaped, how §4.2 words
+the action, and, conveniently, §4.1's namespace tier, so the grant that delegates
+this names exactly the scope the key covers.
+
+**Publishing without a key is still allowed, and that is a decision.** The
+coherent end state is that a namespace declaring a key refuses a provider it
+cannot verify. Making that the default would break every estate publishing
+Terraform providers today, which §10 forbids — so this ships as "register keys and
+they are served", with the refusal left as a `require_signing_keys` setting on the
+namespace when somebody wants it. A new field rather than a new model, recorded
+here so the next reader does not mistake the permissiveness for an oversight.
+
+#### The JetBrains one was one decision and a day
+
+Channel is read from `index_metadata.channel` at publish, so "assign" means
+mutating a published version — which runs straight into §4.5's `immutable`.
+
+**§13.6 had already answered it.** *"Immutability is a question about **bytes**,
+not about a coordinate"* — the sentence that gave `PublishPolicyRequest` its
+`artifact_key`. A channel move changes no byte: the artifact, its checksum and its
+signature are untouched, and a client that already resolved the build is
+unaffected. What changes is which feed offers it, which is the same class of
+statement as a yank. So `immutable` does not apply, and a test asserts the
+checksum survives the move rather than leaving that to the argument.
+
+It sits beside yank in `lifecycle.rs` for the same reason, and gets its own verb
+only because §4.2 rule 3's test fails for it: a channel is a JetBrains concept, and
+`releases:yank` on an npm registry would not lead an operator to expect it.
+
+#### A defaulted port method is a lie about what happened
+
+`set_channel` shipped with a default returning `Ok(false)`. It compiled, and every
+backend that had not implemented it became a **silent no-op** — the caller was
+authorized, the move was reported as "nothing changed", and nothing failed. The
+mock in `local_registry/tests.rs` inherited it and the first test run said so.
+
+It is a required method now. A default is right when the absent behaviour is
+correct (`list_owned_by` answering an empty vector); it is wrong when the default
+*claims an outcome*, because then the compiler stops asking a question somebody
+has to answer.
+
+#### What is left, and why
+
+Two verbs, and neither is a backlog item.
+
+**`npm:dist-tags:write` should not be built**, and §4.2 now carries the argument:
+dist-tags here are derived so [RFC 0006](/rfc/0006-blocked-versions-hidden-everywhere)'s
+block-repair can move `latest` the instant a version is blocked, and storing them
+forces a choice between a stored value that lies, a blocked version served, or a
+broken `npm install`. If an estate ever needs them it is an RFC about what a tag
+*means* when the thing it names is withdrawn — a supply-chain question rather than
+a permission one.
+
+**`openvsx:namespace:claim` is blocked rather than declined.** `team_namespaces`
+is the right store and the claim maps onto it almost exactly — but its matching is
+hardcoded to `/` in `LOCAL_VISIBILITY_PREDICATE` and OpenVSX namespaces are dotted
+(§4.1's separator table). That predicate is the one §6.3 requires to agree with
+`check_visibility` character for character, so making the separator per-registry
+wants its own review and its own red-checked tests rather than riding along with a
+feature.
+
+Both reasons are in `vocabulary_dead_ends.rs` beside the verbs, where somebody
+about to re-take either decision will meet it.
+
+### 13.16 What the separator and the last ecosystem verb found
+
+§13.15 left `openvsx:namespace:claim` blocked on one sentence — *"its matching is
+hardcoded to `/`"* — and the blocker turned out to be the finding.
+
+#### The separator was hardcoded in four places, and they were not equal
+
+`LOCAL_VISIBILITY_PREDICATE` was the one §13.15 named, because that is the one
+§6.3 requires to agree with `check_visibility`. It was not the only one. The rule
+*"does this namespace cover this package"* was written out four times — the
+Postgres visibility predicate, `find_namespace`'s SQL, the in-memory store, and a
+`namespace_matches` helper — and a fifth time in a test double, which is how they
+appeared to agree: every copy said `/`, so every copy was wrong in the same
+direction and nothing could observe the disagreement.
+
+That is §13.5's shape once more, on a rule small enough that four copies looked
+cheaper than one. The fix is the same: `TeamNamespace::covers` is the matcher,
+migration 045 stores the separator on the claim rather than deriving it at each
+call site, and the three production paths plus the double call the one function.
+`crates/adapters/tests/pg_namespace_separator.rs` drives a case table through all
+three and asserts they answer identically — including the `.` and `:` cases that
+could not previously arise, which is the point of storing it rather than
+defaulting it.
+
+Storing rather than deriving matters for a reason the derivation hides: a claim
+outlives the registry's `kind` in config. Deriving would silently re-point every
+existing claim the day somebody changed a registry's type.
+
+#### The verb is administrative, and that is a decision rather than a default
+
+OpenVSX upstream is first-come self-service: any signed-in account claims a free
+namespace. This server's namespaces are a *tier grants are written on*, so
+self-service claiming lets a user mint the scope their own permissions are then
+read from. §4.3's delegation bounds settle it — the claim is administrative, and
+an estate that wants upstream's behaviour grants `openvsx:namespace:claim` to
+`role:user`, which is then a written record of the choice rather than an
+inherited default.
+
+#### All three new verbs shipped unreachable, and one positive control found it
+
+`terraform:signing-keys:write`, `jetbrains:channel:assign` and
+`openvsx:namespace:claim` are new: **no §10 rule produces any of them.** Rules 1
+through 9 translate legacy config, and there is no legacy config that means
+"register a signing key" — so the verbs were held by nobody, and all three
+endpoints answered `403` to the administrator exactly as readily as to anonymous.
+Each had passing tests, because each test granted the verb explicitly. A feature
+nobody can invoke is not a shipped feature, and the fixtures could not tell the
+difference.
+
+What caught it was a *positive control*: one assertion that the identical request
+succeeds for somebody. §11.1 already required them on write rows for a different
+reason — a rejected payload's `400` reads as a denial — and this is the same
+argument arriving from the other side. The three refusal rows were green and
+would have stayed green forever.
+
+The floor is the fix: all three are granted to `role:admin` on the instance node
+beside the thirteen control verbs. Unlike `gates:exempt`, which stays granted to
+nobody, this takes nothing away and confers nothing previously withheld — there
+was no way to perform any of these three before this branch, so there is no prior
+behaviour for the floor to contradict.
+
+#### The write inventory found the route nobody had classified
+
+`WRITE_ROUTE_INVENTORY` failed on the new OpenVSX route, which is what it is for.
+It could not become a `Row`: a write row fingerprints `get_versions` for a
+coordinate, and a namespace claim publishes nothing, so the denial and its control
+would fingerprint identically and the control could not pass. The row is recorded
+as covered elsewhere, with that reason, and the coverage is real —
+`local_vsx_registry.rs` asserts the refusal, the empty store afterwards, and a
+working control. Two of the three verbs had **no HTTP-level test at all** before
+this; only the OpenVSX one was visible to the inventory, because the other two are
+admin API routes and the inventory watches the proxy surface.
+
+**The vocabulary has one dead end left**, and it is the one that should stay:
+`npm:dist-tags:write`, declined in §4.2 with the argument rather than deferred.
+Every other verb in the enum is requested by a route that runs.
+
+### 13.17 What auditing for loose ends found
+
+§13.16 ended by saying the vocabulary had one dead end left and everything else
+was wired. That was true of the *code path* and false of two things either side
+of it.
+
+#### Two verbs were documented as delegable and were not
+
+§13.12's claim for the `require_admin` split is that each of the thirteen control
+verbs "becomes delegable" — that is the entire return on turning one helper into
+thirteen verbs across 98 call sites. For two of them it was not true.
+`set_retention_pin` and `compact_tombstone_detail` kept a
+`has_role_at_least` assertion *inside the service*, behind handlers that already
+resolve `retention:run` and `tombstones:read` through the engine. So an operator
+writing `[registries.grants]` to delegate `tombstones:read` got a `403` from a
+line no diagnostic mentions, and `explain` said `allow`.
+
+That is §13.8's finding exactly — *a role assertion in front of the engine
+silently overrides the config it is supposed to enforce* — surviving in the two
+places §6.1's sweep did not reach, because they were filed as RFC 0016's methods
+rather than as this document's verbs. The verb belongs to whoever *checks* it.
+
+The existing test could not see it. `compaction_requires_admin` asserts a user
+gets `403`, and passes whether the refusal comes from the engine or from the
+assertion behind it, because `role:user` holds `tombstones:read` under no
+translation rule. **A negative test cannot distinguish a correct denial from a
+denial for the wrong reason.** What distinguishes them is granting the verb and
+requiring it to work, which is the same positive-control argument §13.16 arrived
+at from the other direction — and this time the assertion had been green since
+the day it was written.
+
+#### The published vocabulary was a different vocabulary
+
+`/guide/access-control` is where §13.7 merged the operator documentation, and its
+verb table — under a heading that says *"the set is closed; a verb not on this
+list is a startup error"* — listed **14 of 31**. All thirteen control verbs were
+missing, so the capability the decomposition exists to offer was undiscoverable.
+
+Worse in the other direction: it named `cargo:owners:write`,
+`nuget:symbols:push` and `maven:metadata:write`, **none of which have ever
+existed in the enum**. An operator copying one out of the published site got a
+server that would not boot, and the page told them the list was authoritative.
+This is §13.3's finding recurring in the same file — *three permissions this
+repository had been granting to nobody, one of them in the published docs* — and
+recurring for the reason §11.5 gives about lists in prose: a closed set with a
+hand-maintained second copy has two definitions, and only one of them compiles.
+
+So the fix is not the table. The fix is
+`the_guide_documents_exactly_the_vocabulary`, which compares the guide against
+`Action::ALL` in both directions and fails on either. Its first draft scanned
+table rows and passed — the invented three were in a *prose sentence*, so the
+check would have read straight past the bug it was written for. It scans every
+backticked verb-shaped token in the section now, and was confirmed red against a
+re-injected `cargo:owners:write` before being kept.
+
+**Both findings are the same failure of attention.** A phase reports itself
+complete against the thing it changed; nobody re-reads what the change made
+untrue somewhere else. §11.5's answer generalises past the vocabulary: the way a
+closed set stays closed is that something mechanical refuses to let a second copy
+of it drift.
+
+### 13.18 What the example config had, and did not have
+
+§13.17 fixed the vocabulary on the page operators *read*. It did not touch the
+file they *copy*, and that file had the same defect and one more.
+
+`config.example.toml` — what `task run`, `task dump-spec` and the quickstart all
+use — carried a `# Permissions available:` comment listing three verbs, one of
+which was `actions:read — access Actions artifacts (future)`. **No such verb has
+ever existed.** Expansion happens at config load precisely so an unknown verb is
+a startup error, so an operator uncommenting the line got a server that would not
+boot. That is §13.3's finding for the third time, and the third time in a
+different artifact: once in the granted-to-nobody permissions, once in the
+published guide, once here.
+
+The file also showed **none** of what this RFC built. Forty-seven kilobytes of
+worked examples, thirteen `[registries.rbac]` blocks, and not one
+`[registries.grants]`, `[[registries.namespaces]]` or instance-tier `[grants]` —
+so the config surface five phases produced was invisible in the place people
+learn the syntax from. Nothing was broken by that, because §10 keeps every legacy
+block working; it simply could not be discovered.
+
+Both are fixed, and the example blocks are **live rather than commented**, which
+is the part that matters: a commented example teaches without being checked, and
+this file had no test at all. `config.example-space.toml` had one and
+`config.example.toml` did not — backwards, since the latter is what the first
+five minutes with this server touch.
+
+Adding that test found a **third** thing neither §13.17 nor this section went
+looking for: `config.s3.toml` is tracked, and does not validate. Its OIDC issuer
+is `http://authentik-server:9000/…`, and plain HTTP is accepted for localhost
+only, so the server refuses to start on it. It is excluded from the test with
+that reason written down rather than quietly repaired — pointing an issuer
+somewhere else is a decision about a deployment, not a typo fix.
+
+**Three artifacts claimed to describe one closed set**: the enum, the guide, and
+the example config. Only the enum compiled. Each of the other two now has a test
+that fails when it drifts, which is the only arrangement that has ever held.
+
+#### And the file nothing loaded described a stack that does not exist
+
+`config.s3.toml`'s invalid issuer turned out to be the smaller half of its bug.
+The header said it was *"mounted read-only into the server container by
+docker-compose.s3.yml"* and every address in it was a compose-internal hostname
+— `postgres:5432`, `rustfs:9900`, `authentik-server:9000`, `jaeger:4317`.
+**`docker-compose.s3.yml` has no batlehub service.** It starts the dependencies
+and the server runs on the host, so not one of those hostnames resolved from
+where the process actually runs. The OIDC issuer was merely the address that
+*also* failed validation, which is why it was the one that surfaced.
+
+Every service publishes on its own port, so the repair is mechanical, and
+`config.example-s3.toml` — the file `task run:s3` actually uses — had already
+been corrected to `localhost` throughout, including the identical issuer URL. So
+this was a stale near-duplicate that missed a fix its sibling received, kept
+alive by being referenced by nothing: no task, no compose service, no test.
+
+The same wrong belief had spread into the task runner. `compose:s3:up` advertised
+"+ server", `compose:s3:logs` tailed `-f server` — a service that does not exist,
+so the command could only fail — and `compose:s3:build` ran a build over a file
+with no build context and reported success having done nothing. A fourth thing
+fell out on the way: `compose:s3:auth:pwd` was **defined twice**, and YAML takes
+the last one silently, so one definition had been dead since it was written.
+
+It is in the load test now. The general lesson is the section's: an artifact that
+nothing loads and nothing references does not stay correct, it stays
+*unexamined*, and the two are indistinguishable until somebody runs it.

@@ -144,12 +144,27 @@ pub async fn claim_namespace(
         return Err(AppError::bad_request("group_id must not be empty"));
     }
     let group_id = body.group_id.replace(' ', "");
+    // RFC 0015 §4.1 — the claim records the ecosystem's separator, taken from the
+    // registry it is being made on.
+    //
+    // The claim is where it is stored (see `TeamNamespace::separator`), and this
+    // is the only place it is decided. A registry with no configured hierarchy
+    // falls back to `/`, which is what every claim matched before the column
+    // existed — the conservative answer for a name this server cannot classify.
+    let separator = {
+        let hot = hot.read().await;
+        hot.grants
+            .get(&registry)
+            .map(|g| batlehub_core::entities::namespace_separator(g.kind))
+            .unwrap_or('/')
+    };
     store
         .claim_namespace(TeamNamespace {
             registry,
             prefix: body.prefix.clone(),
             group_id,
             claimed_by: body.claimed_by.clone(),
+            separator,
         })
         .await
         .map_err(AppError::from)?;

@@ -1466,4 +1466,102 @@ path = "./tmp"
             std::env::remove_var(k);
         }
     }
+
+    /// The example configs load and validate — including the grants hierarchy.
+    ///
+    /// `config.example-space.toml` had a test and `config.example.toml` did not,
+    /// which is backwards: the latter is what `task run`, `task dump-spec` and
+    /// the quickstart use, so a mistake in it breaks the first thing anybody
+    /// does. It also shipped a `# actions:read — (future)` line for a verb that
+    /// has never existed, and an operator uncommenting it got a server that
+    /// would not start — the same failure the published guide had, in the file
+    /// people copy from rather than the page they read.
+    ///
+    ///
+    /// Load *and* validate, because they fail differently: TOML that parses can
+    /// still name a verb outside the closed set, and expansion happens at load
+    /// precisely so that is a startup error rather than a silent no-op.
+    #[test]
+    fn example_configs_load_and_validate() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        for (k, v) in [
+            ("BATLEHUB_FRONT_URL", "https://front.example.invalid"),
+            ("BATLEHUB_BACK_URL", "https://back.example.invalid"),
+            ("BATLEHUB_DEX_ISSUER", "https://dex.example.invalid"),
+            ("OIDC_CLIENT_SECRET", "s"),
+            ("OIDC2_CLIENT_SECRET", "s"),
+        ] {
+            std::env::set_var(k, v);
+        }
+
+        // Every tracked config except `config.example-space.toml`, which has its
+        // own test below because it needs three more env vars.
+        //
+        // `config.s3.toml` is here on purpose. It did not validate — its OIDC
+        // issuer was `http://authentik-server:9000/…`, and plain HTTP is
+        // accepted for loopback only, so the server refused to start on it. The
+        // hostname turned out to be the smaller half of the bug: nothing in
+        // `docker-compose.s3.yml` runs the server, so `postgres`, `rustfs`,
+        // `authentik-server` and `jaeger` were all unreachable from the host
+        // that actually runs it. A file no test loaded, describing a topology
+        // that did not exist.
+        for name in [
+            "config.example.toml",
+            "config.example-s3.toml",
+            "config.s3.toml",
+        ] {
+            let path = format!("{}/../../{}", env!("CARGO_MANIFEST_DIR"), name);
+            let cfg = load(&path).unwrap_or_else(|e| panic!("{name} must load and validate: {e}"));
+            assert!(
+                !cfg.registries.is_empty(),
+                "{name} defines no registries, so loading it proves nothing"
+            );
+        }
+    }
+
+    /// The grants hierarchy in `config.example.toml` is the shape it documents.
+    ///
+    /// A commented-out example teaches without being checked. These blocks are
+    /// live, so the test above already proves the verbs are real — this one
+    /// proves the *structure* is still there, because deleting it would leave
+    /// that test just as green.
+    #[test]
+    fn the_example_config_demonstrates_the_grant_tiers() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        for (k, v) in [
+            ("BATLEHUB_FRONT_URL", "https://front.example.invalid"),
+            ("BATLEHUB_BACK_URL", "https://back.example.invalid"),
+            ("OIDC_CLIENT_SECRET", "s"),
+            ("OIDC2_CLIENT_SECRET", "s"),
+        ] {
+            std::env::set_var(k, v);
+        }
+
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config.example.toml");
+        let cfg = load(path).expect("config.example.toml must load");
+
+        assert!(
+            cfg.grants.as_ref().is_some_and(|g| !g.is_empty()),
+            "the instance tier is the one an operator cannot discover from a \
+             registry block, so the example has to show it"
+        );
+
+        let with_ns = cfg
+            .registries
+            .iter()
+            .find(|r| !r.namespaces.is_empty())
+            .expect("at least one registry must demonstrate `[[registries.namespaces]]`");
+        assert!(
+            with_ns.grants.as_ref().is_some_and(|g| !g.is_empty()),
+            "and the registry tier beside it, or the example shows a namespace \
+             with nothing to inherit from"
+        );
+        assert!(
+            with_ns
+                .namespaces
+                .iter()
+                .any(|n| n.grants.as_ref().is_some_and(|g| !g.is_empty())),
+            "a namespace carrying grants is the whole point of the tier"
+        );
+    }
 }

@@ -144,8 +144,8 @@ pub async fn explore_package_readme(
     path: web::Path<ReadmePath>,
     query: web::Query<ReadmeQuery>,
     identity: AuthIdentity,
-    access: web::Data<crate::AccessConfigLock>,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
     proxy_svc: web::Data<Arc<ProxyService>>,
     registry_map: web::Data<RegistryMap>,
@@ -161,7 +161,7 @@ pub async fn explore_package_readme(
         version: requested.as_deref(),
         upstream: query.upstream,
         identity: &identity,
-        access: &access,
+        hot: &hot,
         admin_svc: &admin_svc,
         local_svc: &local_svc,
         proxy_svc: &proxy_svc,
@@ -225,7 +225,9 @@ pub(super) struct ResolveInput<'a> {
     pub upstream: super::detail::UpstreamMode,
     pub identity: &'a AuthIdentity,
     /// Read for one question: may this caller browse this registry at all.
-    pub access: &'a crate::AccessConfigLock,
+    /// See `enforce_detail_gates` for why this is passed rather than taken
+    /// from `local_svc.hot`.
+    pub hot: &'a batlehub_core::services::hot_config::HotConfigLock,
     pub admin_svc: &'a AdminService,
     pub local_svc: &'a LocalRegistryService,
     pub proxy_svc: &'a ProxyService,
@@ -255,7 +257,7 @@ pub(super) async fn resolve_readme(input: ResolveInput<'_>) -> Result<Resolved, 
         version,
         upstream,
         identity,
-        access,
+        hot,
         admin_svc,
         local_svc,
         proxy_svc,
@@ -281,10 +283,8 @@ pub(super) async fn resolve_readme(input: ResolveInput<'_>) -> Result<Resolved, 
     //
     // `404`, and the package's own `404` at that, for the reason the visibility
     // gate below gives: denied and absent look identical from outside.
-    if !access
-        .read()
+    if !batlehub_core::services::authz::browsable_registries(hot, identity)
         .await
-        .explore_accessible_registries_for(identity)
         .contains(registry)
     {
         tracing::debug!(

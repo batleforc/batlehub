@@ -863,11 +863,28 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<(), CoreError> {
+        // RFC 0015 §4.2 — a listing's verb is `releases:list`, by definition of what a
+        // listing is: *"version documents, protocol indexes and search results —
+        // including the cargo sparse index, which is a version listing whatever its URL
+        // suggests."*
+        //
+        // Requested at the **funnel** rather than at 76 handler call sites, and that is
+        // not a shortcut: `authorize_listing` exists precisely because a listing names no
+        // concrete version (§5.1), so every path that reaches it is a listing and no path
+        // that is not reaches it. Classifying the handlers by hand would be restating the
+        // funnel's own definition 76 times, with 76 chances to disagree with it.
+        //
+        // §10 rule 4 is what makes this safe on upgrade: *"any subject holding
+        // `releases:read` **or** `source:read` gains `releases:list`"*, because both of
+        // today's verbs authorise some listing document and which one varies by ecosystem
+        // rather than by intent. So no translated config loses a document; the estates
+        // that change are the ones that wrote a grants block distinguishing the two,
+        // which is the whole point of the verb.
         crate::services::authz::authorize_listing(
             &self.hot,
             &PackageId::new(registry, name, "latest"),
             identity,
-            crate::entities::Action::ReleasesRead,
+            crate::entities::Action::ReleasesList,
         )
         .await?;
         self.check_visibility(registry, name, identity).await

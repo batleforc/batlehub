@@ -25,7 +25,7 @@ use futures::StreamExt;
 use crate::{
     entities::{
         AccessAction, AccessEvent, AccessResult, Action, Identity, PackageId, PublishedPackage,
-        ReadmeFormat, Role, SbomFormat, Visibility,
+        ReadmeFormat, SbomFormat, Visibility,
     },
     error::CoreError,
     ports::{

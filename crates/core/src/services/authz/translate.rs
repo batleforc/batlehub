@@ -353,6 +353,36 @@ pub fn instance_node(explicit: Option<&GrantMap>) -> Node {
             Action::OwnersWrite,
             Action::ReleasesYank,
             Action::ReleasesDelete,
+            // The three ecosystem verbs §4.2 named as having no equivalent
+            // elsewhere, and which this branch implemented: registering a
+            // Terraform namespace's signing key, assigning a JetBrains plugin
+            // build to a channel, claiming an OpenVSX namespace.
+            //
+            // They are here because **no translation rule produces them**. They
+            // are new verbs with no legacy config that means them, so a floor is
+            // the only thing that can hold them — and without one the endpoints
+            // are unreachable for every estate, answering `403` to the
+            // administrator as readily as to anonymous. A feature nobody can
+            // invoke is not a shipped feature, which is what the positive
+            // control in `openvsx_namespace_claim_admin_claims_and_the_claim_is_stored`
+            // caught.
+            //
+            // Administrative rather than self-service is the deliberate half.
+            // OpenVSX upstream lets any signed-in account claim a free
+            // namespace; here a namespace is the tier grants are written on, so
+            // self-service claiming would let a user mint the scope their own
+            // permissions are then read from. §4.3's delegation bounds: an
+            // estate that wants upstream's behaviour grants
+            // `openvsx:namespace:claim` to `role:user`, and that grant is the
+            // record of the decision.
+            //
+            // Unlike `gates:exempt` below, granting these to `role:admin` takes
+            // nothing away and hands over nothing that was previously withheld:
+            // there was no way to do any of these three before this branch, so
+            // there is no prior behaviour for the floor to contradict.
+            Action::TerraformSigningKeysWrite,
+            Action::JetbrainsChannelAssign,
+            Action::OpenvsxNamespaceClaim,
             // `gates:exempt` is **deliberately absent**. §4.5: it "goes to
             // nobody: it is new, and §4.2's shadow release is how an estate
             // discovers it needs one", and §13.6 records the exemption endpoint

@@ -67,7 +67,9 @@ pub async fn composer_packages_json(
     svc.authorize_listing(
         &PackageId::new(&registry, "repo", "_"),
         &identity.0,
-        Action::ReleasesRead,
+        // §4.2 — this document names many packages and no single version, which
+        // is `releases:list`'s definition.
+        Action::ReleasesList,
     )
     .await
     .map_err(AppError::from)?;

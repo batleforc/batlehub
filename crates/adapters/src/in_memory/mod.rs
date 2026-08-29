@@ -27,6 +27,7 @@ pub use governance::beta_channel::InMemoryBetaChannelStore;
 pub use governance::grants::InMemoryGrantRepository;
 pub use governance::ownership::InMemoryOwnershipStore;
 pub use governance::policy::InMemoryPolicyRepository;
+pub use governance::signing_keys::InMemorySigningKeyStore;
 pub use governance::team_namespace::InMemoryTeamNamespaceStore;
 pub use ops::quota::InMemoryQuotaRepository;
 pub use package_repo::InMemoryPackageRepository;

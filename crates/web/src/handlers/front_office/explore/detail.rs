@@ -441,9 +441,9 @@ pub async fn explore_package_detail(
     query: web::Query<PackageDetailQuery>,
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
     registry_map: web::Data<RegistryMap>,
-    access: web::Data<crate::AccessConfigLock>,
     sbom_svc: Option<web::Data<Arc<SbomService>>>,
     proxy_svc: web::Data<Arc<ProxyService>>,
     mode_map: web::Data<RegistryModeMap>,
@@ -476,7 +476,7 @@ pub async fn explore_package_detail(
             .and_then(|t| socket_badge_url(t, name, version))
     };
 
-    enforce_detail_gates(&access, &local_svc, registry, name, &identity).await?;
+    enforce_detail_gates(&hot, &local_svc, registry, name, &identity).await?;
 
     // Gate: beta channel membership
     let beta_member = beta_member_for(&local_svc, registry, &identity).await;
@@ -1108,7 +1108,15 @@ fn paginate_versions(
 /// the fact a non-public package is trying not to disclose. Denied and absent
 /// look identical from outside.
 async fn enforce_detail_gates(
-    access: &crate::AccessConfigLock,
+    // The lock, passed rather than taken from `local_svc.hot`.
+    //
+    // They are not always the same lock: `cli/tests/integration.rs` builds one
+    // for `LocalRegistryService` and another for `ProxyService`, and reading the
+    // service's own copy resolved `catalogue:browse` against an empty grant map.
+    // §13.4 records the general form — *"two holders of the same ports is how the
+    // two answers drift apart"* — and an authorization check is the worst place
+    // to discover which copy you got.
+    hot: &batlehub_core::services::hot_config::HotConfigLock,
     local_svc: &LocalRegistryService,
     registry: &str,
     name: &str,
@@ -1120,10 +1128,8 @@ async fn enforce_detail_gates(
         ))
     };
 
-    if !access
-        .read()
+    if !batlehub_core::services::authz::browsable_registries(hot, identity)
         .await
-        .explore_accessible_registries_for(identity)
         .contains(registry)
     {
         tracing::debug!(

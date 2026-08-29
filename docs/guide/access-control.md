@@ -67,9 +67,42 @@ granted to nobody.
 | `stats:read` | read the dashboard's aggregates |
 | `audit:read` | read the audit log |
 
-Four more are ecosystem-scoped and only grantable on the registry types that
-implement them: `npm:dist-tags:write`, `cargo:owners:write`,
-`nuget:symbols:push`, `maven:metadata:write`.
+Thirteen more authorise the **control surfaces** — the server itself rather than
+what is published on it. They were one `require_admin` check until they were
+split, so an administrator holds all of them and each is now delegable on its
+own:
+
+| Verb | What it authorises |
+| --- | --- |
+| `config:read` | read the running configuration |
+| `config:write` | reload it, or change a registry |
+| `system:read` | health, metrics, the notification wiring |
+| `system:write` | change that wiring |
+| `blocks:read` | read the block lists |
+| `blocks:write` | change them |
+| `authz:read` | the authorization diagnostics (`explain`, shadow) |
+| `cache:evict` | drop cached artifacts |
+| `cache:warm` | pre-fetch them |
+| `quota:read` | read quota usage |
+| `retention:run` | run retention, and pin a version against it |
+| `tombstones:read` | read tombstones, and compact their detail |
+| `packages:read` | the administrative package list |
+
+Four are **ecosystem-scoped** and only grantable on the registry types that
+define them:
+
+| Verb | Registry type | What it authorises |
+| --- | --- | --- |
+| `openvsx:namespace:claim` | `openvsx` | claim a publisher namespace |
+| `terraform:signing-keys:write` | `terraform` | register the GPG key a namespace's providers are signed with |
+| `jetbrains:channel:assign` | `jetbrains-marketplace` | move a published build between release channels |
+| `npm:dist-tags:write` | `npm` | *reserved* — dist-tags are derived here, so nothing requests it ([RFC 0015](/rfc/0015-grants-on-the-resource-hierarchy) §4.2 has the argument) |
+
+::: tip The list above is the whole vocabulary
+All 31 verbs, checked against the enum by a test rather than maintained by hand
+— an earlier version of this table listed three verbs that did not exist, and
+copying one into a config file failed the server at startup.
+:::
 
 `releases:*` expands to every `releases:` verb; `*` expands to everything the
 registry's ecosystem defines. **Expansion happens at config load**, so what a
@@ -99,20 +132,31 @@ Repeating a subject is a **union**, not a second opinion: two blocks granting
 
 ### Where you write them {#tiers}
 
-Four tiers, outermost first:
+Five tiers, outermost first:
 
 ```
-registry            npm1
-  └── namespace     @acme/billing        (matched, not enumerated)
-        └── package @acme/billing/cards
-              └── version 1.4.2
+instance                                 (the server itself)
+  └── registry            npm1
+        └── namespace     @acme/billing  (matched, not enumerated)
+              └── package @acme/billing/cards
+                    └── version 1.4.2
 ```
 
-The first two live in the config file. The last two cannot — a registry with
+The first three live in the config file. The last two cannot — a registry with
 200 000 packages will not enumerate them in TOML — and are written through the
 admin API instead.
 
+The **instance** tier exists because about a dozen endpoints name no registry:
+the configuration, health and metrics, the notification wiring, the block lists,
+the authorization diagnostics. There is no registry for those to resolve
+against, so they resolve here. It is also where the administrative floor sits.
+
 ```toml
+# Instance tier: applies above every registry. This is the only place a grant
+# can reach an endpoint that names no registry.
+[grants]
+"group:oidc1:sre" = ["system:read", "cache:evict"]
+
 [[registries]]
 type = "npm"
 name = "npm1"
@@ -137,6 +181,18 @@ separator is `/` for npm scopes and Go modules, `.` for OpenVSX publishers and
 NuGet ids, `:` for Maven groupIds, the channel for conda, the namespace segment
 for Terraform, the component for deb.
 
+The separator is recorded **on the claim**, not derived per lookup: a namespace
+outlives the registry's `type`, and deriving it would silently re-point every
+existing claim the day somebody changed one.
+
+::: warning Namespaces claimed before this shipped match on `/`
+The column defaults to `/`, which is what every claim already matched — so
+nothing changes meaning on upgrade. But a namespace claimed on a **dotted or
+colon** ecosystem (OpenVSX, NuGet, Maven) before the upgrade keeps matching only
+its own exact name: `digital` covers `digital` and not `digital.exts`. Re-claim
+it to pick up the right separator. New claims get it from the registry's type.
+:::
+
 #### Sealing {#sealing}
 
 `grants = {}` on a namespace **seals** it: nothing is inherited from above, and
@@ -147,9 +203,14 @@ the difference is the whole reason the key is optional rather than defaulted.
 
 Sealing is the one construct in the model that takes access away, so it is
 confined to the config file — there is no way to seal a package through the API.
-An **administrative floor** survives every seal: `owners:read`, `owners:write`
-and `audit:read` held at registry tier still apply, so a sealed subtree is never
-one an administrator cannot reopen.
+An **administrative floor** survives every seal, so a sealed subtree is never one
+an administrator cannot reopen. It sits on the `instance` tier and gives
+`role:admin` the thirteen control verbs, `audit:read`, `stats:read`,
+`packages:block`, both `owners:` verbs, `releases:yank`, `releases:delete` and
+the three ecosystem verbs that no legacy setting translates to.
+
+`gates:exempt` is **not** on the floor, deliberately: it is the one verb that
+silences a security finding, so it is held only where someone wrote it down.
 
 ### The other policies {#policies}
 

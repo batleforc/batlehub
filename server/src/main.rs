@@ -207,6 +207,10 @@ async fn main() -> Result<()> {
             None => inner,
         }
     };
+    // RFC 0015 §4.2 — the GPG keys a Terraform namespace signs its providers
+    // with. Absent, the download response serves the empty list it always did.
+    let signing_key_store: Arc<dyn batlehub_core::ports::SigningKeyPort> =
+        Arc::new(batlehub_adapters::db::PgSigningKeyStore::new(repo.pool()));
     let team_namespace_store: Arc<dyn batlehub_core::ports::TeamNamespacePort> =
         Arc::new(PgTeamNamespaceStore::new(repo.pool()));
     // RFC 0015 §6.3 — the package and version policy tiers, the twin of
@@ -235,6 +239,7 @@ async fn main() -> Result<()> {
         &sbom_repo,
         &grant_repo,
         &Some(Arc::clone(&policy_repo)),
+        &Some(Arc::clone(&signing_key_store)),
     )?;
     let warming_clients: HashMap<String, Arc<dyn batlehub_core::ports::RegistryClient>> = init_hot
         .registries
@@ -360,6 +365,7 @@ async fn main() -> Result<()> {
         Arc::clone(&sbom_repo),
         grant_repo.clone(),
         Some(Arc::clone(&policy_repo)),
+        Some(Arc::clone(&signing_key_store)),
         settled_text_config,
     );
     // Built once here so the same instance is shared with the reload service (for

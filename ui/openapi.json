@@ -2872,6 +2872,77 @@
         ]
       }
     },
+    "/api/v1/admin/registries/{registry}/plugins/{plugin}/{version}/channel": {
+      "put": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "Move a published plugin build to a release channel.",
+        "operationId": "assign_plugin_channel",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "plugin",
+            "in": "path",
+            "description": "Plugin id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Plugin version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignChannelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Channel assigned, or already that channel",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`jetbrains:channel:assign` required"
+          },
+          "404": {
+            "description": "Unknown registry, or not in local/hybrid mode"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
     "/api/v1/admin/registries/{registry}/policy/package/{package}": {
       "get": {
         "tags": [
@@ -3478,6 +3549,173 @@
           },
           "403": {
             "description": "`retention:run` required"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/registries/{registry}/signing-keys/{namespace}": {
+      "get": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "The keys registered for a Terraform namespace.",
+        "operationId": "list_signing_keys",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "path",
+            "description": "Terraform namespace",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Registered keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SigningKeyListResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`terraform:signing-keys:write` required"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "Register or replace a key.",
+        "operationId": "set_signing_key",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "path",
+            "description": "Terraform namespace",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SigningKeyDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Key registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The key cannot verify anything"
+          },
+          "403": {
+            "description": "`terraform:signing-keys:write` required"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/registries/{registry}/signing-keys/{namespace}/{key_id}": {
+      "delete": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "Remove a key by id.",
+        "operationId": "delete_signing_key",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "path",
+            "description": "Terraform namespace",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key_id",
+            "in": "path",
+            "description": "The key id to remove",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Key removed, or was not registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`terraform:signing-keys:write` required"
           }
         },
         "security": [
@@ -6019,6 +6257,63 @@
             "description": "This request did not arrive on a host bound to a single Terraform registry"
           }
         }
+      }
+    },
+    "/proxy/{registry}/api/-/namespace/create": {
+      "post": {
+        "tags": [
+          "proxy/openvsx"
+        ],
+        "summary": "Claim an OpenVSX publisher namespace.",
+        "description": "`POST /proxy/{registry}/api/-/namespace/create` is OpenVSX's own shape. The\nprotocol assumes first-come self-service; this server does not — see\n`LocalRegistryService::claim_openvsx_namespace` for why, and for the one-line\ngrant that turns it back on for an estate that wants it.",
+        "operationId": "openvsx_namespace_create",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimNamespaceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Namespace claimed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Namespace or group missing"
+          },
+          "403": {
+            "description": "`openvsx:namespace:claim` required"
+          },
+          "409": {
+            "description": "Already claimed"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
       }
     },
     "/proxy/{registry}/api/-/publish": {
@@ -14802,6 +15097,19 @@
         "description": "Raw artifact bytes — a tarball, wheel, `.crate`, `.nupkg`, `.gem`, `.vsix`,\npackage archive or signature — streamed from cache storage or from the\nconfigured upstream.\n\nThe `Content-Type` is the one the registry protocol calls for; the payload is\nnever parsed by this server on the read path.",
         "example": "<binary artifact>"
       },
+      "AssignChannelRequest": {
+        "type": "object",
+        "description": "The channel to move a build to.",
+        "required": [
+          "channel"
+        ],
+        "properties": {
+          "channel": {
+            "type": "string",
+            "description": "The release channel. The **empty string is Stable**, which is\nJetBrains' own convention and not a missing value — `eco_jetbrains.rs`\nreads it the same way when selecting builds."
+          }
+        }
+      },
       "Attributes": {
         "type": "object",
         "description": "The resource attributes §4.8 shows beside the resolved verbs.\n\nEvery field is what the *tiers* composed to, not what a particular version\nrow holds: a per-package `visibility` override lives in the `policy` table\nand is composed in here, while the legacy per-package visibility on the\npackage row is one of the layers `not_covered` names.",
@@ -18630,6 +18938,56 @@
           },
           "version": {
             "type": "string"
+          }
+        }
+      },
+      "SigningKeyDto": {
+        "type": "object",
+        "description": "One key, in Terraform's own field names.",
+        "required": [
+          "key_id",
+          "ascii_armor"
+        ],
+        "properties": {
+          "ascii_armor": {
+            "type": "string",
+            "description": "The armoured public key block."
+          },
+          "key_id": {
+            "type": "string",
+            "description": "The long key id, uppercase hex without `0x`."
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trust_signature": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "SigningKeyListResponse": {
+        "type": "object",
+        "required": [
+          "keys"
+        ],
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SigningKeyDto"
+            }
           }
         }
       },

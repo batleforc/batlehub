@@ -293,6 +293,10 @@ impl LocalRegistryBackend for Backend {
     async fn undeprecate(&self, _: &str, _: &str, _: &str) -> Result<(), CoreError> {
         Ok(())
     }
+    async fn set_channel(&self, _: &str, _: &str, _: &str, _: &str) -> Result<bool, CoreError> {
+        Ok(false)
+    }
+
     async fn unlist(&self, _: &str, _: &str, _: &str) -> Result<(), CoreError> {
         Ok(())
     }
@@ -880,6 +884,10 @@ async fn a_failing_reclamation_stops_the_run_and_reports_what_went() {
         async fn undeprecate(&self, r: &str, n: &str, v: &str) -> Result<(), CoreError> {
             self.inner.undeprecate(r, n, v).await
         }
+        async fn set_channel(&self, _: &str, _: &str, _: &str, _: &str) -> Result<bool, CoreError> {
+            Ok(false)
+        }
+
         async fn unlist(&self, r: &str, n: &str, v: &str) -> Result<(), CoreError> {
             self.inner.unlist(r, n, v).await
         }

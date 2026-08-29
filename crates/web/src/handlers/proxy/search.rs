@@ -105,7 +105,9 @@ pub(crate) async fn resolve_and_search(
     svc.authorize_listing(
         &PackageId::new(registry, "_search", "latest"),
         &identity.0,
-        Action::ReleasesRead,
+        // §4.2 — this document names many packages and no single version, which
+        // is `releases:list`'s definition.
+        Action::ReleasesList,
     )
     .await
     .map_err(AppError::from)?;

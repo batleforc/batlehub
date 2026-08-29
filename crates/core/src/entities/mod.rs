@@ -12,6 +12,7 @@ pub mod policy;
 pub mod readme;
 pub mod registry_kind;
 pub mod sbom;
+pub mod signing_key;
 pub mod subject;
 pub mod team_namespace;
 pub mod vulnerability;
@@ -54,6 +55,7 @@ pub use registry_kind::{
     UpstreamDetailSupport,
 };
 pub use sbom::{ArtifactSbom, SbomFormat, SbomSource};
+pub use signing_key::SigningKey;
 pub use subject::{Decision, Resource, Subject, Tier};
 pub use team_namespace::{NamespacePackage, TeamNamespace};
 pub use vulnerability::{ArtifactVulnerability, Severity};

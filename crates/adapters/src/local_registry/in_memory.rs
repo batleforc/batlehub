@@ -242,6 +242,34 @@ impl LocalRegistryBackend for InMemoryLocalRegistry {
     /// `published_mut` filters to published rows, so this is a no-op for a
     /// tombstone: a coordinate that is already spent cannot be protected from a
     /// reclamation that can never reach it.
+    async fn set_channel(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        channel: &str,
+    ) -> Result<bool, CoreError> {
+        let mut map = self.inner.write().await;
+        match published_mut(&mut map, registry, name, version) {
+            Some(r) => {
+                let current = r
+                    .pkg
+                    .index_metadata
+                    .get("channel")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                if current == channel {
+                    return Ok(false);
+                }
+                if let Some(obj) = r.pkg.index_metadata.as_object_mut() {
+                    obj.insert("channel".to_owned(), serde_json::json!(channel));
+                }
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     async fn set_retention_keep(
         &self,
         registry: &str,

@@ -534,7 +534,27 @@ async fn a_registry_the_caller_may_not_browse_is_not_fetchable_either() {
     // Full proxy access, no explore access — `[registries.rbac.explore]` with
     // every tier off, which is what an operator writes to keep a registry out
     // of the console while package managers go on using it.
+    //
+    // Said in the **hierarchy** rather than only in `AccessConfig`: RFC 0015 §4.2
+    // resolves `catalogue:browse` from grants now, and §10 rule 2's conjunction
+    // is what turns these flags into the grant. A fixture that changed only the
+    // access config would be describing a mechanism the handler no longer reads —
+    // and would pass while testing nothing (§13.5).
     parts.access_config = access_config_explore_denied(&[REG]);
+    {
+        let mut hot = parts.proxy_svc.hot.write().await;
+        hot.grants = [(
+            REG.to_owned(),
+            std::sync::Arc::new(fixture_grants_with_explore(
+                REG,
+                "npm",
+                &RegistryMode::Proxy,
+                &rbac_policy_perms(),
+                false,
+            )),
+        )]
+        .into();
+    }
     let storage = std::sync::Arc::clone(&parts.proxy_svc.storage);
     let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
 

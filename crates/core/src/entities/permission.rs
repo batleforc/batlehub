@@ -175,8 +175,29 @@ pub const LEGACY_WILDCARD_EXPANSION: &[Action] = &[
     Action::ReleasesRead,
     Action::ReleasesList,
     Action::SourceRead,
-    Action::CatalogueBrowse,
 ];
+
+// **`catalogue:browse` is deliberately not here**, and §10 rule 3 as written puts
+// it here — the rule is corrected in place.
+//
+// Rule 3 and rule 2 disagreed, and rule 3 is the one that is wrong. Rule 2 says
+// the console gate is a *conjunction* — the `explore` flag **and** the role's
+// proxy access — and §13.5 records the naive reading of it producing 19
+// disagreements before it was corrected. Rule 3 was written before that
+// correction and lists `catalogue:browse` among the verbs a legacy `"*"` expands
+// to, which hands the console to any `admin = ["*"]` **even where
+// `explore.admin = false`**.
+//
+// Under the evaluator this migration preserves, `"*"` meant *"both of the two
+// verbs that exist"* and the console was gated somewhere else entirely. So
+// dropping it here is not a narrowing of anyone's access — it restores the
+// legacy meaning that rule 3's own sentence claims to be preserving.
+//
+// It went unnoticed because the §11.3 harness compares `releases:read` and
+// `source:read` only (§13.5's scope note), so the one verb the two rules
+// disagreed about was the one verb it never looked at. Wiring
+// `catalogue:browse` to the explore routes is what surfaced it: an `explore =
+// false` fixture kept serving the catalogue to an admin.
 
 impl Action {
     /// Every verb in the vocabulary.

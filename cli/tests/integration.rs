@@ -2838,7 +2838,10 @@ fn package_readme_json_carries_the_qualifiers() {
         &srv.base_url(),
         AUTH_TOKEN,
     );
-    assert!(ok, "package readme --json should succeed");
+    assert!(
+        ok,
+        "package readme --json should succeed; stdout={stdout} stderr={_stderr}"
+    );
     let body: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
     assert_eq!(body["version"], "1.0.0");
     assert_eq!(body["is_fallback"], false);

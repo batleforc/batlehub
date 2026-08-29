@@ -1998,6 +1998,7 @@ const WRITE_ROUTE_INVENTORY: &[(&str, &str, WriteCoverage)] = &[
     // ── openvsx / vscode ─────────────────────────────────────────────────────
     ("PUT", "/proxy/{registry}/{extension_id}/{version}/vsix", WriteCoverage::Row),
     ("POST", "/proxy/{registry}/api/-/publish", WriteCoverage::NoRow("write, not yet exercised: the OpenVSX REST publish, which takes its coordinate from the VSIX manifest rather than the URL")),
+    ("POST", "/proxy/{registry}/api/-/namespace/create", WriteCoverage::NoRow("write, covered outside this matrix: `local_vsx_registry.rs`'s `openvsx_namespace_claim_*` rows assert the refusal, the empty store afterwards, and a working positive control. It cannot be a `Row` here because a write row's fingerprint is `get_versions` for a coordinate and a namespace claim publishes nothing — both the denial and its control would fingerprint identically, so the control could not pass")),
     ("POST", "/proxy/{registry}/vscode/gallery/extensionquery", WriteCoverage::ReadRow),
     // ── maven ────────────────────────────────────────────────────────────────
     ("PUT", "/proxy/{registry}/maven2/{path}", WriteCoverage::NoRow("write, not yet exercised: a Maven deploy is several files under one coordinate, so the row needs the multi-file storage key rather than the flat fixture")),

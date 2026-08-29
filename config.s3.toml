@@ -1,15 +1,30 @@
 # batlehub — RustFS + Authentik + Jaeger configuration
-# Mounted read-only into the server container by docker-compose.s3.yml.
-# Uses compose-internal hostnames (rustfs, authentik-server, jaeger).
+#
+# `docker-compose.s3.yml` starts the DEPENDENCIES ONLY — postgres, rustfs,
+# authentik, jaeger. There is no batlehub service in it, so the server runs on
+# the HOST against this file:
+#
+#     task compose:s3:up          # or: podman compose -f docker-compose.s3.yml up -d
+#     cargo run -p batlehub-server -- --config config.s3.toml
+#
+# So every address here is `localhost` on the published port, not a
+# compose-internal hostname. It said the opposite ("mounted read-only into the
+# server container", `rustfs:9900`, `authentik-server:9000`) and nothing could
+# resolve any of it from where the server actually runs — and the OIDC issuer
+# being a non-loopback `http://` meant the server refused to start at all, which
+# is how a config file nothing loaded stayed broken. `crates/config` loads and
+# validates this file in its test suite now.
 
 [server]
 host       = "0.0.0.0"
 port       = 8080
-static_dir = "/app/ui/dist"
+# The server runs from the repo root, so this is a repo-relative path rather
+# than the container path `/app/ui/dist` this used to carry.
+static_dir = "ui/dist"
 
 [database]
 type            = "postgresql"
-url             = "postgresql://batlehub:changeme@postgres:5432/batlehub"
+url             = "postgresql://batlehub:changeme@localhost:5432/batlehub"
 max_connections = 10
 
 # ── Auth providers (evaluated in order; first match wins) ─────────────────────
@@ -31,7 +46,13 @@ user_id = "user-1"
 # Blueprint at deploy/auth/batlehub.yaml provisions client_id / client_secret.
 [[auth]]
 type         = "oidc"
-issuer_url   = "http://authentik-server:9000/application/o/proxy-auth/"
+# `localhost:9000` is what the BROWSER uses too, and both have to agree: the
+# `iss` claim in the token is compared against this string, so a server-side
+# hostname that differs from the browser-side one fails the flow after the
+# password has been typed. Loopback also satisfies `is_secure_issuer_url` —
+# plain HTTP is accepted for localhost only, and a self-signed HTTPS authentik
+# would not work either, as there is no CA-bundle option on an OIDC provider.
+issuer_url   = "http://localhost:9000/application/o/proxy-auth/"
 client_id    = "proxy-auth"
 client_secret = "proxy-auth-secret"
 redirect_uri = "http://localhost:8080/api/v1/auth/oidc/callback"
@@ -53,13 +74,13 @@ role_claim    = "groups"
 type             = "s3"
 bucket           = "artifacts"
 region           = "us-east-1"
-endpoint_url     = "http://rustfs:9900"
+endpoint_url     = "http://localhost:9900"
 force_path_style = true
 
 # ── OpenTelemetry ─────────────────────────────────────────────────────────────
 
 [otel]
-endpoint     = "http://jaeger:4317"
+endpoint     = "http://localhost:4317"
 service_name = "batlehub"
 
 # ── Registries ────────────────────────────────────────────────────────────────

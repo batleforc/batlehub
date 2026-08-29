@@ -40,6 +40,28 @@ impl InMemoryTeamNamespaceStore {
         Arc::new(Self::default())
     }
 
+    /// The claim for `(registry, prefix)`, or a `/`-separated stand-in.
+    ///
+    /// The two "packages in this namespace" queries are handed a prefix rather
+    /// than a claim, and the separator lives on the claim — so they have to look
+    /// it up. The fallback is `/`, which is what every one of these matched
+    /// before migration 045 and so is the answer that changes nothing for a
+    /// prefix nobody has claimed.
+    async fn claim_for(&self, registry: &str, prefix: &str) -> TeamNamespace {
+        self.namespaces
+            .read()
+            .await
+            .get(&(registry.to_owned(), prefix.to_owned()))
+            .cloned()
+            .unwrap_or_else(|| TeamNamespace {
+                registry: registry.to_owned(),
+                prefix: prefix.to_owned(),
+                group_id: String::new(),
+                claimed_by: None,
+                separator: '/',
+            })
+    }
+
     /// Wire a [`LocalRegistryBackend`] so `list_packages_in_namespace` and
     /// `count_packages_in_namespace` can query real published packages instead
     /// of always returning empty.
@@ -61,8 +83,11 @@ impl TeamNamespacePort for InMemoryTeamNamespaceStore {
         let map = self.namespaces.read().await;
         let best = map
             .iter()
-            .filter(|((reg, prefix), _)| {
-                reg == registry && (package == prefix || package.starts_with(&format!("{prefix}/")))
+            .filter(|((reg, _prefix), ns)| {
+                // `TeamNamespace::covers`, not a fourth spelling of it. The
+                // key carries the prefix and the value carries the separator, so
+                // the match has to come from the value.
+                reg == registry && ns.covers(package)
             })
             .max_by_key(|((_, prefix), _)| prefix.len());
         Ok(best.map(|(_, ns)| ns.clone()))
@@ -144,10 +169,11 @@ impl TeamNamespacePort for InMemoryTeamNamespaceStore {
         let Some(backend) = &self.backend else {
             return Ok(vec![]);
         };
+        let claim = self.claim_for(registry, prefix).await;
         let all_names = backend.list_package_names(registry).await?;
         let mut matching: Vec<NamespacePackage> = vec![];
         for name in all_names {
-            if !namespace_matches(&name, prefix) {
+            if !namespace_matches(&name, &claim) {
                 continue;
             }
             let versions = backend.get_versions(registry, &name).await?;
@@ -183,10 +209,11 @@ impl TeamNamespacePort for InMemoryTeamNamespaceStore {
         let Some(backend) = &self.backend else {
             return Ok(0);
         };
+        let claim = self.claim_for(registry, prefix).await;
         let all_names = backend.list_package_names(registry).await?;
         let mut total = 0u64;
         for name in all_names {
-            if !namespace_matches(&name, prefix) {
+            if !namespace_matches(&name, &claim) {
                 continue;
             }
             total += backend.get_versions(registry, &name).await?.len() as u64;
@@ -195,10 +222,13 @@ impl TeamNamespacePort for InMemoryTeamNamespaceStore {
     }
 }
 
-/// A package `name` belongs to namespace `prefix` if it equals the prefix
-/// exactly or starts with `"{prefix}/"`.
-fn namespace_matches(name: &str, prefix: &str) -> bool {
-    name == prefix || (name.len() > prefix.len() && name.starts_with(&format!("{prefix}/")))
+/// A package `name` belongs to `ns`.
+///
+/// Delegates to [`TeamNamespace::covers`] rather than reimplementing it: this was
+/// a fourth copy of the rule, hardcoded to `/`, and §6.3 requires every copy to
+/// agree character for character.
+fn namespace_matches(name: &str, ns: &TeamNamespace) -> bool {
+    ns.covers(name)
 }
 
 #[cfg(test)]
@@ -216,6 +246,7 @@ mod tests {
             prefix: prefix.to_owned(),
             group_id: group.to_owned(),
             claimed_by: None,
+            separator: '/',
         }
     }
 

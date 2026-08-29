@@ -36,14 +36,18 @@ pub struct ExploreRegistryStatsResponse {
 pub async fn explore_registry_stats(
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
-    access: web::Data<crate::AccessConfigLock>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    let accessible: Vec<String> = access
-        .read()
-        .await
-        .explore_accessible_registries_for(&identity)
-        .into_iter()
-        .collect();
+    // RFC 0015 §4.2 — `catalogue:browse`, resolved from grants, in place of
+    // `AccessConfig`'s explore sets. §10 rule 2's conjunction reproduces those
+    // sets exactly (§13.5 measured the naive reading at 19 disagreements before
+    // it was corrected), so this is a substitution between two computations
+    // already known to agree — not a new policy.
+    let accessible: Vec<String> =
+        batlehub_core::services::authz::browsable_registries(&hot, &identity)
+            .await
+            .into_iter()
+            .collect();
 
     // An empty accessible set is **nothing**, not "no restriction" — the same
     // rule `explore_packages` states at length beside its own scope. The
@@ -132,12 +136,10 @@ pub async fn explore_upstream_search(
     identity: AuthIdentity,
     proxy_svc: web::Data<Arc<ProxyService>>,
     admin_svc: web::Data<Arc<AdminService>>,
-    access: web::Data<crate::AccessConfigLock>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    let accessible = access
-        .read()
-        .await
-        .explore_accessible_registries_for(&identity);
+    // §4.2 — `catalogue:browse`, as in `explore_registry_stats` above.
+    let accessible = batlehub_core::services::authz::browsable_registries(&hot, &identity).await;
 
     tracing::info!(
         name = %query.name,

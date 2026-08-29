@@ -835,6 +835,24 @@ pub fn fixture_grants(
     mode: &RegistryMode,
     fixture: &RbacFixture,
 ) -> batlehub_core::entities::RegistryGrants {
+    fixture_grants_with_explore(name, kind, mode, fixture, true)
+}
+
+/// [`fixture_grants`] with `[registries.rbac.explore]` set for every role.
+///
+/// RFC 0015 §4.2 — `catalogue:browse` is resolved from grants now, so a fixture
+/// that wants "this registry is for package managers, not for browsing" has to
+/// say it in the hierarchy rather than only in `AccessConfig`. §10 rule 2's
+/// conjunction is what turns the flag into the grant, and `build_grants` applies
+/// it, so a fixture built this way and a config built by the server agree by
+/// construction.
+pub fn fixture_grants_with_explore(
+    name: &str,
+    kind: &str,
+    mode: &RegistryMode,
+    fixture: &RbacFixture,
+    explore: bool,
+) -> batlehub_core::entities::RegistryGrants {
     use batlehub_core::entities::{expand_patterns, RegistryKind, WildcardScope};
     use batlehub_core::services::authz::translate::{
         build_grants, ExploreFlags, RbacSnapshot, WriteMode,
@@ -858,9 +876,9 @@ pub fn fixture_grants(
         // default is "on for any role with proxy access" — which is what
         // `build_grants`'s conjunction then narrows.
         explore: ExploreFlags {
-            anonymous: true,
-            user: true,
-            admin: true,
+            anonymous: explore,
+            user: explore,
+            admin: explore,
         },
     };
     let write_mode = match mode {

@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use base64::Engine as _;
 use batlehub_config::schema::RegistryMode;
+use batlehub_core::ports::SigningKeyPort as _;
 use batlehub_core::services::RegistryPolicy;
 use batlehub_web::RegistryModeMap;
 use std::sync::Arc;
@@ -1816,4 +1817,188 @@ async fn publishing_without_checksum_urls_says_nothing_extra() {
 
     let body: Value = read_body_json(resp).await;
     assert_eq!(body["message"].as_str(), Some("provider version published"));
+}
+
+// ── `terraform:signing-keys:write` ───────────────────────────────────────────
+//
+// The endpoint that closes the hole `shared.rs` names: this server served
+// `{"gpg_public_keys": []}` unconditionally, and an empty key set is not
+// "unsigned, proceed" — it tells Terraform there is nothing to verify a
+// provider's SHASUMS against, so no locally published provider could be verified
+// by anyone. The store was the missing half; these rows are the other one.
+//
+// The end-to-end assertion is the point. A test that only PUT the key and read
+// it back through the admin endpoint would pass against a store nothing
+// consults, which is the shape the placeholder already had.
+
+/// An armoured block that is at least structurally a key, so `validate()` passes
+/// and the assertions below are about authorization rather than about parsing.
+const ARMOURED_KEY: &str = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\
+                            \n\
+                            mQENBFdummykeymaterialforatest\n\
+                            -----END PGP PUBLIC KEY BLOCK-----\n";
+
+fn signing_key_body() -> Value {
+    serde_json::json!({
+        "key_id": "34365D9472D7468F",
+        "ascii_armor": ARMOURED_KEY,
+        "trust_signature": "",
+        "source": "HashiCorp",
+        "source_url": "https://example.invalid/keys",
+    })
+}
+
+/// A terraform app whose `HotConfig` has a signing-key store.
+async fn make_terraform_signing_app() -> (
+    impl TestService,
+    Arc<batlehub_adapters::in_memory::InMemorySigningKeyStore>,
+) {
+    let parts = local_only_app_parts("local-tf", "terraform", RegistryMode::Local, false);
+    let store = batlehub_adapters::in_memory::InMemorySigningKeyStore::new();
+    {
+        let mut hot = parts.proxy_svc.hot.write().await;
+        hot.signing_keys = Some(store.clone() as Arc<dyn batlehub_core::ports::SigningKeyPort>);
+    }
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+    (app, store)
+}
+
+/// Anonymous and a plain `USER` are both refused, and neither registers a key.
+///
+/// `role:user` is the interesting half: publishing a provider *is* user work
+/// under rule 5, and the key that verifies it deliberately is not — a publisher
+/// who could register the key their own artifacts are checked against would be
+/// verifying themselves.
+#[actix_web::test]
+async fn terraform_signing_key_write_is_refused_without_the_verb() {
+    let (app, store) = make_terraform_signing_app().await;
+
+    for auth in [None, Some(USER_TOKEN)] {
+        let mut req = TestRequest::put()
+            .uri("/api/v1/admin/registries/local-tf/signing-keys/hashicorp")
+            .set_json(signing_key_body());
+        if let Some(token) = auth {
+            req = req.insert_header(("Authorization", bearer(token)));
+        }
+        let resp = call_service(&app, req.to_request()).await;
+        assert_eq!(resp.status(), 403, "auth = {auth:?}");
+    }
+
+    assert!(
+        store
+            .list_signing_keys("local-tf", "hashicorp")
+            .await
+            .expect("list")
+            .is_empty(),
+        "a refusal that stored the key anyway is the failure mode this asserts"
+    );
+}
+
+/// The positive control, carried all the way to the client: an administrator
+/// registers a key and Terraform's download response starts serving it.
+#[actix_web::test]
+async fn terraform_signing_key_registered_by_admin_reaches_the_download_response() {
+    let (app, _store) = make_terraform_signing_app().await;
+
+    // Before: the placeholder, which is what made every provider unverifiable.
+    let req = TestRequest::post()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/versions")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .insert_header(("Content-Type", "application/json"))
+        .set_payload(PROVIDER_MANIFEST)
+        .to_request();
+    call_service(&app, req).await;
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let body: Value = read_body_json(call_service(&app, req).await).await;
+    assert_eq!(
+        body["signing_keys"]["gpg_public_keys"]
+            .as_array()
+            .expect("the key set is present even when empty")
+            .len(),
+        0,
+        "the assertion below proves nothing unless this starts empty"
+    );
+
+    let req = TestRequest::put()
+        .uri("/api/v1/admin/registries/local-tf/signing-keys/hashicorp")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(signing_key_body())
+        .to_request();
+    assert_eq!(
+        call_service(&app, req).await.status(),
+        200,
+        "the verb is on the administrative floor: no translation rule produces \
+         it, so without the floor this endpoint is unreachable for everybody"
+    );
+
+    // After: the same download response now carries something to verify against.
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let body: Value = read_body_json(call_service(&app, req).await).await;
+    let keys = body["signing_keys"]["gpg_public_keys"]
+        .as_array()
+        .expect("gpg_public_keys");
+    assert_eq!(keys.len(), 1, "got {body}");
+    assert_eq!(keys[0]["key_id"], "34365D9472D7468F");
+    assert!(keys[0]["ascii_armor"]
+        .as_str()
+        .unwrap()
+        .contains("BEGIN PGP PUBLIC KEY BLOCK"));
+
+    // And removing it puts the response back, so the delete verb is real too.
+    let req = TestRequest::delete()
+        .uri("/api/v1/admin/registries/local-tf/signing-keys/hashicorp/34365D9472D7468F")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-tf/v1/providers/hashicorp/aws/5.0.0/download/linux/amd64")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let body: Value = read_body_json(call_service(&app, req).await).await;
+    assert!(body["signing_keys"]["gpg_public_keys"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+/// A key that verifies nothing is refused at the edge rather than stored.
+///
+/// Stored, it would be indistinguishable from the empty placeholder from the
+/// client's side — except that the console would show the namespace as
+/// configured, which is worse than showing it as bare.
+#[actix_web::test]
+async fn terraform_signing_key_that_verifies_nothing_returns_400() {
+    let (app, store) = make_terraform_signing_app().await;
+
+    for (label, body) in [
+        (
+            "empty id",
+            serde_json::json!({ "key_id": "", "ascii_armor": ARMOURED_KEY }),
+        ),
+        (
+            "not armoured",
+            serde_json::json!({ "key_id": "ABC123", "ascii_armor": "just some text" }),
+        ),
+    ] {
+        let req = TestRequest::put()
+            .uri("/api/v1/admin/registries/local-tf/signing-keys/hashicorp")
+            .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+            .set_json(body)
+            .to_request();
+        assert_eq!(call_service(&app, req).await.status(), 400, "{label}");
+    }
+
+    assert!(store
+        .list_signing_keys("local-tf", "hashicorp")
+        .await
+        .expect("list")
+        .is_empty());
 }

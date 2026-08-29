@@ -26,8 +26,7 @@
 
 use super::{
     artifact_storage_key, AccessAction, AccessEvent, AccessResult, Action, CoreError, Identity,
-    LocalRegistryService, PackageId, PublishRequest, ReadmeFormat, Role, SbomFormat,
-    SbomPublishOptions,
+    LocalRegistryService, PackageId, PublishRequest, ReadmeFormat, SbomFormat, SbomPublishOptions,
 };
 
 impl LocalRegistryService {
@@ -218,6 +217,158 @@ impl LocalRegistryService {
         Ok(true)
     }
 
+    /// The claim covering `namespace`, if any (RFC 0015 §4.2).
+    ///
+    /// A read, and unguarded on purpose: whether a namespace is claimed is what
+    /// the OpenVSX protocol's `verified` field *is*, served to every client that
+    /// asks about the namespace. There is nothing here a caller could not infer
+    /// from that response.
+    pub async fn namespace_claim(
+        &self,
+        registry: &str,
+        namespace: &str,
+    ) -> Result<Option<crate::entities::TeamNamespace>, CoreError> {
+        let Some(ref ns_port) = self.team_namespace else {
+            return Ok(None);
+        };
+        // `find_namespace`, so a claim on a *parent* namespace answers for its
+        // children by the ecosystem's own separator — the whole point of §4.1's
+        // table, and the reason this could not be built before migration 045.
+        ns_port.find_namespace(registry, namespace).await
+    }
+
+    /// Claim an OpenVSX publisher namespace (RFC 0015 §4.2).
+    ///
+    /// `openvsx:namespace:claim` — the last of §4.2's four ecosystem verbs, and
+    /// the one that was **blocked rather than declined**. `team_namespaces` was
+    /// always the right store; what stopped it was that every matcher hardcoded
+    /// `/` while OpenVSX namespaces are dotted, so a claim on `digital` covered
+    /// `digital` and none of its extensions. Migration 045 put the separator on
+    /// the claim, which is what makes this a lookup rather than a special case.
+    ///
+    /// # Administrative, not self-service
+    ///
+    /// The OpenVSX protocol assumes first-come self-service: any authenticated
+    /// caller claims an unclaimed namespace. This does not, and §4.3's delegation
+    /// bounds are why — a claim decides who may *see* every package beneath it
+    /// once they are `team`-visible, so a self-service claim is a caller granting
+    /// themselves authority over a subtree. That is the escalation the whole
+    /// section is built to exclude, and the fact that a protocol expects it is not
+    /// an argument for allowing it.
+    ///
+    /// An estate that wants self-service grants `openvsx:namespace:claim` to
+    /// `role:user`, which is exactly the shape §4.5 gives `gates:exempt`: the
+    /// permissive policy is expressible, and it is a decision somebody makes
+    /// rather than the default.
+    pub async fn claim_openvsx_namespace(
+        &self,
+        registry: &str,
+        namespace: &str,
+        group_id: &str,
+        identity: &Identity,
+    ) -> Result<(), CoreError> {
+        // The coordinate is the namespace itself, which is a package-shaped name
+        // for resolution: a grant written on `[[registries.namespaces]] match =
+        // "digital"` reaches a claim on `digital` and on nothing beside it.
+        self.authorize_write(
+            registry,
+            namespace,
+            "",
+            identity,
+            Action::OpenvsxNamespaceClaim,
+        )
+        .await?;
+
+        let Some(ref ns_port) = self.team_namespace else {
+            return Err(CoreError::Registry(
+                "this deployment has no team-namespace store configured".to_owned(),
+            ));
+        };
+
+        let separator = {
+            let hot = self.hot.read().await;
+            hot.grants
+                .get(registry)
+                .map(|g| crate::entities::namespace_separator(g.kind))
+                .unwrap_or('/')
+        };
+
+        ns_port
+            .claim_namespace(crate::entities::TeamNamespace {
+                registry: registry.to_owned(),
+                prefix: namespace.to_owned(),
+                // Spaces stripped, as `check_team_visibility` compares them —
+                // `claim_team_namespace` does the same, and a claim that does not
+                // match the comparison is a claim nobody satisfies.
+                group_id: group_id.replace(' ', ""),
+                claimed_by: identity.user_id.clone(),
+                separator,
+            })
+            .await?;
+
+        self.record_registry_action(registry, AccessAction::ClaimNamespace, identity)
+            .await;
+        Ok(())
+    }
+
+    /// Move a published plugin build to a release channel (RFC 0015 §4.2).
+    ///
+    /// `jetbrains:channel:assign` — the one verb in §4.2's ecosystem table whose
+    /// action this server can perform without new protocol work, because the read
+    /// path already selects on `channel` (`eco_jetbrains.rs`) and only the write
+    /// was missing.
+    ///
+    /// # Not a replacement, so `immutable` does not apply
+    ///
+    /// §4.5 asks whether repointing a published version counts as replacing it,
+    /// and §13.6 answered the general form: *"immutability is a question about
+    /// **bytes**, not about a coordinate."* A channel move changes no byte — the
+    /// artifact, its checksum and its signature are untouched, and a client that
+    /// already resolved the build is unaffected. What changes is which feed
+    /// *offers* it, which is the same class of statement as a yank.
+    ///
+    /// That is also why it sits here beside yank rather than on the publish path:
+    /// the hide-family verbs are the ones that mark an existing version without
+    /// adding or destroying bytes, and this is one of them in everything but
+    /// spelling. It gets its own verb only because §4.2 rule 3's test — *"would an
+    /// operator reading a grant on a mixed estate expect them to mean the same
+    /// thing"* — fails for it: a channel is a JetBrains concept, and `releases:yank`
+    /// on an npm registry would not lead anyone to expect it.
+    pub async fn assign_channel(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        channel: &str,
+        identity: &Identity,
+    ) -> Result<bool, CoreError> {
+        self.authorize_write(
+            registry,
+            name,
+            version,
+            identity,
+            Action::JetbrainsChannelAssign,
+        )
+        .await?;
+        self.check_namespace_membership(registry, name, identity)
+            .await?;
+        self.check_ownership_lifecycle_access(registry, name, identity)
+            .await?;
+
+        let changed = self
+            .backend
+            .set_channel(registry, name, version, channel)
+            .await?;
+        if changed {
+            // Every whole-registry document that selects on channel is now stale
+            // — the JetBrains plugin list is one of the six §4.4 filters.
+            self.invalidate_documents(registry).await;
+            self.record_lifecycle_action(registry, name, version, AccessAction::Relist, identity)
+                .await;
+        }
+        Ok(changed)
+    }
+
     /// Pin a version against retention, or release the pin (RFC 0016 §4.1).
     ///
     /// The same gate the other lifecycle mutations use, and audited the same
@@ -237,11 +388,12 @@ impl LocalRegistryService {
         keep: bool,
         identity: &Identity,
     ) -> Result<bool, CoreError> {
-        if !identity.has_role_at_least(&Role::User) {
-            return Err(CoreError::AccessDenied(
-                "setting a retention pin requires at least User role".into(),
-            ));
-        }
+        // No role floor. `retention:run` is checked by the handler through the
+        // engine, and a role assertion here would be a *second* decision that
+        // silently overrides the first — §13.8's finding, and the reason §6.1
+        // deleted the nine floors on the publish path rather than keeping them
+        // as belt and braces. The ownership and namespace narrowing below stays:
+        // ownership narrows, and narrowing composes with a grant (§5.1).
         self.check_namespace_membership(registry, name, identity)
             .await?;
         if !identity.is_admin() {
@@ -283,11 +435,12 @@ impl LocalRegistryService {
         dry_run: bool,
         identity: &Identity,
     ) -> Result<crate::entities::CompactionReport, CoreError> {
-        if !identity.has_role_at_least(&Role::Admin) {
-            return Err(CoreError::AccessDenied(
-                "compacting tombstone detail requires the Admin role".into(),
-            ));
-        }
+        // No role floor, for the reason above — and here it was not merely
+        // redundant but *live*: `tombstones_read_granted_to_a_user_is_honoured`
+        // fails against the assertion, so an operator writing
+        // `[registries.grants]` to delegate `tombstones:read` was refused by
+        // this line and nothing told them. §13.12 claims the `require_admin`
+        // split made each verb delegable; for this one it did not.
         let report = self
             .backend
             .compact_tombstone_detail(registry, older_than, dry_run)

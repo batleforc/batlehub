@@ -1189,3 +1189,83 @@ async fn retention_requires_admin() {
         assert_eq!(call_service(&app, req).await.status(), 403, "{uri}");
     }
 }
+
+// ── Are the control verbs actually delegable? ────────────────────────────────
+//
+// RFC 0015 §13.12 claims the `require_admin` decomposition made "each verb
+// delegable" — that is the whole return on splitting one helper into thirteen
+// verbs across 98 call sites. `compaction_requires_admin` above cannot check it:
+// `role:user` holds `tombstones:read` under no translation rule, so that test
+// passes whether the decision comes from the engine or from a role assertion
+// behind it. These two rows are the difference, and they are the shape §13.8
+// named — *a role assertion in front of the engine silently overrides the config
+// it is supposed to enforce.*
+
+/// Grant `action` to `role:user` on `local-npm`, on top of the fixture's own
+/// hierarchy, exactly as `[registries.grants]` would.
+async fn grant_to_user(
+    local_svc: &batlehub_core::services::LocalRegistryService,
+    action: batlehub_core::entities::Action,
+) {
+    use batlehub_core::entities::{GrantMap, Role, SubjectMatcher};
+    use std::sync::Arc;
+
+    let mut hot = local_svc.hot.write().await;
+    let mut grants = (**hot
+        .grants
+        .get("local-npm")
+        .expect("the fixture must have a hierarchy for this to add to"))
+    .clone();
+
+    // Added to the registry node's own map, which is what `[registries.grants]`
+    // writes to — not a replacement of it, since replacement is revocation under
+    // another name (§4.3).
+    let map = grants
+        .registry
+        .grants
+        .take()
+        .unwrap_or_else(GrantMap::new)
+        .grant(SubjectMatcher::Role(Role::User), [action]);
+    grants.registry.grants = Some(map);
+
+    hot.grants.insert("local-npm".to_owned(), Arc::new(grants));
+}
+
+/// An operator delegating `tombstones:read` must actually delegate it.
+#[actix_web::test]
+async fn tombstones_read_granted_to_a_user_is_honoured() {
+    let (local_svc, app) = compaction_app(false, Some(Duration::from_secs(0))).await;
+    grant_to_user(&local_svc, batlehub_core::entities::Action::TombstonesRead).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/local-npm/tombstones/compact")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(
+        call_service(&app, req).await.status(),
+        200,
+        "the grant resolves and the handler's `require_verb` passes; a `403` here \
+         is a role assertion deeper in overriding the config that was written to \
+         permit this, which is exactly what §6.1 deleted from the publish path"
+    );
+}
+
+/// The same question for `retention:run`, whose floor is `Role::User` rather
+/// than `Role::Admin` — a lower floor, and still a floor.
+#[actix_web::test]
+async fn retention_run_granted_to_a_user_is_honoured() {
+    let (local_svc, app) = compaction_app(false, Some(Duration::from_secs(0))).await;
+    grant_to_user(&local_svc, batlehub_core::entities::Action::RetentionRun).await;
+    publish(&local_svc, "local-npm", "pinme", "1.0.0", json!({})).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/local-npm/retention-pin")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .set_json(json!({ "name": "pinme", "version": "1.0.0", "keep": true }))
+        .to_request();
+    let status = call_service(&app, req).await.status();
+    assert!(
+        status.is_success(),
+        "granted `retention:run` and got {status}"
+    );
+}

@@ -157,7 +157,7 @@ pub(super) fn local_visibility_predicate_at(admin: &str, authed: &str, groups: &
                               AND (lp.name = tn.prefix
                                    OR (LENGTH(lp.name) > LENGTH(tn.prefix)
                                        AND SUBSTRING(lp.name, 1, LENGTH(tn.prefix) + 1)
-                                           = tn.prefix || '/'))
+                                           = tn.prefix || tn.separator))
                             ORDER BY LENGTH(tn.prefix) DESC
                             LIMIT 1
                         ) claim

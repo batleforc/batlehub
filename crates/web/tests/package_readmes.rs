@@ -69,8 +69,29 @@ async fn app_with_readme_store_explore_denied(
         Arc::clone(&repo) as Arc<dyn ReadmeRepository>
     ));
     let mut parts =
-        local_registry_app_parts_with_readme(name, registry_type, mode, None, Some(svc));
+        local_registry_app_parts_with_readme(name, registry_type, mode.clone(), None, Some(svc));
     parts.access_config = access_config_explore_denied(&[name]);
+    // §4.2 — `catalogue:browse` is resolved from grants, so "the catalogue hides
+    // this registry" has to be said in the hierarchy. §10 rule 2's conjunction
+    // turns the `explore` flags into the grant, so this fixture and a server
+    // reading the same config agree.
+    {
+        let mut hot = parts.proxy_svc.hot.write().await;
+        hot.grants = [(
+            name.to_owned(),
+            std::sync::Arc::new(fixture_grants_with_explore(
+                name,
+                registry_type,
+                // The fixture's own mode: rule 5's write verbs are mode-gated, so
+                // hardcoding `Proxy` would take publish away from a suite that
+                // publishes in order to prove the *read* is refused.
+                &mode,
+                &rbac_policy_perms(),
+                false,
+            )),
+        )]
+        .into();
+    }
     let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
     (app, repo)
 }

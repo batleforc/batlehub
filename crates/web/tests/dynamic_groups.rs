@@ -140,7 +140,48 @@ async fn make_group_app(
     ]
     .into();
 
+    // §5.1 — grant resolution, not the fixture's own `RbacRule`, is what refuses
+    // here. Derived from the same permissions the policies above were built from,
+    // so the two cannot disagree: §13.5 records a commit where they did and the
+    // whole suite stayed green while testing a path production had stopped taking.
+    let group_perms = RbacFixture {
+        roles: HashMap::from([
+            (Role::Anonymous, vec![]),
+            (Role::User, vec![]),
+            (Role::Admin, vec!["*".to_owned()]),
+        ]),
+        groups: HashMap::from([
+            (
+                "team-a".to_owned(),
+                vec!["releases:read".to_owned(), "source:read".to_owned()],
+            ),
+            ("team-b".to_owned(), vec!["releases:read".to_owned()]),
+        ]),
+    };
+    let grants: HashMap<String, Arc<batlehub_core::entities::RegistryGrants>> = [
+        (
+            "github".to_owned(),
+            Arc::new(fixture_grants(
+                "github",
+                "github",
+                &batlehub_config::schema::RegistryMode::Proxy,
+                &rbac_policy_perms(),
+            )),
+        ),
+        (
+            "github2".to_owned(),
+            Arc::new(fixture_grants(
+                "github2",
+                "github",
+                &batlehub_config::schema::RegistryMode::Proxy,
+                &group_perms,
+            )),
+        ),
+    ]
+    .into();
+
     let hot = new_hot_lock(HotConfig {
+        grants,
         // RFC 0015 §4.2's instance tier, wired exactly as production wires it:
         // `instance_node` is §10 rule 5's own translation, so the fixture's admin
         // holds the control verbs and nobody else does. Without it every

@@ -72,8 +72,8 @@ pub struct ReadmeImagePath {
 pub async fn explore_readme_image(
     path: web::Path<ReadmeImagePath>,
     identity: AuthIdentity,
-    access: web::Data<crate::AccessConfigLock>,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
     proxy_svc: web::Data<Arc<ProxyService>>,
     registry_map: web::Data<RegistryMap>,
@@ -100,7 +100,7 @@ pub async fn explore_readme_image(
         // that renders fine.
         upstream: super::detail::UpstreamMode::Auto,
         identity: &identity,
-        access: &access,
+        hot: &hot,
         admin_svc: &admin_svc,
         local_svc: &local_svc,
         proxy_svc: &proxy_svc,

@@ -286,6 +286,7 @@ async fn rubygems_upload_to_claimed_namespace_blocks_non_member() {
             prefix: "internal-gem".to_owned(),
             group_id: "team-alpha".to_owned(),
             claimed_by: None,
+            separator: '/',
         })
         .await
         .unwrap();
@@ -309,6 +310,7 @@ async fn rubygems_upload_to_claimed_namespace_allows_member() {
             prefix: "internal-gem".to_owned(),
             group_id: "team-alpha".to_owned(),
             claimed_by: None,
+            separator: '/',
         })
         .await
         .unwrap();
@@ -348,6 +350,7 @@ async fn goproxy_upload_to_claimed_namespace_blocks_non_member() {
             prefix: "example.com/internal".to_owned(),
             group_id: "team-alpha".to_owned(),
             claimed_by: None,
+            separator: '/',
         })
         .await
         .unwrap();
@@ -371,6 +374,7 @@ async fn goproxy_upload_to_claimed_namespace_allows_member() {
             prefix: "example.com/internal".to_owned(),
             group_id: "team-alpha".to_owned(),
             claimed_by: None,
+            separator: '/',
         })
         .await
         .unwrap();
@@ -411,6 +415,7 @@ async fn openvsx_upload_to_claimed_namespace_blocks_non_member() {
             prefix: "myorg.myext".to_owned(),
             group_id: "team-alpha".to_owned(),
             claimed_by: None,
+            separator: '/',
         })
         .await
         .unwrap();
@@ -434,6 +439,7 @@ async fn openvsx_upload_to_claimed_namespace_allows_member() {
             prefix: "myorg.myext".to_owned(),
             group_id: "team-alpha".to_owned(),
             claimed_by: None,
+            separator: '/',
         })
         .await
         .unwrap();
@@ -473,6 +479,7 @@ async fn composer_upload_to_claimed_namespace_blocks_non_member() {
             prefix: "myvendor".to_owned(),
             group_id: "team-alpha".to_owned(),
             claimed_by: None,
+            separator: '/',
         })
         .await
         .unwrap();
@@ -496,6 +503,7 @@ async fn composer_upload_to_claimed_namespace_allows_member() {
             prefix: "myvendor".to_owned(),
             group_id: "team-alpha".to_owned(),
             claimed_by: None,
+            separator: '/',
         })
         .await
         .unwrap();

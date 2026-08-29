@@ -135,6 +135,7 @@ curl -s -H "Authorization: Bearer <your-token>" \
 |--------|------|-------------|
 | `GET` | `/proxy/{registry}/{extension_id}/{version}/vsix` | Download a VS Code extension VSIX package. |
 | `PUT` | `/proxy/{registry}/{extension_id}/{version}/vsix` | Upload a VS Code extension VSIX package. |
+| `POST` | `/proxy/{registry}/api/-/namespace/create` | Claim an OpenVSX publisher namespace. |
 | `POST` | `/proxy/{registry}/api/-/publish` | `ovsx publish` — `POST /api/-/publish`. |
 | `GET` | `/proxy/{registry}/api/-/search` | Search the registry — `GET …/api/-/search`. |
 | `GET` | `/proxy/{registry}/api/{namespace}` | `GET /api/{namespace}` — what a publisher has here. |

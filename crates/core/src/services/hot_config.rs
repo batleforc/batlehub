@@ -403,6 +403,12 @@ pub struct HotConfig {
     /// for a node's `grants` is carried by the `Node` inside, not by this
     /// `Option`.
     pub instance: Option<Arc<crate::entities::Node>>,
+    /// RFC 0015 §4.2 — the GPG keys a Terraform namespace signs its providers
+    /// with, read on the provider download path.
+    ///
+    /// `None` serves the empty list this server hardcoded before the store
+    /// existed, which is what an estate that has registered no key still gets.
+    pub signing_keys: Option<Arc<dyn crate::ports::SigningKeyPort>>,
     /// Per-registry policy tiers (RFC 0015 §4.1) — the other five policies.
     ///
     /// `grants` above carries the one that composes by union; this carries
@@ -552,6 +558,7 @@ impl Default for HotConfig {
             namespace_policies: HashMap::new(),
             grants: HashMap::new(),
             instance: None,
+            signing_keys: None,
             policy_tiers: HashMap::new(),
             grant_repo: None,
             policy_repo: None,

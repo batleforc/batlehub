@@ -94,7 +94,28 @@ async fn make_explore_app_full(
     // One lock for both services, as `server/src/main.rs` wires it. This fixture
     // used to build two and write the page size into both by hand; it no longer
     // has to, and a policy set here is now the one the local read path consults.
+    // §4.2 — `catalogue:browse` comes from the hierarchy now, so `explore_allowed`
+    // has to be expressed there and not only in `AccessConfig`. `build_grants`
+    // applies rule 2's conjunction, so what this fixture grants is what a server
+    // reading the same flags would grant.
+    let grants: HashMap<String, Arc<batlehub_core::entities::RegistryGrants>> = reg_names
+        .iter()
+        .map(|n| {
+            (
+                n.to_string(),
+                Arc::new(fixture_grants_with_explore(
+                    n,
+                    n,
+                    &batlehub_config::schema::RegistryMode::Proxy,
+                    &rbac_policy_perms(),
+                    explore_allowed,
+                )),
+            )
+        })
+        .collect();
+
     let hot = new_hot_lock(HotConfig {
+        grants,
         // RFC 0015 §4.2's instance tier, wired exactly as production wires it:
         // `instance_node` is §10 rule 5's own translation, so the fixture's admin
         // holds the control verbs and nobody else does. Without it every

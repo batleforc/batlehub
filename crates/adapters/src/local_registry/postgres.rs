@@ -252,6 +252,36 @@ impl LocalRegistryBackend for PostgresLocalRegistry {
     /// `WHERE … status = 'published'` makes this a no-op for a tombstone: a
     /// coordinate that is already spent cannot be protected from a reclamation
     /// that can never reach it.
+    async fn set_channel(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        channel: &str,
+    ) -> Result<bool, CoreError> {
+        // `jsonb_set` on the one key, rather than reading the document and
+        // writing it back: a read-modify-write would lose a concurrent yank's
+        // `index_metadata.yanked`, and this is the field the *other* mutators
+        // share. `IS DISTINCT FROM` makes a no-op move report `false` rather than
+        // touching the row.
+        let result = sqlx::query(
+            "UPDATE local_packages \
+             SET index_metadata = jsonb_set(\
+                 COALESCE(index_metadata, '{}'::jsonb), '{channel}', to_jsonb($4::text), true) \
+             WHERE registry = $1 AND name = $2 AND version = $3 \
+               AND status = 'published' \
+               AND COALESCE(index_metadata->>'channel', '') IS DISTINCT FROM $4::text",
+        )
+        .bind(registry)
+        .bind(name)
+        .bind(version)
+        .bind(channel)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| CoreError::Database(e.to_string()))?;
+        Ok(result.rows_affected() > 0)
+    }
+
     async fn set_retention_keep(
         &self,
         registry: &str,
