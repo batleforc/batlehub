@@ -30,6 +30,15 @@ use metrics_exporter_prometheus::PrometheusBuilder;
 async fn healthz_returns_ok_without_db() {
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let hot = new_hot_lock(HotConfig {
+        // RFC 0015 §4.2's instance tier, wired exactly as production wires it:
+        // `instance_node` is §10 rule 5's own translation, so the fixture's admin
+        // holds the control verbs and nobody else does. Without it every
+        // `require_verb` on a control endpoint refuses, including the admin the
+        // suite is asserting about — a fixture that does not build the model
+        // tests a server nobody runs (§13.5).
+        instance: Some(std::sync::Arc::new(
+            batlehub_core::services::authz::translate::instance_node(None),
+        )),
         registries: HashMap::new(),
         policies: HashMap::new(),
         ..Default::default()
@@ -67,6 +76,15 @@ async fn healthz_is_unauthenticated() {
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
+            // RFC 0015 §4.2's instance tier, wired exactly as production wires it:
+            // `instance_node` is §10 rule 5's own translation, so the fixture's admin
+            // holds the control verbs and nobody else does. Without it every
+            // `require_verb` on a control endpoint refuses, including the admin the
+            // suite is asserting about — a fixture that does not build the model
+            // tests a server nobody runs (§13.5).
+            instance: Some(std::sync::Arc::new(
+                batlehub_core::services::authz::translate::instance_node(None),
+            )),
             registries: HashMap::new(),
             policies: HashMap::new(),
             ..Default::default()
@@ -83,6 +101,18 @@ async fn healthz_is_unauthenticated() {
 
     let app = init_service(
         actix_web::App::new()
+            // RFC 0015 §4.2 — this app registers only the handlers under test, so the
+            // hot lock the control-verb check reads has to be registered with them.
+            .app_data(actix_web::web::Data::new(
+                batlehub_core::services::hot_config::new_hot_lock(
+                    batlehub_core::services::hot_config::HotConfig {
+                        instance: Some(std::sync::Arc::new(
+                            batlehub_core::services::authz::translate::instance_node(None),
+                        )),
+                        ..Default::default()
+                    },
+                ),
+            ))
             .app_data(actix_web::web::Data::new(proxy_svc))
             .service(healthz)
             .wrap(AuthMiddlewareFactory::new(test_auth_providers())),
@@ -113,6 +143,18 @@ async fn metrics_returns_200_with_handle() {
 
     let app = init_service(
         actix_web::App::new()
+            // RFC 0015 §4.2 — this app registers only the handlers under test, so the
+            // hot lock the control-verb check reads has to be registered with them.
+            .app_data(actix_web::web::Data::new(
+                batlehub_core::services::hot_config::new_hot_lock(
+                    batlehub_core::services::hot_config::HotConfig {
+                        instance: Some(std::sync::Arc::new(
+                            batlehub_core::services::authz::translate::instance_node(None),
+                        )),
+                        ..Default::default()
+                    },
+                ),
+            ))
             .app_data(actix_web::web::Data::new(handle))
             .service(prometheus_metrics),
     )
@@ -160,6 +202,15 @@ async fn cli_download_serves_binary_when_configured() {
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
     let hot = new_hot_lock(HotConfig {
+        // RFC 0015 §4.2's instance tier, wired exactly as production wires it:
+        // `instance_node` is §10 rule 5's own translation, so the fixture's admin
+        // holds the control verbs and nobody else does. Without it every
+        // `require_verb` on a control endpoint refuses, including the admin the
+        // suite is asserting about — a fixture that does not build the model
+        // tests a server nobody runs (§13.5).
+        instance: Some(std::sync::Arc::new(
+            batlehub_core::services::authz::translate::instance_node(None),
+        )),
         registries: HashMap::new(),
         policies: HashMap::new(),
         ..Default::default()

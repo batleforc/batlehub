@@ -370,7 +370,7 @@ for (const { role, token, routes } of plans) {
         for (const el of document.querySelectorAll("body *")) {
           if (!el.getClientRects().length) continue;
           const style = getComputedStyle(el);
-          const size = Math.round(parseFloat(style.fontSize));
+          const size = Math.round(Number.parseFloat(style.fontSize));
           if (!el.children.length && el.innerText?.trim()) sizes.add(size);
           if (hasOwnText(el) && style.fontFamily.includes(face)) {
             largestDisplay = Math.max(largestDisplay, size);
@@ -381,7 +381,7 @@ for (const { role, token, routes } of plans) {
           sizes: [...sizes].sort((a, b) => a - b),
           largestDisplay,
           h1: h1 && {
-            size: Math.round(parseFloat(getComputedStyle(h1).fontSize)),
+            size: Math.round(Number.parseFloat(getComputedStyle(h1).fontSize)),
             display: getComputedStyle(h1).fontFamily.includes(face),
           },
         };

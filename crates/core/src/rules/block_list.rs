@@ -79,6 +79,7 @@ impl Rule for BlockListRule {
 
 #[cfg(test)]
 mod tests {
+    use crate::entities::Action;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
@@ -206,7 +207,7 @@ mod tests {
         RuleContext {
             identity,
             package: pkg,
-            resource_type: "releases:read",
+            action: Action::ReleasesRead,
             cache_entry: None,
             requested_version: None,
         }

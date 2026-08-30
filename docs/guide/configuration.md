@@ -613,7 +613,7 @@ Dynamic groups enable wildcard grants. To allow all CI tokens from `batleforc`'s
 "forgejo-action/*" = ["releases:read"]
 
 # Grant specific per-repo CI full publish access
-"forgejo-action/batleforc-batlehub/*" = ["releases:read", "releases:write"]
+"forgejo-action/batleforc-batlehub/*" = ["releases:read", "releases:publish"]
 ```
 
 **GitHub Actions workflow snippet:**
@@ -1777,6 +1777,102 @@ enabled = true
 - `GET    /api/v1/admin/registries/{registry}/beta-channel` — list members
 - `POST   /api/v1/admin/registries/{registry}/beta-channel` — body: `{ "principal_type": "user"|"group", "principal_id": "...", "granted_by": "..." }`
 - `DELETE /api/v1/admin/registries/{registry}/beta-channel/{principal_type}/{principal_id}` — remove member
+
+#### `[registries.retention]`
+
+Retention for what this registry holds **locally**. Absent — the default — keeps
+everything forever, which is what every instance does without this block.
+
+Not to be confused with the eviction keys on [`[registries.cache]`](/guide/caching),
+which govern the *proxy cache*: an evicted cache entry is re-fetchable from
+upstream, a local version is frequently the only copy in existence. A
+`[registries.retention]` block on a `proxy`-mode registry is a **startup error**,
+because it would govern an empty set.
+
+The block governs two different objects: **published versions**, which retention
+reclaims, and the **tombstones** their deletion leaves, whose detail compaction
+strips. Deleting a version already leaves a permanent tombstone with no
+configuration at all; nothing here changes that, and the coordinate claim is
+never removed by any setting. See
+[Deleting a published version](/guide/admin-policies#deleting-versions).
+
+```toml
+[[registries]]
+type = "npm"
+name = "my-npm"
+mode = "local"
+
+[registries.retention]
+keep_versions       = 10
+keep_if_pulled_days = 90    # the veto that makes this safe to switch on
+keep_for_days       = 365
+dry_run             = false
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `keep_versions` | int | *(unset)* | Keep the newest N versions of every package, by publish date |
+| `keep_for_days` | int | *(unset)* | Keep anything **published** within this window |
+| `keep_if_pulled_days` | int | *(unset)* | Keep anything **downloaded** within this window |
+| `keep_yanked` | bool | `true` | Keep yanked versions |
+| `download_signal_floor_days` | int | *(built-in)* | Before this point, "no download record" proves nothing. Defaults to 2026-08-27 |
+| `reclaim_delay_ms` | int | `0` | Pause between reclamations, bounding a first live run |
+| `tombstone_detail_for_days` | int | *(unset)* | Strip a tombstone's detail this many days after the deletion. Unset keeps it forever. Minimum 30 |
+| `dry_run` | bool | `true` | Report and change nothing |
+
+### Keep conditions are a union of vetoes
+
+**A version survives if *any* configured condition matches.** There is no
+expression to write and no ordering to get wrong: the only way to reclaim a
+version is for every configured condition to decline to keep it. Wrong
+configuration therefore fails toward keeping, which is the direction that is
+recoverable.
+
+A block with **no** keep condition is rejected at startup, because it is the one
+that reclaims every version on its first live run. `keep_yanked` does not count:
+it defaults to `true` and only ever vetoes, so a block containing nothing else
+would still destroy every unyanked version. `0` is rejected for every window — a
+keep condition set to zero keeps nothing, which is not what it looks like it
+means.
+
+### `keep_if_pulled_days` is the one that matters
+
+`keep_versions = 10` alone throws away the version half the estate is pinned to,
+because it happens to be eleventh by date. `keep_if_pulled_days` is the rule that
+makes retention safe to switch on: *whatever anyone is actually using stays,
+regardless of age or count.*
+
+Configuring reclamation without it raises `retention.no-pull-veto` on every
+reload. Live reclamation raises `retention.reclamation-live` as well, and live
+compaction `retention.compaction-live` — all three on every reload, because
+unlike cache eviction these destroy the only copy.
+
+Reading the download signal means reading its gaps too. The Maven and NuGet local
+artifact paths recorded no download event at all before 2026-08-26, so
+`download_signal_floor_days` marks the point before which an *absent* record
+proves nothing, and a version whose only evidence predates it is kept. Set it
+explicitly if this instance's audit history begins later — after a restore, or an
+`audit_purge`.
+
+A `keep_if_pulled_days` policy on a deployment with no package repository
+**refuses to run** rather than treating "no signal" as "no downloads".
+
+### What this does not have
+
+Retention here is **registry tier**. The namespace and package tiers RFC 0016
+§4.1 describes need RFC 0015's namespace blocks and its `policy` table, neither
+of which exists yet. The version-tier pin does not need them and is available:
+`POST …/retention-pin` sets `retention_keep` on a version, and a pinned version
+is never reclaimed whatever the policy says.
+
+**API (admin only):**
+- `POST /api/v1/admin/registries/{registry}/retention` — run retention; optional `?dry_run=true` to preview. `409` when no keep condition is configured
+- `POST /api/v1/admin/registries/{registry}/retention-pin` — body `{name, version, keep}`; pin or release a version
+- `GET  /api/v1/admin/registries/{registry}/tombstones` — deleted coordinates, newest first; optional `?name=`
+- `POST /api/v1/admin/registries/{registry}/tombstones/compact` — run compaction; optional `?dry_run=true` to preview. `409` when no window is configured
+
+`?dry_run=` can only ever make a run *safer*: passing `false` does not override a
+configured `dry_run = true`.
 
 ---
 

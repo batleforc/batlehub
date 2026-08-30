@@ -5,7 +5,6 @@ use actix_web::{post, web, Responder};
 use batlehub_core::ports::StorageAdminRepository;
 use batlehub_core::services::ProxyService;
 
-use crate::handlers::back_office::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
 use super::system::ClearCacheResponse;
@@ -20,7 +19,7 @@ use super::system::ClearCacheResponse;
     ),
     responses(
         (status = 200, description = "Artifacts cleared", body = ClearCacheResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`cache:evict` required"),
         (status = 404, description = "Registry not found"),
     ),
     security(("bearer_token" = [])),
@@ -32,10 +31,16 @@ pub async fn clear_registry_cache(
     registry_map: web::Data<RegistryMap>,
     storage_admin_repo: Option<web::Data<Arc<dyn StorageAdminRepository>>>,
     proxy_svc: web::Data<Arc<ProxyService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
-
     let registry = path.into_inner();
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::CacheEvict,
+        Some(&registry),
+        &hot,
+    )
+    .await?;
 
     if !registry_map.contains(&registry) {
         return Err(AppError::not_found("registry not found"));

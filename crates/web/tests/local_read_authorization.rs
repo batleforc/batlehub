@@ -80,6 +80,7 @@ async fn make_team_only(ns_store: &InMemoryTeamNamespaceStore, registry: &str, p
             prefix: package.to_owned(),
             group_id: "team-nobody".to_owned(),
             claimed_by: Some("admin".to_owned()),
+            separator: '/',
         })
         .await
         .expect("claim namespace");
@@ -418,4 +419,403 @@ async fn a_warmed_search_cache_does_not_replay_one_callers_private_hits_to_anoth
         !as_user.contains(&"acme-secret".to_owned()),
         "the cache replayed the admin's private hit to a non-member: {as_user:?}"
     );
+}
+
+// ── Whole-registry documents (RFC 0015 §4.4) ─────────────────────────────────
+//
+// The tests above are per-coordinate: a caller names a package and is refused.
+// These are the other shape, and the one §4.4 exists for. A whole-registry
+// document names *every* package in the registry, so a coordinate the caller
+// would be refused must not appear in it — being refused the artifact afterwards
+// is not a remedy, because the name was the secret.
+//
+// Each was built from `list_package_names` and, in conda's case, straight from
+// `backend.get_versions` with no visibility check at all. That is survey finding
+// 11's shape — a listing assembled from a bare name query — surviving on the
+// ecosystems whose listings nobody had revisited.
+//
+// The public control comes first in each, so a test that starts passing because
+// the fixture stopped publishing fails instead.
+
+/// Minimal conda `.tar.bz2`: a bzip2-compressed tar holding `info/index.json`.
+fn make_conda_tar_bz2(name: &str, version: &str) -> Vec<u8> {
+    use bzip2::write::BzEncoder;
+    use bzip2::Compression;
+    use std::io::Write as _;
+
+    let index_bytes = serde_json::to_vec(&serde_json::json!({
+        "name": name,
+        "version": version,
+        "build": "0",
+        "build_number": 0,
+        "depends": [],
+        "subdir": "linux-64",
+    }))
+    .unwrap();
+
+    let mut tar_bytes = Vec::new();
+    {
+        let mut builder = tar::Builder::new(&mut tar_bytes);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(index_bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "info/index.json", index_bytes.as_slice())
+            .unwrap();
+        builder.finish().unwrap();
+    }
+
+    let mut encoder = BzEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(&tar_bytes).unwrap();
+    encoder.finish().unwrap()
+}
+
+/// The names a caller's `repodata.json` describes, across both generations.
+async fn repodata_names<S: TestService>(app: &S, token: &str) -> Vec<String> {
+    let req = TestRequest::get()
+        .uri("/proxy/local-conda/linux-64/repodata.json")
+        .insert_header(("Authorization", bearer(token)))
+        .to_request();
+    let resp = call_service(app, req).await;
+    assert_eq!(resp.status(), 200);
+    let doc: serde_json::Value =
+        serde_json::from_slice(&actix_web::test::read_body(resp).await).expect("JSON");
+
+    let mut names: Vec<String> = ["packages", "packages.conda"]
+        .iter()
+        .filter_map(|k| doc[*k].as_object())
+        .flat_map(|m| m.values())
+        .filter_map(|entry| entry["name"].as_str().map(str::to_owned))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// `repodata.json` is the channel's inventory, and it named private packages.
+///
+/// This document was built from `backend.get_versions` directly — no
+/// `check_visibility`, no grant filter — so a team-visible conda package was
+/// listed to every caller who fetched the channel, including the ones the same
+/// registry answers `403` to on the package itself. conda fetches this on every
+/// `conda install`, so the disclosure was not a corner of the API: it was the
+/// first request every client makes.
+#[actix_web::test]
+async fn conda_repodata_does_not_name_a_team_visible_package_to_a_non_member() {
+    let (app, ns_store, _local_svc) = app_with_namespaces("local-conda", "conda").await;
+
+    for name in ["openpkg", "secretpkg"] {
+        let req = TestRequest::post()
+            .uri("/proxy/local-conda/linux-64/")
+            .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+            .set_payload(make_conda_tar_bz2(name, "1.0.0"))
+            .to_request();
+        assert!(
+            call_service(&app, req).await.status().is_success(),
+            "publishing {name} must succeed, or the assertions below pass vacuously"
+        );
+    }
+
+    // Control: both public, both named.
+    let before = repodata_names(&app, USER_TOKEN).await;
+    assert!(
+        before.contains(&"secretpkg".to_owned()),
+        "fixture published nothing: {before:?}"
+    );
+
+    make_team_only(&ns_store, "local-conda", "secretpkg").await;
+
+    let after = repodata_names(&app, USER_TOKEN).await;
+    assert!(
+        !after.contains(&"secretpkg".to_owned()),
+        "the channel index named a package this caller is refused: {after:?}"
+    );
+    assert!(
+        after.contains(&"openpkg".to_owned()),
+        "filtering must remove one package, not blank the channel: {after:?}"
+    );
+
+    // And a member still sees it — otherwise the assertion above would pass on a
+    // channel that had simply stopped listing anything.
+    let as_admin = repodata_names(&app, ADMIN_TOKEN).await;
+    assert!(as_admin.contains(&"secretpkg".to_owned()), "{as_admin:?}");
+}
+
+/// `available-packages` asserts it is the *complete* contents of the repository.
+///
+/// Which is what makes an unfiltered one worse than an ordinary listing leak:
+/// Composer treats the list as authoritative and will not request a package
+/// absent from it, so every name in it is both a disclosure and a promise. The
+/// handler already gated *whether* the caller gets the document; nothing decided
+/// what went in it.
+#[actix_web::test]
+async fn composer_available_packages_omits_a_team_visible_package() {
+    let (app, ns_store, _local_svc) = app_with_namespaces("local-composer", "composer").await;
+
+    for name in ["acme/open", "acme/secret"] {
+        let req = TestRequest::post()
+            .uri("/proxy/local-composer/api/upload")
+            .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+            .set_payload(make_composer_zip(name, "1.0.0"))
+            .to_request();
+        assert!(
+            call_service(&app, req).await.status().is_success(),
+            "publishing {name} must succeed, or the assertions below pass vacuously"
+        );
+    }
+
+    let available = |token: &'static str| {
+        let app = &app;
+        async move {
+            let req = TestRequest::get()
+                .uri("/proxy/local-composer/packages.json")
+                .insert_header(("Authorization", bearer(token)))
+                .to_request();
+            let resp = call_service(app, req).await;
+            assert_eq!(resp.status(), 200);
+            let doc: serde_json::Value =
+                serde_json::from_slice(&actix_web::test::read_body(resp).await).expect("JSON");
+            doc["available-packages"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        }
+    };
+
+    let before = available(USER_TOKEN).await;
+    assert!(
+        before.contains(&"acme/secret".to_owned()),
+        "fixture published nothing: {before:?}"
+    );
+
+    make_team_only(&ns_store, "local-composer", "acme/secret").await;
+
+    let after = available(USER_TOKEN).await;
+    assert!(
+        !after.contains(&"acme/secret".to_owned()),
+        "`available-packages` named a package this caller is refused: {after:?}"
+    );
+    assert!(
+        after.contains(&"acme/open".to_owned()),
+        "filtering must remove one package, not empty the repository: {after:?}"
+    );
+}
+
+// ── RFC 0015 §4.4 — the namespace tier reaches a whole-registry document ──────
+//
+// `available-packages` is the sharpest of the six wired documents, and §13.5 says
+// why: it *asserts* it is the complete contents of the repository, and Composer
+// will not request a package absent from it. So every name in it is
+// simultaneously a disclosure and a promise, and the filter has to be right in
+// both directions — a missing name breaks resolution, an extra one enumerates a
+// private inventory.
+//
+// It is also the only one of the six with no per-package grant check behind it:
+// the other five call `load_visible_versions`, which authorizes, so a filter that
+// listed too much was caught downstream there and not here.
+//
+// The filter used to resolve the registry node **alone**, which made
+// `[[registries.namespaces]]` invisible to all six documents in both directions.
+
+/// A local Composer app with `packages` published, and `grants` installed
+/// *afterwards*.
+///
+/// The publishes run under the fixture's own permissive hierarchy because
+/// publishing needs `releases:publish`; the hierarchy under test is then swapped
+/// into the shared `HotConfig`, which is also what proves the document reflects
+/// the live config rather than one captured at construction.
+async fn composer_app_with(
+    packages: &[&str],
+    grants: batlehub_core::entities::RegistryGrants,
+) -> impl TestService {
+    let parts = local_registry_app_parts("local-composer", "composer", RegistryMode::Local, None);
+    let hot = parts.proxy_svc.hot.clone();
+    let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
+
+    for name in packages {
+        let req = TestRequest::post()
+            .uri("/proxy/local-composer/api/upload")
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .set_payload(make_composer_zip(name, "1.0.0"))
+            .to_request();
+        assert_eq!(
+            call_service(&app, req).await.status(),
+            200,
+            "{name} must publish, or the assertions below are about an empty registry"
+        );
+    }
+
+    hot.write().await.grants = [("local-composer".to_owned(), Arc::new(grants))].into();
+    app
+}
+
+/// The names in `available-packages`, as an ordinary user.
+async fn available_packages<S: TestService>(app: &S) -> Vec<String> {
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/packages.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let resp = call_service(app, req).await;
+    assert_eq!(resp.status(), 200, "the document itself must be served");
+    let body: serde_json::Value = actix_web::test::read_body_json(resp).await;
+    body.get("available-packages")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A registry node granting `registry` to `role:user`, over `namespaces` in
+/// config order. `None` grants is the seal (`grants = {}`).
+fn hierarchy(
+    registry: &[batlehub_core::entities::Action],
+    namespaces: &[(&str, Option<&[batlehub_core::entities::Action]>)],
+) -> batlehub_core::entities::RegistryGrants {
+    use batlehub_core::entities::{
+        GrantMap, Node, RegistryGrants, RegistryKind, Role, SubjectMatcher, Tier,
+    };
+    RegistryGrants {
+        kind: RegistryKind::Composer,
+        registry: Node::new(
+            Tier::Registry,
+            "registry:local-composer",
+            Some(GrantMap::new().grant(SubjectMatcher::Role(Role::User), registry.to_vec())),
+        ),
+        namespaces: namespaces
+            .iter()
+            .map(|(prefix, grants)| {
+                (
+                    (*prefix).to_owned(),
+                    Node::new(
+                        Tier::Namespace,
+                        format!("namespace:{prefix}"),
+                        Some(match grants {
+                            None => GrantMap::sealed(),
+                            Some(actions) => GrantMap::new()
+                                .grant(SubjectMatcher::Role(Role::User), actions.to_vec()),
+                        }),
+                    ),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// A namespace seal withholds from the document what the registry granted.
+///
+/// The direction that is a **disclosure** rather than a breakage: the registry
+/// grants the read, so a filter that resolved only the registry node answered
+/// "everything" and named a sealed namespace's packages to a caller the seal
+/// excludes. §6.3 requires the listing and the download gate to agree, so the
+/// control asserts the same coordinate is refused on the per-package route —
+/// which is what makes the document the half that was wrong.
+#[actix_web::test]
+async fn a_namespace_seal_is_honoured_by_available_packages() {
+    use batlehub_core::entities::Action;
+
+    let app = composer_app_with(
+        &["acme/lib", "other/lib"],
+        hierarchy(
+            &[Action::ReleasesRead, Action::ReleasesList],
+            &[("acme", None)],
+        ),
+    )
+    .await;
+
+    let names = available_packages(&app).await;
+    assert!(
+        !names.contains(&"acme/lib".to_owned()),
+        "a sealed namespace must not be enumerated to a caller it excludes; got {names:?}"
+    );
+    assert!(
+        names.contains(&"other/lib".to_owned()),
+        "the control: a seal is a namespace seal, not a refusal of everything: {names:?}"
+    );
+
+    let req = TestRequest::get()
+        .uri("/proxy/local-composer/p2/acme/lib.json")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    let status = call_service(&app, req).await.status();
+    assert!(
+        status.is_client_error(),
+        "the per-package route already refused this coordinate; the document was \
+         the half that disagreed, and got {status}"
+    );
+}
+
+/// A namespace grant **below** a seal reaches the document, and only the
+/// packages under it.
+///
+/// The widening direction, end to end. §4.3: *"A seal stops inheritance, it does
+/// not disable the nodes beneath it"* — so re-opening one package's namespace
+/// inside a sealed vendor is a supported configuration, and it is the shape that
+/// proves the filter consults the namespace tier per package rather than
+/// answering once from the registry node. Before that, `acme/lib` was absent
+/// from the inventory while `/p2/acme/lib.json` served it — and Composer, which
+/// treats this list as complete, would have reported a package it was entitled
+/// to as not existing.
+#[actix_web::test]
+async fn a_namespace_grant_below_a_seal_reaches_available_packages() {
+    use batlehub_core::entities::Action;
+
+    let app = composer_app_with(
+        &["acme/lib", "acme/other", "other/lib"],
+        hierarchy(
+            &[Action::ReleasesRead, Action::ReleasesList],
+            // Config order is path order, so the seal comes first and the
+            // narrower block below it re-opens exactly what it names.
+            // **Both verbs.** The seal removes everything the registry granted,
+            // `releases:list` included, and a listing's gate is `releases:list`
+            // now (§4.2) — so re-opening only the read verb serves the name in
+            // the inventory and then refuses the document it points at. §10
+            // rule 4 gives translated configs both together for exactly this
+            // reason; a hand-written grants block has to say so.
+            &[
+                ("acme", None),
+                (
+                    "acme/lib",
+                    Some(&[Action::ReleasesRead, Action::ReleasesList]),
+                ),
+            ],
+        ),
+    )
+    .await;
+
+    let names = available_packages(&app).await;
+    assert!(
+        names.contains(&"acme/lib".to_owned()),
+        "a namespace grant below the seal must reach its own packages; got {names:?}"
+    );
+    assert!(
+        !names.contains(&"acme/other".to_owned()),
+        "and only its own — the seal still covers the rest of the vendor: {names:?}"
+    );
+    assert!(
+        names.contains(&"other/lib".to_owned()),
+        "the control: the registry grant still reaches everything outside the seal: {names:?}"
+    );
+
+    // The listing and the gate agree, in both directions, on the two coordinates
+    // the seal separates.
+    for (package, served) in [("acme/lib", true), ("acme/other", false)] {
+        let req = TestRequest::get()
+            .uri(&format!("/proxy/local-composer/p2/{package}.json"))
+            .insert_header(("Authorization", bearer(USER_TOKEN)))
+            .to_request();
+        let status = call_service(&app, req).await.status();
+        assert_eq!(
+            status.is_success(),
+            served,
+            "{package}: the document and the per-package route must agree, got {status}"
+        );
+    }
 }

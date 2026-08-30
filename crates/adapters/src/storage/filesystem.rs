@@ -96,7 +96,7 @@ async fn walk_dat_files(dir: PathBuf) -> Vec<PathBuf> {
                 stack.push(path);
                 continue;
             }
-            if path.extension().and_then(|e| e.to_str()) == Some("dat") {
+            if path.extension().and_then(std::ffi::OsStr::to_str) == Some("dat") {
                 files.push(path);
             }
         }

@@ -184,6 +184,21 @@ function terraformHost(url: string): string {
 }
 
 /**
+ * `//a/b//` → `a/b`.
+ *
+ * Walked rather than `replace(/^\/+|\/+$/g, "")`: an anchored `\/+$` re-scans a
+ * run of slashes from every position inside it, which is quadratic on a path
+ * that is mostly slashes.
+ */
+function trimSlashes(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === "/") start++;
+  while (end > start && value[end - 1] === "/") end--;
+  return value.slice(start, end);
+}
+
+/**
  * The `host[/registry]` prefix of a provider source. A host-routed registry
  * serves `/v1/providers/…` at the root of its own hostname, so repeating the
  * registry name there points `terraform init` at a path that does not exist.
@@ -191,7 +206,7 @@ function terraformHost(url: string): string {
 function terraformSource(url: string, reg: string): string {
   let path: string;
   try {
-    path = new URL(url, globalThis.location.origin).pathname.replaceAll(/^\/+|\/+$/g, "");
+    path = trimSlashes(new URL(url, globalThis.location.origin).pathname);
   } catch {
     path = "";
   }

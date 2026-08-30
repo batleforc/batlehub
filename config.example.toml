@@ -268,16 +268,41 @@ path = "./tmp/storage-cache"
 
 # ── Registries ────────────────────────────────────────────────────────────────
 
-# Permissions available:
-#   releases:read  — list releases and download release assets
-#   source:read    — download source tarballs
-#   actions:read   — access Actions artifacts (future)
+# Permissions available — the set is CLOSED. A verb that is not one of these is
+# a startup error, not a permission granted to nobody. The full list of 31 is in
+# /guide/access-control#verbs; the ones a registry block usually wants:
+#   releases:read      — download an artifact
+#   releases:list      — read a version listing or index document
+#   source:read        — download source tarballs
+#   releases:publish   — publish a new version
+#   catalogue:browse   — use the console's package explorer
+#
+# (An earlier version of this comment offered `actions:read` "(future)". No such
+# verb has ever existed, and uncommenting it stopped the server from starting.)
 #
 # Dynamic groups (from OIDC providers like Authentik):
 #   [registries.rbac.groups]
 #   "team-a" = ["releases:read", "source:read"]
 #   "team-b" = ["releases:read"]
 # A user belonging to a group sees the union of their role's registries and all their groups'.
+
+# ── Grants: the hierarchy (RFC 0015) ─────────────────────────────────────────
+#
+# `[registries.rbac]` above still works exactly as it always did — it is
+# translated into grants at load, so nothing here needs changing. What the
+# hierarchy adds is the ability to say things `rbac` cannot: a verb for one
+# group, a policy on part of a registry, and the control surfaces.
+#
+# Five tiers: instance → registry → namespace → package → version. The first
+# three are written here; the last two go through the admin API, because a
+# registry with 200 000 packages will not enumerate them in TOML.
+
+# Instance tier — above every registry, and the only place that can reach an
+# endpoint naming no registry (health, metrics, config, the block lists).
+# `role:admin` already holds all of these; this block is for giving one to
+# somebody else.
+[grants]
+"group:*:sre" = ["system:read", "cache:evict"]
 
 [[registries]]
 type = "github"
@@ -288,6 +313,25 @@ name = "github"
 anonymous = []
 user = ["releases:read", "source:read"]
 admin = ["*"]
+
+# Registry tier — the default for everything beneath it. Unioned with whatever
+# the `rbac` block above translates to; a grant only ever adds.
+[registries.grants]
+"group:*:release-eng" = ["releases:publish", "owners:write"]
+
+# Namespace tier — matched on segment boundaries with the ecosystem's own
+# separator, so `acme/internal` never matches `acme/internal-tools`.
+[[registries.namespaces]]
+match      = "acme/internal"
+visibility = "team"
+
+# `grants = {}` SEALS: nothing is inherited from above, and only what is written
+# on this node or below applies. An absent block inherits; an empty one seals.
+# They are different states, which is why the key is optional rather than
+# defaulted. The administrative floor survives a seal, so a sealed subtree is
+# never one an administrator cannot reopen.
+[registries.namespaces.grants]
+"group:oidc1:platform" = ["releases:read", "releases:list", "releases:publish"]
 
 # Optional: grant access to this registry for specific OIDC groups.
 # [registries.rbac.groups]
@@ -769,6 +813,57 @@ anonymous = ["releases:read"]
 #
 # [registries.beta_channel]
 # enabled = true
+
+# ── Local retention (RFC 0016) ────────────────────────────────────────────────
+#
+# Reclaims locally published versions nobody is using, and ages out the detail of
+# the tombstones deletions leave. Absent — the default — keeps everything forever.
+#
+# NOT the same as the eviction keys on [registries.cache], which govern the proxy
+# cache. An evicted cache entry is re-fetchable from upstream; a locally published
+# artifact is frequently the only copy in existence. A [registries.retention]
+# block on a `proxy` mode registry is a startup error, because it would govern an
+# empty set.
+#
+# KEEP CONDITIONS ARE A UNION OF VETOES: a version survives if ANY configured
+# condition matches. There is no expression to write and no ordering to get
+# wrong, and wrong configuration therefore fails toward keeping. A block with no
+# keep condition at all is rejected — that is the one that reclaims everything on
+# its first live run.
+#
+# keep_if_pulled_days is the setting that makes this safe to switch on.
+# keep_versions = 10 alone throws away the version half the estate is pinned to,
+# because it happens to be eleventh by date. Configuring reclamation without the
+# pull veto raises `retention.no-pull-veto` on every reload.
+#
+# Deleting a version ALWAYS spends its number permanently, with or without this
+# block, and a reclamation is a deletion — freeing disk must not free the
+# namespace. There is no setting that lets a coordinate be reused.
+#
+#   POST /api/v1/admin/registries/{registry}/retention?dry_run=true
+#   POST /api/v1/admin/registries/{registry}/retention-pin   body: {name, version, keep}
+#   GET  /api/v1/admin/registries/{registry}/tombstones
+#   POST /api/v1/admin/registries/{registry}/tombstones/compact
+#
+# [[registries]]
+# type = "npm"
+# name = "my-npm"
+# mode = "local"
+#
+# [registries.retention]
+# keep_versions              = 10    # newest N per package, by publish date
+# keep_for_days              = 365   # anything published within this window
+# keep_if_pulled_days        = 90    # anything DOWNLOADED within this window
+# keep_yanked                = true  # default: a yank is not a reason to destroy
+# download_signal_floor_days = 400   # before this, "no download record" proves
+#                                    # nothing (default: 2026-08-27, when the
+#                                    # Maven/NuGet local paths began recording)
+# reclaim_delay_ms           = 250   # pace a first live run; 0 paces nothing
+# tombstone_detail_for_days  = 730   # strip a deleted version's checksum,
+#                                    # publisher and metadata after two years.
+#                                    # The coordinate claim is kept forever and
+#                                    # there is no setting that removes it.
+# dry_run                    = true  # DEFAULT. Report and change nothing.
 
 # ── IP-Based Blocking (fail2ban) ──────────────────────────────────────────────
 #

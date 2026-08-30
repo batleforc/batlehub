@@ -20,28 +20,20 @@ pub use version_gate::VersionGateRule;
 
 use async_trait::async_trait;
 
-use crate::entities::{Identity, PackageMetadata, Role};
+use crate::entities::{Action, Identity, PackageMetadata};
 use crate::ports::CacheEntry;
-
-/// Well-known values for [`RuleContext::resource_type`] (and the matching
-/// `resource_type` param threaded through `proxy_stream`/`ProxyStreamOptions`
-/// in `batlehub-web`), defined once instead of repeated as string literals
-/// across every registry handler.
-pub mod resource_type {
-    /// Downloading a release artifact (the published package bytes).
-    pub const RELEASES_READ: &str = "releases:read";
-    /// Reading package/source metadata (index pages, manifests, packuments)
-    /// without downloading the artifact itself.
-    pub const SOURCE_READ: &str = "source:read";
-}
 
 pub struct RuleContext<'a> {
     /// The caller making the request.
     pub identity: &'a Identity,
     /// Resolved package metadata from the upstream registry.
     pub package: &'a PackageMetadata,
-    /// The operation being requested, e.g. `"releases:read"`, `"source:read"`.
-    pub resource_type: &'a str,
+    /// The operation being requested.
+    ///
+    /// A closed enum since RFC 0015 phase 1: this was `&'a str`, and a typo in
+    /// it asked for a permission nothing grants and refused every caller for a
+    /// reason no log explained.
+    pub action: Action,
     /// Cached metadata entry, if one exists. Absent on the first request for a package.
     pub cache_entry: Option<&'a CacheEntry>,
     /// The version string from the original request, before upstream resolution.
@@ -49,41 +41,40 @@ pub struct RuleContext<'a> {
     pub requested_version: Option<&'a str>,
 }
 
+/// A rule's verdict.
+///
+/// # Why there is no third variant
+///
+/// There used to be `RequireRole { minimum }`, which meant "allow this if the
+/// caller is privileged enough" and left the comparison to whoever received it.
+/// The operand was never missing — `RuleContext` carries the identity, and every
+/// rule that produced a `RequireRole` was holding the very thing needed to
+/// resolve it. What the extra variant bought was nothing; what it cost was a
+/// verdict that reads as *not a denial* until someone remembers to call
+/// `.resolve()`.
+///
+/// That cost was paid. The 2026-08-26 remediation review found two call sites in
+/// `authz.rs` that matched on `Deny` alone, so every gate with a
+/// non-empty `bypass_roles` — `version_gate`, `deny_latest`, `trusted_publisher`
+/// — silently became a no-op the moment an operator named a bypass role: the
+/// rule answered `RequireRole`, the caller saw "not a `Deny`", and the blocked
+/// version was served to everyone.
+///
+/// RFC 0015 §5.1 deletes it. Rules now compare against `ctx.identity` and answer
+/// `Allow` or `Deny`, so there is no unresolved state for a caller to
+/// misread — the fix is structural rather than two more `.resolve()` calls that
+/// the next caller can also forget.
 #[derive(Debug, Clone)]
 pub enum RuleDecision {
     /// The request is permitted.
     Allow,
     /// The request is rejected with a human-readable reason.
     Deny { reason: String },
-    /// The current identity's role is too low; elevate to `minimum` to proceed.
-    RequireRole { minimum: Role },
 }
 
 impl RuleDecision {
     pub fn is_deny(&self) -> bool {
-        matches!(
-            self,
-            RuleDecision::Deny { .. } | RuleDecision::RequireRole { .. }
-        )
-    }
-
-    /// Resolve `RequireRole` against the actual identity, returning a `Deny` if insufficient.
-    pub fn resolve(self, identity: &Identity) -> Self {
-        match &self {
-            RuleDecision::RequireRole { minimum } => {
-                if identity.has_role_at_least(minimum) {
-                    RuleDecision::Allow
-                } else {
-                    RuleDecision::Deny {
-                        reason: format!(
-                            "requires role '{}' or higher (you have '{}')",
-                            minimum, identity.role
-                        ),
-                    }
-                }
-            }
-            other => other.clone(),
-        }
+        matches!(self, RuleDecision::Deny { .. })
     }
 }
 
@@ -94,7 +85,7 @@ pub trait Rule: Send + Sync {
     fn name(&self) -> &str;
 
     /// Evaluate the rule against `ctx`. Rules are called in order; the first
-    /// `Deny` or `RequireRole` that resolves to `Deny` short-circuits the chain.
+    /// `Deny` short-circuits the chain.
     async fn evaluate(&self, ctx: &RuleContext<'_>) -> RuleDecision;
 }
 
@@ -108,7 +99,7 @@ pub trait Rule: Send + Sync {
 /// `server/src/builders.rs`.
 pub async fn evaluate_rules(rules: &[Box<dyn Rule>], ctx: &RuleContext<'_>) -> RuleDecision {
     for rule in rules {
-        let decision = rule.evaluate(ctx).await.resolve(ctx.identity);
+        let decision = rule.evaluate(ctx).await;
         if decision.is_deny() {
             return decision;
         }

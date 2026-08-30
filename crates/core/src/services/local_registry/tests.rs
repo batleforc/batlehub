@@ -6,7 +6,7 @@ use bytes::Bytes;
 use chrono::Utc;
 
 use super::*;
-use crate::rules::resource_type::RELEASES_READ;
+use crate::entities::Action;
 use crate::{
     entities::{Identity, Role},
     error::CoreError,
@@ -51,6 +51,36 @@ impl crate::ports::LocalRegistryBackend for InMemBackend {
     async fn undeprecate(&self, _: &str, _: &str, _: &str) -> Result<(), CoreError> {
         Ok(())
     }
+    async fn set_channel(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        channel: &str,
+    ) -> Result<bool, CoreError> {
+        let mut v = self.versions.lock().unwrap();
+        match v
+            .iter_mut()
+            .find(|p| p.registry == registry && p.name == name && p.version == version)
+        {
+            Some(p) => {
+                let current = p
+                    .index_metadata
+                    .get("channel")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or_default();
+                if current == channel {
+                    return Ok(false);
+                }
+                if let Some(obj) = p.index_metadata.as_object_mut() {
+                    obj.insert("channel".to_owned(), serde_json::json!(channel));
+                }
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     async fn unlist(&self, _: &str, _: &str, _: &str) -> Result<(), CoreError> {
         Ok(())
     }
@@ -194,6 +224,7 @@ fn pkg(registry: &str, name: &str, version: &str) -> PublishedPackage {
         signature_bytes: None,
         signature_type: None,
         visibility: Default::default(),
+        retention_keep: false,
     }
 }
 
@@ -249,6 +280,7 @@ fn apt_policy_req(name: &str, artifact_len: u64) -> PublishPolicyRequest<'_> {
         artifact_len,
         signature_bytes: None,
         signature_type: None,
+        artifact_key: None,
     }
 }
 
@@ -359,26 +391,85 @@ async fn publish_rejects_slash_in_version() {
     );
 }
 
-// ── yank / unyank role checks ─────────────────────────────────────────────
+// ── yank / unyank: the engine decides, not a role assertion ───────────────
+//
+// These two used to pass against `svc()`, which wires no grants at all — because
+// what they were really asserting was `has_role_at_least(&Role::User)` sitting in
+// front of the decision function. RFC 0015 §6.1 asks for that assertion to be
+// *replaced* by `releases:yank`, so it is gone, and a test that still passed
+// against a service with no authorization model would be pinning its own absence.
+//
+// The property is unchanged and is now asserted where it lives: §10 rule 5's
+// translation grants the write verbs to `role:user`, so an anonymous caller holds
+// none of them and is refused by the resolver.
+
+/// A registry whose grants are what §10 rule 5's translation produces for a
+/// local-mode registry: the write verbs to `role:user`, nothing to anyone else.
+fn rule_5_registry() -> crate::entities::RegistryGrants {
+    use crate::entities::{GrantMap, Node, RegistryGrants, RegistryKind, SubjectMatcher, Tier};
+    RegistryGrants {
+        kind: RegistryKind::Cargo,
+        registry: Node::new(
+            Tier::Registry,
+            "registry:cargo",
+            Some(GrantMap::new().grant(
+                SubjectMatcher::Role(Role::User),
+                [
+                    Action::ReleasesPublish,
+                    Action::ReleasesOverwrite,
+                    Action::ReleasesYank,
+                    Action::ReleasesDelete,
+                ],
+            )),
+        ),
+        namespaces: Vec::new(),
+    }
+}
+
+async fn svc_under_rule_5(backend: Arc<InMemBackend>) -> LocalRegistryService {
+    let s = svc(backend, None);
+    s.hot
+        .write()
+        .await
+        .grants
+        .insert("cargo".to_owned(), Arc::new(rule_5_registry()));
+    s
+}
 
 #[tokio::test]
-async fn yank_requires_user_role() {
-    let s = svc(InMemBackend::arc(), None);
+async fn yank_is_refused_to_a_caller_holding_no_grant() {
+    let s = svc_under_rule_5(InMemBackend::arc()).await;
     let err = s
         .yank("cargo", "serde", "1.0.0", &anon())
         .await
         .unwrap_err();
-    assert!(matches!(err, CoreError::AccessDenied(_)));
+    assert!(
+        matches!(err, CoreError::AccessDenied(ref m) if m.contains("releases:yank")),
+        "the refusal must name the verb the caller lacks, not a role: {err:?}"
+    );
 }
 
 #[tokio::test]
-async fn unyank_requires_user_role() {
-    let s = svc(InMemBackend::arc(), None);
+async fn unyank_is_refused_to_a_caller_holding_no_grant() {
+    let s = svc_under_rule_5(InMemBackend::arc()).await;
     let err = s
         .unyank("cargo", "serde", "1.0.0", &anon())
         .await
         .unwrap_err();
-    assert!(matches!(err, CoreError::AccessDenied(_)));
+    assert!(matches!(err, CoreError::AccessDenied(ref m) if m.contains("releases:yank")));
+}
+
+/// The positive control, and the half the old tests could not express: the role
+/// rule 5 grants to still reaches the operation, through the engine rather than
+/// around it.
+#[tokio::test]
+async fn a_user_yanks_under_the_rule_5_translation() {
+    let backend = InMemBackend::arc();
+    backend.seed(pkg("cargo", "serde", "1.0.0"));
+    let s = svc_under_rule_5(backend).await;
+    s.yank("cargo", "serde", "1.0.0", &user())
+        .await
+        .expect("role:user holds releases:yank under rule 5");
 }
 
 // ── npm packument / version not-found ─────────────────────────────────────
@@ -923,6 +1014,7 @@ impl MockTeamNamespace {
                 prefix: prefix.to_owned(),
                 group_id: group.to_owned(),
                 claimed_by: None,
+                separator: '/',
             });
         s
     }
@@ -943,15 +1035,17 @@ impl TeamNamespacePort for MockTeamNamespace {
         registry: &str,
         package: &str,
     ) -> Result<Option<crate::entities::TeamNamespace>, CoreError> {
+        // `TeamNamespace::covers`, not a fifth spelling of it.
+        //
+        // This mock carried its own matcher hardcoded to `/`, which made it agree
+        // with the three real ones by coincidence — and stop agreeing the moment
+        // migration 045 made the separator per-claim. §6.3 requires every copy of
+        // this rule to agree character for character; the way to get that is for
+        // there to be one copy.
         let ns = self.namespaces.lock().unwrap();
         let result = ns
             .iter()
-            .filter(|n| {
-                n.registry == registry
-                    && (package == n.prefix
-                        || (package.len() > n.prefix.len()
-                            && package[..n.prefix.len() + 1] == format!("{}/", n.prefix)))
-            })
+            .filter(|n| n.registry == registry && n.covers(package))
             .max_by_key(|n| n.prefix.len())
             .cloned();
         Ok(result)
@@ -962,7 +1056,21 @@ impl TeamNamespacePort for MockTeamNamespace {
     ) -> Result<Vec<crate::entities::TeamNamespace>, CoreError> {
         Ok(vec![])
     }
-    async fn claim_namespace(&self, _: crate::entities::TeamNamespace) -> Result<(), CoreError> {
+    async fn claim_namespace(&self, ns: crate::entities::TeamNamespace) -> Result<(), CoreError> {
+        // Stores, and refuses a second claim — a mock that silently accepted one
+        // would let `a_second_claim_is_refused` pass against a store that takes
+        // over rather than conflicts, which is the behaviour that test exists for.
+        let mut all = self.namespaces.lock().unwrap();
+        if all
+            .iter()
+            .any(|n| n.registry == ns.registry && n.prefix == ns.prefix)
+        {
+            return Err(CoreError::Conflict(format!(
+                "namespace '{}' in registry '{}' is already claimed",
+                ns.prefix, ns.registry
+            )));
+        }
+        all.push(ns);
         Ok(())
     }
     async fn release_namespace(&self, _: &str, _: &str) -> Result<(), CoreError> {
@@ -1588,6 +1696,7 @@ fn seed_version(
         published_by: None,
         signature_bytes: sig_bytes,
         signature_type: sig_type,
+        retention_keep: false,
         visibility: Default::default(),
     });
 }
@@ -1620,7 +1729,7 @@ async fn get_artifact_reverify_passes_when_bytes_match() {
 
     let s = download_svc(backend, storage, Some(reverify_policy(true)), None);
     let out = s
-        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+        .get_artifact("npm", "pkg", "1.0.0", Action::ReleasesRead, &user())
         .await
         .unwrap();
     assert_eq!(out.as_ref(), body);
@@ -1645,7 +1754,7 @@ async fn get_artifact_reverify_detects_corruption() {
 
     let s = download_svc(backend, storage, Some(reverify_policy(true)), None);
     let err = s
-        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+        .get_artifact("npm", "pkg", "1.0.0", Action::ReleasesRead, &user())
         .await
         .unwrap_err();
     assert!(
@@ -1672,7 +1781,7 @@ async fn get_artifact_reverify_off_serves_corrupted_bytes() {
 
     let s = download_svc(backend, storage, Some(reverify_policy(false)), None);
     assert!(s
-        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+        .get_artifact("npm", "pkg", "1.0.0", Action::ReleasesRead, &user())
         .await
         .is_ok());
 }
@@ -1692,7 +1801,7 @@ async fn get_artifact_reverify_fails_closed_when_metadata_row_missing() {
 
     let s = download_svc(backend, storage, Some(reverify_policy(true)), None);
     let err = s
-        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+        .get_artifact("npm", "pkg", "1.0.0", Action::ReleasesRead, &user())
         .await
         .unwrap_err();
     assert!(
@@ -1729,7 +1838,7 @@ async fn get_artifact_verifies_ed25519_signature() {
     };
     let s = download_svc(backend, storage, None, Some(signing));
     assert!(s
-        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+        .get_artifact("npm", "pkg", "1.0.0", Action::ReleasesRead, &user())
         .await
         .is_ok());
 }
@@ -1766,7 +1875,7 @@ async fn get_artifact_rejects_signature_from_untrusted_key() {
     };
     let s = download_svc(backend, storage, None, Some(signing));
     let err = s
-        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+        .get_artifact("npm", "pkg", "1.0.0", Action::ReleasesRead, &user())
         .await
         .unwrap_err();
     assert!(
@@ -1806,7 +1915,7 @@ async fn get_artifact_refuses_stored_signature_bytes_with_no_type() {
     };
     let s = download_svc(backend, storage, None, Some(signing));
     let err = s
-        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+        .get_artifact("npm", "pkg", "1.0.0", Action::ReleasesRead, &user())
         .await
         .unwrap_err();
     assert!(
@@ -1842,7 +1951,7 @@ async fn get_artifact_still_serves_an_unsigned_artifact_under_verify_on_download
     };
     let s = download_svc(backend, storage, None, Some(signing));
     assert!(s
-        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+        .get_artifact("npm", "pkg", "1.0.0", Action::ReleasesRead, &user())
         .await
         .is_ok());
 }
@@ -1899,7 +2008,7 @@ async fn get_artifact_judges_the_chain_against_the_versions_real_metadata() {
         );
 
         assert!(
-            s.get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+            s.get_artifact("npm", "pkg", "1.0.0", Action::ReleasesRead, &user())
                 .await
                 .is_ok(),
             "{label} refused a version whose stored row satisfies it"
@@ -1936,7 +2045,7 @@ async fn get_artifact_defers_the_version_gates_for_a_coordinate_it_has_no_row_fo
     );
 
     let err = s
-        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+        .get_artifact("npm", "pkg", "1.0.0", Action::ReleasesRead, &user())
         .await
         .unwrap_err();
     assert!(
@@ -2026,7 +2135,7 @@ async fn get_artifact_still_applies_the_block_list_when_it_has_no_row() {
     );
 
     let err = s
-        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+        .get_artifact("npm", "pkg", "1.0.0", Action::ReleasesRead, &user())
         .await
         .unwrap_err();
     assert!(
@@ -2051,16 +2160,19 @@ async fn get_artifact_still_applies_rbac_when_it_has_no_row() {
             firewall_only: false,
             serve_stale_metadata: false,
             artifact_ttl: None,
-            rules: vec![Box::new(RbacRule::new(HashMap::from([
-                (Role::Anonymous, vec![]),
-                (Role::User, vec![]),
-                (Role::Admin, vec!["*".to_owned()]),
-            ])))],
+            rules: vec![Box::new(
+                RbacRule::from_patterns(HashMap::from([
+                    (Role::Anonymous, vec![]),
+                    (Role::User, vec![]),
+                    (Role::Admin, vec!["*".to_owned()]),
+                ]))
+                .expect("fixture patterns are valid"),
+            )],
         }),
     );
 
     let err = s
-        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+        .get_artifact("npm", "pkg", "1.0.0", Action::ReleasesRead, &user())
         .await
         .unwrap_err();
     assert!(
@@ -2103,7 +2215,7 @@ async fn get_artifact_still_refuses_an_unsigned_version_under_require_signed_rel
     );
 
     let err = s
-        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+        .get_artifact("npm", "pkg", "1.0.0", Action::ReleasesRead, &user())
         .await
         .unwrap_err();
     assert!(
@@ -2487,6 +2599,10 @@ impl crate::ports::LocalRegistryBackend for CommitFailBackend {
     ) -> Result<(), CoreError> {
         self.inner.undeprecate(registry, name, version).await
     }
+    async fn set_channel(&self, _: &str, _: &str, _: &str, _: &str) -> Result<bool, CoreError> {
+        Ok(false)
+    }
+
     async fn unlist(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError> {
         self.inner.unlist(registry, name, version).await
     }
@@ -2546,7 +2662,7 @@ async fn get_artifact_records_allowed_download_when_access_log_configured() {
 
     let spy = SpyRepo::new();
     let s = download_svc_with_access_log(backend, storage, None, None, Some(spy.clone()));
-    s.get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+    s.get_artifact("npm", "pkg", "1.0.0", Action::ReleasesRead, &user())
         .await
         .unwrap();
 
@@ -2583,7 +2699,7 @@ async fn get_artifact_records_denied_download_when_visibility_check_fails() {
 
     // Anonymous identity can't see an `Internal` package.
     let err = s
-        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &anon())
+        .get_artifact("npm", "pkg", "1.0.0", Action::ReleasesRead, &anon())
         .await
         .unwrap_err();
     assert!(matches!(err, CoreError::AccessDenied(_)));
@@ -2616,8 +2732,729 @@ async fn get_artifact_is_a_noop_for_audit_when_access_log_is_none() {
 
     let s = download_svc(backend, storage, None, None);
     let out = s
-        .get_artifact("npm", "pkg", "1.0.0", RELEASES_READ, &user())
+        .get_artifact("npm", "pkg", "1.0.0", Action::ReleasesRead, &user())
         .await
         .unwrap();
     assert_eq!(out.as_ref(), body);
+}
+
+// ── RFC 0015 §11.1 axis D — verb granularity on the write path ────────────
+//
+// > A subject holding `releases:read` and not `releases:publish` is served the
+// > artifact and refused the publish, on the same coordinate. This is the axis
+// > that does not exist today because the verbs do not.
+//
+// The verbs exist now and are resolved on the write path, so it does. Every row
+// here keeps its positive control: under a model where refusal is the default, a
+// test whose *permitted* caller is also refused proves nothing, and that failure
+// mode is much easier to hit than it looks.
+mod write_verbs {
+    use super::*;
+    use crate::entities::{
+        Action, GrantMap, Node, RegistryGrants, RegistryKind, SubjectMatcher, Tier,
+    };
+
+    /// A registry whose only grant is `verbs` to everyone.
+    fn registry_granting(verbs: &[Action]) -> RegistryGrants {
+        RegistryGrants {
+            kind: RegistryKind::Npm,
+            registry: Node::new(
+                Tier::Registry,
+                "registry:npm",
+                Some(GrantMap::new().grant(SubjectMatcher::Anyone, verbs.to_vec())),
+            ),
+            namespaces: Vec::new(),
+        }
+    }
+
+    fn svc_with(backend: Arc<InMemBackend>, grants: RegistryGrants) -> LocalRegistryService {
+        let mut hot = HotConfig::default();
+        hot.grants.insert("npm".to_owned(), Arc::new(grants));
+        LocalRegistryService {
+            backend,
+            storage: Arc::new(NoopStorage),
+            hot: new_hot_lock(hot),
+            quota: None,
+            ownership: None,
+            team_namespace: None,
+            sbom: None,
+            explore_cache: None,
+            package_repo: None,
+            readme: None,
+        }
+    }
+
+    fn publish_req() -> PublishRequest {
+        PublishRequest {
+            unlisted: false,
+            registry: "npm".into(),
+            name: "pkg".into(),
+            version: "1.0.0".into(),
+            artifact: Bytes::from_static(b"body"),
+            checksum: "abc".into(),
+            index_metadata: serde_json::json!({}),
+            publisher: user(),
+            signature_bytes: None,
+            signature_type: None,
+        }
+    }
+
+    /// The axis, in one test: same caller, same coordinate, read served and
+    /// publish refused.
+    ///
+    /// Before the write verbs were on the request path this was unassertable —
+    /// publish answered `has_role_at_least(&Role::User)`, so a grant hierarchy
+    /// that withheld `releases:publish` changed nothing at all. That is the
+    /// *"I granted it and nothing happened"* failure §4.2 rule 2 exists to
+    /// remove, arriving inside the model built to remove it.
+    #[tokio::test]
+    async fn a_reader_without_publish_is_served_the_read_and_refused_the_write() {
+        let backend = InMemBackend::arc();
+        let s = svc_with(
+            Arc::clone(&backend),
+            registry_granting(&[Action::ReleasesRead, Action::ReleasesList]),
+        );
+
+        // The read this caller does hold.
+        crate::services::authz::authorize_read(
+            &s.hot,
+            &PackageId::new("npm", "pkg", "1.0.0"),
+            &user(),
+            Action::ReleasesRead,
+        )
+        .await
+        .expect("the read verb is granted and must be served");
+
+        // …and the write they do not, on the same coordinate.
+        let err = s.publish(publish_req()).await.unwrap_err();
+        assert!(
+            matches!(err, CoreError::AccessDenied(ref m) if m.contains("releases:publish")),
+            "a caller without releases:publish must be refused, and told which verb: {err:?}"
+        );
+    }
+
+    /// The positive control for the row above.
+    #[tokio::test]
+    async fn the_same_caller_publishes_once_the_verb_is_granted() {
+        let backend = InMemBackend::arc();
+        let s = svc_with(
+            Arc::clone(&backend),
+            registry_granting(&[Action::ReleasesRead, Action::ReleasesPublish]),
+        );
+        s.publish(publish_req())
+            .await
+            .expect("the grant is what was missing, not the fixture");
+    }
+
+    /// Publish does not carry yank, and yank does not carry delete.
+    ///
+    /// The verbs are separate lines in §4.2's table and an operator granting one
+    /// is not granting the others. Asserted on the same service so the only
+    /// difference between the arms is the verb.
+    #[tokio::test]
+    async fn each_write_verb_is_held_separately() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("npm", "pkg", "1.0.0"));
+
+        let publisher_only = svc_with(
+            Arc::clone(&backend),
+            registry_granting(&[Action::ReleasesPublish]),
+        );
+        let err = publisher_only
+            .yank("npm", "pkg", "1.0.0", &user())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, CoreError::AccessDenied(ref m) if m.contains("releases:yank")),
+            "releases:publish must not carry releases:yank: {err:?}"
+        );
+
+        let yanker = svc_with(
+            Arc::clone(&backend),
+            registry_granting(&[Action::ReleasesYank]),
+        );
+        yanker
+            .yank("npm", "pkg", "1.0.0", &user())
+            .await
+            .expect("the control: releases:yank does carry yank");
+        let err = yanker
+            .delete_version("npm", "pkg", "1.0.0", &user())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, CoreError::AccessDenied(ref m) if m.contains("releases:delete")),
+            "releases:yank must not carry releases:delete: {err:?}"
+        );
+    }
+
+    /// Unlist and deprecate are the same verb as yank (§4.2 rule 3), and the
+    /// module docs say so — this is the assertion behind the sentence.
+    #[tokio::test]
+    async fn the_hide_family_shares_one_verb() {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("npm", "pkg", "1.0.0"));
+        let s = svc_with(
+            Arc::clone(&backend),
+            registry_granting(&[Action::ReleasesYank]),
+        );
+        for op in ["unlist", "deprecate"] {
+            let out = match op {
+                "unlist" => s.unlist("npm", "pkg", "1.0.0", &user()).await,
+                _ => s.deprecate("npm", "pkg", "1.0.0", None, &user()).await,
+            };
+            out.unwrap_or_else(|e| panic!("{op} must be reachable with releases:yank: {e:?}"));
+        }
+
+        // …and refused without it, or the row above would pass on a service that
+        // never consulted a grant.
+        let ungranted = svc_with(backend, registry_granting(&[Action::ReleasesRead]));
+        assert!(ungranted
+            .unlist("npm", "pkg", "1.0.0", &user())
+            .await
+            .is_err());
+    }
+
+    /// RFC 0015 §4.3 — a namespace seal stops the registry's grants, and the
+    /// write path honours it.
+    ///
+    /// This is the configuration the finding was reported against: an operator
+    /// seals `@acme/billing` expecting nobody to publish there, and before the
+    /// verbs were wired the publish succeeded anyway because it never asked.
+    #[tokio::test]
+    async fn a_namespace_seal_refuses_a_publish_the_registry_would_allow() {
+        let backend = InMemBackend::arc();
+        let sealed = RegistryGrants {
+            kind: RegistryKind::Npm,
+            registry: Node::new(
+                Tier::Registry,
+                "registry:npm",
+                Some(GrantMap::new().grant(
+                    SubjectMatcher::Anyone,
+                    [Action::ReleasesRead, Action::ReleasesPublish],
+                )),
+            ),
+            namespaces: vec![(
+                "@acme/billing".to_owned(),
+                Node::new(
+                    Tier::Namespace,
+                    "namespace:@acme/billing",
+                    Some(GrantMap::sealed()),
+                ),
+            )],
+        };
+        let s = svc_with(Arc::clone(&backend), sealed);
+
+        let mut inside = publish_req();
+        inside.name = "@acme/billing/cards".into();
+        let err = s.publish(inside).await.unwrap_err();
+        assert!(
+            matches!(err, CoreError::AccessDenied(_)),
+            "a sealed namespace must refuse the publish the registry grants: {err:?}"
+        );
+
+        // The control, and the one that says the seal is a *namespace* seal
+        // rather than the fixture refusing everything: its neighbour is
+        // unaffected, on segment boundaries (`-internal` is not under it).
+        let mut outside = publish_req();
+        outside.name = "@acme/billing-internal".into();
+        s.publish(outside)
+            .await
+            .expect("a seal must not reach a name that merely starts with the prefix");
+    }
+
+    /// RFC 0015 §6.1 — replacing existing bytes needs `releases:overwrite` as
+    /// well as `releases:publish`.
+    ///
+    /// On the path where a replacement is possible at all: the path-addressed and
+    /// multi-file publishers, which name their storage key. §13.6 records why
+    /// that is the whole scope — the row-based backend refuses every republish
+    /// before any policy is consulted, so there is nothing there to authorize.
+    #[tokio::test]
+    async fn replacing_existing_bytes_needs_the_overwrite_verb() {
+        /// A storage backend that already holds everything asked of it.
+        struct Present;
+        #[async_trait]
+        impl StorageBackend for Present {
+            async fn store(&self, _: &str, _: Bytes, _: StorageMeta) -> Result<(), CoreError> {
+                Ok(())
+            }
+            async fn retrieve(&self, _: &str) -> Result<Option<StoredArtifact>, CoreError> {
+                Ok(None)
+            }
+            async fn exists(&self, _: &str) -> Result<bool, CoreError> {
+                Ok(true)
+            }
+            async fn delete(&self, _: &str) -> Result<bool, CoreError> {
+                Ok(false)
+            }
+            async fn delete_by_prefix(&self, _: &str) -> Result<usize, CoreError> {
+                Ok(0)
+            }
+            async fn stat_by_prefix(&self, _: &str) -> Result<(u64, u64), CoreError> {
+                Ok((0, 0))
+            }
+            async fn list_keys(&self, _: &str) -> Result<Vec<String>, CoreError> {
+                Ok(vec![])
+            }
+        }
+
+        let req = |key| PublishPolicyRequest {
+            registry: "npm",
+            name: "pkg",
+            version: "1.0.0",
+            artifact_len: 4,
+            signature_bytes: None,
+            signature_type: None,
+            artifact_key: Some(key),
+        };
+
+        // Publish alone is not enough when the bytes are already there…
+        let mut s = svc_with(
+            InMemBackend::arc(),
+            registry_granting(&[Action::ReleasesPublish]),
+        );
+        s.storage = Arc::new(Present);
+        let err = s
+            .enforce_publish_policy(&req("npm/pkg/1.0.0/pkg.jar"), &user())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, CoreError::AccessDenied(ref m) if m.contains("releases:overwrite")),
+            "a re-PUT over existing bytes needs the overwrite verb: {err:?}"
+        );
+
+        // …and is enough when they are not, which is every first publish
+        // including each later file of one multi-file coordinate.
+        let fresh = svc_with(
+            InMemBackend::arc(),
+            registry_granting(&[Action::ReleasesPublish]),
+        );
+        fresh
+            .enforce_publish_policy(&req("npm/pkg/1.0.0/pkg.jar"), &user())
+            .await
+            .expect("nothing is being replaced, so publish alone carries it");
+
+        // …and the caller who holds both is served, or the row above would be
+        // asserting that this path refuses everyone.
+        let mut both = svc_with(
+            InMemBackend::arc(),
+            registry_granting(&[Action::ReleasesPublish, Action::ReleasesOverwrite]),
+        );
+        both.storage = Arc::new(Present);
+        both.enforce_publish_policy(&req("npm/pkg/1.0.0/pkg.jar"), &user())
+            .await
+            .expect("both verbs held, so the replacement is authorized");
+    }
+
+    /// The attributability floor survives the verbs.
+    ///
+    /// A hand-written `"*" = ["releases:publish"]` grants publish to anonymous —
+    /// and an anonymous publish is one `register_initial_owner` cannot attribute
+    /// and the quota counter cannot meter. The floor is why `authorize_write`
+    /// is added *above* the role check rather than replacing it.
+    #[tokio::test]
+    async fn an_anonymous_publish_is_refused_even_when_a_grant_names_everyone() {
+        let s = svc_with(
+            InMemBackend::arc(),
+            registry_granting(&[Action::ReleasesPublish]),
+        );
+        let mut req = publish_req();
+        req.publisher = anon();
+        assert!(matches!(
+            s.publish(req).await.unwrap_err(),
+            CoreError::AccessDenied(_)
+        ));
+    }
+}
+
+// ── RFC 0015 §4.2/§4.4 — `releases:list` and `releases:read` are separable ────
+//
+// §4.4's opening sentence describes a caller *"holding `releases:list` on a
+// namespace but `releases:read` on only some of its packages"*, and until the
+// listing funnel requested `releases:list` that configuration was inexpressible:
+// both documents and artifacts asked for the same verb, so a grant naming one of
+// them either opened both or closed both.
+//
+// Asserted in both directions on one service, because an implementation that got
+// either backwards would pass the other.
+mod listing_verb {
+    use super::*;
+    use crate::entities::{
+        Action, GrantMap, Node, RegistryGrants, RegistryKind, SubjectMatcher, Tier,
+    };
+
+    fn svc_granting(verbs: &[Action]) -> (LocalRegistryService, Arc<InMemBackend>) {
+        let backend = InMemBackend::arc();
+        backend.seed(pkg("npm", "pkg", "1.0.0"));
+        let s = svc(
+            Arc::clone(&backend) as Arc<dyn crate::ports::LocalRegistryBackend>,
+            None,
+        );
+        futures::executor::block_on(async {
+            s.hot.write().await.grants.insert(
+                "npm".to_owned(),
+                Arc::new(RegistryGrants {
+                    kind: RegistryKind::Npm,
+                    registry: Node::new(
+                        Tier::Registry,
+                        "registry:npm",
+                        Some(GrantMap::new().grant(SubjectMatcher::Anyone, verbs.to_vec())),
+                    ),
+                    namespaces: Vec::new(),
+                }),
+            );
+        });
+        (s, backend)
+    }
+
+    /// `releases:list` alone serves the version document.
+    ///
+    /// The caller holds no `releases:read`, so before the funnel requested the
+    /// listing verb this was a refusal — the document and the bytes were one
+    /// permission.
+    #[tokio::test]
+    async fn list_without_read_serves_the_version_document() {
+        let (s, _b) = svc_granting(&[Action::ReleasesList]);
+        let doc = s
+            .get_npm_packument("npm", "pkg", "http://x", &user())
+            .await
+            .expect("a caller holding releases:list may read the version document");
+        assert!(doc["versions"].get("1.0.0").is_some());
+    }
+
+    /// …and does not serve the artifact.
+    ///
+    /// The half that makes the split worth having: §4.4's caller sees the index
+    /// and is refused the bytes, on the same coordinate.
+    #[tokio::test]
+    async fn list_without_read_is_refused_the_artifact() {
+        let (s, _b) = svc_granting(&[Action::ReleasesList]);
+        let err = s
+            .get_artifact("npm", "pkg", "1.0.0", Action::ReleasesRead, &user())
+            .await
+            .expect_err("releases:list must not carry the bytes");
+        assert!(matches!(err, CoreError::AccessDenied(_)), "{err:?}");
+    }
+
+    /// The inverse: `releases:read` alone is refused the document.
+    ///
+    /// Asserted because an implementation that requested `releases:list` for the
+    /// artifact *too* would pass the pair above and fail here — the two tests
+    /// together pin which verb goes where rather than that two verbs exist.
+    ///
+    /// Note this configuration cannot arise from `[registries.rbac]`: §10 rule 4
+    /// gives `releases:list` to anyone holding `releases:read`, precisely so no
+    /// migrated estate lands here. It takes a hand-written grants block, which is
+    /// what the verb is for.
+    #[tokio::test]
+    async fn read_without_list_is_refused_the_document() {
+        let (s, _b) = svc_granting(&[Action::ReleasesRead]);
+        let err = s
+            .get_npm_packument("npm", "pkg", "http://x", &user())
+            .await
+            .expect_err("releases:read must not carry the version document");
+        assert!(matches!(err, CoreError::AccessDenied(_)), "{err:?}");
+    }
+
+    /// §10 rule 4's guarantee, as a test: the translation gives both together, so
+    /// no config that reached a document yesterday is refused one today.
+    #[tokio::test]
+    async fn the_migration_grants_both_so_nothing_regresses() {
+        let (s, _b) = svc_granting(&[Action::ReleasesRead, Action::ReleasesList]);
+        assert!(s
+            .get_npm_packument("npm", "pkg", "http://x", &user())
+            .await
+            .is_ok());
+    }
+}
+
+// ── RFC 0015 §4.2 — `jetbrains:channel:assign` ───────────────────────────────
+//
+// The verb §13.13 listed as gating an unimplemented action. What made it
+// implementable in a day rather than a week is that the *read* side already
+// selected on `channel` (`eco_jetbrains.rs`) — only the write was missing.
+mod channel_assign {
+    use super::*;
+    use crate::entities::{
+        Action, GrantMap, Node, RegistryGrants, RegistryKind, SubjectMatcher, Tier,
+    };
+
+    fn plugin(channel: &str) -> PublishedPackage {
+        let mut p = pkg("jb", "com.acme.plugin", "1.0.0");
+        p.index_metadata = serde_json::json!({ "channel": channel });
+        p
+    }
+
+    fn svc_granting(verbs: &[Action], seed: PublishedPackage) -> LocalRegistryService {
+        let backend = InMemBackend::arc();
+        backend.seed(seed);
+        let s = svc(backend, None);
+        futures::executor::block_on(async {
+            s.hot.write().await.grants.insert(
+                "jb".to_owned(),
+                Arc::new(RegistryGrants {
+                    kind: RegistryKind::Jetbrains,
+                    registry: Node::new(
+                        Tier::Registry,
+                        "registry:jb",
+                        Some(GrantMap::new().grant(SubjectMatcher::Anyone, verbs.to_vec())),
+                    ),
+                    namespaces: Vec::new(),
+                }),
+            );
+        });
+        s
+    }
+
+    async fn channel_of(s: &LocalRegistryService) -> String {
+        s.backend
+            .get_versions("jb", "com.acme.plugin")
+            .await
+            .unwrap()
+            .first()
+            .and_then(|p| p.index_metadata.get("channel").cloned())
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default()
+    }
+
+    /// The verb moves a build between channels.
+    #[tokio::test]
+    async fn the_verb_moves_a_build_to_another_channel() {
+        let s = svc_granting(&[Action::JetbrainsChannelAssign], plugin(""));
+        assert_eq!(channel_of(&s).await, "", "the control: it starts on Stable");
+
+        let changed = s
+            .assign_channel("jb", "com.acme.plugin", "1.0.0", "eap", &user())
+            .await
+            .expect("the grant permits it");
+        assert!(changed);
+        assert_eq!(channel_of(&s).await, "eap");
+    }
+
+    /// …and nothing else does.
+    ///
+    /// §4.2's whole argument for an ecosystem verb: *"forcing it into an existing
+    /// verb makes the grant mean something different on npm than it does anywhere
+    /// else"*. A caller holding every shared write verb still cannot move a
+    /// channel.
+    #[tokio::test]
+    async fn no_shared_write_verb_carries_a_channel_move() {
+        let s = svc_granting(
+            &[
+                Action::ReleasesPublish,
+                Action::ReleasesOverwrite,
+                Action::ReleasesYank,
+                Action::ReleasesDelete,
+            ],
+            plugin(""),
+        );
+        let err = s
+            .assign_channel("jb", "com.acme.plugin", "1.0.0", "eap", &user())
+            .await
+            .expect_err("only jetbrains:channel:assign carries this");
+        assert!(
+            matches!(err, CoreError::AccessDenied(ref m) if m.contains("jetbrains:channel:assign")),
+            "{err:?}"
+        );
+        assert_eq!(channel_of(&s).await, "", "and nothing moved");
+    }
+
+    /// The empty string is Stable, not a missing value.
+    ///
+    /// JetBrains' own convention, and the one `eco_jetbrains.rs` already reads
+    /// when selecting builds — so moving *back* to Stable has to be expressible
+    /// rather than being indistinguishable from "no channel given".
+    #[tokio::test]
+    async fn the_empty_channel_is_stable_and_is_assignable() {
+        let s = svc_granting(&[Action::JetbrainsChannelAssign], plugin("eap"));
+        assert!(s
+            .assign_channel("jb", "com.acme.plugin", "1.0.0", "", &user())
+            .await
+            .unwrap());
+        assert_eq!(channel_of(&s).await, "");
+    }
+
+    /// A move to the channel it is already on reports `false` and writes nothing.
+    #[tokio::test]
+    async fn a_move_to_the_same_channel_changes_nothing() {
+        let s = svc_granting(&[Action::JetbrainsChannelAssign], plugin("eap"));
+        assert!(!s
+            .assign_channel("jb", "com.acme.plugin", "1.0.0", "eap", &user())
+            .await
+            .unwrap());
+    }
+
+    /// **The bytes are untouched**, which is why `immutable` does not apply.
+    ///
+    /// §4.5 asks whether repointing a published version counts as replacing it;
+    /// §13.6 answered the general form — *"immutability is a question about
+    /// **bytes**, not about a coordinate"*. This is that answer as an assertion:
+    /// the checksum a client verified against before the move is the checksum
+    /// after it.
+    #[tokio::test]
+    async fn a_channel_move_does_not_touch_the_artifact() {
+        let s = svc_granting(&[Action::JetbrainsChannelAssign], plugin(""));
+        let before = s
+            .backend
+            .get_versions("jb", "com.acme.plugin")
+            .await
+            .unwrap();
+        let checksum = before[0].checksum.clone();
+
+        s.assign_channel("jb", "com.acme.plugin", "1.0.0", "eap", &user())
+            .await
+            .unwrap();
+
+        let after = s
+            .backend
+            .get_versions("jb", "com.acme.plugin")
+            .await
+            .unwrap();
+        assert_eq!(after[0].checksum, checksum, "no byte of the artifact moved");
+        assert_eq!(after[0].version, "1.0.0", "and it is the same coordinate");
+    }
+}
+
+// ── RFC 0015 §4.2 — `openvsx:namespace:claim` ────────────────────────────────
+//
+// The last of the four, and the one that was **blocked rather than declined**:
+// `team_namespaces` was always the right store, and what stopped it was that
+// every matcher hardcoded `/` while OpenVSX namespaces are dotted (§4.1).
+// Migration 045 put the separator on the claim, which is what makes this a
+// lookup rather than a special case.
+mod openvsx_namespace_claim {
+    use super::*;
+    use crate::entities::{
+        Action, GrantMap, Node, RegistryGrants, RegistryKind, SubjectMatcher, Tier,
+    };
+
+    fn svc_granting(verbs: &[Action]) -> LocalRegistryService {
+        let mut s = svc(InMemBackend::arc(), None);
+        s.team_namespace = Some(MockTeamNamespace::arc());
+        futures::executor::block_on(async {
+            s.hot.write().await.grants.insert(
+                "vsx".to_owned(),
+                Arc::new(RegistryGrants {
+                    kind: RegistryKind::Openvsx,
+                    registry: Node::new(
+                        Tier::Registry,
+                        "registry:vsx",
+                        Some(GrantMap::new().grant(SubjectMatcher::Anyone, verbs.to_vec())),
+                    ),
+                    namespaces: Vec::new(),
+                }),
+            );
+        });
+        s
+    }
+
+    /// The verb claims a namespace, and the claim records the **ecosystem's**
+    /// separator.
+    ///
+    /// That last part is the whole blocker: with `/` the claim would cover
+    /// `digital` and nothing else, so every extension under it stayed outside any
+    /// claim and its team visibility was unenforceable.
+    #[tokio::test]
+    async fn a_claim_records_the_ecosystem_separator() {
+        let s = svc_granting(&[Action::OpenvsxNamespaceClaim]);
+        s.claim_openvsx_namespace("vsx", "digital", "team-digital", &user())
+            .await
+            .expect("the grant permits it");
+
+        let claim = s
+            .namespace_claim("vsx", "digital")
+            .await
+            .unwrap()
+            .expect("claimed");
+        assert_eq!(claim.separator, '.', "OpenVSX namespaces are dotted (§4.1)");
+        assert_eq!(claim.group_id, "team-digital");
+        assert_eq!(claim.claimed_by.as_deref(), Some("u1"));
+    }
+
+    /// …and the claim then covers the extensions beneath it.
+    ///
+    /// The property that was unreachable before: `find_namespace` answers for a
+    /// child, which is what makes `verified` meaningful and what lets
+    /// `check_team_visibility` enforce anything on this ecosystem.
+    #[tokio::test]
+    async fn the_claim_covers_the_extensions_under_it() {
+        let s = svc_granting(&[Action::OpenvsxNamespaceClaim]);
+        s.claim_openvsx_namespace("vsx", "digital", "team-digital", &user())
+            .await
+            .unwrap();
+
+        assert!(
+            s.namespace_claim("vsx", "digital.pipeline-tools")
+                .await
+                .unwrap()
+                .is_some(),
+            "a dotted child must fall under its publisher's claim"
+        );
+        assert!(
+            s.namespace_claim("vsx", "digitalpipeline")
+                .await
+                .unwrap()
+                .is_none(),
+            "and a name that merely starts with it must not — RFC 0011-bis §4.2"
+        );
+    }
+
+    /// No other verb carries it, including every shared write verb.
+    ///
+    /// §4.2's argument for an ecosystem verb, asserted rather than assumed: a
+    /// claim decides who may see every package beneath it once they are
+    /// `team`-visible, so acquiring it by being able to publish would be §4.3's
+    /// delegation bound broken by a spelling.
+    #[tokio::test]
+    async fn no_shared_write_verb_carries_a_namespace_claim() {
+        let s = svc_granting(&[
+            Action::ReleasesPublish,
+            Action::ReleasesOverwrite,
+            Action::ReleasesYank,
+            Action::ReleasesDelete,
+            Action::OwnersWrite,
+        ]);
+        let err = s
+            .claim_openvsx_namespace("vsx", "digital", "team-digital", &user())
+            .await
+            .expect_err("only openvsx:namespace:claim carries this");
+        assert!(
+            matches!(err, CoreError::AccessDenied(ref m) if m.contains("openvsx:namespace:claim")),
+            "{err:?}"
+        );
+        assert!(s.namespace_claim("vsx", "digital").await.unwrap().is_none());
+    }
+
+    /// An unclaimed namespace answers `None`, which is the protocol's
+    /// `verified: false`.
+    #[tokio::test]
+    async fn an_unclaimed_namespace_is_not_verified() {
+        let s = svc_granting(&[Action::OpenvsxNamespaceClaim]);
+        assert!(s.namespace_claim("vsx", "nobody").await.unwrap().is_none());
+    }
+
+    /// Claiming twice is a conflict, not a silent takeover.
+    ///
+    /// The one thing a self-service protocol gets right and this must not lose:
+    /// a namespace has one owner, and the second claimant is told so rather than
+    /// replacing the first.
+    #[tokio::test]
+    async fn a_second_claim_is_refused() {
+        let s = svc_granting(&[Action::OpenvsxNamespaceClaim]);
+        s.claim_openvsx_namespace("vsx", "digital", "team-a", &user())
+            .await
+            .unwrap();
+        assert!(s
+            .claim_openvsx_namespace("vsx", "digital", "team-b", &user())
+            .await
+            .is_err());
+        assert_eq!(
+            s.namespace_claim("vsx", "digital")
+                .await
+                .unwrap()
+                .unwrap()
+                .group_id,
+            "team-a"
+        );
+    }
 }

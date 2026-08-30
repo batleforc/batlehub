@@ -9,6 +9,7 @@ use batlehub_core::ports::UserBlockRepository;
 use batlehub_core::services::{SignedUrlCoordinate, SignedUrlService, SIGNED_URL_QUERY_PARAM};
 
 use crate::handlers::schemas::MessageResponse;
+use batlehub_core::entities::Action;
 
 // ── Signed download URLs (RFC 0012) ───────────────────────────────────────────
 
@@ -430,7 +431,7 @@ pub async fn terraform_versions_response(
         svc,
         pkg,
         identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         batlehub_core::ports::DocumentKind::Versions,
         String::new(),
     )

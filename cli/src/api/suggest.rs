@@ -198,6 +198,19 @@ const BACKEND_REGISTRIES: &[(&str, &str, &str)] = &[
 
 // ── Accumulation ──────────────────────────────────────────────────────────────
 
+/// Append the items of `incoming` that `into` does not already hold.
+///
+/// Order-preserving and quadratic, which is what the three merged lists want:
+/// they are short, and the order they were discovered in is the order they read
+/// best in.
+fn merge_new<T: PartialEq>(into: &mut Vec<T>, incoming: impl Iterator<Item = T>) {
+    for item in incoming {
+        if !into.contains(&item) {
+            into.push(item);
+        }
+    }
+}
+
 /// Collects suggestions keyed by registry name, merging sources and allowlists
 /// so that (say) ten aqua tools produce one `github` entry.
 #[derive(Default)]
@@ -207,28 +220,13 @@ struct Accumulator {
 
 impl Accumulator {
     fn add(&mut self, mut reg: SuggestedRegistry) {
-        match self.by_name.get_mut(&reg.name) {
-            Some(existing) => {
-                for src in reg.sources.drain(..) {
-                    if !existing.sources.contains(&src) {
-                        existing.sources.push(src);
-                    }
-                }
-                for p in reg.path_allow.drain(..) {
-                    if !existing.path_allow.contains(&p) {
-                        existing.path_allow.push(p);
-                    }
-                }
-                for u in reg.upstreams.drain(..) {
-                    if !existing.upstreams.contains(&u) {
-                        existing.upstreams.push(u);
-                    }
-                }
-            }
-            None => {
-                self.by_name.insert(reg.name.clone(), reg);
-            }
-        }
+        let Some(existing) = self.by_name.get_mut(&reg.name) else {
+            self.by_name.insert(reg.name.clone(), reg);
+            return;
+        };
+        merge_new(&mut existing.sources, reg.sources.drain(..));
+        merge_new(&mut existing.path_allow, reg.path_allow.drain(..));
+        merge_new(&mut existing.upstreams, reg.upstreams.drain(..));
     }
 
     fn finish(self) -> Vec<SuggestedRegistry> {
@@ -309,34 +307,42 @@ fn collect_from_mise_lock(content: &str, acc: &mut Accumulator) {
             other => vec![other],
         };
         for item in items {
-            let Some(table) = item.as_table() else {
-                continue;
-            };
-
-            let mut saw_url = false;
-            // Every `platforms.*` sub-table carries a `url` for one platform.
-            for sub in table.values() {
-                let Some(url) = sub.get("url").and_then(|u| u.as_str()) else {
-                    continue;
-                };
-                saw_url = true;
-                if let Some(reg) = registry_for_url(url, &source) {
-                    acc.add(reg);
-                }
-            }
-
-            // No platform block (pure-source backends like `cargo:` / `pipx:`):
-            // fall back to the backend prefix.
-            if !saw_url {
-                let backend = table
-                    .get("backend")
-                    .and_then(|b| b.as_str())
-                    .unwrap_or(tool_name);
-                if let Some(reg) = registry_for_backend(backend, &source) {
-                    acc.add(reg);
-                }
+            if let Some(table) = item.as_table() {
+                collect_from_mise_lock_entry(table, tool_name, &source, acc);
             }
         }
+    }
+}
+
+/// One `[[tools.x]]` entry: its per-platform URLs, or its backend if it has none.
+fn collect_from_mise_lock_entry(
+    table: &toml::Table,
+    tool_name: &str,
+    source: &str,
+    acc: &mut Accumulator,
+) {
+    let mut saw_url = false;
+    // Every `platforms.*` sub-table carries a `url` for one platform.
+    for sub in table.values() {
+        let Some(url) = sub.get("url").and_then(|u| u.as_str()) else {
+            continue;
+        };
+        saw_url = true;
+        if let Some(reg) = registry_for_url(url, source) {
+            acc.add(reg);
+        }
+    }
+    if saw_url {
+        return;
+    }
+    // No platform block (pure-source backends like `cargo:` / `pipx:`):
+    // fall back to the backend prefix.
+    let backend = table
+        .get("backend")
+        .and_then(|b| b.as_str())
+        .unwrap_or(tool_name);
+    if let Some(reg) = registry_for_backend(backend, source) {
+        acc.add(reg);
     }
 }
 
@@ -772,18 +778,7 @@ pub fn render_mise_toml(regs: &[SuggestedRegistry], server_url: &str, commented:
     if !any {
         body.push_str("# (nothing mise downloads itself — see the note below)\n");
     }
-    if !skipped.is_empty() {
-        body.push('\n');
-        for line in wrap_comment(&format!(
-            "Not rewritable here: {}. mise shells out to the ecosystem's own tool \
-             for these, so point that tool at the proxy instead (.cargo/config.toml, \
-             pip.conf / UV_INDEX_URL, GOPROXY, .npmrc, …) — see \
-             `batlehub-cli registry suggest --client-env`.",
-            skipped.join(", ")
-        )) {
-            body.push_str(&format!("# {line}\n"));
-        }
-    }
+    push_mise_skipped_note(&mut body, &skipped);
 
     let mut full = String::new();
     full.push_str("# Generated by `batlehub-cli registry suggest --mise`.\n");
@@ -798,11 +793,32 @@ pub fn render_mise_toml(regs: &[SuggestedRegistry], server_url: &str, commented:
     if !commented {
         return full;
     }
-    // Prefix *every* line, header comments included. Stripping one "# " must
-    // yield a valid file, so the header has to survive as `# …` rather than
-    // become a bare sentence the TOML parser chokes on.
+    comment_every_line(&full)
+}
+
+/// The trailing note naming the registry types `url_replacements` cannot cover.
+fn push_mise_skipped_note(body: &mut String, skipped: &[&str]) {
+    if skipped.is_empty() {
+        return;
+    }
+    body.push('\n');
+    for line in wrap_comment(&format!(
+        "Not rewritable here: {}. mise shells out to the ecosystem's own tool \
+         for these, so point that tool at the proxy instead (.cargo/config.toml, \
+         pip.conf / UV_INDEX_URL, GOPROXY, .npmrc, …) — see \
+         `batlehub-cli registry suggest --client-env`.",
+        skipped.join(", ")
+    )) {
+        body.push_str(&format!("# {line}\n"));
+    }
+}
+
+/// Prefix *every* line, header comments included. Stripping one "# " must
+/// yield a valid file, so the header has to survive as `# …` rather than
+/// become a bare sentence the TOML parser chokes on.
+fn comment_every_line(text: &str) -> String {
     let mut out = String::new();
-    for line in full.lines() {
+    for line in text.lines() {
         if !line.is_empty() {
             out.push_str("# ");
         }
@@ -823,40 +839,45 @@ pub fn render_toml(regs: &[SuggestedRegistry]) -> String {
     out.push_str("# permissive starting point.\n");
     for reg in regs {
         out.push('\n');
-        for src in &reg.sources {
-            out.push_str(&format!("# from {src}\n"));
-        }
-        if let Some(note) = &reg.note {
-            for line in wrap_comment(note) {
-                out.push_str(&format!("# {line}\n"));
-            }
-        }
-        out.push_str("[[registries]]\n");
-        out.push_str(&format!("type       = \"{}\"\n", reg.registry_type));
-        out.push_str(&format!("name       = \"{}\"\n", reg.name));
-        if reg.upstreams.is_empty() {
-            out.push_str("# upstreams omitted — the adapter's default upstream applies\n");
-        } else {
-            out.push_str(&format!(
-                "upstreams  = [{}]\n",
-                reg.upstreams
-                    .iter()
-                    .map(|u| format!("\"{u}\""))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-        if !reg.path_allow.is_empty() {
-            out.push_str("path_allow = [\n");
-            for p in &reg.path_allow {
-                out.push_str(&format!("  \"{p}\",\n"));
-            }
-            out.push_str("]\n");
-        }
-        out.push_str("\n[registries.rbac]\n");
-        out.push_str("anonymous = [\"releases:read\"]\n");
+        push_registry_block(&mut out, reg);
     }
     out
+}
+
+/// One `[[registries]]` block: its provenance comments, then its keys.
+fn push_registry_block(out: &mut String, reg: &SuggestedRegistry) {
+    for src in &reg.sources {
+        out.push_str(&format!("# from {src}\n"));
+    }
+    if let Some(note) = &reg.note {
+        for line in wrap_comment(note) {
+            out.push_str(&format!("# {line}\n"));
+        }
+    }
+    out.push_str("[[registries]]\n");
+    out.push_str(&format!("type       = \"{}\"\n", reg.registry_type));
+    out.push_str(&format!("name       = \"{}\"\n", reg.name));
+    if reg.upstreams.is_empty() {
+        out.push_str("# upstreams omitted — the adapter's default upstream applies\n");
+    } else {
+        out.push_str(&format!(
+            "upstreams  = [{}]\n",
+            reg.upstreams
+                .iter()
+                .map(|u| format!("\"{u}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !reg.path_allow.is_empty() {
+        out.push_str("path_allow = [\n");
+        for p in &reg.path_allow {
+            out.push_str(&format!("  \"{p}\",\n"));
+        }
+        out.push_str("]\n");
+    }
+    out.push_str("\n[registries.rbac]\n");
+    out.push_str("anonymous = [\"releases:read\"]\n");
 }
 
 /// Render the client-side environment variables for the suggestions that have

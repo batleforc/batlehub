@@ -1,4 +1,4 @@
-use super::{CoreError, LocalRegistryService};
+use super::{CoreError, Identity, LocalRegistryService};
 
 impl LocalRegistryService {
     /// Return the (name, version) key for a locally published conda package
@@ -61,18 +61,41 @@ impl LocalRegistryService {
         Some((filename, entry))
     }
 
+    /// `repodata.json` for `platform`, holding what `identity` may see.
+    ///
+    /// The identity is not decoration. This document names every package in the
+    /// channel, and it used to be built from `backend.get_versions` directly —
+    /// no visibility check, no grant filter — so a private conda package was
+    /// listed to anyone who fetched the channel index, including callers the
+    /// same registry answers `403` to on the package itself. That is survey
+    /// finding 11's shape (a listing built from a bare name query) on the one
+    /// ecosystem whose listing nobody had revisited, and RFC 0015 §4.4 is the
+    /// rule it breaks.
     pub async fn get_conda_repodata(
         &self,
         registry: &str,
         platform: &str,
+        identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
         let names = self.backend.list_package_names(registry).await?;
+        let readable = self.readable_packages(registry, identity).await?;
 
         let mut packages = serde_json::Map::new();
         let mut packages_conda = serde_json::Map::new();
 
         for name in &names {
-            let versions = self.backend.get_versions(registry, name).await?;
+            if !readable.contains(name) {
+                continue;
+            }
+            // `load_visible_versions` rather than `get_versions`: it applies the
+            // visibility predicate and drops blocked versions, which is what the
+            // per-package conda routes already do. A denial is a package this
+            // caller does not see, not an error that blanks the channel.
+            let versions = match self.load_visible_versions(registry, name, identity).await {
+                Ok(v) => v,
+                Err(CoreError::AccessDenied(_)) => continue,
+                Err(e) => return Err(e),
+            };
             for pkg in versions.into_iter().filter(|p| !p.yanked) {
                 let Some((filename, entry)) = Self::conda_repodata_entry(&pkg, platform) else {
                     continue;

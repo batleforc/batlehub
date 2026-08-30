@@ -316,12 +316,14 @@ the [README support table](/registries/#readmes).
 
 ---
 
-## 6. Commands — version
+## 6. Commands — version {#commands-version}
 
 ```
 batlehub-cli version yank   <registry> <name> <version>
 batlehub-cli version unyank <registry> <name> <version>
 batlehub-cli version delete <registry> <name> <version> [--yes]
+batlehub-cli version pin    <registry> <name> <version>
+batlehub-cli version unpin  <registry> <name> <version>
 ```
 
 These commands require an admin token.
@@ -330,17 +332,27 @@ These commands require an admin token.
 |---------|--------|
 | `yank` | Marks a version unavailable (kept in storage, download blocked) |
 | `unyank` | Reverses a yank |
-| `delete` | Permanently removes the version and its artifact |
+| `delete` | Drops the artifact **and spends the version number permanently** |
+| `pin` | Exempts a version from retention — it is never reclaimed automatically |
+| `unpin` | Releases the pin, so the registry's retention policy applies again |
 
 > **Package name casing**: package names are normalized to lowercase when published (NuGet lowercases the package ID, cargo and npm use lowercase by convention). Use the lowercase form with `version yank/unyank/delete` to match the stored name — e.g. `serilog`, not `Serilog`.
 
 `delete` prompts for confirmation unless `--yes` is passed:
 
 ```
-$ batlehub-cli version delete internal Serilog 2.0.0
-Permanently delete internal/Serilog@2.0.0? This cannot be undone. [y/N] y
-Deleted internal/Serilog@2.0.0
+$ batlehub-cli version delete internal serilog 2.0.0
+Delete internal/serilog@2.0.0? The artifact is dropped and the version number is
+spent permanently — 2.0.0 can never be published again. [y/N] y
+Deleted internal/serilog@2.0.0
 ```
+
+A deleted version number is never reused. Publishing `2.0.0` again is refused
+with `409`, whoever asks and however long afterwards, so "delete and re-upload to
+fix it" is not a plan — publish `2.0.1`, or `yank` instead if you only need the
+version to stop being installed. The reasoning, and what the deletion leaves
+behind for an auditor, are in
+[Deleting a published version](/guide/admin-policies#deleting-versions).
 
 ---
 
@@ -507,6 +519,23 @@ batlehub-cli admin banner clear
 ```
 batlehub-cli admin audit-log [--registry <r>] [--user <id>] [--from <date>] [--to <date>] [--denied-only]
 ```
+
+### Retention
+
+```
+batlehub-cli admin retention <registry> [--show-kept] [--reclaim]
+```
+
+Reclaims locally published versions the registry's `[registries.retention]`
+policy no longer keeps. **Reports by default** — `--reclaim` is only half the
+interlock, and the registry also needs `dry_run = false`. Two decisions in two
+places, because a reclaimed artifact may exist nowhere else.
+
+`--show-kept` prints every surviving version and the condition that saved it,
+which is how you check a policy against what it actually does before arming it.
+
+Pinning a single version against retention is
+[`version pin`](#commands-version).
 
 ---
 

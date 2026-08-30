@@ -80,7 +80,32 @@ impl QuotaService {
         registry: &str,
         bytes: u64,
     ) -> Result<QuotaCheck, CoreError> {
-        let config = match self.configs.get(registry) {
+        self.check_and_record_publish_at_tier(identity, registry, bytes, None)
+            .await
+    }
+
+    /// [`Self::check_and_record_publish`], with the quota a deeper tier declared.
+    ///
+    /// RFC 0015 §4.5 attaches `quota` to the resource hierarchy: a namespace or
+    /// package may declare its own, and composition is **wholesale** — the
+    /// deeper block replaces the registry's rather than merging with it, because
+    /// the motivating case is a *narrower* limit deeper down and a field merge
+    /// could only ever raise one.
+    ///
+    /// `None` means no tier below the registry declared a quota, which is every
+    /// publish before phase 4 and most of them after it. The accounting is
+    /// unchanged either way: §4.5 notes that per-subject limits resolved per tier
+    /// *"need no new accounting — the same counter `check_and_record_publish`
+    /// already maintains, with the limit looked up at the deepest tier that
+    /// declares one"*. This is that lookup, and nothing else moves.
+    pub async fn check_and_record_publish_at_tier(
+        &self,
+        identity: &Identity,
+        registry: &str,
+        bytes: u64,
+        tier_quota: Option<&RegistryQuotaConfig>,
+    ) -> Result<QuotaCheck, CoreError> {
+        let config = match tier_quota.or_else(|| self.configs.get(registry)) {
             Some(c) => c,
             None => {
                 // No quota configured for this registry — pass through.
@@ -90,17 +115,15 @@ impl QuotaService {
 
         let user_id = match &identity.user_id {
             Some(id) => id.clone(),
-            None => {
-                // Anonymous users: enforce if limits exist, otherwise pass.
-                if config.max_storage_bytes_per_user.is_some()
-                    || config.max_packages_per_user.is_some()
-                {
-                    return Err(CoreError::QuotaExceeded(
-                        "anonymous users cannot publish to quota-gated registries".into(),
-                    ));
-                }
-                return Ok(QuotaCheck::default());
+            // Anonymous users: enforce if limits exist, otherwise pass.
+            None if config.max_storage_bytes_per_user.is_some()
+                || config.max_packages_per_user.is_some() =>
+            {
+                return Err(CoreError::QuotaExceeded(
+                    "anonymous users cannot publish to quota-gated registries".into(),
+                ))
             }
+            None => return Ok(QuotaCheck::default()),
         };
 
         // In `Block` mode, pass the real limits so the repository atomically
@@ -131,46 +154,17 @@ impl QuotaService {
                 bytes_used,
                 packages_used,
             } => {
-                let msg = if config
-                    .max_storage_bytes_per_user
-                    .is_some_and(|max| bytes_used > max)
-                {
-                    format!(
-                        "storage quota exceeded for registry '{registry}': \
-                         {bytes_used} bytes used, limit is {}",
-                        config.max_storage_bytes_per_user.unwrap_or(0)
-                    )
-                } else {
-                    format!(
-                        "package quota exceeded for registry '{registry}': \
-                         {packages_used} packages, limit is {}",
-                        config.max_packages_per_user.unwrap_or(0)
-                    )
-                };
-                return Err(CoreError::QuotaExceeded(msg));
+                return Err(CoreError::QuotaExceeded(exceeded_message(
+                    config,
+                    registry,
+                    bytes_used,
+                    packages_used,
+                )))
             }
         };
 
-        // In Warn mode the publish always records even past the limit; log it
-        // server-side the same way the old check-then-write path did, since
-        // nothing rejected the request to make the operator aware otherwise.
         if config.enforcement == QuotaEnforcement::Warn {
-            if let Some(max) = config.max_storage_bytes_per_user {
-                if new_bytes > max {
-                    tracing::warn!(
-                        "storage quota exceeded for registry '{registry}': \
-                         {new_bytes} bytes used, limit is {max}"
-                    );
-                }
-            }
-            if let Some(max) = config.max_packages_per_user {
-                if new_count > max {
-                    tracing::warn!(
-                        "package quota exceeded for registry '{registry}': \
-                         {new_count} packages, limit is {max}"
-                    );
-                }
-            }
+            warn_if_over_limit(config, registry, new_bytes, new_count);
         }
 
         // Build QuotaCheck with updated counts
@@ -349,6 +343,66 @@ fn is_warning(used: u64, limit: Option<u64>, threshold: f64) -> bool {
     match limit {
         Some(max) if max > 0 => used as f64 / max as f64 >= threshold,
         _ => false,
+    }
+}
+
+/// Which of the two limits the repository refused the publish over.
+///
+/// The repository reports "exceeded" without saying which dimension, so the
+/// bytes limit is tested first and the packages limit is the remaining case —
+/// the same order the enforcement arguments are passed in.
+fn exceeded_message(
+    config: &RegistryQuotaConfig,
+    registry: &str,
+    bytes_used: u64,
+    packages_used: u32,
+) -> String {
+    if config
+        .max_storage_bytes_per_user
+        .is_some_and(|max| bytes_used > max)
+    {
+        format!(
+            "storage quota exceeded for registry '{registry}': \
+             {bytes_used} bytes used, limit is {}",
+            config.max_storage_bytes_per_user.unwrap_or(0)
+        )
+    } else {
+        format!(
+            "package quota exceeded for registry '{registry}': \
+             {packages_used} packages, limit is {}",
+            config.max_packages_per_user.unwrap_or(0)
+        )
+    }
+}
+
+/// In `Warn` mode the publish always records even past the limit; log it
+/// server-side the same way the old check-then-write path did, since nothing
+/// rejected the request to make the operator aware otherwise.
+fn warn_if_over_limit(
+    config: &RegistryQuotaConfig,
+    registry: &str,
+    new_bytes: u64,
+    new_count: u32,
+) {
+    if config
+        .max_storage_bytes_per_user
+        .is_some_and(|max| new_bytes > max)
+    {
+        let max = config.max_storage_bytes_per_user.unwrap_or(0);
+        tracing::warn!(
+            "storage quota exceeded for registry '{registry}': \
+             {new_bytes} bytes used, limit is {max}"
+        );
+    }
+    if config
+        .max_packages_per_user
+        .is_some_and(|max| new_count > max)
+    {
+        let max = config.max_packages_per_user.unwrap_or(0);
+        tracing::warn!(
+            "package quota exceeded for registry '{registry}': \
+             {new_count} packages, limit is {max}"
+        );
     }
 }
 

@@ -17,12 +17,12 @@ pub(super) const MAX_CONCURRENT_DISPATCHES: usize = 64;
 /// Channels are built once from `NotificationsConfig` at startup.
 /// A shared `reqwest::Client` is used for all HTTP-based channels.
 pub struct NotificationService {
-    pub(self) store: Arc<dyn NotificationPort>,
-    pub(self) channels: HashMap<String, Box<dyn ChannelDispatcher>>,
+    store: Arc<dyn NotificationPort>,
+    channels: HashMap<String, Box<dyn ChannelDispatcher>>,
     /// Tracks in-flight background dispatch tasks for graceful shutdown.
-    pub(self) pending: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    pending: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// Caps the number of concurrently-running dispatch tasks to prevent burst storms.
-    pub(self) dispatch_semaphore: Arc<tokio::sync::Semaphore>,
+    dispatch_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl NotificationService {

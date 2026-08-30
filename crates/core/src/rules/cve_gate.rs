@@ -91,6 +91,7 @@ impl Rule for CveGateRule {
 
 #[cfg(test)]
 mod tests {
+    use crate::entities::Action;
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -182,7 +183,7 @@ mod tests {
         let ctx = RuleContext {
             identity: id,
             package: m,
-            resource_type: "releases:read",
+            action: Action::ReleasesRead,
             cache_entry: None,
             requested_version: None,
         };

@@ -184,6 +184,24 @@ async fn app_with_hosts_and_explore(
     );
     if !explore {
         parts.access_config = access_config_explore_denied(&[REG]);
+        // §4.2 — `catalogue:browse` is resolved from grants, so "the catalogue hides
+        // this registry" has to be said in the hierarchy. §10 rule 2's conjunction
+        // turns the `explore` flags into the grant, so this fixture and a server
+        // reading the same config agree.
+        {
+            let mut hot = parts.proxy_svc.hot.write().await;
+            hot.grants = [(
+                REG.to_owned(),
+                std::sync::Arc::new(fixture_grants_with_explore(
+                    REG,
+                    "npm",
+                    &RegistryMode::Local,
+                    &rbac_policy_perms(),
+                    false,
+                )),
+            )]
+            .into();
+        }
     }
     // The endpoint reads the policy out of `LocalRegistryService`'s hot config,
     // which the shared factory leaves empty — an absent entry means the README

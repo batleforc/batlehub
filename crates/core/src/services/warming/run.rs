@@ -192,25 +192,12 @@ impl WarmingService {
             return WarmingReport::default();
         }
 
-        let (name, pinned_version) = if let Some(rest) = package.strip_prefix('@') {
-            match rest.find('@') {
-                Some(pos) => (&package[..pos + 1], Some(package[pos + 2..].to_owned())),
-                None => (package, None),
-            }
-        } else if let Some((n, v)) = package.split_once('@') {
-            (n, Some(v.to_owned()))
-        } else {
-            (package, None)
-        };
+        let (name, pinned_version) = split_package_spec(package);
 
-        let versions: Vec<String> = if let Some(v) = pinned_version {
-            vec![v]
-        } else {
-            match self.client.list_versions(name).await {
-                Ok(v) => {
-                    let n = self.latest_n;
-                    v.into_iter().rev().take(n).collect()
-                }
+        let versions: Vec<String> = match pinned_version {
+            Some(v) => vec![v],
+            None => match self.client.list_versions(name).await {
+                Ok(v) => v.into_iter().rev().take(self.latest_n).collect(),
                 Err(e) => {
                     tracing::warn!(
                         registry = %self.registry_name,
@@ -221,7 +208,7 @@ impl WarmingService {
                     // No version to name: the listing itself is what failed.
                     return WarmingReport::failed(name, None, e);
                 }
-            }
+            },
         };
 
         let sem = Arc::new(Semaphore::new(self.concurrency));
@@ -321,5 +308,23 @@ impl WarmingService {
             }
         }
         total
+    }
+}
+
+/// Split a warming entry into its package name and pinned version, if any.
+///
+/// `"name"`, `"name@1.2.3"`, and the scoped npm forms `"@scope/pkg"` and
+/// `"@scope/pkg@1.2.3"` — the leading `@` of a scope is not a separator, so the
+/// search for one starts past it.
+fn split_package_spec(package: &str) -> (&str, Option<String>) {
+    let Some(rest) = package.strip_prefix('@') else {
+        return match package.split_once('@') {
+            Some((name, version)) => (name, Some(version.to_owned())),
+            None => (package, None),
+        };
+    };
+    match rest.find('@') {
+        Some(pos) => (&package[..pos + 1], Some(package[pos + 2..].to_owned())),
+        None => (package, None),
     }
 }

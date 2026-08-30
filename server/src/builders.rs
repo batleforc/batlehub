@@ -246,8 +246,150 @@ fn parse_bypass_roles(roles: &[String]) -> anyhow::Result<Vec<Role>> {
     roles.iter().map(|r| parse_role(r)).collect()
 }
 
+/// RFC 0015 §4.2 rule 2: an ecosystem verb is rejected on a registry of another
+/// type, not silently inert.
+///
+/// The registry type is known here, so this is checkable — and "I granted it and
+/// nothing happened" is the failure mode the closed enum exists to remove. A
+/// `npm:dist-tags:write` on a Maven registry is a mistake with an obvious fix,
+/// and the only bad outcome is not telling anyone.
+fn check_action_scoping(
+    rbac: &RbacRule,
+    reg: &RegistryConfig,
+    kind: Option<RegistryKind>,
+) -> anyhow::Result<()> {
+    // An unparseable `registry_type` is already a config-validation failure; if
+    // one somehow reaches here there is no kind to check against, and inventing
+    // one would reject a verb for the wrong reason.
+    let Some(kind) = kind else {
+        return Ok(());
+    };
+    let offenders: Vec<String> = rbac
+        .permissions
+        .values()
+        .chain(rbac.group_permissions.values())
+        .flatten()
+        .filter(|a| !a.applies_to(kind))
+        .map(|a| a.to_string())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if offenders.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "registry '{}': [registries.rbac] grants {} on a '{}' registry, which does not \
+         define {}. An ecosystem permission is only grantable on the registry types that \
+         implement it.",
+        reg.name,
+        offenders.join(", "),
+        reg.registry_type,
+        if offenders.len() == 1 { "it" } else { "them" },
+    )
+}
+
 pub(super) fn build_policy(
     reg: &RegistryConfig,
+    repo: Arc<dyn batlehub_core::ports::PackageRepository>,
+    vuln_repo: Arc<dyn VulnerabilityRepository>,
+    sbom_repo: Arc<dyn SbomRepository>,
+) -> anyhow::Result<RegistryPolicy> {
+    build_policy_with_rules(reg, &reg.rules, repo, vuln_repo, sbom_repo)
+}
+
+/// RFC 0015 §4.1 — one rule chain per `[[registries.namespaces]]` block that
+/// overrides a gate.
+///
+/// Returns `(match_prefix, chain)` in config order, and **only for namespaces
+/// that declared `rules`**: a namespace with none runs the registry's chain, and
+/// building an identical second copy would double the per-request `Box<dyn Rule>`
+/// footprint of every registry for no behaviour change.
+///
+/// Built at config load rather than per request because a rule is a trait object
+/// with owned state — a `Regex`, a repository handle, a parsed role set — and
+/// composing one per request would put that construction on the download path.
+/// Namespaces are few and declared, so there is a small fixed number of chains.
+///
+/// The merge is **per gate** (§4.1), which is the composition rule that differs
+/// from `versioning`'s and for a stated reason: a wholesale override would force
+/// an operator to redeclare `cve_gate` and `license_gate` in order to change
+/// `release_age`, and a forgotten one is a gate silently switched off.
+pub(super) fn build_namespace_policies(
+    reg: &RegistryConfig,
+    repo: Arc<dyn batlehub_core::ports::PackageRepository>,
+    vuln_repo: Arc<dyn VulnerabilityRepository>,
+    sbom_repo: Arc<dyn SbomRepository>,
+) -> anyhow::Result<Vec<(String, Arc<RegistryPolicy>)>> {
+    let mut out = Vec::new();
+    for ns in &reg.namespaces {
+        let Some(overrides) = ns.rules.as_deref() else {
+            continue;
+        };
+        let owned = effective_rules(&reg.rules, overrides)?;
+        out.push((
+            ns.match_prefix.clone(),
+            Arc::new(build_policy_with_rules(
+                reg,
+                &owned,
+                Arc::clone(&repo),
+                Arc::clone(&vuln_repo),
+                Arc::clone(&sbom_repo),
+            )?),
+        ));
+    }
+    Ok(out)
+}
+
+/// RFC 0015 §4.1's **per-gate** merge: `base`, with each entry replaced by the
+/// override of the same gate, and anything the override adds appended.
+///
+/// Order is the registry's, so a gate the namespace only re-tunes stays where it
+/// was in the chain. The chain is evaluated in order and the gates are
+/// independent, so this is presentation rather than semantics — but a chain that
+/// reordered itself when a namespace touched one gate would make a `403`'s
+/// provenance harder to read for no gain.
+fn effective_rules(
+    base: &[RuleConfig],
+    overrides: &[RuleConfig],
+) -> anyhow::Result<Vec<RuleConfig>> {
+    let mut effective: Vec<&RuleConfig> = Vec::new();
+    for b in base {
+        match overrides.iter().find(|o| same_gate(o, b)) {
+            Some(over) => effective.push(over),
+            None => effective.push(b),
+        }
+    }
+    for over in overrides {
+        if !base.iter().any(|b| same_gate(over, b)) {
+            effective.push(over);
+        }
+    }
+    effective.into_iter().map(clone_rule_config).collect()
+}
+
+/// Whether two rule blocks configure the same gate.
+///
+/// By discriminant rather than by a name string: the `kind` tag and the enum
+/// variant are the same fact, and comparing the tag would mean a second spelling
+/// of it that could drift.
+fn same_gate(a: &RuleConfig, b: &RuleConfig) -> bool {
+    std::mem::discriminant(a) == std::mem::discriminant(b)
+}
+
+/// `RuleConfig` is not `Clone` — it holds only plain data, but deriving `Clone`
+/// on eight structs to move a reference into an owned list is a wider change
+/// than round-tripping through the serialisation it already has. The round trip
+/// cannot fail for a value that was deserialised from TOML a moment ago; the
+/// `Result` is there so a future field that does not serialise is a load error
+/// rather than a panic.
+fn clone_rule_config(cfg: &RuleConfig) -> anyhow::Result<RuleConfig> {
+    let value = serde_json::to_value(cfg)?;
+    Ok(serde_json::from_value(value)?)
+}
+
+fn build_policy_with_rules(
+    reg: &RegistryConfig,
+    rule_configs: &[RuleConfig],
     repo: Arc<dyn batlehub_core::ports::PackageRepository>,
     vuln_repo: Arc<dyn VulnerabilityRepository>,
     sbom_repo: Arc<dyn SbomRepository>,
@@ -263,11 +405,24 @@ pub(super) fn build_policy(
         (Role::User, reg.rbac.user.clone()),
         (Role::Admin, reg.rbac.admin.clone()),
     ]);
-    rules.push(Box::new(
-        RbacRule::new(rbac_perms).with_groups(reg.rbac.groups.clone()),
-    ));
+    // `RbacRule` is **not** pushed. RFC 0015 §5.1: it becomes grant resolution,
+    // and `Authorizer::check_grants` is what answers the question it used to.
+    // The chain keeps the gates that judge the *artifact* — blocks, CVEs,
+    // licence, age, signature — because those are a different question (§5.2).
+    //
+    // It is still constructed, because constructing it is what validates the
+    // config: an unknown verb, an unknown prefix or an ecosystem verb on the
+    // wrong registry type are all refused here, at load, exactly as they were
+    // before the rule stopped being evaluated. `build_registry_grants` re-reads
+    // the same block and would reject the same things; doing it here too keeps
+    // the diagnostic attached to `[registries.rbac]` rather than to a hierarchy
+    // the operator did not write.
+    let rbac = RbacRule::from_patterns(rbac_perms)
+        .and_then(|r| r.with_group_patterns(reg.rbac.groups.clone()))
+        .map_err(|e| anyhow::anyhow!("registry '{}': [registries.rbac]: {e}", reg.name))?;
+    check_action_scoping(&rbac, reg, registry_kind)?;
     rules.push(Box::new(BlockListRule::new(repo)));
-    for rule_cfg in &reg.rules {
+    for rule_cfg in rule_configs {
         match rule_cfg {
             RuleConfig::ReleaseAgeGate(cfg) => {
                 let bypass = parse_bypass_roles(&cfg.bypass_roles)?;
@@ -598,6 +753,176 @@ mod tests {
         assert_eq!(client.registry_type(), "npm");
     }
 
+    /// Build a policy, or return why it was refused.
+    fn policy_for(r: &RegistryConfig) -> anyhow::Result<batlehub_core::services::RegistryPolicy> {
+        let repo: Arc<dyn batlehub_core::ports::PackageRepository> =
+            InMemoryPackageRepository::new();
+        build_policy(
+            r,
+            repo,
+            InMemoryVulnerabilityRepository::arc(),
+            NoopSbomRepository::arc(),
+        )
+    }
+
+    /// The refusal message, or a failure naming what was wrongly accepted.
+    ///
+    /// `RegistryPolicy` holds boxed `dyn Rule`s and so cannot be `Debug`, which
+    /// rules out `expect_err`.
+    fn refusal(r: &RegistryConfig, what: &str) -> String {
+        match policy_for(r) {
+            Ok(_) => panic!("{what}"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    /// RFC 0015 §4.9: a verb this build does not know is a config-load error.
+    ///
+    /// Before phase 1 this config started, and the permission it named was
+    /// granted to nobody — a typo with no error, no log line and no effect,
+    /// which is the failure the closed enum exists to end.
+    #[test]
+    fn an_unknown_verb_refuses_to_load() {
+        let r = make_registry(
+            "npm",
+            "reg",
+            r#"[registries.rbac]
+               anonymous = []
+               user = ["releases:raed"]
+               admin = ["*"]"#,
+        );
+        let err = refusal(&r, "a typo'd verb must not load");
+        assert!(err.contains("releases:raed"), "{err}");
+        assert!(
+            err.contains("reg"),
+            "the error must name the registry: {err}"
+        );
+    }
+
+    /// The same for a prefix nobody carries, which is the mistake that would
+    /// otherwise expand to the empty set and grant nothing.
+    #[test]
+    fn an_unknown_prefix_refuses_to_load() {
+        let r = make_registry(
+            "npm",
+            "reg",
+            r#"[registries.rbac]
+               anonymous = []
+               user = ["release:*"]
+               admin = ["*"]"#,
+        );
+        let err = refusal(&r, "an unknown prefix must not load");
+        assert!(err.contains("release"), "{err}");
+    }
+
+    /// RFC 0015 §4.2 rule 2: an ecosystem verb is rejected on a registry of
+    /// another type, not silently inert.
+    #[test]
+    fn an_ecosystem_verb_is_refused_on_the_wrong_registry_type() {
+        let r = make_registry(
+            "maven",
+            "mvn1",
+            r#"[registries.rbac]
+               anonymous = []
+               user = ["npm:dist-tags:write"]
+               admin = ["*"]"#,
+        );
+        let err = refusal(&r, "npm:dist-tags:write is not a Maven permission");
+        assert!(err.contains("npm:dist-tags:write"), "{err}");
+        assert!(err.contains("maven"), "the error must name the type: {err}");
+    }
+
+    /// …and accepted on one that does define it, so the rule is a scope rather
+    /// than a ban. Without this the test above would pass against a build that
+    /// rejected the verb everywhere.
+    #[test]
+    fn an_ecosystem_verb_is_accepted_on_its_own_registry_type() {
+        let r = make_registry(
+            "npm",
+            "npm1",
+            r#"[registries.rbac]
+               anonymous = []
+               user = ["npm:dist-tags:write"]
+               admin = ["*"]"#,
+        );
+        assert!(policy_for(&r).is_ok());
+    }
+
+    /// A group grant is scoped exactly like a role grant.
+    ///
+    /// Separate map, separate code path, and the one an operator is more likely
+    /// to reach for — `[registries.rbac.groups]` is where per-team permissions
+    /// go, so a check that covered only the three role fields would miss the
+    /// common case.
+    #[test]
+    fn a_group_grant_is_scoped_too() {
+        let r = make_registry(
+            "maven",
+            "mvn1",
+            r#"[registries.rbac]
+               anonymous = []
+               user = []
+               admin = ["*"]
+               [registries.rbac.groups]
+               "team-a" = ["npm:dist-tags:write"]"#,
+        );
+        let err = refusal(&r, "group grants are scoped too");
+        assert!(err.contains("npm:dist-tags:write"), "{err}");
+    }
+
+    /// Every permission this repository ships in a config file is a real one.
+    ///
+    /// Phase 1 turned an unknown verb from a silent no-op into a startup
+    /// failure, and the first thing that change found was three of them in this
+    /// repository: `releases:write` in `docs/guide/configuration.md` and
+    /// `packages:publish` in both perf configs. All three had been granting
+    /// nothing to nobody for as long as they had existed, which is precisely why
+    /// nobody noticed.
+    ///
+    /// So the shipped configs are parsed here rather than trusted. A doc example
+    /// that cannot start the server is worse than no example — the reader has no
+    /// reason to doubt it.
+    #[test]
+    fn every_shipped_config_grants_only_real_permissions() {
+        for path in [
+            "../config.example.toml",
+            "../perf/config.perf.toml",
+            "../perf/config.perf-s3.toml",
+            "../perf/config.perf-authz.toml",
+        ] {
+            let raw = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("{path} must be readable: {e}"));
+
+            #[derive(serde::Deserialize)]
+            struct Wrapper {
+                #[serde(default)]
+                registries: Vec<RegistryConfig>,
+            }
+            // Parsed directly rather than through `batlehub_config::load`, which
+            // also interpolates `${ENV}` and would make this a test about the
+            // environment it happens to run in.
+            let w: Wrapper =
+                toml::from_str(&raw).unwrap_or_else(|e| panic!("{path} must be valid TOML: {e}"));
+
+            for reg in &w.registries {
+                let patterns = reg
+                    .rbac
+                    .anonymous
+                    .iter()
+                    .chain(&reg.rbac.user)
+                    .chain(&reg.rbac.admin)
+                    .chain(reg.rbac.groups.values().flatten())
+                    .cloned()
+                    .collect::<Vec<_>>();
+                batlehub_core::entities::expand_patterns(
+                    &patterns,
+                    batlehub_core::entities::WildcardScope::Legacy,
+                )
+                .unwrap_or_else(|e| panic!("{path}: registry '{}': {e}", reg.name));
+            }
+        }
+    }
+
     #[test]
     fn build_policy_default_has_rbac_and_block_list_rules() {
         let r = make_registry("npm", "reg", "");
@@ -611,7 +936,10 @@ mod tests {
         )
         .unwrap();
         let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
-        assert_eq!(names, vec!["rbac", "block_list"]);
+        // `rbac` is absent by design since RFC 0015 phase 3: grant resolution
+        // answers that question now (§5.1), and the chain keeps only the gates
+        // that judge the artifact.
+        assert_eq!(names, vec!["block_list"]);
         assert!(!policy.firewall_only);
         assert!(policy.serve_stale_metadata);
         assert_eq!(policy.metadata_ttl, Some(Duration::from_secs(300)));
@@ -658,7 +986,6 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "rbac",
                 "block_list",
                 "release_age_gate",
                 "deny_latest",
@@ -694,7 +1021,7 @@ mod tests {
         )
         .unwrap();
         let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
-        assert_eq!(names, vec!["rbac", "block_list", "cve_gate"]);
+        assert_eq!(names, vec!["block_list", "cve_gate"]);
     }
 
     #[test]
@@ -722,7 +1049,7 @@ mod tests {
         )
         .unwrap();
         let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
-        assert_eq!(names, vec!["rbac", "block_list", "license_gate"]);
+        assert_eq!(names, vec!["block_list", "license_gate"]);
     }
 
     #[test]
@@ -747,6 +1074,96 @@ mod tests {
         )
         .unwrap();
         let names: Vec<&str> = policy.rules.iter().map(|rule| rule.name()).collect();
-        assert_eq!(names, vec!["rbac", "block_list", "trusted_publisher"]);
+        assert_eq!(names, vec!["block_list", "trusted_publisher"]);
+    }
+
+    // ── RFC 0015 §4.1: per-gate rule composition ─────────────────────────────
+
+    fn rule(toml_body: &str) -> RuleConfig {
+        toml::from_str(toml_body).expect("valid rule toml")
+    }
+
+    fn gate_names(rules: &[RuleConfig]) -> Vec<String> {
+        rules
+            .iter()
+            .map(|r| {
+                serde_json::to_value(r).unwrap()["kind"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    /// The composition rule that differs from `versioning`'s, and the reason it
+    /// does: a wholesale override would force redeclaring `cve_gate` to change
+    /// `release_age`, and a forgotten one is a gate silently switched off.
+    #[test]
+    fn a_namespace_override_replaces_one_gate_and_leaves_the_others() {
+        let base = vec![
+            rule("kind = \"release_age_gate\"\nmin_age_secs = 3600"),
+            rule("kind = \"deny_latest\"\nenabled = true"),
+        ];
+        let overrides = vec![rule("kind = \"release_age_gate\"\nmin_age_secs = 0")];
+
+        let effective = effective_rules(&base, &overrides).expect("merges");
+        assert_eq!(
+            gate_names(&effective),
+            vec!["release_age_gate", "deny_latest"],
+            "the untouched gate survives, in its original position"
+        );
+        let age = serde_json::to_value(&effective[0]).unwrap();
+        assert_eq!(
+            age["min_age_secs"], 0,
+            "and the overridden one carries the namespace's value"
+        );
+    }
+
+    /// The standing `release_age` finding §4.5 names: first-party CI publishes
+    /// into a namespace that sets `min_age_secs = 0`, instead of the operator
+    /// choosing between quarantining their own builds and turning the gate off
+    /// everywhere.
+    #[test]
+    fn a_namespace_may_lift_the_quarantine_for_its_own_builds() {
+        let base = vec![rule("kind = \"release_age_gate\"\nmin_age_secs = 86400")];
+        let effective = effective_rules(
+            &base,
+            &[rule("kind = \"release_age_gate\"\nmin_age_secs = 0")],
+        )
+        .expect("merges");
+        assert_eq!(effective.len(), 1);
+        assert_eq!(
+            serde_json::to_value(&effective[0]).unwrap()["min_age_secs"],
+            0
+        );
+    }
+
+    /// A gate the registry does not configure at all can be *added* by a
+    /// namespace.
+    #[test]
+    fn a_namespace_may_add_a_gate_the_registry_does_not_have() {
+        let base = vec![rule("kind = \"deny_latest\"\nenabled = true")];
+        let effective = effective_rules(
+            &base,
+            &[rule("kind = \"release_age_gate\"\nmin_age_secs = 60")],
+        )
+        .expect("merges");
+        assert_eq!(
+            gate_names(&effective),
+            vec!["deny_latest", "release_age_gate"]
+        );
+    }
+
+    /// No overrides is the registry's chain unchanged, which is what every
+    /// namespace without a `rules` block gets — and is why such namespaces get
+    /// no chain of their own at all.
+    #[test]
+    fn no_overrides_is_the_registrys_chain() {
+        let base = vec![
+            rule("kind = \"release_age_gate\"\nmin_age_secs = 3600"),
+            rule("kind = \"deny_latest\"\nenabled = true"),
+        ];
+        let effective = effective_rules(&base, &[]).expect("merges");
+        assert_eq!(gate_names(&effective), gate_names(&base));
     }
 }

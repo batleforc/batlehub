@@ -10,36 +10,12 @@ use batlehub_core::{
     services::{AdminService, QuotaService},
 };
 
-use super::super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity, handlers::schemas::OkResponse};
 
 #[cfg(test)]
 mod tests {
-    use super::{require_admin, QuotaUsageDto};
-    use crate::extractors::AuthIdentity;
-    use batlehub_core::{
-        entities::{Identity, Role},
-        ports::QuotaUsage,
-    };
-
-    fn id(role: Role) -> AuthIdentity {
-        AuthIdentity(Identity {
-            user_id: Some("u".into()),
-            role,
-            auth_provider: None,
-            groups: vec![],
-        })
-    }
-
-    #[test]
-    fn require_admin_passes_for_admin() {
-        assert!(require_admin(&id(Role::Admin)).is_ok());
-    }
-
-    #[test]
-    fn require_admin_fails_for_non_admin() {
-        assert!(require_admin(&id(Role::User)).is_err());
-    }
+    use super::QuotaUsageDto;
+    use batlehub_core::ports::QuotaUsage;
 
     #[test]
     fn quota_usage_dto_conversion() {
@@ -83,7 +59,7 @@ impl From<QuotaUsage> for QuotaUsageDto {
     tag = "back-office",
     responses(
         (status = 200, description = "All quota usage rows", body = Vec<QuotaUsageDto>),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`quota:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -91,8 +67,15 @@ impl From<QuotaUsage> for QuotaUsageDto {
 pub async fn list_quota(
     identity: AuthIdentity,
     quota_svc: web::Data<Arc<QuotaService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::QuotaRead,
+        None,
+        &hot,
+    )
+    .await?;
     let rows = quota_svc.list_usage(None).await.map_err(AppError::from)?;
     let dtos: Vec<QuotaUsageDto> = rows.into_iter().map(Into::into).collect();
     Ok(HttpResponse::Ok().json(dtos))
@@ -106,7 +89,7 @@ pub async fn list_quota(
     params(("registry" = String, Path, description = "Registry name")),
     responses(
         (status = 200, description = "Quota usage rows for registry", body = Vec<QuotaUsageDto>),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`quota:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -115,9 +98,16 @@ pub async fn list_quota_for_registry(
     path: web::Path<String>,
     identity: AuthIdentity,
     quota_svc: web::Data<Arc<QuotaService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let registry = path.into_inner();
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::QuotaRead,
+        Some(&registry),
+        &hot,
+    )
+    .await?;
     let rows = quota_svc
         .list_usage(Some(&registry))
         .await
@@ -137,7 +127,7 @@ pub async fn list_quota_for_registry(
     ),
     responses(
         (status = 200, description = "Quota usage for the user", body = QuotaUsageDto),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`quota:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -146,9 +136,16 @@ pub async fn get_quota_for_user(
     path: web::Path<(String, String)>,
     identity: AuthIdentity,
     quota_svc: web::Data<Arc<QuotaService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let (registry, user_id) = path.into_inner();
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::QuotaRead,
+        Some(&registry),
+        &hot,
+    )
+    .await?;
     let usage = quota_svc
         .get_usage(&user_id, &registry)
         .await
@@ -167,7 +164,7 @@ pub async fn get_quota_for_user(
     ),
     responses(
         (status = 200, description = "Quota reset", body = OkResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`quota:write` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -177,9 +174,21 @@ pub async fn reset_quota_for_user(
     identity: AuthIdentity,
     quota_svc: web::Data<Arc<QuotaService>>,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
     let (registry, user_id) = path.into_inner();
+    // **`quota:write`, not `quota:read`.** The three reads above ask for the
+    // read verb; this one zeroes the counters. Every other control surface in
+    // the vocabulary splits the two — `config:*`, `system:*`, `blocks:*` — and
+    // quota was the one that did not, so a support engineer granted the read to
+    // inspect usage could also defeat the limit on every user in the registry.
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::QuotaWrite,
+        Some(&registry),
+        &hot,
+    )
+    .await?;
     quota_svc
         .reset(&user_id, &registry)
         .await

@@ -9,7 +9,6 @@ use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
     entities::PackageId,
     error::CoreError,
-    rules::resource_type::RELEASES_READ,
     services::{
         validate_package_name, validate_path_safe, LocalRegistryService, ProxyRequest, ProxyService,
     },
@@ -23,6 +22,7 @@ use crate::handlers::proxy::common::{
 };
 use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
+use batlehub_core::entities::Action;
 
 /// Forward a fixed-URL blob through the cached-forward helper (the IDE fetches
 /// these at startup — the highest-value offline case).
@@ -96,7 +96,7 @@ pub async fn jbm_plugins_xml_ids(
     if mode == RegistryMode::Hybrid {
         // Best-effort union with upstream; upstream loss keeps the local list.
         let key = forward_cache_key(&registry, "files/pluginsXMLIds.json", "");
-        if let Ok(fwd) = cached_forward_get(
+        let upstream_ids = cached_forward_get(
             &svc,
             &upstream_map,
             &client,
@@ -105,21 +105,27 @@ pub async fn jbm_plugins_xml_ids(
             &key,
         )
         .await
-        {
-            if let Ok(upstream_ids) = serde_json::from_slice::<Vec<String>>(&fwd.body) {
-                // Upstream carries tens of thousands of ids — a Vec::contains
-                // scan per id would make this union quadratic.
-                let mut seen: std::collections::HashSet<String> = ids.iter().cloned().collect();
-                for id in upstream_ids {
-                    if seen.insert(id.clone()) {
-                        ids.push(id);
-                    }
-                }
-            }
+        .ok()
+        .and_then(|fwd| serde_json::from_slice::<Vec<String>>(&fwd.body).ok());
+        if let Some(upstream_ids) = upstream_ids {
+            extend_unseen(&mut ids, upstream_ids);
         }
     }
 
     Ok(HttpResponse::Ok().json(ids))
+}
+
+/// Append the ids `ids` does not already hold, preserving local order.
+///
+/// Set-backed rather than `Vec::contains`: upstream carries tens of thousands
+/// of ids, and a linear scan per id would make this union quadratic.
+fn extend_unseen(ids: &mut Vec<String>, incoming: Vec<String>) {
+    let mut seen: std::collections::HashSet<String> = ids.iter().cloned().collect();
+    for id in incoming {
+        if seen.insert(id.clone()) {
+            ids.push(id);
+        }
+    }
 }
 
 // rustfmt is not idempotent on the utoipa attribute inside a macro body (it
@@ -214,7 +220,7 @@ async fn load_entries(
     let proxy_req = ProxyRequest {
         package_id: PackageId::new(registry, xml_id, "latest"),
         identity: identity.0,
-        resource_type: RELEASES_READ.to_owned(),
+        action: Action::ReleasesRead.to_owned(),
         ip_address: None,
         user_agent: None,
     };
@@ -352,7 +358,7 @@ pub async fn jbm_file_download(
             artifact_suffix: &artifact,
             local_content_type: content_type_for(&file_name),
             proxy_content_type: None,
-            resource_type: RELEASES_READ,
+            action: Action::ReleasesRead,
             check_prerelease: false,
             append_signature: true,
         },
@@ -435,7 +441,7 @@ pub async fn jbm_plugin_download(
             artifact_suffix: &artifact,
             local_content_type: "application/octet-stream",
             proxy_content_type: None,
-            resource_type: RELEASES_READ,
+            action: Action::ReleasesRead,
             check_prerelease: false,
             append_signature: true,
         },
@@ -521,7 +527,7 @@ pub async fn jbm_plugin_manager(
                         &registry,
                         &query.id,
                         &best.version,
-                        batlehub_core::rules::resource_type::RELEASES_READ,
+                        Action::ReleasesRead,
                         &identity,
                     )
                     .await
@@ -544,7 +550,7 @@ pub async fn jbm_plugin_manager(
     let proxy_req = ProxyRequest {
         package_id: PackageId::new(&registry, &query.id, "latest"),
         identity: identity.0.clone(),
-        resource_type: RELEASES_READ.to_owned(),
+        action: Action::ReleasesRead.to_owned(),
         ip_address: None,
         user_agent: None,
     };
@@ -566,7 +572,7 @@ pub async fn jbm_plugin_manager(
         .ok_or_else(|| AppError::not_found("upstream version list is empty".to_owned()))?;
 
     let pkg = PackageId::new(&registry, &query.id, &version).with_artifact(PLUGIN_ARTIFACT);
-    let mut resp = proxy_stream(svc, pkg, identity, RELEASES_READ, None).await?;
+    let mut resp = proxy_stream(svc, pkg, identity, Action::ReleasesRead, None).await?;
     resp.headers_mut().insert(
         header::CONTENT_DISPOSITION,
         plugin_attachment_value(&query.id, &version)?,

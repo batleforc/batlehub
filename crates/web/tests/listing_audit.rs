@@ -25,27 +25,7 @@ use std::sync::Arc;
 
 use actix_web::test::{call_service, read_body_json, TestRequest};
 use batlehub_config::schema::RegistryMode;
-use batlehub_core::{entities::Role, rules::RbacRule, services::RegistryPolicy};
 use serde_json::Value;
-
-/// A registry policy that grants anonymous callers nothing.
-///
-/// The shared `rbac_policy` gives `Role::Anonymous` `releases:read`, which is
-/// what a listing needs — so a denial has to be arranged deliberately rather
-/// than assumed.
-fn anonymous_denied_policy() -> RegistryPolicy {
-    let perms = std::collections::HashMap::from([
-        (Role::Anonymous, Vec::new()),
-        (Role::Admin, vec!["*".to_owned()]),
-    ]);
-    RegistryPolicy {
-        metadata_ttl: None,
-        firewall_only: false,
-        serve_stale_metadata: false,
-        artifact_ttl: None,
-        rules: vec![Box::new(RbacRule::new(perms))],
-    }
-}
 
 /// Every audit row currently in the log, newest-first, as the admin console
 /// would read them.
@@ -106,13 +86,23 @@ async fn an_allowed_listing_writes_no_audit_row_and_moves_the_counter() {
 async fn a_denied_listing_writes_exactly_one_view_metadata_row() {
     let parts = local_registry_app_parts("local-npm", "npm", RegistryMode::Proxy, None);
     let metrics = Arc::clone(&parts.proxy_svc.metrics);
-    parts
-        .proxy_svc
-        .hot
-        .write()
-        .await
-        .policies
-        .insert("local-npm".to_owned(), Arc::new(anonymous_denied_policy()));
+    {
+        // The denial comes from the **hierarchy**, not from a fixture `RbacRule`.
+        // §5.1 took that rule out of the chain `build_policy` assembles, and
+        // `authorize_listing` no longer runs one — so a policy carrying it
+        // describes a mechanism production does not have (§13.14).
+        let mut hot = parts.proxy_svc.hot.write().await;
+        hot.grants = [(
+            "local-npm".to_owned(),
+            Arc::new(fixture_grants(
+                "local-npm",
+                "npm",
+                &RegistryMode::Proxy,
+                &rbac_policy_deny_anonymous_perms(),
+            )),
+        )]
+        .into();
+    }
     let app = build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await;
 
     let req = TestRequest::get()

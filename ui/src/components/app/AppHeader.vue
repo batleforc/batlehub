@@ -265,6 +265,7 @@ function handleLogout() {
       </nav>
       <button
         v-if="isAuthenticated"
+        type="button"
         class="mt-3 block w-full border border-border px-3 py-2.5 text-left text-xs uppercase tracking-[0.1em] text-destructive transition-colors hover:border-destructive"
         @click="handleLogout"
       >

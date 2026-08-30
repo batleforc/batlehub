@@ -35,6 +35,7 @@ use crate::middleware::host_routing::host_routed_registry;
 use crate::RegistryMap;
 
 use actix_web::HttpResponse;
+use batlehub_core::entities::Action;
 use batlehub_core::{entities::PackageId, services::ProxyService};
 
 /// `GET /.well-known/terraform.json` — the document Terraform reads first.
@@ -293,7 +294,7 @@ async fn mirror_versions(
     let req = batlehub_core::services::ProxyRequest {
         package_id: PackageId::new(registry, &name, "versions"),
         identity: identity.0,
-        resource_type: batlehub_core::rules::resource_type::RELEASES_READ.to_owned(),
+        action: Action::ReleasesRead.to_owned(),
         ip_address: None,
         user_agent: None,
     };

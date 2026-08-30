@@ -97,10 +97,9 @@ function resolveTarget(fromFile, target) {
   if (!clean) return { ok: true, file: fromFile };
 
   const inDocs = !relative(DOCS, fromFile).startsWith("..");
-  const base = clean.startsWith("/")
-    ? // Root-absolute inside the site means the site root; outside it, the repo.
-      join(inDocs ? DOCS : REPO, clean)
-    : resolve(dirname(fromFile), clean);
+  // Root-absolute inside the site means the site root; outside it, the repo.
+  const root = inDocs ? DOCS : REPO;
+  const base = clean.startsWith("/") ? join(root, clean) : resolve(dirname(fromFile), clean);
 
   const candidates = [
     base,
@@ -140,7 +139,11 @@ function slugify(str) {
     .replace(R_CONTROL, "")
     .replace(R_SPECIAL, "-")
     .replace(/-{2,}/g, "-")
-    .replace(/^-+|-+$/g, "")
+    // Single-character anchors, not `^-+|-+$`: the run has just been collapsed,
+    // so one dash is all there can be at either end, and `-+$` is the shape that
+    // rescans a long dash run from every start position.
+    .replace(/^-/, "")
+    .replace(/-$/, "")
     .replace(/^(\d)/, "_$1")
     .toLowerCase();
 }
@@ -160,7 +163,10 @@ function stripTags(text) {
   let out = text;
   for (let prev; prev !== out; ) {
     prev = out;
-    out = out.replace(/<[^>]+>/g, "");
+    // `[^<>]`, not `[^>]`: excluding `<` from the body means a failed attempt
+    // cannot run past the next `<`, so the scan stays linear — and a tag cannot
+    // contain `<` anyway. Re-formation is what the fixed-point loop is for.
+    out = out.replace(/<[^<>]*>/g, "");
   }
   return out;
 }
@@ -177,14 +183,20 @@ function anchorsOf(file) {
   const src = readFileSync(file, "utf8").replace(/```[\s\S]*?```/g, "");
   const seen = new Map();
   const anchors = new Set();
-  for (const [, , raw] of src.matchAll(/^(#{1,6})\s+(.+?)\s*$/gm)) {
-    const explicit = raw.match(/\{#([^}]+)\}\s*$/);
+  // `[ \t]+(\S.*)` rather than `\s+(.+?)\s*$`: `\s` and `.` both match a space,
+  // and that overlap is what makes the lazy group backtrack super-linearly. The
+  // trailing whitespace `\s*$` used to absorb comes off in JS instead.
+  for (const [, , headingLine] of src.matchAll(/^(#{1,6})[ \t]+(\S.*)$/gm)) {
+    const raw = headingLine.trimEnd();
+    const explicit = /\{#([^}]+)\}\s*$/.exec(raw);
     let slug;
     if (explicit) {
       slug = explicit[1];
     } else {
       const text = raw
-        .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+        // `[^\][]`/`[^()]`: a class that excludes its own opener cannot rescan
+        // across the next one, which is what keeps these two linear.
+        .replace(/\[([^\][]*)\]\([^()]*\)/g, "$1")
         // Tag-stripping happens outside code spans only: `<name>` in
         // `registry info <name>` is a placeholder a reader types, not markup,
         // and VitePress keeps it — which is the difference between
@@ -248,7 +260,7 @@ for (const file of markdownFiles(REPO)) {
   const quotes = QUOTES_HISTORY.some((p) => p.test(rel));
 
   // Markdown links, minus the ones that do not name a file in this repository.
-  for (const [, , target] of src.matchAll(/\[([^\]]*)\]\(([^)\s]+)\)/g)) {
+  for (const [, , target] of src.matchAll(/\[([^\][]*)\]\(([^()\s]+)\)/g)) {
     if (/^(https?:|mailto:|<)/.test(target)) continue;
     const { ok, file: targetFile } = resolveTarget(file, target);
     if (!ok) {

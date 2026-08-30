@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::entities::{
-    AccessEvent, EventFilter, ExploreEntry, ExploreFilter, PackageFilter, PackageId, PackageStatus,
-    PackageSummary, RegistryStat,
+    AccessEvent, EventFilter, ExploreEntry, ExploreFilter, ExploreViewer, PackageFilter, PackageId,
+    PackageStatus, PackageSummary, RegistryStat,
 };
 use crate::error::CoreError;
 
@@ -152,6 +152,47 @@ pub trait PackageRepository: Send + Sync {
         Ok(vec![])
     }
 
+    /// The newest successful **download** of each version of one package.
+    ///
+    /// The signal retention's `keep_if_pulled` reads (RFC 0016 §4.3), and the
+    /// rule that makes retention safe to switch on: whatever anyone is actually
+    /// using stays, regardless of age or count.
+    ///
+    /// Three constraints are the method's contract rather than the caller's to
+    /// assemble, for the same reason [`Self::list_own_downloads`] states its own.
+    ///
+    /// 1. **`AccessAction::Download` only.** A `ViewMetadata` is a client
+    ///    reading an index, not a consumer installing anything. Counting it
+    ///    would keep every version any listing ever mentioned.
+    /// 2. **Allowed only.** A denied download is evidence someone *wanted* the
+    ///    version and did not get it, which is not evidence the version is in
+    ///    use — and a blocked package would otherwise defend itself from
+    ///    reclamation by being repeatedly refused.
+    /// 3. **Per version, newest first.** A sweep asks about a whole package at
+    ///    once; one round trip per version would make a retention run over
+    ///    200 000 packages a million queries.
+    ///
+    /// The `Download`/`ViewMetadata` split is drawn at record time by
+    /// [`PackageId::is_verification_sidecar`], not here: a `.sha1` beside a jar
+    /// records as `ViewMetadata` and a `.pom` records as a `Download`, because a
+    /// `.pom` is a file a build actually consumes. Both halves matter to
+    /// retention and both are pinned by tests.
+    ///
+    /// Returns `(version, last_download)` pairs. A version with no recorded
+    /// download is **absent** rather than present-with-`None` — the caller has
+    /// to decide what an absence means, and under the floor-date rule in
+    /// RFC 0016 §4.3 it does not always mean "never pulled".
+    ///
+    /// [`PackageId::is_verification_sidecar`]: crate::entities::PackageId::is_verification_sidecar
+    async fn last_downloads(
+        &self,
+        registry: &str,
+        package: &str,
+    ) -> Result<Vec<(String, DateTime<Utc>)>, CoreError> {
+        let (_, _) = (registry, package);
+        Ok(vec![])
+    }
+
     /// Delete access-event rows older than `before`. Returns the number of rows deleted.
     async fn purge_events_before(&self, before: DateTime<Utc>) -> Result<u64, CoreError> {
         let _ = before;
@@ -195,11 +236,18 @@ pub trait PackageRepository: Send + Sync {
     }
 
     /// Explorer: per-registry package counts and download totals.
+    ///
+    /// `viewer` is not optional and not cosmetic (RFC 0015 §4.4): every number
+    /// here is an aggregate over packages, so one computed without it discloses
+    /// the set it was computed over. An empty `accessible_registries` means
+    /// **nothing**, never "all" — survey finding 2's reading is what this
+    /// signature exists to make unavailable.
     async fn registry_explore_stats(
         &self,
         accessible_registries: &[String],
+        viewer: &ExploreViewer,
     ) -> Result<Vec<RegistryStat>, CoreError> {
-        let _ = accessible_registries;
+        let _ = (accessible_registries, viewer);
         Ok(vec![])
     }
 

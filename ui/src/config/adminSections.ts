@@ -46,6 +46,10 @@ export const PACKAGES_TABS = [
 export const SECURITY_TABS = [
   { to: "/admin/security/blocks", label: "adminNav.blocks" },
   { to: "/admin/security/access-check", label: "adminNav.accessCheck" },
+  // RFC 0015 §4.8. Beside the access checker rather than under its own section:
+  // both answer "why was this refused?", and an operator arriving with that
+  // question should not have to know which of two mechanisms produced it.
+  { to: "/admin/security/authorization", label: "adminNav.authorization" },
 ];
 
 export const NAMESPACES_TABS = [

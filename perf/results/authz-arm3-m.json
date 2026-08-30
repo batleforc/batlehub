@@ -1,0 +1,36 @@
+{
+  "size": "m",
+  "vus": 4,
+  "duration": "60s",
+  "note": "Arm 3 \u2014 filtered, keyed by resolved grant set. `perf-gems` is the filtered+cached registry once RFC 0015 phase 3's \u00a74.4 wiring and DocumentCache ship; `perf-gems-proxy` remains arm 1. Phase 0b's arm-2 (filtered, uncached) numbers are in authz-m.json and are not reproducible against this build.",
+  "rows": [
+    {
+      "doc": "versions",
+      "arm1_p50": 33.3,
+      "arm1_p95": 64.6,
+      "arm1_p99": 84.4,
+      "arm3_p50": 33.3,
+      "arm3_p95": 64.4,
+      "arm3_p99": 86.0,
+      "ratio_p99": 1.0,
+      "bytes": 2600037
+    },
+    {
+      "doc": "names",
+      "arm1_p50": 6.9,
+      "arm1_p95": 22.5,
+      "arm1_p99": 40.4,
+      "arm3_p50": 6.8,
+      "arm3_p95": 22.8,
+      "arm3_p99": 37.3,
+      "ratio_p99": 0.9,
+      "bytes": 425004
+    }
+  ],
+  "cold_build_seconds": 28.35,
+  "shared_entry_check": {
+    "note": "A second caller resolving to the same grant set hit the cache.",
+    "first_caller_warm_ms": 22.9,
+    "second_caller_ms": 41.3
+  }
+}

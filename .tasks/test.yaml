@@ -96,6 +96,13 @@ tasks:
         vars:
           TEST: pg_cache
 
+  test:pg-grants:
+    desc: Run GrantRepository integration tests (starts a temporary Postgres container via Podman)
+    cmds:
+      - task: pg
+        vars:
+          TEST: pg_grants
+
   test:pg-vulnerability:
     desc: Run PgVulnerabilityRepository integration tests (starts a temporary Postgres container via Podman)
     cmds:
@@ -147,6 +154,24 @@ tasks:
           TEST: local_registry
           CONTAINER: batlehub-test-pg-local
           PORT: "15433"
+
+  test:pg-tombstones:
+    desc: Run local-registry tombstone/compaction integration tests (starts a temporary Postgres container via Podman)
+    cmds:
+      - task: pg
+        vars:
+          TEST: pg_tombstones
+          CONTAINER: batlehub-test-pg-tombstones
+          PORT: "15438"
+
+  test:pg-retention:
+    desc: Run retention-run integration tests against real Postgres and a real store (starts a temporary Postgres container via Podman)
+    cmds:
+      - task: pg
+        vars:
+          TEST: pg_retention
+          CONTAINER: batlehub-test-pg-retention
+          PORT: "15439"
 
   test:pg-storage-router:
     desc: Run storage_router integration tests (starts a temporary Postgres container via Podman)
@@ -245,6 +270,31 @@ tasks:
     cmds:
       - bash tests/heavy/terraform.sh
 
+  test:authz-matrix-heavy:
+    desc: "Heavy authorization matrix: every verb in the vocabulary, both directions, plus the namespace tiers, the seal, the administrative floor, shadow mode and the `explain` oracle — over curl, no client toolchain (needs DATABASE_URL)"
+    # The fast half of the authz suite, and the one to run while working on a
+    # grant: no package manager, ~90 assertions, under a minute once the server
+    # is built. `task test:authz-heavy` adds the client phases.
+    cmds:
+      - bash tests/heavy/authz.sh matrix
+
+  test:authz-heavy:
+    desc: "The whole authorization suite: the matrix, then the pull boundary as each ecosystem's real client meets it (needs DATABASE_URL + the clients; see docs/contributing/testing.md)"
+    # One invocation per target rather than one script doing all of them: each
+    # starts its own server and tap, and Terraform's tap has to terminate TLS
+    # while the others must not. CI runs the same list as a matrix.
+    cmds:
+      - bash tests/heavy/authz.sh matrix
+      - bash tests/heavy/authz.sh signing
+      - bash tests/heavy/authz.sh npm
+      - bash tests/heavy/authz.sh pypi
+      - bash tests/heavy/authz.sh openvsx
+      - bash tests/heavy/authz.sh conda
+      - bash tests/heavy/authz.sh nuget
+      - bash tests/heavy/authz.sh composer
+      - bash tests/heavy/authz.sh rubygems
+      - bash tests/heavy/authz.sh terraform
+
   test:heavy:
     desc: "Every heavy client suite except the marketplaces (which download two IDEs). Sequential: each one binds its own ports but they all share one Postgres."
     cmds:
@@ -256,4 +306,5 @@ tasks:
       - bash tests/heavy/nuget.sh
       - bash tests/heavy/composer.sh
       - bash tests/heavy/terraform.sh
+      - task: test:authz-heavy
 

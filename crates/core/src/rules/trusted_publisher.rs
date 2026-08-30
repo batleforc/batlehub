@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::entities::{RegistryKind, Role};
+use crate::entities::{Identity, RegistryKind, Role};
 use crate::rules::{Rule, RuleContext, RuleDecision};
 
 /// Derive a normalized "publisher" identifier for a package from data already
@@ -85,14 +85,26 @@ impl TrustedPublisherRule {
         }
     }
 
-    /// Turn a gate violation into a `Deny`, or a `RequireRole` when bypass
-    /// roles are configured (mirrors `VersionGateRule::gate`).
-    fn gate(&self, reason: String) -> RuleDecision {
+    /// Turn a gate violation into a verdict, admitting a caller who holds one of
+    /// the configured bypass roles (mirrors `VersionGateRule::gate`).
+    ///
+    /// The comparison happens here rather than being handed back as a
+    /// `RequireRole` for the caller to resolve — that variant is deleted, and
+    /// `RuleDecision`'s own documentation says what it cost.
+    fn gate(&self, identity: &Identity, reason: String) -> RuleDecision {
         if self.bypass_roles.is_empty() {
             return RuleDecision::Deny { reason };
         }
-        let minimum = self.bypass_roles.iter().min().expect("non-empty").clone();
-        RuleDecision::RequireRole { minimum }
+        let minimum = self.bypass_roles.iter().min().expect("non-empty");
+        if identity.has_role_at_least(minimum) {
+            return RuleDecision::Allow;
+        }
+        RuleDecision::Deny {
+            reason: format!(
+                "{reason} (bypass requires role '{minimum}' or higher, you have '{}')",
+                identity.role
+            ),
+        }
     }
 }
 
@@ -110,26 +122,31 @@ impl Rule for TrustedPublisherRule {
         let id = &ctx.package.id;
         let Some(publisher) = derive_publisher(self.registry_kind, &id.name, &ctx.package.extra)
         else {
-            return self.gate(format!(
+            return self.gate(
+                ctx.identity,
+                format!(
                 "cannot verify the publisher of {} on registry '{}'; trusted_publisher requires \
                  a supported registry type",
                 id, id.registry
-            ));
+            ),
+            );
         };
 
         if self.allow.contains(&publisher.to_lowercase()) {
             return RuleDecision::Allow;
         }
 
-        self.gate(format!(
-            "publisher '{publisher}' is not in the trusted_publisher allowlist for {id}"
-        ))
+        self.gate(
+            ctx.identity,
+            format!("publisher '{publisher}' is not in the trusted_publisher allowlist for {id}"),
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entities::Action;
     use crate::entities::{Identity, PackageId, PackageMetadata, Role};
     use crate::rules::RuleContext;
 
@@ -158,7 +175,7 @@ mod tests {
         RuleContext {
             identity,
             package: meta,
-            resource_type: "releases:read",
+            action: Action::ReleasesRead,
             cache_entry: None,
             requested_version: Some(meta.id.version.as_str()),
         }
@@ -325,7 +342,7 @@ mod tests {
         );
         let m = meta("github", "other-org/repo", serde_json::Value::Null);
         let admin = identity(Role::Admin);
-        let decision = rule.evaluate(&ctx(&m, &admin)).await.resolve(&admin);
+        let decision = rule.evaluate(&ctx(&m, &admin)).await;
         assert!(matches!(decision, RuleDecision::Allow));
     }
 
@@ -338,7 +355,7 @@ mod tests {
         );
         let m = meta("github", "other-org/repo", serde_json::Value::Null);
         let anon = identity(Role::Anonymous);
-        let decision = rule.evaluate(&ctx(&m, &anon)).await.resolve(&anon);
+        let decision = rule.evaluate(&ctx(&m, &anon)).await;
         assert!(matches!(decision, RuleDecision::Deny { .. }));
     }
 

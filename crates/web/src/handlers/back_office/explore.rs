@@ -6,7 +6,6 @@ use utoipa::ToSchema;
 
 use batlehub_core::services::AdminService;
 
-use super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity, handlers::schemas::OkResponse};
 
 #[derive(Deserialize, ToSchema)]
@@ -26,7 +25,7 @@ pub struct ExploreInvalidateRequest {
     request_body = ExploreInvalidateRequest,
     responses(
         (status = 200, description = "Cache invalidated", body = OkResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`system:write` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -35,8 +34,15 @@ pub async fn invalidate_explore_cache(
     body: web::Json<ExploreInvalidateRequest>,
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::SystemWrite,
+        None,
+        &hot,
+    )
+    .await?;
     admin_svc
         .explore_cache
         .invalidate(body.registry.as_deref())

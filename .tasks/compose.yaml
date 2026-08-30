@@ -46,8 +46,12 @@ tasks:
 
   # ── S3 / RustFS ───────────────────────────────────────────────────────────────
 
+  # `docker-compose.s3.yml` has no batlehub service — it starts dependencies
+  # only, and the server runs on the host against `config.s3.toml`. The
+  # description used to say "+ server", `compose:s3:logs` tailed a service that
+  # does not exist, and `compose:s3:build` built an image nothing declares.
   compose:s3:up:
-    desc: Start the full S3 stack (postgres + RustFS + Authentik + Jaeger + server) via docker-compose.s3.yml
+    desc: Start the S3 stack dependencies (postgres + RustFS + Authentik + Jaeger); run the server with `cargo run -p batlehub-server -- --config config.s3.toml`
     cmds:
       - podman compose -f docker-compose.s3.yml up postgres -d
       - podman compose -f docker-compose.s3.yml up authentik-postgres -d
@@ -68,19 +72,13 @@ tasks:
       - podman compose -f docker-compose.s3.yml down {{ .CLI_ARGS }}
 
   compose:s3:logs:
-    desc: Tail server logs from the S3 stack
+    desc: Tail the S3 stack's dependency logs (the server itself runs on the host)
     cmds:
-      - podman compose -f docker-compose.s3.yml logs -f server
+      - podman compose -f docker-compose.s3.yml logs -f {{ .CLI_ARGS }}
 
-  compose:s3:build:
-    desc: (Re)build the server image for the S3 stack
-    cmds:
-      - podman compose -f docker-compose.s3.yml build
-
-  compose:s3:auth:pwd:
-    desc: "Set admin password for the Authentik identity provider (default: akadmin)"
-    cmds:
-      - podman compose exec -T authentik-server ak shell -c "from authentik.core.models import User; u=User.objects.get(username='akadmin'); u.set_password('akadmin'); u.save(); print('password reset for', u.username)"
+  # No `compose:s3:build`: nothing in `docker-compose.s3.yml` declares a build
+  # context, so the task ran `podman compose build` over a file with no
+  # buildable service and reported success having done nothing.
 
   compose:s3:auth:pwd:
     desc: "Set admin password for the Authentik identity provider (default: akadmin)"

@@ -2,8 +2,23 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-/// Visibility level for a locally published package.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+/// How wide the audience for a resource is — RFC 0015 §4.5's one *narrowing*
+/// dimension.
+///
+/// Grants and visibility answer the same question from opposite directions, and
+/// the model ships both deliberately: a grant says *this subject may* and
+/// composes by union, so it can only ever widen; visibility says *the audience
+/// is this wide*, is a single scalar, and composes deepest-wins, so it can only
+/// ever narrow. **A caller needs both** — a grant for the verb and membership of
+/// the audience — which is an AND, not a fallback. A `releases:read` grant does
+/// not make a `team` package public, and a `public` namespace does not serve a
+/// caller no grant matches.
+///
+/// The variants are ordered widest to narrowest, and [`Self::narrower_of`]
+/// depends on that order.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize, ToSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Visibility {
     /// Anyone, including anonymous users, may download.
@@ -13,15 +28,55 @@ pub enum Visibility {
     Internal,
     /// Only members of the owning team group may download.
     Team,
+    /// Inherited read grants do not apply — only grants written on this node or
+    /// below (RFC 0015 §4.5).
+    ///
+    /// This is the case the other three cannot express: narrowing to *fewer
+    /// subjects than the parent named*, which is RFC 0011-bis §4.3's empty
+    /// reader set — the shape it uses to keep one package private inside a
+    /// shared namespace. It is a scalar rather than a second subject list, so it
+    /// enumerates nobody and adds no second place to look.
+    ///
+    /// **Package and version tier only.** §4.9 rejects it at registry or
+    /// namespace tier, where "only grants written at this node or below" either
+    /// says nothing or says what `grants = {}` already says properly — accepting
+    /// it higher up would give sealing a second, weaker spelling.
+    ///
+    /// §4.3's administrative floor applies to it exactly as it does to a seal,
+    /// so it cannot lock an operator out of their own registry.
+    Private,
+}
+
+impl Visibility {
+    /// The narrower of two visibilities.
+    ///
+    /// Not a composition rule — visibility composes *deepest-wins*, not by
+    /// intersection (§4.1). This is for the places that must satisfy two
+    /// independent audience constraints at once, of which
+    /// `prerelease_visibility` beside `visibility` is the motivating one.
+    pub fn narrower_of(self, other: Self) -> Self {
+        self.max(other)
+    }
+
+    /// Whether this value may be written at `tier` (§4.9).
+    pub fn is_valid_at(self, tier: crate::entities::Tier) -> bool {
+        use crate::entities::Tier;
+        !matches!(self, Self::Private) || matches!(tier, Tier::Package | Tier::Version)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Internal => "internal",
+            Self::Team => "team",
+            Self::Private => "private",
+        }
+    }
 }
 
 impl std::fmt::Display for Visibility {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Visibility::Public => write!(f, "public"),
-            Visibility::Internal => write!(f, "internal"),
-            Visibility::Team => write!(f, "team"),
-        }
+        f.write_str(self.as_str())
     }
 }
 
@@ -32,6 +87,7 @@ impl std::str::FromStr for Visibility {
             "public" => Ok(Self::Public),
             "internal" => Ok(Self::Internal),
             "team" => Ok(Self::Team),
+            "private" => Ok(Self::Private),
             other => Err(format!("unknown visibility: '{other}'")),
         }
     }
@@ -52,9 +108,50 @@ mod tests {
         assert_eq!(Visibility::from_str("team").unwrap(), Visibility::Team);
     }
 
+    /// `private` is RFC 0015 §4.5's fourth value, and it round-trips like the
+    /// other three. It used to be the example of an unknown one — see the test
+    /// below, which kept the assertion and changed the string.
+    #[test]
+    fn private_round_trips() {
+        assert_eq!(
+            Visibility::from_str("private").unwrap(),
+            Visibility::Private
+        );
+        assert_eq!(Visibility::Private.to_string(), "private");
+    }
+
+    /// The variants are ordered widest to narrowest, which `narrower_of` relies
+    /// on. Pinned because reordering the enum for readability would silently
+    /// invert it.
+    #[test]
+    fn visibility_is_ordered_widest_to_narrowest() {
+        assert!(Visibility::Public < Visibility::Internal);
+        assert!(Visibility::Internal < Visibility::Team);
+        assert!(Visibility::Team < Visibility::Private);
+        assert_eq!(
+            Visibility::Public.narrower_of(Visibility::Team),
+            Visibility::Team
+        );
+    }
+
+    /// §4.9: `private` is a package- and version-tier value. Higher up it either
+    /// says nothing or duplicates a seal.
+    #[test]
+    fn private_is_only_valid_at_the_two_deepest_tiers() {
+        use crate::entities::Tier;
+        assert!(!Visibility::Private.is_valid_at(Tier::Registry));
+        assert!(!Visibility::Private.is_valid_at(Tier::Namespace));
+        assert!(Visibility::Private.is_valid_at(Tier::Package));
+        assert!(Visibility::Private.is_valid_at(Tier::Version));
+        // The other three are valid everywhere.
+        for v in [Visibility::Public, Visibility::Internal, Visibility::Team] {
+            assert!(v.is_valid_at(Tier::Registry), "{v}");
+        }
+    }
+
     #[test]
     fn from_str_unknown_is_err() {
-        assert!(Visibility::from_str("private").is_err());
+        assert!(Visibility::from_str("secret").is_err());
         assert!(Visibility::from_str("").is_err());
         assert!(Visibility::from_str("Public").is_err());
     }
@@ -108,6 +205,105 @@ pub struct PublishedPackage {
     /// Download visibility for this package.
     #[serde(default)]
     pub visibility: Visibility,
+    /// Never reclaim this version, whatever the registry's retention policy says
+    /// (RFC 0016 §4.1).
+    ///
+    /// Set through the admin API beside `yanked`/`unlisted`, and read only by a
+    /// retention run — it changes nothing about how the version resolves,
+    /// downloads or lists. A pinned version behaves in every other respect
+    /// exactly like an unpinned one.
+    #[serde(default)]
+    pub retention_keep: bool,
+}
+
+/// A version coordinate that has been published and then deleted (RFC 0016 §4.4).
+///
+/// The coordinate is spent. `(registry, name, version)` may never be occupied by
+/// different bytes, whether the version was released by hand or reclaimed by a
+/// retention policy, so this row is what the publish path consults before it
+/// accepts anything.
+///
+/// The row holds two things with two different lifetimes (RFC 0016 §4.5): the
+/// **claim** — the coordinate itself, permanent, and the reason the row exists —
+/// and the **detail** — checksum, publisher, index metadata, signature — which is
+/// audit history and ages out under `tombstone_detail_for`. Every detail field is
+/// therefore `Option`, and `detail_compacted_at` says which of the two reasons a
+/// `None` has: never recorded, or stripped by compaction. An auditor reading a
+/// bare row needs to be able to tell those apart.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Tombstone {
+    pub registry: String,
+    pub name: String,
+    pub version: String,
+    /// When the version was deleted. Always present — this is what makes the row
+    /// a tombstone rather than a live version.
+    pub deleted_at: DateTime<Utc>,
+    /// The identity that deleted it, or `None` for a deletion by a principal with
+    /// no user id (an unauthenticated admin path, or a retention run).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_by: Option<String>,
+    /// When the detail columns below were stripped. `None` means they were not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail_compacted_at: Option<DateTime<Utc>>,
+    /// When the version was originally published.
+    ///
+    /// Not part of the detail that compaction strips: eight bytes do not
+    /// accumulate, and "how long did this coordinate live" is the first question
+    /// asked of a tombstone whose index metadata is already gone.
+    pub published_at: DateTime<Utc>,
+    /// Detail: who published it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_by: Option<String>,
+    /// Detail: SHA-256 hex of the artifact bytes that used to be here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<String>,
+}
+
+impl Tombstone {
+    /// Whether the detail columns have been stripped by a compaction run.
+    ///
+    /// Distinct from "the detail is absent": a tombstone written by a path that
+    /// never had a checksum is not compacted, and re-running compaction over it
+    /// must not claim it was.
+    pub fn is_compacted(&self) -> bool {
+        self.detail_compacted_at.is_some()
+    }
+
+    /// The message a publish onto this coordinate is refused with.
+    ///
+    /// Shared by every backend so a caller sees the same refusal whichever store
+    /// is behind it, and worded to say the thing that is actually true: the
+    /// version is not *published*, it is *spent*. "Already exists" would send a
+    /// publisher looking for bytes that are not there.
+    pub fn burned_coordinate_message(&self) -> String {
+        format!(
+            "{}@{} was published and deleted on {} in registry '{}'; a published \
+             version coordinate is never reused — publish under a new version",
+            self.name,
+            self.version,
+            self.deleted_at.format("%Y-%m-%d"),
+            self.registry,
+        )
+    }
+}
+
+/// What one tombstone-compaction run did, or — under `dry_run` — would have done.
+///
+/// Compaction is destructive to history even though it is not destructive to the
+/// invariant (RFC 0016 §4.5), so it reports like eviction does and is dry-runnable
+/// for the same reason.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct CompactionReport {
+    /// Tombstones whose detail was stripped (or would have been, under `dry_run`).
+    pub compacted: u64,
+    /// Tombstones examined and left alone — already compacted, or inside the window.
+    pub skipped: u64,
+    /// True when nothing was written.
+    pub dry_run: bool,
+    /// The coordinates compacted, `"{name}@{version}"`, for the operator reading
+    /// a dry run before turning it off.
+    #[serde(default)]
+    pub coordinates: Vec<String>,
 }
 
 /// One newline-delimited line in a Cargo sparse index file.

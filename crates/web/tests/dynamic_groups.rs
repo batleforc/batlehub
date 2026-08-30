@@ -94,7 +94,12 @@ fn rbac_policy_group_registry(repo: Arc<dyn PackageRepository>) -> RegistryPolic
         serve_stale_metadata: false,
         artifact_ttl: None,
         rules: vec![
-            Box::new(RbacRule::new(perms).with_groups(group_perms)),
+            Box::new(
+                RbacRule::from_patterns(perms)
+                    .expect("fixture rbac patterns are valid")
+                    .with_group_patterns(group_perms)
+                    .expect("fixture group patterns are valid"),
+            ),
             Box::new(BlockListRule::new(repo)),
         ],
     }
@@ -124,7 +129,10 @@ async fn make_group_app(
     .into();
 
     let policies: HashMap<String, Arc<RegistryPolicy>> = [
-        ("github".to_owned(), Arc::new(rbac_policy(repo_dyn.clone()))),
+        (
+            "github".to_owned(),
+            Arc::new(rbac_policy(repo_dyn.clone()).0),
+        ),
         (
             "github2".to_owned(),
             Arc::new(rbac_policy_group_registry(repo_dyn.clone())),
@@ -132,7 +140,57 @@ async fn make_group_app(
     ]
     .into();
 
+    // §5.1 — grant resolution, not the fixture's own `RbacRule`, is what refuses
+    // here. Derived from the same permissions the policies above were built from,
+    // so the two cannot disagree: §13.5 records a commit where they did and the
+    // whole suite stayed green while testing a path production had stopped taking.
+    let group_perms = RbacFixture {
+        roles: HashMap::from([
+            (Role::Anonymous, vec![]),
+            (Role::User, vec![]),
+            (Role::Admin, vec!["*".to_owned()]),
+        ]),
+        groups: HashMap::from([
+            (
+                "team-a".to_owned(),
+                vec!["releases:read".to_owned(), "source:read".to_owned()],
+            ),
+            ("team-b".to_owned(), vec!["releases:read".to_owned()]),
+        ]),
+    };
+    let grants: HashMap<String, Arc<batlehub_core::entities::RegistryGrants>> = [
+        (
+            "github".to_owned(),
+            Arc::new(fixture_grants(
+                "github",
+                "github",
+                &batlehub_config::schema::RegistryMode::Proxy,
+                &rbac_policy_perms(),
+            )),
+        ),
+        (
+            "github2".to_owned(),
+            Arc::new(fixture_grants(
+                "github2",
+                "github",
+                &batlehub_config::schema::RegistryMode::Proxy,
+                &group_perms,
+            )),
+        ),
+    ]
+    .into();
+
     let hot = new_hot_lock(HotConfig {
+        grants,
+        // RFC 0015 §4.2's instance tier, wired exactly as production wires it:
+        // `instance_node` is §10 rule 5's own translation, so the fixture's admin
+        // holds the control verbs and nobody else does. Without it every
+        // `require_verb` on a control endpoint refuses, including the admin the
+        // suite is asserting about — a fixture that does not build the model
+        // tests a server nobody runs (§13.5).
+        instance: Some(std::sync::Arc::new(
+            batlehub_core::services::authz::translate::instance_node(None),
+        )),
         registries,
         policies,
         ..Default::default()

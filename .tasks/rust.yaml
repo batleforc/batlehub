@@ -141,3 +141,8 @@ tasks:
       - task: run:s3
       - task: ui:dev
 
+
+  config:explain:
+    desc: "Print what a config file grants, after wildcard expansion (RFC 0015 §4.2)"
+    cmds:
+      - cargo run -q -p batlehub-server -- explain-config {{.CONFIG | default "config.toml"}}

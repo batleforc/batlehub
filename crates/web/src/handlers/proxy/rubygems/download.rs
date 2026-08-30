@@ -8,6 +8,7 @@ use batlehub_config::schema::RegistryMode;
 use batlehub_core::{error::CoreError, ports::DocumentKind};
 
 use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
+use batlehub_core::entities::Action;
 
 /// Download a gem file.
 #[utoipa::path(
@@ -56,7 +57,7 @@ pub async fn gem_download(
             artifact_suffix: "gem",
             local_content_type: "application/octet-stream",
             proxy_content_type: Some("application/octet-stream"),
-            resource_type: batlehub_core::rules::resource_type::RELEASES_READ,
+            action: Action::ReleasesRead,
             check_prerelease: true,
             append_signature: true,
         },
@@ -97,13 +98,9 @@ pub async fn gem_info(
     let mode = mode_map.get(&registry);
 
     if matches!(mode, RegistryMode::Local | RegistryMode::Hybrid) {
-        svc.authorize_read(
-            &pkg,
-            &identity.0,
-            batlehub_core::rules::resource_type::RELEASES_READ,
-        )
-        .await
-        .map_err(AppError::from)?;
+        svc.authorize_read(&pkg, &identity.0, Action::ReleasesRead)
+            .await
+            .map_err(AppError::from)?;
         match local_svc
             .get_rubygems_gem_info(&registry, &name, &identity)
             .await
@@ -144,7 +141,7 @@ async fn proxy_gem_info(
         svc.clone(),
         PackageId::new(&registry, &name, "info"),
         AuthIdentity(identity.0.clone()),
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         DocumentKind::GEM,
         String::new(),
     )
@@ -154,7 +151,7 @@ async fn proxy_gem_info(
         svc,
         PackageId::new(&registry, &name, "versions"),
         identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         DocumentKind::Versions,
         String::new(),
     )
@@ -248,7 +245,7 @@ pub async fn gem_versions(
         },
         not_found_msg,
         pkg,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         DocumentKind::Versions,
         "application/json",
         String::new(),
@@ -296,7 +293,7 @@ pub async fn gem_gemspec(
         svc,
         pkg,
         identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         Some("application/octet-stream"),
     )
     .await

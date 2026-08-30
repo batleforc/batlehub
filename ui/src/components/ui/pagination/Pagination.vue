@@ -43,13 +43,13 @@ function next() {
     <!-- Two whole messages rather than a sentence assembled around a value:
          French does not put "sur" where English puts "of", and the count is not
          always known. -->
-    <span class="text-xs text-muted-foreground" role="status" aria-live="polite">
+    <output class="text-xs text-muted-foreground" aria-live="polite">
       {{
         totalPages === undefined
           ? t("pagination.page", { page: page + 1 })
           : t("pagination.pageOf", { page: page + 1, total: totalPages })
       }}
-    </span>
+    </output>
     <Button variant="outline" size="sm" :disabled="disabled || !canGoNext" @click="next">
       {{ t("common.next") }}
     </Button>

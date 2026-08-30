@@ -300,15 +300,31 @@ pub async fn openvsx_namespace(
         )));
     }
 
+    // RFC 0015 §4.2 — `verified` now answers from the claim, where there is one.
+    //
+    // This was hardcoded `false`, with a comment saying BatleHub had no
+    // namespace-ownership model. It had one — `team_namespaces` — and what was
+    // actually missing was the ability to match a *dotted* namespace, because
+    // every matcher hardcoded `/` (§4.1). With the separator on the claim, an
+    // OpenVSX namespace is a namespace like any other and `verified` can mean
+    // what the protocol says it means: somebody with `openvsx:namespace:claim`
+    // asserted ownership, and this server recorded who.
+    //
+    // Still `false` for an unclaimed namespace, for the original reason: saying a
+    // namespace is verified when nothing verified it is a claim about provenance
+    // this server cannot back.
+    let verified = local_svc
+        .namespace_claim(&registry, &namespace)
+        .await
+        .map_err(AppError::from)?
+        .is_some();
+
     Ok(HttpResponse::Ok()
         .content_type("application/json")
         .json(serde_json::json!({
             "name": namespace,
             "extensions": extensions,
-            // BatleHub has no namespace-ownership model of its own, and saying
-            // a namespace is verified when nothing verified it would be a claim
-            // about provenance we cannot back.
-            "verified": false,
+            "verified": verified,
         })))
 }
 
@@ -502,4 +518,71 @@ pub async fn openvsx_file(
     batlehub_core::services::validate_path_safe("extension file", &filename)
         .map_err(AppError::from)?;
     super::assets::serve_entry(&bytes, &filename)
+}
+
+// ── RFC 0015 §4.2 — `openvsx:namespace:claim` ────────────────────────────────
+
+/// The group that will own the namespace.
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+pub struct ClaimNamespaceRequest {
+    /// The auth-provider group whose members own this namespace. Matched against
+    /// `Identity.groups` with spaces stripped, exactly as `check_team_visibility`
+    /// compares them.
+    pub group_id: String,
+}
+
+/// Claim an OpenVSX publisher namespace.
+///
+/// `POST /proxy/{registry}/api/-/namespace/create` is OpenVSX's own shape. The
+/// protocol assumes first-come self-service; this server does not — see
+/// `LocalRegistryService::claim_openvsx_namespace` for why, and for the one-line
+/// grant that turns it back on for an estate that wants it.
+#[utoipa::path(
+    post,
+    path = "/proxy/{registry}/api/-/namespace/create",
+    tag = "proxy/openvsx",
+    params(("registry" = String, Path, description = "Registry name")),
+    request_body = ClaimNamespaceRequest,
+    responses(
+        (status = 200, description = "Namespace claimed", body = crate::handlers::schemas::OkResponse),
+        (status = 400, description = "Namespace or group missing"),
+        (status = 403, description = "`openvsx:namespace:claim` required"),
+        (status = 409, description = "Already claimed"),
+    ),
+    security(("bearer_token" = [])),
+)]
+#[post("/proxy/{registry}/api/-/namespace/create")]
+pub async fn openvsx_namespace_create(
+    path: web::Path<String>,
+    query: web::Query<std::collections::HashMap<String, String>>,
+    body: web::Json<ClaimNamespaceRequest>,
+    identity: AuthIdentity,
+    local_svc: web::Data<Arc<LocalRegistryService>>,
+    map: web::Data<RegistryMap>,
+) -> Result<impl Responder, AppError> {
+    let registry = path.into_inner();
+    require_vsx(&registry, &map)?;
+
+    // OpenVSX's CLI sends the namespace as `?name=`, which is why this is a query
+    // parameter rather than a path segment: the route has to be the one `ovsx`
+    // already calls, not a tidier one of our own.
+    let namespace = query
+        .get("name")
+        .map(String::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    if namespace.is_empty() {
+        return Err(AppError::bad_request("name must not be empty"));
+    }
+    require_single_segment("namespace", &namespace)?;
+    if body.group_id.trim().is_empty() {
+        return Err(AppError::bad_request("group_id must not be empty"));
+    }
+
+    local_svc
+        .claim_openvsx_namespace(&registry, &namespace, &body.group_id, &identity.0)
+        .await
+        .map_err(AppError::from)?;
+
+    Ok(HttpResponse::Ok().json(crate::handlers::schemas::OkResponse { ok: true }))
 }

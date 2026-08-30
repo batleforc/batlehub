@@ -46,10 +46,12 @@ jobs:
           cache: pnpm
           cache-dependency-path: ui/pnpm-lock.yaml
       # --frozen-lockfile fails the job if pnpm-lock.yaml would need updating
-      # (the `npm ci` equivalent). Install-time lifecycle scripts stay blocked by
-      # pnpm's default deny + the `allowBuilds` list in ui/pnpm-workspace.yaml.
+      # (the `npm ci` equivalent). --ignore-scripts states the script policy on the
+      # command line rather than relying on pnpm's default deny + the `allowBuilds`
+      # list in ui/pnpm-workspace.yaml alone; neither package.json here declares a
+      # lifecycle script, so nothing this project needs is skipped.
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Run oxlint
         id: oxlint
         continue-on-error: true

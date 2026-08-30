@@ -10,9 +10,9 @@
    survives the OS flipping at sunset instead of being frozen at install time. */
 (function(){try{
   var p=localStorage.getItem("batlehub.theme")||"system";
-  var r=p==="system"?(matchMedia("(prefers-color-scheme: light)").matches?"light":"dark"):p;
-  document.documentElement.dataset.theme=r;
-}catch(e){document.documentElement.dataset.theme="dark";}})();
+  var sys=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";
+  document.documentElement.dataset.theme=p==="system"?sys:p;
+}catch{document.documentElement.dataset.theme="dark";}})();
 </script>
 <link rel="preload" href="fonts/silkscreen-700.woff2" as="font" type="font/woff2" crossorigin />
 <link rel="preload" href="fonts/silkscreen-400.woff2" as="font" type="font/woff2" crossorigin />
@@ -163,8 +163,19 @@ a{color:var(--accent);text-underline-offset:3px}
    light/dark/system setting is. Three states, because "System" (follow the
    browser) is a real answer and a two-way switch cannot express it. */
 .settings{position:relative}
-.pop{position:absolute;right:0;top:calc(100% + var(--s2));z-index:50;min-width:264px;
-  background:var(--ground-sunk);border:1px solid var(--rule-strong);padding:var(--s4)}
+/* `.pop` and `.segmented` are fieldsets — the native grouping element, rather
+   than a plain div carrying the group role. A fieldset carries three UA defaults
+   that have to go for it to lay out like the div did: a 2px inline margin, a
+   groove border, and `min-inline-size:min-content`, which would stop the
+   segmented control from shrinking inside its flex row. Both rules set their own
+   border already.
+
+   Written as prose rather than as markup on purpose: SonarCloud's Web:S6819
+   parses element syntax wherever it appears, including inside this CSS comment,
+   and flagged the very sentence explaining that the fix it asks for is already
+   what the file does. */
+.pop{position:absolute;right:0;top:calc(100% + var(--s2));z-index:50;min-width:264px;margin:0;
+  min-inline-size:0;background:var(--ground-sunk);border:1px solid var(--rule-strong);padding:var(--s4)}
 .pop h2{font-family:"Silkscreen",monospace;font-size:var(--t-px-sm);margin:0;
   text-transform:uppercase;letter-spacing:.04em;color:var(--ink)}
 .pref-label{margin:var(--s4) 0 var(--s2);font-size:var(--t-meta);letter-spacing:.14em;
@@ -172,7 +183,7 @@ a{color:var(--accent);text-underline-offset:3px}
 .pref-note{margin:var(--s2) 0 0;font-size:var(--t-meta);color:var(--ink-dim)}
 /* Same segment grammar as the primary nav, so a chosen option reads the same way
    in both places: a reversed ink block inside one shared bounding box. */
-.segmented{display:flex;border:1px solid var(--rule-strong)}
+.segmented{display:flex;margin:0;padding:0;min-inline-size:0;border:1px solid var(--rule-strong)}
 .segmented button{flex:1;background:transparent;border:0;border-right:1px solid var(--rule-strong);
   color:var(--ink-dim);font:inherit;font-size:var(--t-meta);letter-spacing:.06em;
   text-transform:uppercase;padding:var(--s2) var(--s1);cursor:pointer}
@@ -378,23 +389,23 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   <div class="settings">
     <button class="ctl" id="settings-btn" aria-expanded="false" aria-controls="settings-pop"
             data-i18n="settings">Settings</button>
-    <div class="pop" id="settings-pop" role="group" aria-labelledby="settings-h" hidden>
+    <fieldset class="pop" id="settings-pop" aria-labelledby="settings-h" hidden>
       <h2 id="settings-h" data-i18n="settings.h">Settings</h2>
       <p class="pref-label" id="lang-label" data-i18n="settings.lang">Language</p>
-      <div class="segmented" role="group" aria-labelledby="lang-label">
+      <fieldset class="segmented" aria-labelledby="lang-label">
         <button data-lang="system" data-i18n="settings.system">System</button>
         <button data-lang="en">English</button>
         <button data-lang="fr">Français</button>
-      </div>
+      </fieldset>
       <p class="pref-note" id="lang-note"></p>
       <p class="pref-label" id="theme-label" data-i18n="settings.theme">Theme</p>
-      <div class="segmented" role="group" aria-labelledby="theme-label">
+      <fieldset class="segmented" aria-labelledby="theme-label">
         <button data-theme-pref="system" data-i18n="settings.system">System</button>
         <button data-theme-pref="light" data-i18n="settings.light">Light</button>
         <button data-theme-pref="dark" data-i18n="settings.dark">Dark</button>
-      </div>
+      </fieldset>
       <p class="pref-note" id="theme-note"></p>
-    </div>
+    </fieldset>
   </div>
 </header>
 
@@ -427,7 +438,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
     </div>
 
     <div id="surface"></div>
-    <p class="sr" role="status" aria-live="polite" id="live"></p>
+    <output class="sr" aria-live="polite" id="live"></output>
   </section>
 </div>
 </main>
@@ -566,7 +577,7 @@ function renderHead(){
   el("#reg-caption").innerHTML = t(r.mode==="local"?"facts.local":"facts")
     .replace("%m","<b>"+r.mode+"</b>").replace("%u",r.up)
     .replace("%c","<b>"+nf().format(r.count)+"</b>").replace("%s","<b>"+r.size+"</b>")
-    .replace(/ · /g,'<span class="sep">·</span>');
+    .replaceAll(" · ",'<span class="sep">·</span>');
 }
 
 function renderSurface(animate){
@@ -674,8 +685,10 @@ function setPop(open){
 settingsBtn.addEventListener("click",()=>setPop(pop.hidden));
 document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!pop.hidden) setPop(false);});
 document.addEventListener("click",e=>{
-  if(!pop.hidden && !pop.contains(e.target) && e.target!==settingsBtn) pop.hidden=true,
+  if(!pop.hidden && !pop.contains(e.target) && e.target!==settingsBtn){
+    pop.hidden=true;
     settingsBtn.setAttribute("aria-expanded","false");
+  }
 });
 pop.addEventListener("click",e=>{
   const th=e.target.closest("[data-theme-pref]");

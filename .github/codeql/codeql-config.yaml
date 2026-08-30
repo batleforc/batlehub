@@ -1,0 +1,39 @@
+name: BatleHub CodeQL config
+
+# `perf/` is the performance harness, not shipped code: `perf/mock-upstream` is
+# its own workspace (note the bare `[workspace]` in its Cargo.toml, so
+# `cargo build --workspace` at the repo root never builds it), `perf/k6` is the
+# load-test scripts, and `perf/corpus-seed` fabricates fixture data. None of it
+# is deployed or reachable from the server binary, so a taint path that ends in
+# a mock handler describes an attack on the benchmark, not on BatleHub.
+#
+# Concretely this drops the two `rust/uncontrolled-allocation-size` alerts on
+# `perf/mock-upstream/src/main.rs` (82, 128). Both are `req.connection_info()`,
+# where the "allocation" is actix copying a request header into a `String` —
+# bounded to the HTTP/1 head at `MAX_BUFFER_SIZE = 131_072`
+# (actix-http `src/h1/decoder.rs`), so not attacker-controlled in size either.
+#
+# Scope this narrowly. Everything that ships — crates/, server/, cli/, ui/ —
+# stays in the analysis; excluding a path because its alerts are inconvenient
+# is how a real finding gets filed under "benchmark noise".
+#
+# There is deliberately **no `query-filters` block here**, and the four standing
+# `High` alerts on shipped code are not silenced by one. They are dismissed
+# per-alert in Code scanning, on `main`, with the reasoning written down in
+# `docs/internal/codeql-triage-2026-08-30.md`:
+#
+#   - `rust/uncontrolled-allocation-size` on
+#     `crates/web/src/middleware/proxy_trust.rs` — the same `connection_info()`
+#     header copy as the `perf/` pair above, bounded by the same 128 KiB.
+#   - `rust/path-injection` ×3 on `crates/web/src/services/reload/applier.rs` —
+#     the `--config` path, read once at boot; no request-borne route reaches it.
+#
+# A query-filter would have been the easy fix and the wrong one:
+# `rust/path-injection` is a query this codebase needs live, because several
+# handlers build storage keys out of request-supplied package coordinates and
+# `ensure_safe_key` is the backstop for precisely that. Turning it off repo-wide
+# to quiet three boot-time reads of a CLI flag trades a real control for a green
+# check. If a future alert is genuinely unfixable in code, dismiss it and add it
+# to the triage note — do not add it here.
+paths-ignore:
+  - perf/**

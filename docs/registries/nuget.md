@@ -166,7 +166,7 @@ Pass the BatleHub token as the source password (username `__token__`), or as `--
 ## Notes
 
 - `dotnet list package --vulnerable` works automatically — BatleHub advertises a `VulnerabilitiesUrl` resource in the v3 service index and proxies the upstream vulnerability catalogue. See [Using BatleHub → security auditing](/use/#security-audit).
-- A `401` on push usually means the token lacks `releases:write` (or admin) on the registry.
+- A `401` on push usually means the token lacks `releases:publish` (or admin) on the registry.
 
 ## Search
 

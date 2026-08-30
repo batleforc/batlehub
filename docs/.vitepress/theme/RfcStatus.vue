@@ -65,9 +65,18 @@ const status = computed(
   color: var(--ink);
 }
 
+/* `overflow-wrap: anywhere` rather than nothing, because the note is the RFC's
+   own prose and that prose names config keys. UAX #14 offers no break inside
+   `[registries.grants]`/`[[registries.namespaces]]`, so it is one 470px run —
+   wider than the 334px column at 390 — and a flex item's `min-width: auto` is
+   its min-content width, so the banner sized itself to the token and pushed the
+   document 40px past the viewport. `anywhere` is the value that also lowers the
+   intrinsic minimum, which `break-word` does not, so the item shrinks to the
+   column instead of merely spilling less far out of it. */
 .note {
   font-size: var(--t-body);
   line-height: 1.6;
   color: var(--ink-dim);
+  overflow-wrap: anywhere;
 }
 </style>

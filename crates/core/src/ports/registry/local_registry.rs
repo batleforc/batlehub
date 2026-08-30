@@ -2,7 +2,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::{entities::PublishedPackage, error::CoreError};
+use crate::{
+    entities::{CompactionReport, PublishedPackage, Tombstone},
+    error::CoreError,
+};
 
 /// Authoritative storage for packages published directly to BatleHub.
 ///
@@ -23,12 +26,22 @@ use crate::{entities::PublishedPackage, error::CoreError};
 ///
 /// On any failure after step 1, call `remove_version` to clean up the pending
 /// row.  Hard-crashed pending rows are recovered by `cleanup_pending`.
+///
+/// ## Deletion is a tombstone, not a removal
+///
+/// A version that was ever *published* is never removed from this store. Delete
+/// is `tombstone_version`: the row survives with `deleted_at` set, the artifact
+/// bytes are dropped by the caller, and `publish` refuses the coordinate for
+/// good (RFC 0016 §4.4). `remove_version` remains a hard delete and exists only
+/// for the rollback of a publish that never committed — a pending row was never
+/// visible to anyone, so it spends no name.
 #[async_trait]
 pub trait LocalRegistryBackend: Send + Sync {
     /// Reserve a new version. Returns `CoreError::Conflict` if a *published*
-    /// version already exists. Implementations may insert in a *pending* state
-    /// that is invisible to `get_versions` and `exists` until `commit_publish`
-    /// is called.
+    /// version already exists, **or if the coordinate is tombstoned** — a name
+    /// that has been published once is spent, and no later publish may occupy it
+    /// (RFC 0016 §4.4). Implementations may insert in a *pending* state that is
+    /// invisible to `get_versions` and `exists` until `commit_publish` is called.
     async fn publish(&self, pkg: PublishedPackage) -> Result<(), CoreError>;
 
     /// Promote a previously `publish`-ed row to the visible *published* state.
@@ -71,6 +84,63 @@ pub trait LocalRegistryBackend: Send + Sync {
     /// Reverse an unlist, making the version visible in listings again.
     async fn relist(&self, registry: &str, name: &str, version: &str) -> Result<(), CoreError>;
 
+    /// Pin or unpin a version against retention (RFC 0016 §4.1).
+    ///
+    /// A pinned version is never reclaimed by a retention run, whatever the
+    /// registry's policy says. It changes nothing else: the version resolves,
+    /// downloads and lists exactly as it did.
+    ///
+    /// Returns `true` when a published version's pin changed. A no-op returns
+    /// `false` rather than erroring, so setting a pin that is already set is
+    /// safe to repeat.
+    /// Move a published version to a release channel (RFC 0015 §4.2).
+    ///
+    /// JetBrains Marketplace serves plugin builds on a channel — the empty string
+    /// is Stable, anything else (`eap`, `nightly`) is its own feed — and the
+    /// channel is read from `index_metadata.channel`, set once at publish. This
+    /// is what moves it afterwards.
+    ///
+    /// # A channel move is not a replacement, and `immutable` does not apply
+    ///
+    /// The question §4.5 raises is whether repointing a published version at
+    /// another channel counts as replacing it. §13.6 already answered the general
+    /// form: *"immutability is a question about **bytes**, not about a
+    /// coordinate"* — which is why `PublishPolicyRequest::artifact_key` exists and
+    /// why a Maven `.jar` is judged on its key rather than on its version row. A
+    /// channel move changes no byte: the artifact, its checksum and its signature
+    /// are untouched, and a client that already downloaded it is unaffected.
+    ///
+    /// So this is a narrow, purpose-named method rather than a general
+    /// `set_index_metadata`. The generic one would be a way to mutate anything on
+    /// a published version — including the checksum — behind a verb that names one
+    /// field, which is the shape `immutable` exists to prevent.
+    ///
+    /// Returns `true` when a row changed, `false` when the version is absent or
+    /// already on that channel.
+    /// **Required, not defaulted.** A default returning `false` compiled fine and
+    /// made every backend that had not implemented it into a silent no-op — which
+    /// is how the first version of this shipped, and what the tests caught: the
+    /// mock inherited the default and reported "nothing changed" for a move the
+    /// caller had been authorized to make. A port method whose default is a lie
+    /// about what happened is worse than a compile error.
+    async fn set_channel(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        channel: &str,
+    ) -> Result<bool, CoreError>;
+
+    async fn set_retention_keep(
+        &self,
+        _registry: &str,
+        _name: &str,
+        _version: &str,
+        _keep: bool,
+    ) -> Result<bool, CoreError> {
+        Ok(false)
+    }
+
     /// Return all versions of `name` in `registry`, sorted by `published_at` ASC.
     /// Returns an empty vec (not an error) when the crate has never been published.
     /// Must only return rows in the *published* state.
@@ -83,9 +153,17 @@ pub trait LocalRegistryBackend: Send + Sync {
     /// Return `true` if at least one *published* version of `name` exists in `registry`.
     async fn exists(&self, registry: &str, name: &str) -> Result<bool, CoreError>;
 
-    /// Remove an exact version record from the index regardless of its state.
-    /// Used to roll back a partially completed publish. Implementations that
-    /// cannot support this operation should return `Ok(())` (best-effort).
+    /// Hard-remove an exact version record from the index regardless of its state.
+    ///
+    /// **Rollback only.** This is how a publish that failed between `publish` and
+    /// `commit_publish` discards its own pending row: that row was never visible
+    /// to a reader, so removing it spends no coordinate. A user-facing delete of a
+    /// *published* version goes through [`Self::tombstone_version`] instead, and
+    /// calling this for one silently frees a name that RFC 0016 §4.4 says is
+    /// permanently spent.
+    ///
+    /// Implementations that cannot support this operation should return `Ok(())`
+    /// (best-effort).
     async fn remove_version(
         &self,
         _registry: &str,
@@ -93,6 +171,78 @@ pub trait LocalRegistryBackend: Send + Sync {
         _version: &str,
     ) -> Result<(), CoreError> {
         Ok(())
+    }
+
+    /// Soft-delete a *published* version: keep the row, set `deleted_at`.
+    ///
+    /// The coordinate is spent from here on — `publish` refuses it, listings stop
+    /// returning it, and the row stays readable to the audit and ownership views.
+    /// The caller drops the artifact bytes; this method owns only the row.
+    ///
+    /// Returns `true` when a published version was tombstoned, `false` when there
+    /// was nothing to tombstone (no such version, or it is already a tombstone).
+    /// Idempotent: re-deleting an existing tombstone is a `false`, not an error,
+    /// and must not overwrite the original `deleted_at`.
+    ///
+    /// The default implementation refuses rather than silently hard-deleting: a
+    /// backend that has not implemented tombstones must not be handed a delete it
+    /// would satisfy by freeing the name.
+    async fn tombstone_version(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        _deleted_by: Option<&str>,
+    ) -> Result<bool, CoreError> {
+        Err(CoreError::Config(format!(
+            "this local-registry backend cannot tombstone {name}@{version} in \
+             registry '{registry}'; refusing to delete rather than free the coordinate"
+        )))
+    }
+
+    /// Return the tombstone for an exact coordinate, if the coordinate is spent.
+    ///
+    /// Consulted by the publish path on every publish. The default `None` is
+    /// wrong for any backend that can tombstone, and correct only for one that
+    /// cannot — which also cannot delete, so it never creates one.
+    async fn find_tombstone(
+        &self,
+        _registry: &str,
+        _name: &str,
+        _version: &str,
+    ) -> Result<Option<Tombstone>, CoreError> {
+        Ok(None)
+    }
+
+    /// List tombstones in `registry`, newest deletion first, optionally narrowed
+    /// to one package name. For the audit and ownership views, which are the
+    /// callers RFC 0016 §4.4 says may still see a deleted version.
+    async fn list_tombstones(
+        &self,
+        _registry: &str,
+        _name: Option<&str>,
+    ) -> Result<Vec<Tombstone>, CoreError> {
+        Ok(vec![])
+    }
+
+    /// Strip the detail columns of tombstones in `registry` deleted more than
+    /// `older_than` ago, keeping the coordinate claim (RFC 0016 §4.5).
+    ///
+    /// Only rows with `deleted_at` set are ever touched, and no row is ever
+    /// removed — there is deliberately no method here that deletes a tombstone,
+    /// because collecting one reopens the hole tombstones exist to close.
+    ///
+    /// `dry_run` reports what would be stripped and writes nothing.
+    async fn compact_tombstone_detail(
+        &self,
+        _registry: &str,
+        _older_than: Duration,
+        dry_run: bool,
+    ) -> Result<CompactionReport, CoreError> {
+        Ok(CompactionReport {
+            dry_run,
+            ..Default::default()
+        })
     }
 
     /// Delete *pending* rows that were created before `older_than` ago.
@@ -156,12 +306,18 @@ pub trait LocalRegistryBackend: Send + Sync {
         Ok(result)
     }
 
-    /// Permanently delete multiple versions in one call.
-    /// The default implementation loops over `remove_version`. Override for efficiency.
-    async fn bulk_remove_versions(
+    /// Tombstone multiple versions in one call.
+    /// The default implementation loops over `tombstone_version`. Override for efficiency.
+    ///
+    /// A version that was already a tombstone, or that never existed, counts as
+    /// succeeded: the caller asked for the coordinate to be gone and it is. The
+    /// distinction the caller does care about — did bytes need dropping — is not
+    /// this method's to answer.
+    async fn bulk_tombstone_versions(
         &self,
         registry: &str,
         items: &[(String, String)],
+        deleted_by: Option<&str>,
     ) -> Result<BulkResult, CoreError> {
         let mut result = BulkResult {
             processed: items.len(),
@@ -169,8 +325,11 @@ pub trait LocalRegistryBackend: Send + Sync {
             failed: vec![],
         };
         for (name, version) in items {
-            match self.remove_version(registry, name, version).await {
-                Ok(()) => result.succeeded += 1,
+            match self
+                .tombstone_version(registry, name, version, deleted_by)
+                .await
+            {
+                Ok(_) => result.succeeded += 1,
                 Err(e) => result
                     .failed
                     .push((name.clone(), version.clone(), e.to_string())),

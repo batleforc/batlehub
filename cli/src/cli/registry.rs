@@ -50,36 +50,8 @@ pub enum RegistryCommand {
 
 pub async fn run(cmd: RegistryCommand, client: &BatleHubClient, json: bool) -> Result<()> {
     match cmd {
-        RegistryCommand::List => {
-            let registries = client.list_registries().await?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&registries)?);
-            } else {
-                let mut table = Table::new();
-                table.set_header(["Name", "Type", "Mode"]);
-                for r in &registries {
-                    table.add_row([&r.name, &r.registry_type, &r.mode]);
-                }
-                println!("{table}");
-                println!("{} registry/registries", registries.len());
-            }
-        }
-        RegistryCommand::Info { name } => {
-            let registries = client.list_registries().await?;
-            let reg = registries
-                .into_iter()
-                .find(|r| r.name == name)
-                .ok_or_else(|| anyhow::anyhow!("registry '{name}' not found"))?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&reg)?);
-            } else {
-                let mut table = Table::new();
-                table.add_row(["Name", &reg.name]);
-                table.add_row(["Type", &reg.registry_type]);
-                table.add_row(["Mode", &reg.mode]);
-                println!("{table}");
-            }
-        }
+        RegistryCommand::List => run_list(client, json).await,
+        RegistryCommand::Info { name } => run_info(client, json, &name).await,
         RegistryCommand::Suggest {
             dir,
             depth,
@@ -88,40 +60,102 @@ pub async fn run(cmd: RegistryCommand, client: &BatleHubClient, json: bool) -> R
             mise_commented,
             include_existing,
         } => {
-            let dir = match dir {
-                Some(d) => d,
-                None => std::env::current_dir()?,
-            };
-            let suggestions = suggest_registries(&dir, depth);
-
-            // Scanning is purely local, so an unreachable server must not fail
-            // the command — it only costs the "already configured" annotation.
-            let existing = if include_existing {
-                Vec::new()
-            } else {
-                match client.list_registries().await {
-                    Ok(regs) => regs.into_iter().map(|r| r.registry_type).collect(),
-                    Err(_) => Vec::new(),
-                }
-            };
-
-            let (wanted, already): (Vec<_>, Vec<_>) = suggestions
-                .into_iter()
-                .partition(|s| include_existing || !existing.contains(&s.registry_type));
-
-            if json {
-                print_json(&wanted, &already, &client.base_url, mise_commented)?;
-            } else {
-                print_human(
-                    &wanted,
-                    &already,
-                    &dir,
-                    &client.base_url,
+            run_suggest(
+                client,
+                json,
+                SuggestOptions {
+                    dir,
+                    depth,
                     client_env,
-                    mise.then_some(mise_commented),
-                );
-            }
+                    mise,
+                    mise_commented,
+                    include_existing,
+                },
+            )
+            .await
         }
+    }
+}
+
+async fn run_list(client: &BatleHubClient, json: bool) -> Result<()> {
+    let registries = client.list_registries().await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&registries)?);
+        return Ok(());
+    }
+    let mut table = Table::new();
+    table.set_header(["Name", "Type", "Mode"]);
+    for r in &registries {
+        table.add_row([&r.name, &r.registry_type, &r.mode]);
+    }
+    println!("{table}");
+    println!("{} registry/registries", registries.len());
+    Ok(())
+}
+
+async fn run_info(client: &BatleHubClient, json: bool, name: &str) -> Result<()> {
+    let registries = client.list_registries().await?;
+    let reg = registries
+        .into_iter()
+        .find(|r| r.name == name)
+        .ok_or_else(|| anyhow::anyhow!("registry '{name}' not found"))?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&reg)?);
+        return Ok(());
+    }
+    let mut table = Table::new();
+    table.add_row(["Name", &reg.name]);
+    table.add_row(["Type", &reg.registry_type]);
+    table.add_row(["Mode", &reg.mode]);
+    println!("{table}");
+    Ok(())
+}
+
+/// `registry suggest`'s flags, kept together so the handler takes one argument
+/// rather than six positional ones that are easy to transpose.
+struct SuggestOptions {
+    dir: Option<std::path::PathBuf>,
+    depth: usize,
+    client_env: bool,
+    mise: bool,
+    mise_commented: bool,
+    include_existing: bool,
+}
+
+async fn run_suggest(client: &BatleHubClient, json: bool, opts: SuggestOptions) -> Result<()> {
+    let dir = match opts.dir {
+        Some(d) => d,
+        None => std::env::current_dir()?,
+    };
+    let suggestions = suggest_registries(&dir, opts.depth);
+
+    // Scanning is purely local, so an unreachable server must not fail
+    // the command — it only costs the "already configured" annotation.
+    let existing: Vec<String> = if opts.include_existing {
+        Vec::new()
+    } else {
+        client
+            .list_registries()
+            .await
+            .map(|regs| regs.into_iter().map(|r| r.registry_type).collect())
+            .unwrap_or_default()
+    };
+
+    let (wanted, already): (Vec<_>, Vec<_>) = suggestions
+        .into_iter()
+        .partition(|s| opts.include_existing || !existing.contains(&s.registry_type));
+
+    if json {
+        print_json(&wanted, &already, &client.base_url, opts.mise_commented)?;
+    } else {
+        print_human(
+            &wanted,
+            &already,
+            &dir,
+            &client.base_url,
+            opts.client_env,
+            opts.mise.then_some(opts.mise_commented),
+        );
     }
     Ok(())
 }
@@ -196,22 +230,7 @@ fn print_human(
         return;
     }
 
-    let mut table = Table::new();
-    table.set_header(["Name", "Type", "Upstream", "Detected from"]);
-    for s in wanted {
-        let upstream = if s.upstreams.is_empty() {
-            "(adapter default)".to_owned()
-        } else {
-            s.upstreams.join(", ")
-        };
-        table.add_row([
-            s.name.clone(),
-            s.registry_type.clone(),
-            upstream,
-            s.sources.join(", "),
-        ]);
-    }
-    println!("{table}");
+    print_suggestion_table(wanted);
     println!();
     println!("Add to config.toml:");
     println!();
@@ -231,14 +250,38 @@ fn print_human(
         println!("{}", render_client_env(wanted, server_url));
     }
 
-    if !client_env || mise.is_none() {
-        let mut hints = Vec::new();
-        if !client_env {
-            hints.push("--client-env for the matching client environment variables");
-        }
-        if mise.is_none() {
-            hints.push("--mise for a mise [settings.url_replacements] block");
-        }
+    print_flag_hints(client_env, mise);
+}
+
+fn print_suggestion_table(wanted: &[SuggestedRegistry]) {
+    let mut table = Table::new();
+    table.set_header(["Name", "Type", "Upstream", "Detected from"]);
+    for s in wanted {
+        let upstream = if s.upstreams.is_empty() {
+            "(adapter default)".to_owned()
+        } else {
+            s.upstreams.join(", ")
+        };
+        table.add_row([
+            s.name.clone(),
+            s.registry_type.clone(),
+            upstream,
+            s.sources.join(", "),
+        ]);
+    }
+    println!("{table}");
+}
+
+/// Name the flags that would have printed more, and only those.
+fn print_flag_hints(client_env: bool, mise: Option<bool>) {
+    let mut hints = Vec::new();
+    if !client_env {
+        hints.push("--client-env for the matching client environment variables");
+    }
+    if mise.is_none() {
+        hints.push("--mise for a mise [settings.url_replacements] block");
+    }
+    if !hints.is_empty() {
         println!("Re-run with {}.", hints.join(", "));
     }
 }

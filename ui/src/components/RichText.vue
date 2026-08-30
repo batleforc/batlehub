@@ -57,7 +57,7 @@ type Part =
  * A naive `[^>]*` ends the tag mid-attribute and spills the remainder into the
  * text, which is escaped but reads as garbage on the page.
  */
-const ATTRS = String.raw`(?:"[^"]*"|'[^']*'|[^>"'])*`;
+const ATTRS = `(?:"[^"]*"|'[^']*'|[^>"'])*`;
 const TAG = new RegExp(
   String.raw`<(code|strong|em)\b${ATTRS}>([\s\S]*?)<\/\1\s*>|<a\b(${ATTRS})>([\s\S]*?)<\/a\s*>`,
   "gi",
@@ -122,7 +122,7 @@ const decode = (text: string) =>
   text.replace(/&(#\d+|#x[0-9a-f]+|\w+);/gi, (whole, name: string) => {
     if (!name.startsWith("#")) return ENTITIES[name.toLowerCase()] ?? whole;
     const hex = name[1]?.toLowerCase() === "x";
-    const code = hex ? parseInt(name.slice(2), 16) : Number(name.slice(1));
+    const code = hex ? Number.parseInt(name.slice(2), 16) : Number(name.slice(1));
     return Number.isInteger(code) && code > 0 && code <= 0x10ffff
       ? String.fromCodePoint(code)
       : whole;

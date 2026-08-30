@@ -407,7 +407,7 @@ fn req(registry: &str) -> ProxyRequest {
     ProxyRequest {
         package_id: PackageId::new(registry, "test-pkg", "1.0.0"),
         identity: Identity::anonymous(),
-        resource_type: "releases:read".to_owned(),
+        action: Action::ReleasesRead,
         ip_address: None,
         user_agent: None,
     }
@@ -457,7 +457,7 @@ async fn rejects_path_traversal_in_coordinate() {
     let bad_name = ProxyRequest {
         package_id: PackageId::new("npm", "../../../../etc/passwd", "1.0.0"),
         identity: Identity::anonymous(),
-        resource_type: "releases:read".to_owned(),
+        action: Action::ReleasesRead,
         ip_address: None,
         user_agent: None,
     };
@@ -470,7 +470,7 @@ async fn rejects_path_traversal_in_coordinate() {
     let bad_version = ProxyRequest {
         package_id: PackageId::new("npm", "test-pkg", "../../etc"),
         identity: Identity::anonymous(),
-        resource_type: "releases:read".to_owned(),
+        action: Action::ReleasesRead,
         ip_address: None,
         user_agent: None,
     };
@@ -486,7 +486,7 @@ async fn rejects_path_traversal_in_coordinate() {
     let bad_artifact = ProxyRequest {
         package_id: PackageId::new("npm", "test-pkg", "1.0.0").with_artifact("../evil"),
         identity: Identity::anonymous(),
-        resource_type: "source:read".to_owned(),
+        action: Action::SourceRead,
         ip_address: None,
         user_agent: None,
     };
@@ -1453,7 +1453,7 @@ async fn integrity_require_metadata_bypass_role_is_allowed() {
             auth_provider: None,
             groups: vec![],
         },
-        resource_type: "releases:read".to_owned(),
+        action: Action::ReleasesRead,
         ip_address: None,
         user_agent: None,
     };
@@ -2004,7 +2004,7 @@ async fn resolve_metadata_for_rejects_traversal() {
     let bad = ProxyRequest {
         package_id: PackageId::new("npm", "../../etc/passwd", "1.0.0"),
         identity: Identity::anonymous(),
-        resource_type: "releases:read".to_owned(),
+        action: Action::ReleasesRead,
         ip_address: None,
         user_agent: None,
     };

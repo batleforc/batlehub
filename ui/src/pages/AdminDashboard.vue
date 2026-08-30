@@ -144,7 +144,8 @@ const trend = computed(() => {
   }
   // Under a tenth of a point either way is noise, and calling it a direction
   // would have an operator chasing a rounding artefact.
-  const tone = Math.abs(t0.delta) < 0.001 ? "flat" : t0.delta > 0 ? "up" : "down";
+  const direction = t0.delta > 0 ? "up" : "down";
+  const tone = Math.abs(t0.delta) < 0.001 ? "flat" : direction;
   return { tone, days, rate: t0.hit_rate, delta: t0.delta };
 });
 

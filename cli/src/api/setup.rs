@@ -115,7 +115,7 @@ enum DirEntryKind {
 fn classify_entry(entry: &std::fs::DirEntry, remaining_depth: usize) -> Option<DirEntryKind> {
     let ft = entry.file_type().ok()?;
     let path = entry.path();
-    let name = path.file_name().and_then(|n| n.to_str())?;
+    let name = path.file_name().and_then(std::ffi::OsStr::to_str)?;
     if ft.is_file() {
         Some(DirEntryKind::File(name.to_string()))
     } else if ft.is_dir() && remaining_depth > 0 && !is_skipped_dir(name) {
@@ -346,7 +346,10 @@ fn detect_terraform(
     if !has_tf {
         return None;
     }
-    let name = dir.file_name().and_then(|s| s.to_str()).map(str::to_string);
+    let name = dir
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::to_string);
     Some(detection("terraform", targets, name, |base| {
         format!(
             "Registry type : terraform\n\

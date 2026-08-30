@@ -86,7 +86,10 @@ export function useAdminCrudList<TItem, TAddForm extends object>(
     }
   }
 
-  const removeTarget = ref(null) as Ref<TItem | null>;
+  // Both halves are load-bearing. The type parameter is what actually typechecks
+  // the writes; the cast is what stops `TItem` being rewritten as
+  // `UnwrapRef<TItem>`, which for a generic parameter Vue cannot resolve.
+  const removeTarget = ref<TItem | null>(null) as Ref<TItem | null>;
   const removeLoading = ref(false);
   const removeError = ref<string | null>(null);
 

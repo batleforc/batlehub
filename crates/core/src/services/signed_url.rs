@@ -981,7 +981,7 @@ mod tests {
     /// here is a forgeable token, whichever pair collides.
     #[test]
     fn distinct_inputs_never_share_a_canonical_string() {
-        let nasty = [
+        let nasty: [&str; 17] = [
             "",
             "a",
             "a\nb",
@@ -1000,39 +1000,38 @@ mod tests {
             "admin",
             "user",
         ];
+        let roles: [&str; 2] = ["user", "admin"];
+        let groupings: [&[&str]; 4] = [&[], &["a"], &["a,b"], &["a", "b"]];
+
+        // The product is built as one iterator rather than five nested `for`s:
+        // the nesting is arithmetic, and the only part worth reading is the
+        // collision check below.
+        let cases = nasty.into_iter().flat_map(move |pkg| {
+            nasty.into_iter().flat_map(move |ver| {
+                nasty.into_iter().flat_map(move |sub| {
+                    roles.into_iter().flat_map(move |role| {
+                        groupings
+                            .into_iter()
+                            .map(move |groups| (pkg, ver, sub, role, groups))
+                    })
+                })
+            })
+        });
 
         let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-        for pkg in nasty {
-            for ver in nasty {
-                for sub in nasty {
-                    for role in ["user", "admin"] {
-                        for groups in [
-                            vec![],
-                            vec!["a".to_owned()],
-                            vec!["a,b".to_owned()],
-                            vec!["a".to_owned(), "b".to_owned()],
-                        ] {
-                            let c = Coordinate {
-                                method: "GET",
-                                registry: "tf",
-                                package: pkg,
-                                version: ver,
-                                artifact: "linux/amd64",
-                            };
-                            let key = SignedUrlService::canonical(
-                                &c,
-                                Some(sub),
-                                role,
-                                &groups,
-                                1_767_225_600,
-                            );
-                            let id = format!("{pkg:?}|{ver:?}|{sub:?}|{role}|{groups:?}");
-                            if let Some(previous) = seen.insert(key.clone(), id.clone()) {
-                                panic!("canonical collision:\n  {previous}\n  {id}\n  -> {key:?}");
-                            }
-                        }
-                    }
-                }
+        for (pkg, ver, sub, role, groups) in cases {
+            let groups: Vec<String> = groups.iter().map(|g| (*g).to_owned()).collect();
+            let c = Coordinate {
+                method: "GET",
+                registry: "tf",
+                package: pkg,
+                version: ver,
+                artifact: "linux/amd64",
+            };
+            let key = SignedUrlService::canonical(&c, Some(sub), role, &groups, 1_767_225_600);
+            let id = format!("{pkg:?}|{ver:?}|{sub:?}|{role}|{groups:?}");
+            if let Some(previous) = seen.insert(key.clone(), id.clone()) {
+                panic!("canonical collision:\n  {previous}\n  {id}\n  -> {key:?}");
             }
         }
     }

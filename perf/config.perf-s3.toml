@@ -78,7 +78,7 @@ mode = "local"
 
 [registries.rbac]
 anonymous = []
-user = ["releases:read", "source:read", "packages:publish"]
+user = ["releases:read", "source:read", "releases:publish"]
 admin = ["*"]
 
 [registries.quota]

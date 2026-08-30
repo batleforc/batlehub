@@ -4,6 +4,7 @@ use super::{
     LocalRegistryService, ProxyService, RegistryMap, RegistryMode, RegistryModeMap, Responder,
 };
 use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
+use batlehub_core::entities::Action;
 
 /// List available versions for a Terraform module.
 #[utoipa::path(
@@ -147,7 +148,7 @@ pub async fn terraform_module_metadata(
     let req = batlehub_core::services::ProxyRequest {
         package_id: batlehub_core::entities::PackageId::new(&registry, &pkg_name, "versions"),
         identity: identity.0,
-        resource_type: batlehub_core::rules::resource_type::RELEASES_READ.to_owned(),
+        action: Action::ReleasesRead.to_owned(),
         ip_address: None,
         user_agent: None,
     };
@@ -239,7 +240,7 @@ pub async fn terraform_module_artifact(
             svc,
             pkg,
             identity,
-            batlehub_core::rules::resource_type::RELEASES_READ,
+            Action::ReleasesRead,
             Some("application/octet-stream"),
         )
         .await;
@@ -257,7 +258,7 @@ pub async fn terraform_module_artifact(
             &registry,
             &pkg_name,
             &version,
-            batlehub_core::rules::resource_type::RELEASES_READ,
+            Action::ReleasesRead,
             &identity,
         )
         .await

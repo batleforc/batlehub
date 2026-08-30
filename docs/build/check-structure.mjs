@@ -75,9 +75,11 @@ for (const file of pages()) {
   const prose = src.replace(/```[\s\S]*?```/g, "");
   const words = prose.split(/\s+/).filter(Boolean).length;
 
-  const headings = [...prose.matchAll(/^(#{1,6})\s+(.+?)\s*$/gm)].map((m) => ({
+  // `[ \t]+(\S.*)` rather than `\s+(.+?)\s*$`: `\s` and `.` overlap on a space,
+  // and a lazy group between two overlapping classes backtracks super-linearly.
+  const headings = [...prose.matchAll(/^(#{1,6})[ \t]+(\S.*)$/gm)].map((m) => ({
     level: m[1].length,
-    text: m[2],
+    text: m[2].trimEnd(),
   }));
   const depth = headings.reduce((d, h) => Math.max(d, h.level), 0);
 
@@ -101,7 +103,7 @@ for (const file of pages()) {
   const openNumber = []; // number parts of the innermost numbered ancestor, by level
   const lastSibling = new Map(); // "level|parent" → last last-component seen
   for (const h of headings) {
-    const num = h.text.match(/^(\d+(?:\.\d+)*)\.?\s/)?.[1];
+    const num = /^(\d+(?:\.\d+)*)\.?\s/.exec(h.text)?.[1];
     if (!num) continue;
     const parts = num.split(".");
     const parent = parts.slice(0, -1).join(".");

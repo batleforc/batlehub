@@ -20,16 +20,16 @@ const route = useRoute();
 const { isAuthenticated } = useAuth();
 
 const inputToken = ref("");
-const error = ref<string | null>(
-  /* Errors forwarded from the OIDC callback. The router sends a catalogue key
-     (`loginPage.oidcStateMismatch`); the backend may forward its own sentence.
-     `te` tells the two apart, so neither has to know about the other. */
-  typeof route.query.error === "string"
-    ? te(route.query.error)
-      ? t(route.query.error)
-      : route.query.error
-    : null,
-);
+/* Errors forwarded from the OIDC callback. The router sends a catalogue key
+   (`loginPage.oidcStateMismatch`); the backend may forward its own sentence.
+   `te` tells the two apart, so neither has to know about the other. */
+function forwardedError(): string | null {
+  const forwarded = route.query.error;
+  if (typeof forwarded !== "string") return null;
+  return te(forwarded) ? t(forwarded) : forwarded;
+}
+
+const error = ref<string | null>(forwardedError());
 const loading = ref(false);
 const oidcLoadingProvider = ref<string | null>(null);
 const oidcProviders = ref<OidcProviderInfo[]>([]);

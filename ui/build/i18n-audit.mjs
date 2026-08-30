@@ -54,7 +54,7 @@ const ROOT = new URL("../src", import.meta.url).pathname;
  * narrow fix; the rule the audit actually needs is `looksHuman` below, and this
  * list is now only the set of names that are human text *whatever* they hold.
  */
-const HUMAN_ATTRS = [
+const HUMAN_ATTRS = new Set([
   "title",
   "placeholder",
   "aria-label",
@@ -73,7 +73,7 @@ const HUMAN_ATTRS = [
   "heading",
   "summary",
   "legend",
-];
+]);
 
 /**
  * The rule, rather than the list.
@@ -87,7 +87,7 @@ const HUMAN_ATTRS = [
  * `isTranslatable` is still the one that decides whether the value is prose.
  */
 const looksHuman = (attr) =>
-  HUMAN_ATTRS.includes(attr) ||
+  HUMAN_ATTRS.has(attr) ||
   /(^|-)(label|message|text|title|hint|description|caption|tooltip|placeholder)$/.test(attr);
 
 /**
@@ -125,7 +125,10 @@ function scriptOf(source) {
   return region
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/(^|[^:"'`\\])\/\/[^\n]*/g, "$1")
-    .replace(/^\s*(import|export)\s[^;\n]*(from\s*["'][^"']*["'])?;?/gm, "");
+    // No trailing `(from …)?` group: `[^;\n]*` has already eaten the rest of the
+    // line, so the optional group could only ever re-match what it consumed —
+    // the overlap that makes this pattern backtrack super-linearly.
+    .replace(/^[ \t]*(?:import|export)\s[^;\n]*;?/gm, "");
 }
 
 /**
@@ -144,8 +147,39 @@ function scriptOf(source) {
  * search. `t(…)`/`te(…)` are excluded for the opposite reason — their argument
  * is a catalogue key, which is the fixed form this gate is driving toward.
  */
-const SILENT_SINK =
-  /(?:console\.\w+|new\s+Error|Error|URL|URLSearchParams|RegExp|JSON\.\w+|localStorage\.\w+|sessionStorage\.\w+|querySelector(?:All)?|getElementById|createElement|setAttribute|getAttribute|matchMedia|cva|cn|defineModel|defineEmits|\bt|\bte|\btm|\bd|\bn)\s*$/;
+const SILENT_CALLEES = [
+  // Diagnostics. The reader is whoever reads the log, and a translated message
+  // is a stack trace that no longer greps.
+  String.raw`console\.\w+`,
+  String.raw`new\s+Error`,
+  "Error",
+  // Machine constructors and DOM plumbing: the argument is a URL, a key, a
+  // selector or a class list, never a sentence.
+  "URL",
+  "URLSearchParams",
+  "RegExp",
+  String.raw`JSON\.\w+`,
+  String.raw`localStorage\.\w+`,
+  String.raw`sessionStorage\.\w+`,
+  "querySelector(?:All)?",
+  "getElementById",
+  "createElement",
+  "setAttribute",
+  "getAttribute",
+  "matchMedia",
+  "cva",
+  "cn",
+  "defineModel",
+  "defineEmits",
+  // The i18n helpers themselves, for the opposite reason: their argument is a
+  // catalogue key, which is the fixed form this gate is driving toward.
+  String.raw`\bt`,
+  String.raw`\bte`,
+  String.raw`\btm`,
+  String.raw`\bd`,
+  String.raw`\bn`,
+];
+const SILENT_SINK = new RegExp(String.raw`(?:${SILENT_CALLEES.join("|")})\s*$`);
 
 /**
  * Identifiers whose assigned string is machine-facing whatever it says: a route
@@ -213,13 +247,16 @@ const textsOf = (raw) => {
   return out;
 };
 
-function scriptStrings(source) {
+// Assignment: `x = "…"`, `x.value = "…"`, `obj.prop = "…"`.
+//
+// The leading lookbehind is what keeps the scan linear: without it, a failed
+// attempt restarts at every character of a long dotted name and re-walks the
+// same run. A match can only ever begin where the name does, so refusing to
+// start mid-name loses nothing.
+function assignedStrings(script) {
   const out = [];
-  const script = scriptOf(source);
-
-  // Assignment: `x = "…"`, `x.value = "…"`, `obj.prop = "…"`.
   for (const [, target, single, double, backtick] of script.matchAll(
-    /([\w.$[\]"']+)\s*=(?!=)\s*(?:"([^"\\\n]*)"|'([^'\\\n]*)'|`([^`\\]*)`)/g,
+    /(?<![\w.$[\]"'])([\w.$[\]"']+)\s*=(?!=)\s*(?:"([^"\\\n]*)"|'([^'\\\n]*)'|`([^`\\]*)`)/g,
   )) {
     /* The name being assigned to, however it was reached: `parseError.value`,
        `row.error`, `headers["Authorization"]`. The last identifier in the
@@ -228,8 +265,10 @@ function scriptStrings(source) {
     if (SILENT_TARGET.test(name)) continue;
     for (const text of textsOf(single ?? double ?? backtick)) out.push(`${target} = "${text}"`);
   }
+  return out;
+}
 
-  /* Call argument: `setError("…")`, `announce("…")`, `ref("…")`. The callee is
+/* Call argument: `setError("…")`, `announce("…")`, `ref("…")`. The callee is
      read from the text *before* the paren — `match.index`, not `indexOf`, which
      would resolve every repeat of a common call to its first occurrence.
 
@@ -242,14 +281,18 @@ function scriptStrings(source) {
      still resolves its callee to `console.error` and stays silent, and so that
      the 40-character window behind `match.index` still lands on the callee
      rather than inside an argument list. */
+function argumentStrings(script) {
+  const out = [];
   for (const match of script.matchAll(
     /\(\s*(?:[\w.$?![\]]+\s*,\s*)*(?:"([^"\\\n]*)"|'([^'\\\n]*)'|`([^`\\]*)`)/g,
   )) {
     if (SILENT_SINK.test(script.slice(Math.max(0, match.index - 40), match.index))) continue;
     for (const text of textsOf(match[1] ?? match[2] ?? match[3])) out.push(`(… "${text}")`);
   }
+  return out;
+}
 
-  /* A fallback expression: `x ?? "Unknown"`, `ok ? "Yes" : "No"`, `a || "—"`.
+/* A fallback expression: `x ?? "Unknown"`, `ok ? "Yes" : "No"`, `a || "—"`.
      This is where default human text hides — `errorMsg.value = e instanceof
      Error ? e.message : "Export failed"` is an assignment whose right-hand side
      is an expression, so the assignment sink above cannot see it, and it is the
@@ -282,25 +325,48 @@ function scriptStrings(source) {
      re-reads what the first already consumed, and the `?` ending
      `"…</span>?", confirmLabel:` pairs with the quote after it to report
      `, confirmLabel:` as English. One scan cannot overlap itself. */
+function fallbackStrings(script) {
+  const out = [];
   for (const match of script.matchAll(
     /(\?{1,2}|\|\||(?<!:):(?=\s))\s*(?:"([^"\\\n]*)"|'([^'\\\n]*)'|`([^`\\]*)`)/g,
   )) {
     if (match[1] === ":" && OBJECT_KEY.test(script.slice(0, match.index))) continue;
     for (const text of textsOf(match[2] ?? match[3] ?? match[4])) out.push(`… ?? "${text}"`);
   }
+  return out;
+}
 
-  /* Object-literal value: `dark: "Theme: dark"` in a lookup table. This is the
-     §2.2 defect in its purest form — `theme.dark` was translated, correct, and
-     referenced zero times while `ThemeToggle` held the English in a `LABELS`
-     map. This replaces a pass that scanned `label:` and `title:` only, because
-     those are the two keys text had been found under before; the key's *name*
-     is not what makes the value text. */
+/* Object-literal value: `dark: "Theme: dark"` in a lookup table. This is the
+   §2.2 defect in its purest form — `theme.dark` was translated, correct, and
+   referenced zero times while `ThemeToggle` held the English in a `LABELS`
+   map. This replaces a pass that scanned `label:` and `title:` only, because
+   those are the two keys text had been found under before; the key's *name*
+   is not what makes the value text. */
+function objectValueStrings(script) {
+  const out = [];
   for (const [, name, single, double, backtick] of script.matchAll(OBJECT_VALUE)) {
     if (SILENT_TARGET.test(name)) continue;
     for (const text of textsOf(single ?? double ?? backtick)) out.push(`${name}: "${text}"`);
   }
+  return out;
+}
 
-  return [...new Set(out)];
+/**
+ * Every user-visible string the `<script>` region yields, deduplicated.
+ *
+ * Four sinks, four passes, one scan each — see each pass for what it reads and
+ * why the shape it matches is the one the defect took.
+ */
+function scriptStrings(source) {
+  const script = scriptOf(source);
+  return [
+    ...new Set([
+      ...assignedStrings(script),
+      ...argumentStrings(script),
+      ...fallbackStrings(script),
+      ...objectValueStrings(script),
+    ]),
+  ];
 }
 
 /**
@@ -316,6 +382,42 @@ function scriptStrings(source) {
  * not prose, and they outnumber the real findings roughly twenty to one — which
  * would bury this gate rather than sharpen it.
  */
+/**
+ * The `{{ … }}` spans in `text`, as `[open, afterClose)` index pairs.
+ *
+ * Hand-walked rather than `/\{\{[\s\S]*?\}\}/`: a lazy any-character run
+ * followed by a literal re-scans the rest of the string from every `{{`, which
+ * is quadratic on a long template. `indexOf` finds the same leftmost, shortest
+ * spans in one pass.
+ */
+function interpolationSpans(text) {
+  const spans = [];
+  let from = 0;
+  for (;;) {
+    const open = text.indexOf("{{", from);
+    if (open === -1) return spans;
+    const close = text.indexOf("}}", open + 2);
+    if (close === -1) return spans;
+    spans.push([open, close + 2]);
+    from = close + 2;
+  }
+}
+
+/** The expression inside each `{{ … }}`, braces excluded. */
+const interpolationBodies = (text) =>
+  interpolationSpans(text).map(([open, end]) => text.slice(open + 2, end - 2));
+
+/** `text` with every `{{ … }}` removed. */
+function stripInterpolations(text) {
+  let out = "";
+  let last = 0;
+  for (const [open, end] of interpolationSpans(text)) {
+    out += text.slice(last, open);
+    last = end;
+  }
+  return out + text.slice(last);
+}
+
 function boundLiterals(template) {
   const out = [];
   // A backtick literal may interpolate; its `${…}` parts are values, and what
@@ -343,7 +445,7 @@ function boundLiterals(template) {
      backtick is the one an interpolated sentence is most likely to use.
      Omitting the backtick is how `` `Sign in with ${providerLabel(p.name)}` ``
      rendered English on the login page with this gate reading zero. */
-  for (const [, expr] of template.matchAll(/\{\{([\s\S]*?)\}\}/g)) {
+  for (const expr of interpolationBodies(template)) {
     for (const [, single, double, backtick] of expr.matchAll(
       // See the note on `literal` above: a length floor here mis-pairs quotes.
       /'([^']*)'|"([^"]*)"|`([^`]*)`/g,
@@ -404,9 +506,11 @@ export function scanSource(source, isVue = true) {
 
   const out = [];
 
-  // Text nodes: everything between tags that is not an interpolation.
-  for (const chunk of textOnly.split(/<[^>]*>/)) {
-    const text = chunk.replace(/\{\{[\s\S]*?\}\}/g, "").trim();
+  // Text nodes: everything between tags that is not an interpolation. The tag
+  // pattern excludes `<` from its own body so a failed match cannot rescan past
+  // the next tag — and a tag cannot contain a `<` anyway.
+  for (const chunk of textOnly.split(/<[^<>]*>/)) {
+    const text = stripInterpolations(chunk).trim();
     if (!text || text.length < 3) continue;
     if (!isTranslatable(text)) continue;
     out.push(text.length > 60 ? `${text.slice(0, 57)}…` : text);
@@ -421,8 +525,7 @@ export function scanSource(source, isVue = true) {
     const text = value.trim();
     if (isTranslatable(text)) out.push(`${attr}="${text}"`);
   }
-  out.push(...boundLiterals(template));
-  out.push(...scriptStrings(source));
+  out.push(...boundLiterals(template), ...scriptStrings(source));
   return out;
 }
 
@@ -430,7 +533,7 @@ const findings = (path) => scanSource(readFileSync(path, "utf8"), path.endsWith(
 
 // Importing this module must not run the report — `i18n-audit.test.ts` imports
 // `scanSource` and would otherwise walk the whole tree on every test run.
-if (process.argv[1] && process.argv[1].endsWith("i18n-audit.mjs")) main();
+if (process.argv[1]?.endsWith("i18n-audit.mjs")) main();
 
 function main() {
 const maxIndex = process.argv.indexOf("--max");

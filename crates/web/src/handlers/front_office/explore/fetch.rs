@@ -33,6 +33,7 @@ use batlehub_core::{
 };
 
 use crate::RegistryMap;
+use batlehub_core::entities::Action;
 
 /// A rule refused the download. The body carries the rule's own reason.
 pub const FETCH_DENIED: &str = "fetch.denied";
@@ -92,7 +93,7 @@ pub async fn explore_fetch_version(
     local_svc: web::Data<Arc<LocalRegistryService>>,
     proxy_svc: web::Data<Arc<ProxyService>>,
     registry_map: web::Data<RegistryMap>,
-    access: web::Data<crate::AccessConfigLock>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<web::Json<FetchResponse>, AppError> {
     let FetchPath {
         registry,
@@ -160,15 +161,19 @@ pub async fn explore_fetch_version(
     //
     // `404` and not `403`, exactly as the visibility check above: denied and
     // absent look identical from outside. **After** the anonymous refusal, not
+    // RFC 0015 §4.2 — `catalogue:browse`, resolved from grants, in place of
+    // `AccessConfig`'s explore sets. §10 rule 2's conjunction reproduces those
+    // sets exactly (§13.5 measured the naive reading at 19 disagreements before
+    // it was corrected), so this is a substitution between two computations
+    // already known to agree — not a new policy.
+    //
     // before it: `explore.anonymous` is commonly off, and a `404` here would
     // otherwise answer an unauthenticated caller who should be told to sign in.
     // Neither answer leaks anything — an anonymous caller gets `401` whatever
     // the registry, and a signed-in one gets a `404` that says nothing about
     // whether the package exists.
-    if !access
-        .read()
+    if !batlehub_core::services::authz::browsable_registries(&hot, &identity)
         .await
-        .explore_accessible_registries_for(&identity)
         .contains(&registry)
     {
         tracing::debug!(
@@ -272,7 +277,7 @@ pub async fn explore_fetch_version(
         .handle(ProxyRequest {
             package_id,
             identity: identity.0.clone(),
-            resource_type: "source:read".to_owned(),
+            action: Action::SourceRead,
             ip_address: None,
             user_agent: None,
         })

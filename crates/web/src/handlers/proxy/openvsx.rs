@@ -11,6 +11,7 @@ use super::common::{
 };
 use crate::handlers::schemas::{ArtifactBytes, OkResponse};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+use batlehub_core::entities::Action;
 
 /// The `PackageId::artifact` sub-coordinate a VSIX is stored and read under.
 ///
@@ -81,7 +82,7 @@ pub async fn download_vsix(
             artifact_suffix: VSIX_ARTIFACT,
             local_content_type: "application/octet-stream",
             proxy_content_type: None,
-            resource_type: batlehub_core::rules::resource_type::SOURCE_READ,
+            action: Action::SourceRead,
             check_prerelease: true,
             append_signature: true,
         },

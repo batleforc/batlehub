@@ -13,6 +13,7 @@ use crate::RegistryModeMap;
 use crate::badges::socket_badge_url;
 use crate::handlers::back_office::packages::detail::VulnerabilityDto;
 use crate::RegistryMap;
+use batlehub_core::entities::Action;
 
 /// Which SBOM formats a version actually has here, so the console can say *no
 /// SBOM* instead of offering a download that can only 404.
@@ -440,9 +441,9 @@ pub async fn explore_package_detail(
     query: web::Query<PackageDetailQuery>,
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
     registry_map: web::Data<RegistryMap>,
-    access: web::Data<crate::AccessConfigLock>,
     sbom_svc: Option<web::Data<Arc<SbomService>>>,
     proxy_svc: web::Data<Arc<ProxyService>>,
     mode_map: web::Data<RegistryModeMap>,
@@ -475,7 +476,7 @@ pub async fn explore_package_detail(
             .and_then(|t| socket_badge_url(t, name, version))
     };
 
-    enforce_detail_gates(&access, &local_svc, registry, name, &identity).await?;
+    enforce_detail_gates(&hot, &local_svc, registry, name, &identity).await?;
 
     // Gate: beta channel membership
     let beta_member = beta_member_for(&local_svc, registry, &identity).await;
@@ -599,7 +600,7 @@ pub async fn explore_package_detail(
         // coordinate and snapshots the hot config and does **not** evaluate the
         // registry's rules — `RbacRule` is applied in `handle`/
         // `resolve_metadata_for`, neither of which is on this path. So the
-        // `resource_type: "releases:read"` and the identity it threads through
+        // `action: "releases:read"` and the identity it threads through
         // are never consulted, and an anonymous `GET` against a registry with
         // `rbac.anonymous = []` made this server fetch upstream on their behalf
         // and hand back the full version list, publish dates and deprecation
@@ -820,7 +821,15 @@ fn held_version_rows(
             // Graded in `enrich_page`, the one funnel every rendered row passes
             // through — see `version_state`.
             state: String::new(),
-            is_prerelease: summary.package_id.version.contains('-'),
+            // RFC 0015 §4.5's one definition, not `contains('-')`. The crude
+            // rule was defended by this table's own consistency — two lists in
+            // one table must grade a row the same way — and one shared function
+            // serves that better than two matching approximations do. It is a
+            // visible change: `1.0-SNAPSHOT` is now labelled a pre-release,
+            // correctly, and `2.0.0+build-1` stops being one.
+            is_prerelease: batlehub_core::services::version_order::is_prerelease(
+                &summary.package_id.version,
+            ),
             version: summary.package_id.version.clone(),
             source: "proxied".to_string(),
             firewall,
@@ -848,7 +857,9 @@ fn held_version_rows(
             readme: readme_state(&pkg.version),
             vulnerabilities_scanned: true,
             state: String::new(),
-            is_prerelease: pkg.version.contains('-'),
+            // The same definition as the proxied rows above, which is the
+            // property this table needed all along.
+            is_prerelease: batlehub_core::services::version_order::is_prerelease(&pkg.version),
             version: pkg.version,
             source: "local".to_string(),
             firewall,
@@ -1097,7 +1108,15 @@ fn paginate_versions(
 /// the fact a non-public package is trying not to disclose. Denied and absent
 /// look identical from outside.
 async fn enforce_detail_gates(
-    access: &crate::AccessConfigLock,
+    // The lock, passed rather than taken from `local_svc.hot`.
+    //
+    // They are not always the same lock: `cli/tests/integration.rs` builds one
+    // for `LocalRegistryService` and another for `ProxyService`, and reading the
+    // service's own copy resolved `catalogue:browse` against an empty grant map.
+    // §13.4 records the general form — *"two holders of the same ports is how the
+    // two answers drift apart"* — and an authorization check is the worst place
+    // to discover which copy you got.
+    hot: &batlehub_core::services::hot_config::HotConfigLock,
     local_svc: &LocalRegistryService,
     registry: &str,
     name: &str,
@@ -1109,10 +1128,8 @@ async fn enforce_detail_gates(
         ))
     };
 
-    if !access
-        .read()
+    if !batlehub_core::services::authz::browsable_registries(hot, identity)
         .await
-        .explore_accessible_registries_for(identity)
         .contains(registry)
     {
         tracing::debug!(
@@ -1274,7 +1291,7 @@ async fn package_links(input: LinkInput<'_>) -> Option<PackageLinksDto> {
                 let req = batlehub_core::services::proxy::ProxyRequest {
                     package_id,
                     identity: identity.clone(),
-                    resource_type: batlehub_core::rules::resource_type::RELEASES_READ.to_owned(),
+                    action: Action::ReleasesRead.to_owned(),
                     ip_address: None,
                     user_agent: None,
                 };

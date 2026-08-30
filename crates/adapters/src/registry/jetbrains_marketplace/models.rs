@@ -68,89 +68,19 @@ fn assign_field(entry: &mut PluginListEntry, tag: &str, text: &str) {
 /// element's `End`.
 pub fn parse_plugin_list(xml: &[u8]) -> Result<Vec<PluginListEntry>, CoreError> {
     let mut reader = XmlReader::from_reader(xml);
-
-    let mut entries = Vec::new();
-    let mut current: Option<PluginListEntry> = None;
-    let mut current_tag = String::new();
-    let mut text_buf = String::new();
+    let mut state = PluginListParser::default();
     let mut buf = Vec::new();
 
+    // One line per event kind: what each event *means* lives on `PluginListParser`,
+    // so this loop stays a dispatch table rather than the machine itself.
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(XmlEvent::Start(e)) => {
-                let local = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
-                if local == "idea-plugin" {
-                    current = Some(PluginListEntry {
-                        date_ms: attr_value(&e, "date").and_then(|v| v.parse().ok()),
-                        size: attr_value(&e, "size").and_then(|v| v.parse().ok()),
-                        ..PluginListEntry::default()
-                    });
-                    current_tag.clear();
-                } else if let Some(entry) = current.as_mut() {
-                    if local == "idea-version" {
-                        entry.since_build = attr_value(&e, "since-build");
-                        entry.until_build = attr_value(&e, "until-build");
-                    }
-                    current_tag = local;
-                    text_buf.clear();
-                }
-            }
-            Ok(XmlEvent::Empty(e)) => {
-                let local = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
-                if local == "idea-version" {
-                    if let Some(entry) = current.as_mut() {
-                        entry.since_build = attr_value(&e, "since-build");
-                        entry.until_build = attr_value(&e, "until-build");
-                    }
-                }
-            }
-            Ok(XmlEvent::Text(e)) => {
-                if current.is_some() && !current_tag.is_empty() {
-                    text_buf.push_str(&e.decode().map_err(parse_err)?);
-                }
-            }
-            Ok(XmlEvent::CData(e)) => {
-                if current.is_some() && !current_tag.is_empty() {
-                    text_buf.push_str(&String::from_utf8_lossy(&e));
-                }
-            }
-            Ok(XmlEvent::GeneralRef(e)) => {
-                if current.is_some() && !current_tag.is_empty() {
-                    if let Some(ch) = e.resolve_char_ref().map_err(parse_err)? {
-                        text_buf.push(ch);
-                    } else {
-                        match e.decode().map_err(parse_err)?.as_ref() {
-                            "amp" => text_buf.push('&'),
-                            "lt" => text_buf.push('<'),
-                            "gt" => text_buf.push('>'),
-                            "quot" => text_buf.push('"'),
-                            "apos" => text_buf.push('\''),
-                            // Unknown entity: keep it verbatim rather than dropping text.
-                            other => {
-                                text_buf.push('&');
-                                text_buf.push_str(other);
-                                text_buf.push(';');
-                            }
-                        }
-                    }
-                }
-            }
-            Ok(XmlEvent::End(e)) => {
-                let local = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
-                if local == "idea-plugin" {
-                    if let Some(entry) = current.take() {
-                        entries.push(entry);
-                    }
-                } else {
-                    if let Some(entry) = current.as_mut() {
-                        if local == current_tag {
-                            assign_field(entry, &current_tag, &text_buf);
-                        }
-                    }
-                    current_tag.clear();
-                    text_buf.clear();
-                }
-            }
+            Ok(XmlEvent::Start(e)) => state.start(&e),
+            Ok(XmlEvent::Empty(e)) => state.empty(&e),
+            Ok(XmlEvent::Text(e)) => state.push_text(&e.decode().map_err(parse_err)?),
+            Ok(XmlEvent::CData(e)) => state.push_text(&String::from_utf8_lossy(&e)),
+            Ok(XmlEvent::GeneralRef(e)) => state.push_entity(&e)?,
+            Ok(XmlEvent::End(e)) => state.end(&e),
             Ok(XmlEvent::Eof) => break,
             Err(e) => return Err(parse_err(e)),
             _ => {}
@@ -158,7 +88,107 @@ pub fn parse_plugin_list(xml: &[u8]) -> Result<Vec<PluginListEntry>, CoreError> 
         buf.clear();
     }
 
-    Ok(entries)
+    Ok(state.entries)
+}
+
+/// The bookkeeping [`parse_plugin_list`] carries from one event to the next.
+///
+/// `current` is the `<idea-plugin>` being filled, `current_tag` the child element
+/// whose text is being accumulated into `text_buf`. Text arrives in pieces —
+/// quick-xml emits `Text`, `CData` and each entity reference separately — so the
+/// value is only assigned on that child's `End`.
+#[derive(Default)]
+struct PluginListParser {
+    entries: Vec<PluginListEntry>,
+    current: Option<PluginListEntry>,
+    current_tag: String,
+    text_buf: String,
+}
+
+impl PluginListParser {
+    /// Whether text events belong to a field right now, rather than to the
+    /// space between elements.
+    fn accumulating(&self) -> bool {
+        self.current.is_some() && !self.current_tag.is_empty()
+    }
+
+    fn start(&mut self, e: &quick_xml::events::BytesStart<'_>) {
+        let local = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+        if local == "idea-plugin" {
+            self.current = Some(PluginListEntry {
+                date_ms: attr_value(e, "date").and_then(|v| v.parse().ok()),
+                size: attr_value(e, "size").and_then(|v| v.parse().ok()),
+                ..PluginListEntry::default()
+            });
+            self.current_tag.clear();
+        } else if let Some(entry) = self.current.as_mut() {
+            if local == "idea-version" {
+                entry.since_build = attr_value(e, "since-build");
+                entry.until_build = attr_value(e, "until-build");
+            }
+            self.current_tag = local;
+            self.text_buf.clear();
+        }
+    }
+
+    /// `<idea-version …/>` carries its bounds on attributes, so the self-closing
+    /// form is the one that actually appears.
+    fn empty(&mut self, e: &quick_xml::events::BytesStart<'_>) {
+        if String::from_utf8_lossy(e.local_name().as_ref()) != "idea-version" {
+            return;
+        }
+        if let Some(entry) = self.current.as_mut() {
+            entry.since_build = attr_value(e, "since-build");
+            entry.until_build = attr_value(e, "until-build");
+        }
+    }
+
+    fn push_text(&mut self, text: &str) {
+        if self.accumulating() {
+            self.text_buf.push_str(text);
+        }
+    }
+
+    fn push_entity(&mut self, e: &quick_xml::events::BytesRef<'_>) -> Result<(), CoreError> {
+        if !self.accumulating() {
+            return Ok(());
+        }
+        if let Some(ch) = e.resolve_char_ref().map_err(parse_err)? {
+            self.text_buf.push(ch);
+            return Ok(());
+        }
+        match e.decode().map_err(parse_err)?.as_ref() {
+            "amp" => self.text_buf.push('&'),
+            "lt" => self.text_buf.push('<'),
+            "gt" => self.text_buf.push('>'),
+            "quot" => self.text_buf.push('"'),
+            "apos" => self.text_buf.push('\''),
+            // Unknown entity: keep it verbatim rather than dropping text.
+            other => {
+                self.text_buf.push('&');
+                self.text_buf.push_str(other);
+                self.text_buf.push(';');
+            }
+        }
+        Ok(())
+    }
+
+    fn end(&mut self, e: &quick_xml::events::BytesEnd<'_>) {
+        let local = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+        if local == "idea-plugin" {
+            if let Some(entry) = self.current.take() {
+                self.entries.push(entry);
+            }
+            return;
+        }
+        if let Some(entry) = self.current.as_mut() {
+            if local == self.current_tag {
+                assign_field(entry, &self.current_tag, &self.text_buf);
+            }
+        }
+        self.current_tag.clear();
+        self.text_buf.clear();
+    }
 }
 
 // ── /api/searchPlugins JSON ───────────────────────────────────────────────────

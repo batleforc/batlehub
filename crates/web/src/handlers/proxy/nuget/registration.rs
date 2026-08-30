@@ -12,6 +12,7 @@ use batlehub_core::{
 use super::super::common::{proxy_document, registry_public_base, require_registry_type};
 use crate::handlers::schemas::UpstreamDocument;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap};
+use batlehub_core::entities::Action;
 
 /// Return NuGet v3 registration metadata for a package.
 ///
@@ -53,7 +54,7 @@ pub async fn nuget_registration(
         svc.authorize_read(
             &PackageId::new(&registry, &id, "__registration__"),
             &identity.0,
-            batlehub_core::rules::resource_type::RELEASES_READ,
+            Action::ReleasesRead,
         )
         .await
         .map_err(AppError::from)?;
@@ -138,7 +139,7 @@ pub async fn nuget_registration(
         svc,
         PackageId::new(&registry, &id, "__registration__"),
         identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         DocumentKind::REGISTRATION,
         String::new(),
     )

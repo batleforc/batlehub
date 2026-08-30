@@ -7,7 +7,7 @@ use utoipa::{IntoParams, ToSchema};
 
 use batlehub_core::{entities::SbomFormat, services::SbomService};
 
-use super::{require_admin, require_authenticated};
+use super::require_authenticated;
 use crate::{error::AppError, extractors::AuthIdentity};
 
 /// An SPDX 2.3 or CycloneDX 1.5 document.
@@ -107,7 +107,7 @@ pub struct SbomExportQuery {
     responses(
         (status = 200, description = "Merged SBOM document (JSON attachment)", body = SbomDocument),
         (status = 400, description = "Unknown format"),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`system:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -116,8 +116,15 @@ pub async fn export_org_sbom(
     query: web::Query<SbomExportQuery>,
     identity: AuthIdentity,
     sbom_svc: web::Data<Arc<SbomService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::SystemRead,
+        None,
+        &hot,
+    )
+    .await?;
 
     let format = SbomFormat::parse(&query.format)
         .ok_or_else(|| AppError::bad_request(format!("unknown SBOM format '{}'", query.format)))?;

@@ -84,17 +84,24 @@ impl AdminService {
     }
 
     /// Returns `(stats, upstream_unavailable)`.
+    ///
+    /// **Keyed by the viewer as well as the registries** (RFC 0015 §4.4 rule 3).
+    /// The numbers are filtered per identity now, so a key that named only the
+    /// registries would replay one caller's counts to the next — finding 11's
+    /// lesson, which §4.4 says an aggregate is *cheaper* to apply than a
+    /// document because there are far fewer distinct tiles.
     pub async fn registry_explore_stats(
         &self,
         accessible_registries: &[String],
+        viewer: &crate::entities::ExploreViewer,
     ) -> Result<(Vec<RegistryStat>, bool), CoreError> {
-        let key = stats_cache_key(accessible_registries);
+        let key = stats_cache_key(accessible_registries, viewer);
         if let Some(stats) = self.explore_cache.get_stats(&key).await {
             return Ok((stats, false));
         }
         match self
             .repo
-            .registry_explore_stats(accessible_registries)
+            .registry_explore_stats(accessible_registries, viewer)
             .await
         {
             Ok(stats) => {

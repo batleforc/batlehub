@@ -15,7 +15,6 @@ use batlehub_core::{
     services::{AdminService, ProxyService, SbomService},
 };
 
-use super::require_admin;
 use crate::{badges::socket_badge_url, error::AppError, extractors::AuthIdentity, RegistryMap};
 
 // ── Vulnerability finding ─────────────────────────────────────────────────────
@@ -114,6 +113,140 @@ pub struct PackageDetailResponse {
     pub recent_events: Vec<PackageEventDto>,
 }
 
+/// What every version row on this page needs, resolved once per request.
+///
+/// Gathered into one struct rather than passed as seven arguments: they are all
+/// per-request context, and a row builder that takes them positionally is one
+/// transposition away from reading the wrong registry.
+struct VersionDetailCtx<'a> {
+    query: &'a PackageDetailQuery,
+    admin_svc: &'a Arc<AdminService>,
+    proxy_svc: &'a Arc<ProxyService>,
+    storage_admin_repo: Option<&'a Arc<dyn StorageAdminRepository>>,
+    sbom_svc: Option<&'a Arc<SbomService>>,
+    registry_type: Option<String>,
+    socket_badge_enabled: bool,
+}
+
+/// One version's row: where its bytes are, what it is flagged as, and the
+/// decoration the page hangs off it.
+async fn version_detail(
+    ctx: &VersionDetailCtx<'_>,
+    s: batlehub_core::entities::PackageSummary,
+) -> PackageVersionDetail {
+    let storage_key = format!("artifact:{}", s.package_id.cache_key());
+    let cached = ctx
+        .proxy_svc
+        .storage
+        .exists(&storage_key)
+        .await
+        .unwrap_or(false);
+    let (storage_backend, cached_at) = match ctx.storage_admin_repo {
+        Some(repo) => match repo.find_by_key(&storage_key).await.ok().flatten() {
+            Some(r) => (Some(r.backend_name), Some(r.stored_at)),
+            None => (None, None),
+        },
+        None => (None, None),
+    };
+    let status = match s.status {
+        PackageStatus::Available => PackageStatusDetail::Available,
+        PackageStatus::Blocked {
+            reason,
+            blocked_by,
+            blocked_at,
+        } => PackageStatusDetail::Blocked {
+            reason,
+            blocked_by,
+            blocked_at,
+        },
+    };
+    let vulnerabilities = ctx
+        .admin_svc
+        .list_vulnerabilities(&ctx.query.registry, &ctx.query.name, &s.package_id.version)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(VulnerabilityDto::from)
+        .collect();
+    let socket_badge_url = ctx
+        .socket_badge_enabled
+        .then(|| {
+            ctx.registry_type
+                .as_deref()
+                .and_then(|t| socket_badge_url(t, &ctx.query.name, &s.package_id.version))
+        })
+        .flatten();
+    // A failed lookup reads as unknown rather than propagating: the licence
+    // is decoration on this page, and an SBOM outage should not take the
+    // package detail with it. The gate is where a lookup failure matters,
+    // and it logs its own.
+    let license = match ctx.sbom_svc {
+        Some(svc) => svc
+            .repo
+            .get_license_for_coordinate(&ctx.query.registry, &ctx.query.name, &s.package_id.version)
+            .await
+            .unwrap_or(None),
+        None => None,
+    };
+    PackageVersionDetail {
+        id: s.id,
+        version: s.package_id.version,
+        artifact: s.package_id.artifact,
+        status,
+        storage_key,
+        cached,
+        storage_backend,
+        cached_at,
+        access_count: s.access_count,
+        last_accessed: s.last_accessed,
+        last_accessed_by: s.last_accessed_by,
+        vulnerabilities,
+        license,
+        socket_badge_url,
+    }
+}
+
+/// The wire name of an audited action.
+fn action_name(action: AccessAction) -> &'static str {
+    match action {
+        AccessAction::Download => "download",
+        AccessAction::ViewMetadata => "view_metadata",
+        AccessAction::Block => "block",
+        AccessAction::Unblock => "unblock",
+        AccessAction::Delete => "delete",
+        AccessAction::AddOwner => "add_owner",
+        AccessAction::RemoveOwner => "remove_owner",
+        AccessAction::SetVisibility => "set_visibility",
+        AccessAction::BlockUser => "block_user",
+        AccessAction::UnblockUser => "unblock_user",
+        AccessAction::BlockIp => "block_ip",
+        AccessAction::UnblockIp => "unblock_ip",
+        AccessAction::AuditPurge => "audit_purge",
+        AccessAction::Yank => "yank",
+        AccessAction::Unyank => "unyank",
+        AccessAction::Deprecate => "deprecate",
+        AccessAction::Undeprecate => "undeprecate",
+        AccessAction::Unlist => "unlist",
+        AccessAction::Relist => "relist",
+        AccessAction::AddBetaMember => "add_beta_member",
+        AccessAction::RemoveBetaMember => "remove_beta_member",
+        AccessAction::ClaimNamespace => "claim_namespace",
+        AccessAction::ReleaseNamespace => "release_namespace",
+        AccessAction::ResetQuota => "reset_quota",
+        AccessAction::TombstoneCompact => "tombstone_compact",
+        AccessAction::SetRetentionPin => "set_retention_pin",
+    }
+}
+
+/// An event's outcome word, and the reason when there is one.
+fn event_outcome(result: AccessResult) -> (String, Option<String>) {
+    match result {
+        AccessResult::Allowed => ("allowed".to_string(), None),
+        AccessResult::Denied { reason } => ("denied".to_string(), Some(reason)),
+        AccessResult::ProxyError { reason } => ("error".to_string(), Some(reason)),
+    }
+}
+
 /// Get detailed information about a specific package (all versions, access history, cache status).
 #[utoipa::path(
     get,
@@ -122,11 +255,16 @@ pub struct PackageDetailResponse {
     params(PackageDetailQuery),
     responses(
         (status = 200, description = "Package detail", body = PackageDetailResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`packages:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
 #[get("/api/v1/admin/packages/detail")]
+// Eight extractors: the six this handler already had, plus `hot` for the
+// `packages:read` check that replaced `require_admin`. The alternative is a
+// bundle struct whose only purpose is to satisfy a lint about a signature actix
+// generates the wiring for.
+#[allow(clippy::too_many_arguments)]
 pub async fn package_detail(
     query: web::Query<PackageDetailQuery>,
     identity: AuthIdentity,
@@ -135,8 +273,15 @@ pub async fn package_detail(
     registry_map: web::Data<RegistryMap>,
     storage_admin_repo: Option<web::Data<Arc<dyn StorageAdminRepository>>>,
     sbom_svc: Option<web::Data<Arc<SbomService>>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::PackagesRead,
+        None,
+        &hot,
+    )
+    .await?;
 
     // socket.dev badge: enabled per registry via feature flag, mapped by type.
     let socket_badge_enabled = proxy_svc
@@ -162,77 +307,18 @@ pub async fn package_detail(
         .await
         .map_err(AppError::from)?;
 
+    let ctx = VersionDetailCtx {
+        query: &query,
+        admin_svc: &admin_svc,
+        proxy_svc: &proxy_svc,
+        storage_admin_repo: storage_admin_repo.as_deref().map(|v| &**v),
+        sbom_svc: sbom_svc.as_deref().map(|v| &**v),
+        registry_type,
+        socket_badge_enabled,
+    };
     let mut versions = Vec::with_capacity(summaries.len());
     for s in summaries {
-        let storage_key = format!("artifact:{}", s.package_id.cache_key());
-        let cached = proxy_svc
-            .storage
-            .exists(&storage_key)
-            .await
-            .unwrap_or(false);
-        let (storage_backend, cached_at) = if let Some(ref repo) = storage_admin_repo {
-            let record = repo.find_by_key(&storage_key).await.ok().flatten();
-            match record {
-                Some(r) => (Some(r.backend_name), Some(r.stored_at)),
-                None => (None, None),
-            }
-        } else {
-            (None, None)
-        };
-        let status = match s.status {
-            PackageStatus::Available => PackageStatusDetail::Available,
-            PackageStatus::Blocked {
-                reason,
-                blocked_by,
-                blocked_at,
-            } => PackageStatusDetail::Blocked {
-                reason,
-                blocked_by,
-                blocked_at,
-            },
-        };
-        let vulnerabilities = admin_svc
-            .list_vulnerabilities(&query.registry, &query.name, &s.package_id.version)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(VulnerabilityDto::from)
-            .collect();
-        let socket_badge_url = if socket_badge_enabled {
-            registry_type
-                .as_deref()
-                .and_then(|t| socket_badge_url(t, &query.name, &s.package_id.version))
-        } else {
-            None
-        };
-        // A failed lookup reads as unknown rather than propagating: the licence
-        // is decoration on this page, and an SBOM outage should not take the
-        // package detail with it. The gate is where a lookup failure matters,
-        // and it logs its own.
-        let license = match sbom_svc {
-            Some(ref svc) => svc
-                .repo
-                .get_license_for_coordinate(&query.registry, &query.name, &s.package_id.version)
-                .await
-                .unwrap_or(None),
-            None => None,
-        };
-        versions.push(PackageVersionDetail {
-            id: s.id,
-            version: s.package_id.version,
-            artifact: s.package_id.artifact,
-            status,
-            storage_key,
-            cached,
-            storage_backend,
-            cached_at,
-            access_count: s.access_count,
-            last_accessed: s.last_accessed,
-            last_accessed_by: s.last_accessed_by,
-            vulnerabilities,
-            license,
-            socket_badge_url,
-        });
+        versions.push(version_detail(&ctx, s).await);
     }
 
     let event_filter = EventFilter {
@@ -253,37 +339,8 @@ pub async fn package_detail(
     let recent_events = events
         .into_iter()
         .map(|e| {
-            let (outcome, deny_reason) = match e.result {
-                AccessResult::Allowed => ("allowed".to_string(), None),
-                AccessResult::Denied { reason } => ("denied".to_string(), Some(reason)),
-                AccessResult::ProxyError { reason } => ("error".to_string(), Some(reason)),
-            };
-            let action = match e.action {
-                AccessAction::Download => "download",
-                AccessAction::ViewMetadata => "view_metadata",
-                AccessAction::Block => "block",
-                AccessAction::Unblock => "unblock",
-                AccessAction::Delete => "delete",
-                AccessAction::AddOwner => "add_owner",
-                AccessAction::RemoveOwner => "remove_owner",
-                AccessAction::SetVisibility => "set_visibility",
-                AccessAction::BlockUser => "block_user",
-                AccessAction::UnblockUser => "unblock_user",
-                AccessAction::BlockIp => "block_ip",
-                AccessAction::UnblockIp => "unblock_ip",
-                AccessAction::AuditPurge => "audit_purge",
-                AccessAction::Yank => "yank",
-                AccessAction::Unyank => "unyank",
-                AccessAction::Deprecate => "deprecate",
-                AccessAction::Undeprecate => "undeprecate",
-                AccessAction::Unlist => "unlist",
-                AccessAction::Relist => "relist",
-                AccessAction::AddBetaMember => "add_beta_member",
-                AccessAction::RemoveBetaMember => "remove_beta_member",
-                AccessAction::ClaimNamespace => "claim_namespace",
-                AccessAction::ReleaseNamespace => "release_namespace",
-                AccessAction::ResetQuota => "reset_quota",
-            };
+            let (outcome, deny_reason) = event_outcome(e.result);
+            let action = action_name(e.action);
             // `event_filter` above always sets `registry`/`package_name`, so any
             // event matching it has a package coordinate; the fallback only
             // matters if that invariant ever changes.

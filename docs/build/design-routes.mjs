@@ -118,7 +118,7 @@ function builtRoutes(dir = DIST, acc = []) {
     else if (entry.endsWith(".html"))
       acc.push("/" + relative(DIST, full).split(sep).join("/"));
   }
-  return acc.sort();
+  return acc.sort((a, b) => a.localeCompare(b));
 }
 
 /**
@@ -150,26 +150,58 @@ function assertions(textRampArr, displayRampArr) {
   const label = (el) =>
     `${el.tagName.toLowerCase()}${el.className && typeof el.className === "string" ? "." + el.className.trim().split(/\s+/).slice(0, 2).join(".") : ""}`;
 
-  for (const el of document.querySelectorAll("body *")) {
-    const cs = getComputedStyle(el);
-    if (cs.display === "none" || cs.visibility === "hidden") continue;
-    const r = el.getBoundingClientRect();
-    if (!r.width && !r.height) continue;
+  // Every helper below is declared *inside* `assertions` for the same reason the
+  // ramps arrive as arguments: the whole function is serialised into the page,
+  // so it may close over nothing this module holds.
 
-    // 3. Nothing glows, and depth is inked rather than lit. Blur is what the
-    //    Flat-At-Rest Rule is actually about — the system's own two shadows are
-    //    box-shadows, and both are zero-blur. A zero-blur shadow is a hairline
-    //    drawn with the shadow property (which is how the default theme draws
-    //    the code-group tab rule); a blurred one is elevation, and this world
-    //    has none.
-    for (const shadow of (cs.boxShadow === "none" ? [] : cs.boxShadow.split(/,(?![^(]*\))/))) {
-      const lengths = shadow.replace(/\w+\([^)]*\)/g, "").match(/-?[\d.]+px/g) ?? [];
-      const blur = parseFloat(lengths[2] ?? "0");
+  /**
+   * One box-shadow list, split on its top-level commas. Hand-walked rather than
+   * `split(/,(?![^(]*\))/)`: that lookahead rescans the rest of the string from
+   * every comma, which is quadratic on a long shadow list.
+   */
+  const shadowLayers = (value) => {
+    if (value === "none") return [];
+    const layers = [];
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < value.length; i++) {
+      const c = value[i];
+      if (c === "(") depth++;
+      else if (c === ")") depth--;
+      else if (c === "," && depth === 0) {
+        layers.push(value.slice(start, i));
+        start = i + 1;
+      }
+    }
+    layers.push(value.slice(start));
+    return layers;
+  };
+
+  /** A layer's `<length>` components, in order: offset-x, offset-y, blur, spread. */
+  const shadowLengths = (layer) =>
+    layer
+      // Drops `rgb(…)`/`rgba(…)` bodies so their numbers are not read as
+      // lengths. The function *name* can stay — it carries no `px` token.
+      .replace(/\([^()]*\)/g, "")
+      .split(/\s+/)
+      .filter((token) => token.endsWith("px"));
+
+  // 3. Nothing glows, and depth is inked rather than lit. Blur is what the
+  //    Flat-At-Rest Rule is actually about — the system's own two shadows are
+  //    box-shadows, and both are zero-blur. A zero-blur shadow is a hairline
+  //    drawn with the shadow property (which is how the default theme draws
+  //    the code-group tab rule); a blurred one is elevation, and this world
+  //    has none.
+  const checkDepth = (el, cs) => {
+    for (const layer of shadowLayers(cs.boxShadow)) {
+      const blur = Number.parseFloat(shadowLengths(layer)[2] ?? "0");
       if (blur > 0) add("shadow-at-rest", `${label(el)} blur ${blur}px`);
     }
     if (cs.textShadow !== "none") add("text-shadow", `${label(el)} ${cs.textShadow}`);
+  };
 
-    // 4. Zero radius everywhere. The world has no rounded corner.
+  // 4. Zero radius everywhere. The world has no rounded corner.
+  const checkRadius = (el, cs) => {
     for (const corner of [
       cs.borderTopLeftRadius,
       cs.borderTopRightRadius,
@@ -179,22 +211,32 @@ function assertions(textRampArr, displayRampArr) {
       if (corner !== "0px" && corner !== "0%")
         add("non-zero-radius", `${label(el)} ${corner}`);
     }
+  };
 
-    // 5. The type ramp, per face. A size outside the ramp is a step nobody
-    //    declared; a Silkscreen size off the 8px em is a pixel that is no
-    //    longer square.
-    const hasOwnText = [...el.childNodes].some(
-      (n) => n.nodeType === 3 && n.textContent.trim(),
-    );
-    if (!hasOwnText) continue;
-    const size = Math.round(parseFloat(cs.fontSize) * 100) / 100;
-    const isDisplay = /silkscreen/i.test(cs.fontFamily);
-    if (isDisplay) {
+  // 5. The type ramp, per face. A size outside the ramp is a step nobody
+  //    declared; a Silkscreen size off the 8px em is a pixel that is no
+  //    longer square. Only elements with text of their own are measured.
+  const checkTypeRamp = (el, cs) => {
+    const hasOwnText = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
+    if (!hasOwnText) return;
+    const size = Math.round(Number.parseFloat(cs.fontSize) * 100) / 100;
+    if (/silkscreen/i.test(cs.fontFamily)) {
       if (size % 8 !== 0 || !DISPLAY_RAMP.has(size))
         add("off-display-ramp", `${label(el)} ${size}px`);
     } else if (!TEXT_RAMP.has(size)) {
       add("off-text-ramp", `${label(el)} ${size}px`);
     }
+  };
+
+  for (const el of document.querySelectorAll("body *")) {
+    const cs = getComputedStyle(el);
+    if (cs.display === "none" || cs.visibility === "hidden") continue;
+    const r = el.getBoundingClientRect();
+    if (!r.width && !r.height) continue;
+
+    checkDepth(el, cs);
+    checkRadius(el, cs);
+    checkTypeRamp(el, cs);
   }
   return findings;
 }
@@ -344,8 +386,10 @@ for (const plan of PLANS) {
       }
     }
 
-    const rendition = await view.evaluate(() =>
-      document.documentElement.getAttribute("data-theme"),
+    // `?? null` keeps the absent case reading as `null`, the way `getAttribute`
+    // reported it, rather than `undefined`.
+    const rendition = await view.evaluate(
+      () => document.documentElement.dataset.theme ?? null,
     );
     if (rendition !== plan.theme)
       failures.push({ plan: plan.name, route, rule: "rendition", detail: rendition });

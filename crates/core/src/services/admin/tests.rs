@@ -467,7 +467,11 @@ impl PackageRepository for StubExploreRepo {
     async fn count_explore_packages(&self, _: ExploreFilter) -> Result<u64, CoreError> {
         Ok(self.count)
     }
-    async fn registry_explore_stats(&self, _: &[String]) -> Result<Vec<RegistryStat>, CoreError> {
+    async fn registry_explore_stats(
+        &self,
+        _: &[String],
+        _: &crate::entities::ExploreViewer,
+    ) -> Result<Vec<RegistryStat>, CoreError> {
         Ok(self.stats.clone())
     }
     async fn delete_package(&self, _: &PackageId) -> Result<bool, CoreError> {
@@ -513,7 +517,11 @@ impl PackageRepository for FailingExploreRepo {
     async fn count_explore_packages(&self, _: ExploreFilter) -> Result<u64, CoreError> {
         Err(CoreError::Database("simulated failure".into()))
     }
-    async fn registry_explore_stats(&self, _: &[String]) -> Result<Vec<RegistryStat>, CoreError> {
+    async fn registry_explore_stats(
+        &self,
+        _: &[String],
+        _: &crate::entities::ExploreViewer,
+    ) -> Result<Vec<RegistryStat>, CoreError> {
         Err(CoreError::Database("simulated failure".into()))
     }
     async fn delete_package(&self, _: &PackageId) -> Result<bool, CoreError> {
@@ -727,13 +735,16 @@ async fn explore_and_count_do_not_clobber_each_other_with_matching_filters() {
 async fn registry_explore_stats_cache_hit_skips_repo() {
     let cache = Arc::new(ExploreCache::new());
     let regs = vec!["npm".to_string()];
-    let key = crate::services::explore_cache::stats_cache_key(&regs);
+    let key = crate::services::explore_cache::stats_cache_key(&regs, &Default::default());
     cache
         .set_stats(&key, vec![sample_stat()], regs.clone())
         .await;
 
     let svc = make_svc_with_cache(FailingExploreRepo::arc(), Arc::clone(&cache));
-    let (stats, unavailable) = svc.registry_explore_stats(&regs).await.unwrap();
+    let (stats, unavailable) = svc
+        .registry_explore_stats(&regs, &Default::default())
+        .await
+        .unwrap();
     assert!(!unavailable);
     assert_eq!(stats.len(), 1);
     assert_eq!(stats[0].registry, "npm");
@@ -746,13 +757,19 @@ async fn registry_explore_stats_cache_miss_queries_repo_and_caches() {
     let repo = StubExploreRepo::arc(vec![], 0, vec![sample_stat()]);
     let svc = make_svc_with_cache(repo, Arc::clone(&cache));
 
-    let (stats, unavailable) = svc.registry_explore_stats(&regs).await.unwrap();
+    let (stats, unavailable) = svc
+        .registry_explore_stats(&regs, &Default::default())
+        .await
+        .unwrap();
     assert!(!unavailable);
     assert_eq!(stats.len(), 1);
 
     // Second call with failing repo should serve from cache
     let svc2 = make_svc_with_cache(FailingExploreRepo::arc(), Arc::clone(&cache));
-    let (cached, _) = svc2.registry_explore_stats(&regs).await.unwrap();
+    let (cached, _) = svc2
+        .registry_explore_stats(&regs, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(cached.len(), 1);
 }
 
@@ -760,13 +777,16 @@ async fn registry_explore_stats_cache_miss_queries_repo_and_caches() {
 async fn registry_explore_stats_db_fail_stale_serves_stale() {
     let cache = Arc::new(ExploreCache::with_ttl(Duration::ZERO));
     let regs = vec!["npm".to_string()];
-    let key = crate::services::explore_cache::stats_cache_key(&regs);
+    let key = crate::services::explore_cache::stats_cache_key(&regs, &Default::default());
     cache
         .set_stats(&key, vec![sample_stat()], regs.clone())
         .await;
 
     let svc = make_svc_with_cache(FailingExploreRepo::arc(), Arc::clone(&cache));
-    let (stats, unavailable) = svc.registry_explore_stats(&regs).await.unwrap();
+    let (stats, unavailable) = svc
+        .registry_explore_stats(&regs, &Default::default())
+        .await
+        .unwrap();
     assert!(!unavailable);
     assert_eq!(stats.len(), 1);
 }
@@ -775,7 +795,10 @@ async fn registry_explore_stats_db_fail_stale_serves_stale() {
 async fn registry_explore_stats_db_fail_no_cache_returns_unavailable() {
     let cache = Arc::new(ExploreCache::new());
     let svc = make_svc_with_cache(FailingExploreRepo::arc(), cache);
-    let (stats, unavailable) = svc.registry_explore_stats(&["npm".into()]).await.unwrap();
+    let (stats, unavailable) = svc
+        .registry_explore_stats(&["npm".into()], &Default::default())
+        .await
+        .unwrap();
     assert!(unavailable);
     assert!(stats.is_empty());
 }

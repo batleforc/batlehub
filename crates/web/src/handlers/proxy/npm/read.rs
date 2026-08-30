@@ -8,6 +8,7 @@ use super::{
 use crate::handlers::proxy::common::attachment_disposition;
 use crate::handlers::proxy::upstream::{cached_forward, Outbound};
 use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
+use batlehub_core::entities::Action;
 
 /// Fetch package metadata (all versions / packument).
 #[utoipa::path(
@@ -60,7 +61,7 @@ pub async fn get_packument(
             },
             not_found_msg,
             pkg,
-            batlehub_core::rules::resource_type::RELEASES_READ,
+            Action::ReleasesRead,
             batlehub_core::ports::DocumentKind::Versions,
             "application/json",
             proxy_url,
@@ -68,14 +69,7 @@ pub async fn get_packument(
         .await;
     }
 
-    proxy_stream(
-        svc,
-        pkg,
-        identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
-        None,
-    )
-    .await
+    proxy_stream(svc, pkg, identity, Action::ReleasesRead, None).await
 }
 
 /// Fetch package version metadata.
@@ -132,20 +126,13 @@ pub async fn get_version(
             },
             not_found_msg,
             pkg,
-            batlehub_core::rules::resource_type::RELEASES_READ,
+            Action::ReleasesRead,
             None,
         )
         .await;
     }
 
-    proxy_stream(
-        svc,
-        pkg,
-        identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
-        None,
-    )
-    .await
+    proxy_stream(svc, pkg, identity, Action::ReleasesRead, None).await
 }
 
 /// Download npm package tarball for a specific version.
@@ -189,7 +176,7 @@ pub async fn download_tarball(
             artifact_suffix: "tarball",
             local_content_type: "application/octet-stream",
             proxy_content_type: None,
-            resource_type: batlehub_core::rules::resource_type::SOURCE_READ,
+            action: Action::SourceRead,
             check_prerelease: true,
             append_signature: false,
         },

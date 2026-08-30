@@ -22,27 +22,23 @@ name: Supply chain (postmortem)
 # from inside a composite action — as it does here. A matrix would therefore
 # hand all three uploads the same category and let them supersede each other,
 # silently leaving only the last one's alerts. Distinct job ids can't collide.
+#
+# Deliberately **unfiltered**: every push to main and every pull request, whatever
+# the diff touches. The lockfile `paths:` filter this used to carry was the
+# intuitive scope and the wrong one — postmortem's verdict depends on data fetched
+# live (repo reputation, activity, archival status, advisories), not only on the
+# lockfile bytes. An unchanged Cargo.lock can go from clean to "three archived
+# upstreams" without a single commit, so "the deps did not change" is not a reason
+# the answer did not change. The daily schedule below covers that for `main`; the
+# filter meant a long-lived PR branch never got the same treatment.
+#
+# Cost is real and bounded — see the concurrency note below. If the quota starts
+# to bite, set VULN_MLAB_TOKEN rather than reinstating the filter.
 on:
   push:
     branches: ["main"]
-    paths:
-      - "**/Cargo.toml"
-      - "**/Cargo.lock"
-      - "ui/package.json"
-      - "ui/pnpm-lock.yaml"
-      - "docs/package.json"
-      - "docs/pnpm-lock.yaml"
-      - ".github/workflows/postmortem.yaml"
   pull_request:
     branches: ["main"]
-    paths:
-      - "**/Cargo.toml"
-      - "**/Cargo.lock"
-      - "ui/package.json"
-      - "ui/pnpm-lock.yaml"
-      - "docs/package.json"
-      - "docs/pnpm-lock.yaml"
-      - ".github/workflows/postmortem.yaml"
   # Daily, same slot as the other dependency audits: reputation and vulnerability
   # data are fetched live, so a dependency that goes archived — or gets an
   # advisory — after the last commit still trips CI the next morning.
@@ -51,9 +47,16 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-# Anonymous vuln.mlab.sh allows 8 scans/hour and one run spends 3, so a PR
-# pushed to three times in quick succession would throttle itself. Superseded
-# runs are cancelled rather than left to burn the quota.
+# Anonymous vuln.mlab.sh allows 8 scans/hour and one run spends 3 (one per
+# dependency root), so the ceiling is **two runs per hour** before throttling.
+# Dropping the `paths:` filter above raised the pressure on that budget: this now
+# fires on every PR push, not only on lockfile changes.
+#
+# The concurrency group absorbs the common case — repeated pushes to one branch
+# supersede each other instead of each burning 3 scans. What it cannot absorb is
+# three *different* branches active in the same hour, since the group is keyed on
+# the ref. If that starts happening, the fix is to set `VULN_MLAB_TOKEN` (the
+# authenticated quota is higher), not to narrow the trigger again.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
   cancel-in-progress: true

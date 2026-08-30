@@ -182,38 +182,6 @@ async fn forward_get(
     cached_forward(svc, client, registry, cache_key, Outbound::get(url)).await
 }
 
-// ── Unit tests ────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn id_validation_accepts_valid_ids() {
-        let valid = [
-            "GO-2023-1234",
-            "GO-2024-5678",
-            "CVE-2023-12345",
-            "GHSA-x.1-y2",
-        ];
-        for id in valid {
-            let ok = id
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.');
-            assert!(ok, "{id} should be accepted");
-        }
-    }
-
-    #[test]
-    fn id_validation_rejects_path_traversal() {
-        let bad = ["../etc/passwd", "GO/../../secret", "GO 2023", "GO\x002023"];
-        for id in bad {
-            let ok = id
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.');
-            assert!(!ok, "{id:?} should be rejected");
-        }
-    }
-}
-
 // ── The checksum database (RFC 0009 §7.4) ─────────────────────────────────────
 
 /// Proxy the Go checksum database.
@@ -279,4 +247,36 @@ pub async fn goproxy_sumdb(
     let url = format!("{}/{sub}", base.trim_end_matches('/'));
     let key = format!("sumdb:{registry}:{sub}");
     cached_forward(&svc, &client, &registry, &key, Outbound::get(url)).await
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn id_validation_accepts_valid_ids() {
+        let valid = [
+            "GO-2023-1234",
+            "GO-2024-5678",
+            "CVE-2023-12345",
+            "GHSA-x.1-y2",
+        ];
+        for id in valid {
+            let ok = id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.');
+            assert!(ok, "{id} should be accepted");
+        }
+    }
+
+    #[test]
+    fn id_validation_rejects_path_traversal() {
+        let bad = ["../etc/passwd", "GO/../../secret", "GO 2023", "GO\x002023"];
+        for id in bad {
+            let ok = id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.');
+            assert!(!ok, "{id:?} should be rejected");
+        }
+    }
 }

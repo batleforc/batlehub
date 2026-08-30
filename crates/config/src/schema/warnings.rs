@@ -179,9 +179,109 @@ pub const UPSTREAM_DETAIL_NO_UPSTREAM: &str = "upstream-detail.no-upstream";
 /// find this by name.
 pub const LICENSE_GATE_DENIES_EVERYTHING: &str = "license-gate.denies-everything";
 
+/// `[registries.retention]` has `tombstone_detail_for_days` set with
+/// `dry_run = false`, so compaction will actually strip detail on the next run.
+///
+/// Legal, and the only way the feature ever does anything — but it is the one
+/// configuration in this block that destroys something, and RFC 0016 §4.6 asks
+/// for it to be said loudly on **every** reload rather than once at the edit
+/// that introduced it. What is lost is a deleted version's checksum, publisher
+/// and metadata; what is kept, always and with no setting that changes it, is
+/// the coordinate claim.
+pub const RETENTION_COMPACTION_LIVE: &str = "retention.compaction-live";
+
+/// `[registries.retention]` will reclaim versions on its next run — `dry_run` is
+/// off and at least one keep condition is set.
+///
+/// Legal, and the only way reclamation ever happens. Said loudly on every reload
+/// because unlike cache eviction it destroys the only copy: an evicted cache
+/// entry is re-fetchable from upstream, a reclaimed local version is frequently
+/// the only copy in existence.
+pub const RETENTION_RECLAMATION_LIVE: &str = "retention.reclamation-live";
+
+/// `[registries.retention]` reclaims on a policy that does not consult the
+/// download signal — `dry_run = false` with no `keep_if_pulled_days`.
+///
+/// **The mistake this feature exists to make hard** (RFC 0016 §4.6). Without it,
+/// `keep_versions = 10` throws away the version half the estate is pinned to
+/// because it happens to be eleventh by date, and the first anyone hears of it
+/// is a build failing against a lockfile that resolved yesterday. With it,
+/// whatever anyone is actually using stays, regardless of age or count.
+pub const RETENTION_NO_PULL_VETO: &str = "retention.no-pull-veto";
+
 /// `[search] readmes = true` while every registry has README capture off.
 ///
 /// Accepted. The index will exist and stay empty, because nothing is ever stored
 /// to put in it — so the search box grows an option that can only ever answer
 /// "no package here says that" (RFC 0007-bis §4.5).
 pub const SEARCH_READMES_NOTHING_STORED: &str = "search.readmes-nothing-stored";
+
+// ── RFC 0015 §4.9 — tiered policy ─────────────────────────────────────────────
+
+/// `immutable = "always"` on a node that also grants `releases:overwrite`.
+///
+/// Not a contradiction and not an error: §4.5 is explicit that immutability is a
+/// property of the *resource* while the verb is a property of the *subject*, and
+/// a replace needs both. So the grant is simply inert here — which is exactly
+/// what makes it worth saying. An operator who wrote both believes one of them
+/// is doing something, and the one that is not doing anything is the permission.
+pub const IMMUTABLE_ALWAYS_WITH_OVERWRITE_GRANT: &str =
+    "versioning.immutable-always-with-overwrite";
+
+/// A namespace with `grants` but no `visibility`, on a registry whose default is
+/// `public`.
+///
+/// The shape of an operator who has carefully decided *who* may reach a
+/// namespace and has not noticed that its packages are readable by everyone
+/// regardless — grants widen, and the audience is still the registry's. §4.5's
+/// two directions, met one at a time.
+pub const NAMESPACE_GRANTS_WITHOUT_VISIBILITY: &str = "namespace.grants-without-visibility";
+
+/// `allow_prerelease = false` beside `immutable = "released"`.
+///
+/// Legal and inert: `released` means "a release is immutable, a pre-release may
+/// be replaced", and a namespace that refuses to publish pre-releases at all can
+/// never take the second branch. The operator has written `always` in two words.
+pub const IMMUTABLE_RELEASED_WITHOUT_PRERELEASES: &str =
+    "versioning.immutable-released-no-prereleases";
+
+/// `prerelease_visibility` on a proxy-mode registry, which publishes nothing.
+///
+/// A **warning rather than a rejection**, and §4.9 spends a paragraph on why.
+/// `[registries.beta_channel]` carries no mode restriction today, so a
+/// proxy-mode registry with a beta-channel block starts now, and §10 rule 6
+/// translates that block into exactly this setting. Rejecting would stop such an
+/// instance from booting on upgrade, which is the one thing §10 forbids.
+pub const PRERELEASE_VISIBILITY_PROXY_MODE: &str = "visibility.prerelease-proxy-mode";
+
+/// `prerelease_visibility` **wider** than the `visibility` beside it.
+///
+/// Legal — nothing in the model forbids showing pre-releases to a wider audience
+/// than releases — and almost always a typo, since the setting exists to do the
+/// opposite.
+pub const PRERELEASE_VISIBILITY_WIDER: &str = "visibility.prerelease-wider-than-release";
+
+/// A node's grants are in **shadow**: they resolve, the would-have-been is
+/// recorded, and nothing is refused because of them (RFC 0015 §4.7).
+///
+/// **The most dangerous setting in RFC 0015**, and the reason §4.7 asks for this
+/// warning on *every* reload rather than once at the edit that introduced it:
+/// dry run on grants means a request that would be refused is **served**. It is
+/// what makes §10's migration survivable — enable the new model in shadow, watch
+/// a week of real traffic, then enforce — and it is also, if forgotten, an
+/// authorization bypass configured on purpose.
+///
+/// The expiry is named in the message because the countdown is the point. A
+/// shadow that cannot be forgotten is what the required `until` buys, and a
+/// warning that did not say when it lapses would be one more thing to go and
+/// look up.
+pub const GRANTS_IN_SHADOW: &str = "grants.shadow-active";
+
+/// `[…versioning] dry_run = true` — a badly-named or duplicate version is
+/// accepted (RFC 0015 §4.7).
+///
+/// Quieter than [`GRANTS_IN_SHADOW`] because the direction is different: §4.7's
+/// table calls this one **mixed** rather than fail-open. Bad data lands, nothing
+/// leaks. It still warns, because the operator who set it during an import is
+/// the operator who forgets to unset it afterwards.
+pub const VERSIONING_IN_DRY_RUN: &str = "versioning.dry-run-active";

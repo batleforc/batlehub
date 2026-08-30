@@ -156,6 +156,33 @@ pub fn embedded_migrator() -> Migrator {
             "user token last used",
             "../migrations/038_user_tokens_last_used.sql"
         ),
+        mig!(
+            39,
+            "local package tombstones",
+            "../migrations/039_local_package_tombstones.sql"
+        ),
+        mig!(
+            40,
+            "retention keep pin",
+            "../migrations/040_retention_keep.sql"
+        ),
+        mig!(41, "grants", "../migrations/041_grants.sql"),
+        mig!(
+            42,
+            "ownership to grants",
+            "../migrations/042_ownership_to_grants.sql"
+        ),
+        mig!(43, "policy", "../migrations/043_policy.sql"),
+        mig!(
+            44,
+            "provider_signing_keys",
+            "../migrations/044_provider_signing_keys.sql"
+        ),
+        mig!(
+            45,
+            "team_namespace_separator",
+            "../migrations/045_team_namespace_separator.sql"
+        ),
     ])
 }
 

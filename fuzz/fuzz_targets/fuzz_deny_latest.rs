@@ -6,6 +6,7 @@ use libfuzzer_sys::fuzz_target;
 use tokio::runtime::Runtime;
 
 use batlehub_core::{
+    entities::Action,
     entities::{Identity, PackageId, PackageMetadata, Role},
     rules::{DenyLatestRule, Rule, RuleContext, RuleDecision},
 };
@@ -25,7 +26,7 @@ fuzz_target!(|data: &[u8]| {
         _ => Role::Admin,
     };
 
-    // Bypass list includes Admin to exercise the RequireRole path.
+    // Bypass list includes Admin to exercise the bypass-role comparison.
     let rule = DenyLatestRule::new(vec![Role::Admin]);
 
     let identity = Identity { user_id: None, role, auth_provider: None, groups: vec![] };
@@ -47,7 +48,7 @@ fuzz_target!(|data: &[u8]| {
     let ctx = RuleContext {
         identity: &identity,
         package: &meta,
-        resource_type: "releases:read",
+        action: Action::ReleasesRead,
         cache_entry: None,
         requested_version: Some(&version_str),
     };

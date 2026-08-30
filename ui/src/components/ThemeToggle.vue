@@ -40,7 +40,14 @@ const LABEL_KEYS: Record<string, string> = {
   dark: "theme.dark",
 };
 
-const icon = computed(() => (mode.value === "auto" ? Monitor : mode.value === "dark" ? Moon : Sun));
+/** Keyed the same way as `LABEL_KEYS`, and for the same reason. */
+const ICONS: Record<string, typeof Monitor> = {
+  auto: Monitor,
+  light: Sun,
+  dark: Moon,
+};
+
+const icon = computed(() => ICONS[mode.value] ?? ICONS.auto);
 const label = computed(() => t(LABEL_KEYS[mode.value] ?? LABEL_KEYS.auto));
 
 function cycle(): void {

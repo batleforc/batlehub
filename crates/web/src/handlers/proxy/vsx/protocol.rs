@@ -104,7 +104,7 @@ pub struct QueryCriterion {
 /// Criteria are **AND**-ed, which is what the editor means by them. Only
 /// `filters[0]` is interpreted — VS Code sends exactly one, and a second would
 /// be an OR-group this server has no way to render into a single result block.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GalleryQuery {
     /// `filterType 7` — exact `{publisher}.{name}`.
     pub extension_names: Vec<String>,
@@ -127,6 +127,37 @@ pub struct GalleryQuery {
     /// recency one), 1 = ascending, 2 = descending.
     pub sort_order: u32,
     pub flags: u32,
+}
+
+/// Paging that names the first page, not the zeroth.
+///
+/// `Default` was derived, which gave `page_number: 0` — and `page()` computes
+/// `(page_number - 1) * page_size`, so every `..Default::default()` construction
+/// that did not override it produced a `usize` underflow: a panic in debug, and
+/// in release a `skip(usize::MAX)` that silently answers an empty list. The
+/// OpenVSX namespace listing was built that way and returned nothing at all.
+///
+/// The invariant `from_request` maintains (`.max(1)`, and its "page 0 is page 1"
+/// test) belongs to the type rather than to one constructor, so it lives here.
+/// `page_size` is defaulted for the same reason: a derived `0` makes `take(0)`
+/// answer nothing, which is the same failure wearing the other field's name.
+impl Default for GalleryQuery {
+    fn default() -> Self {
+        Self {
+            extension_names: Vec::new(),
+            extension_ids: Vec::new(),
+            search_text: None,
+            tags: Vec::new(),
+            categories: Vec::new(),
+            target: None,
+            featured: false,
+            page_number: 1,
+            page_size: DEFAULT_PAGE_SIZE,
+            sort_by: sort_by::RELEVANCE,
+            sort_order: 0,
+            flags: 0,
+        }
+    }
 }
 
 /// `sortBy` values an editor sends. The gallery protocol defines more; these
@@ -210,8 +241,17 @@ impl GalleryQuery {
     }
 
     /// The `[skip, take)` window this page asks for.
+    ///
+    /// `saturating_sub` rather than `- 1`: the `Default` above keeps
+    /// `page_number` at 1 and `from_request` clamps it there, but a struct
+    /// literal can still write `page_number: 0` explicitly, and an arithmetic
+    /// underflow here is a panic in debug and an empty answer in release. Page 0
+    /// is page 1, which is what `from_request` has always said.
     pub fn page(&self) -> (usize, usize) {
-        ((self.page_number - 1) * self.page_size, self.page_size)
+        (
+            self.page_number.saturating_sub(1) * self.page_size,
+            self.page_size,
+        )
     }
 }
 
@@ -267,6 +307,39 @@ mod tests {
         assert_eq!(q.page(), (0, 50));
         assert!(!q.is_lookup());
         assert!(!q.is_unanswerable());
+    }
+
+    /// The construction the OpenVSX namespace listing uses.
+    ///
+    /// It builds a `GalleryQuery` as a struct literal — `search_text` and
+    /// `page_size`, then `..Default::default()` — and never mentions
+    /// `page_number`. With `Default` derived that was `0`, and `page()` computed
+    /// `(0 - 1) * 100`: a panic under debug assertions, and under release a skip
+    /// of `usize::MAX`, so `GET /proxy/{registry}/api/{namespace}` answered with
+    /// an empty list however many extensions the namespace held.
+    ///
+    /// Asserted on `page()` rather than on the field, because the field being
+    /// right is only interesting insofar as the window is.
+    #[test]
+    fn a_partial_struct_literal_still_asks_for_the_first_page() {
+        let q = GalleryQuery {
+            search_text: Some("acme".to_owned()),
+            page_size: 100,
+            ..Default::default()
+        };
+        assert_eq!(q.page(), (0, 100), "the first page skips nothing");
+    }
+
+    /// Belt and braces for the same defect: an explicit `page_number: 0` is a
+    /// state `Default` no longer produces but a caller can still write.
+    #[test]
+    fn page_zero_written_by_hand_does_not_underflow() {
+        let q = GalleryQuery {
+            page_number: 0,
+            page_size: 25,
+            ..Default::default()
+        };
+        assert_eq!(q.page(), (0, 25));
     }
 
     #[test]

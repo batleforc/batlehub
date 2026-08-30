@@ -31,7 +31,6 @@ use batlehub_core::{
     services::AdminService,
 };
 
-use super::super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
 /// Ceiling on how many subjects one response may carry.
@@ -75,7 +74,7 @@ pub struct SubjectsResponse {
     params(SubjectsQuery),
     responses(
         (status = 200, description = "Known subjects", body = SubjectsResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`system:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -91,8 +90,15 @@ pub async fn list_subjects(
     // on the endpoint whose whole purpose is not returning a misleading empty.
     namespaces: Option<web::Data<Arc<dyn TeamNamespacePort>>>,
     registry_map: web::Data<RegistryMap>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::SystemRead,
+        None,
+        &hot,
+    )
+    .await?;
 
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let needle = query.q.as_deref().map(str::to_lowercase);

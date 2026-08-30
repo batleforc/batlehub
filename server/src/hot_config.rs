@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 
@@ -10,8 +11,8 @@ use batlehub_core::ports::{
 };
 use batlehub_core::services::{
     FeatureFlags, HotConfig, HotReadmeConfig, HotSbomConfig, HotUpstreamDetailConfig,
-    IntegrityPolicy, RemoteImagePolicy, SignedUrlService, SigningConfig as CoreSigningConfig,
-    VersioningPolicy,
+    IntegrityPolicy, RemoteImagePolicy, RetentionPolicy, SignedUrlService,
+    SigningConfig as CoreSigningConfig, VersioningPolicy,
 };
 
 use crate::builders::parse_role;
@@ -108,6 +109,40 @@ fn build_signing_map(registries: &[RegistryConfig]) -> HashMap<String, CoreSigni
             trusted_keys: s.trusted_keys.clone(),
         },
     )
+}
+
+/// Only the registries that wrote a `[registries.retention]` block, the same way
+/// `build_sbom_map` works and the opposite of `build_readme_map`: an absent entry
+/// means keep everything forever, which is the default and needs no row.
+fn build_retention_map(registries: &[RegistryConfig]) -> HashMap<String, RetentionPolicy> {
+    map_registries(
+        registries,
+        |reg| reg.retention.as_ref(),
+        |_reg, r| RetentionPolicy {
+            keep_versions: r.keep_versions,
+            keep_for: r.keep_for_days.map(days),
+            keep_if_pulled: r.keep_if_pulled_days.map(days),
+            keep_yanked: r.keep_yanked,
+            // Expressed in config as days-before-now and resolved once here, at
+            // load. A floor recomputed per run would creep forward with the
+            // clock, so a version protected by it today would be reclaimable
+            // tomorrow — the opposite of a floor.
+            download_signal_floor:
+                batlehub_core::services::hot_config::resolve_download_signal_floor(
+                    r.download_signal_floor_days,
+                ),
+            reclaim_delay: Duration::from_millis(r.reclaim_delay_ms),
+            // `validate()` has already refused 0 and anything under the 30-day
+            // floor, so this multiplication cannot produce a window that strips
+            // detail the moment it is written.
+            tombstone_detail_for: r.tombstone_detail_for_days.map(days),
+            dry_run: r.dry_run,
+        },
+    )
+}
+
+fn days(d: u32) -> Duration {
+    Duration::from_secs(u64::from(d) * 24 * 60 * 60)
 }
 
 fn build_sbom_map(registries: &[RegistryConfig]) -> HashMap<String, HotSbomConfig> {
@@ -260,12 +295,23 @@ fn build_sumdb_map(registries: &[RegistryConfig]) -> SumDbMap {
     SumDbMap::new(urls)
 }
 
+// Eight stores, one per thing `HotConfig` holds a handle to. A bundle struct
+// whose only purpose is to satisfy an arity lint would move the same eight
+// names one indirection away, and this function's whole job is to name them.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_hot_bundle(
     cfg: &AppConfig,
     beta_channel_store: &Arc<dyn BetaChannelPort>,
     repo: &Arc<dyn PackageRepository>,
     vuln_repo: &Arc<dyn VulnerabilityRepository>,
     sbom_repo: &Arc<dyn SbomRepository>,
+    // The package and version tiers (RFC 0015 §6.3). Threaded through rather
+    // than defaulted: a `None` here on the reload path would silently drop those
+    // two tiers on every config change, and the symptom would be a grant that
+    // worked until someone edited an unrelated setting.
+    grant_repo: &Option<Arc<dyn batlehub_core::ports::GrantRepository>>,
+    policy_repo: &Option<Arc<dyn batlehub_core::ports::PolicyRepository>>,
+    signing_keys: &Option<Arc<dyn batlehub_core::ports::SigningKeyPort>>,
 ) -> anyhow::Result<(
     HotConfig,
     AccessConfig,
@@ -277,12 +323,20 @@ pub(super) fn build_hot_bundle(
 )> {
     let mut reg_clients: HashMap<String, Arc<dyn batlehub_core::ports::RegistryClient>> =
         HashMap::new();
+    let mut ns_policies: HashMap<
+        String,
+        Vec<(String, Arc<batlehub_core::services::RegistryPolicy>)>,
+    > = HashMap::new();
     let mut reg_policies: HashMap<String, Arc<batlehub_core::services::RegistryPolicy>> =
         HashMap::new();
     let mut reg_type_map: HashMap<String, String> = HashMap::new();
     let mut reg_mode_map: HashMap<String, RegistryMode> = HashMap::new();
     let mut upstream_map: HashMap<String, String> = HashMap::new();
     let mut reg_resolution: HashMap<String, batlehub_core::entities::ResolutionPolicy> =
+        HashMap::new();
+    let mut reg_grants: HashMap<String, Arc<batlehub_core::entities::RegistryGrants>> =
+        HashMap::new();
+    let mut reg_policy: HashMap<String, Arc<batlehub_core::entities::RegistryPolicyTiers>> =
         HashMap::new();
 
     for reg in &cfg.registries {
@@ -297,6 +351,37 @@ pub(super) fn build_hot_bundle(
         )
         .with_context(|| format!("building policy for '{}'", reg.name))?;
         reg_policies.insert(reg.name.clone(), Arc::new(policy));
+        // RFC 0015 §4.1 — one chain per namespace that overrides a gate. Empty
+        // for a registry whose namespaces override none, which is every registry
+        // before phase 4 and most of them after it.
+        let ns = crate::builders::build_namespace_policies(
+            reg,
+            Arc::clone(repo),
+            Arc::clone(vuln_repo),
+            Arc::clone(sbom_repo),
+        )
+        .with_context(|| format!("building namespace rule overrides for '{}'", reg.name))?;
+        if !ns.is_empty() {
+            ns_policies.insert(reg.name.clone(), ns);
+        }
+        // Built in the same pass as the policy, from the same `reg`, so a
+        // registry can never end up with a rule chain and no grant hierarchy —
+        // which under §4.3's "absence is not everything" would refuse every
+        // request to it.
+        reg_grants.insert(
+            reg.name.clone(),
+            Arc::new(
+                crate::grants::build_registry_grants(reg)
+                    .with_context(|| format!("building grants for '{}'", reg.name))?,
+            ),
+        );
+        // No `?`: the validation that could fail ran in `build_registry_grants`
+        // just above, for both halves. A second fallible builder over the same
+        // config would be a second opinion on whether it is legal.
+        reg_policy.insert(
+            reg.name.clone(),
+            Arc::new(crate::grants::build_policy_tiers(reg)),
+        );
         // Built from the same `reg` in the same pass as the policy above, so a
         // registry can never end up with a rule the catalog cannot see.
         reg_resolution.insert(
@@ -311,9 +396,35 @@ pub(super) fn build_hot_bundle(
         }
     }
 
+    // A top-level `[grants]` block, parsed into the instance tier's map.
+    let instance_grants = crate::grants::build_instance_grants(cfg)?;
+
     let hot = HotConfig {
+        // RFC 0015 §4.1's tier above every registry — where the control-surface
+        // verbs live (§4.2's deferred `require_admin` split). Built from rule 5's
+        // translation, plus any top-level `[grants]` block, so an admin reaches
+        // exactly what they reached before and the verbs become delegable.
+        instance: Some(std::sync::Arc::new(
+            batlehub_core::services::authz::translate::instance_node(instance_grants.as_ref()),
+        )),
+        grants: reg_grants,
+        policy_tiers: reg_policy,
+        grant_repo: grant_repo.clone(),
+        policy_repo: policy_repo.clone(),
+        signing_keys: signing_keys.clone(),
+        // A fresh cache per reload. Config that changes what a grant resolves to
+        // must not be answered from documents built under the old one — and a
+        // reload is rare enough that rebuilding a handful of documents costs
+        // nothing next to reasoning about which entries survived.
+        document_cache: Some(batlehub_core::services::document_cache::DocumentCache::new()),
         registries: reg_clients,
         policies: reg_policies,
+        // One buffer for the whole instance, replaced on reload with the config
+        // that produced it. A shadow's would-have-beens describe the config that
+        // was in force, so carrying them across a reload that changed the
+        // grants would show an operator entries a node no longer produces.
+        shadow_log: Some(Arc::new(batlehub_core::services::shadow::ShadowLog::new())),
+        namespace_policies: ns_policies,
         versioning: build_versioning_map(&cfg.registries),
         signing: build_signing_map(&cfg.registries),
         sbom: build_sbom_map(&cfg.registries),
@@ -327,6 +438,7 @@ pub(super) fn build_hot_bundle(
         feature_flags: build_feature_flags_map(&cfg.registries),
         integrity: build_integrity_map(&cfg.registries),
         beta_channel: build_beta_channel_map(Arc::clone(beta_channel_store), &cfg.registries),
+        retention: build_retention_map(&cfg.registries),
         resolution: reg_resolution,
         signed_downloads: cfg
             .registries
@@ -372,6 +484,55 @@ fn build_signed_url_service(cfg: &AppConfig) -> Option<Arc<SignedUrlService>> {
     )))
 }
 
+/// Which role tiers one registry's `rbac` block reaches, cumulatively.
+///
+/// Admin implies user implies anonymous — an admin-only registry is still
+/// "admin accessible" even with an empty `rbac.anonymous`/`rbac.user`.
+struct RegistryTiers {
+    anonymous: bool,
+    user: bool,
+    admin: bool,
+    /// A registry reachable *only* through `[registries.rbac.groups]` — a
+    /// team-only registry — has all three role tiers empty. Its proxy access
+    /// is granted per-caller by `accessible_registries_for`, which unions the
+    /// group grants in, so gating the explore sets on the role tiers alone
+    /// left it out of every one of them: `explore_accessible_registries_for`
+    /// intersects proxy access with the explore set, so a team member's
+    /// explore set came back empty for the one registry they can pull from.
+    ///
+    /// Harmless while the set was only a listing filter (an empty vector
+    /// reads as "no restriction" in `ExploreFilter`); a hard `404` on the
+    /// detail, README and image endpoints once those refuse on the set
+    /// itself. `rbac.explore.*` documents itself as defaulting to "any role
+    /// that has proxy access", and a group member has proxy access.
+    ///
+    /// Safe to widen with because the intersection still applies: naming a
+    /// group-only registry in `explore_user` grants nothing to a caller whose
+    /// `accessible_registries_for` does not already contain it, and
+    /// `r.rbac.explore.*` is still honoured.
+    group: bool,
+}
+
+impl RegistryTiers {
+    fn of(r: &batlehub_config::schema::RegistryConfig) -> Self {
+        let anonymous = !r.rbac.anonymous.is_empty();
+        let user = anonymous || !r.rbac.user.is_empty();
+        let admin = user || !r.rbac.admin.is_empty();
+        Self {
+            anonymous,
+            user,
+            admin,
+            group: !r.rbac.groups.is_empty(),
+        }
+    }
+}
+
+fn insert_if(condition: bool, set: &mut HashSet<String>, name: &str) {
+    if condition {
+        set.insert(name.to_owned());
+    }
+}
+
 pub(super) fn build_access_config(config: &AppConfig) -> AccessConfig {
     let mut group_access: HashMap<String, HashSet<String>> = HashMap::new();
     let mut anonymous = HashSet::new();
@@ -395,47 +556,28 @@ pub(super) fn build_access_config(config: &AppConfig) -> AccessConfig {
                 .insert(r.name.clone());
         }
 
-        let has_anonymous = !r.rbac.anonymous.is_empty();
-        let has_user = has_anonymous || !r.rbac.user.is_empty();
-        let has_admin = has_user || !r.rbac.admin.is_empty();
-        // A registry reachable *only* through `[registries.rbac.groups]` — a
-        // team-only registry — has all three role tiers empty. Its proxy access
-        // is granted per-caller by `accessible_registries_for`, which unions the
-        // group grants in, so gating the explore sets on the role tiers alone
-        // left it out of every one of them: `explore_accessible_registries_for`
-        // intersects proxy access with the explore set, so a team member's
-        // explore set came back empty for the one registry they can pull from.
-        //
-        // Harmless while the set was only a listing filter (an empty vector
-        // reads as "no restriction" in `ExploreFilter`); a hard `404` on the
-        // detail, README and image endpoints once those refuse on the set
-        // itself. `rbac.explore.*` documents itself as defaulting to "any role
-        // that has proxy access", and a group member has proxy access.
-        //
-        // Safe to widen here because the intersection still applies: naming a
-        // group-only registry in `explore_user` grants nothing to a caller whose
-        // `accessible_registries_for` does not already contain it, and
-        // `r.rbac.explore.*` is still honoured.
-        let has_group = !r.rbac.groups.is_empty();
-
-        if has_anonymous {
-            anonymous.insert(r.name.clone());
-        }
-        if has_user {
-            user.insert(r.name.clone());
-        }
-        if has_admin {
-            admin.insert(r.name.clone());
-        }
-        if (has_anonymous || has_group) && r.rbac.explore.anonymous {
-            explore_anonymous.insert(r.name.clone());
-        }
-        if (has_user || has_group) && r.rbac.explore.user {
-            explore_user.insert(r.name.clone());
-        }
-        if (has_admin || has_group) && r.rbac.explore.admin {
-            explore_admin.insert(r.name.clone());
-        }
+        let tiers = RegistryTiers::of(r);
+        // `insert_if` rather than six `if` blocks: the conditions are the whole
+        // content of this loop, and stated as expressions they sit next to each
+        // other where they can be compared.
+        insert_if(tiers.anonymous, &mut anonymous, &r.name);
+        insert_if(tiers.user, &mut user, &r.name);
+        insert_if(tiers.admin, &mut admin, &r.name);
+        insert_if(
+            (tiers.anonymous || tiers.group) && r.rbac.explore.anonymous,
+            &mut explore_anonymous,
+            &r.name,
+        );
+        insert_if(
+            (tiers.user || tiers.group) && r.rbac.explore.user,
+            &mut explore_user,
+            &r.name,
+        );
+        insert_if(
+            (tiers.admin || tiers.group) && r.rbac.explore.admin,
+            &mut explore_admin,
+            &r.name,
+        );
     }
 
     AccessConfig {
@@ -570,11 +712,18 @@ pub(super) async fn settle_text_config(
     })
 }
 
+// Eight stores, one per thing `HotConfig` holds a handle to. A bundle struct
+// whose only purpose is to satisfy an arity lint would move the same eight
+// names one indirection away, and this function's whole job is to name them.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn make_hot_builder(
     beta_channel_store: Arc<dyn BetaChannelPort>,
     repo: Arc<dyn PackageRepository>,
     vuln_repo: Arc<dyn VulnerabilityRepository>,
     sbom_repo: Arc<dyn SbomRepository>,
+    grant_repo: Option<Arc<dyn batlehub_core::ports::GrantRepository>>,
+    policy_repo: Option<Arc<dyn batlehub_core::ports::PolicyRepository>>,
+    signing_keys: Option<Arc<dyn batlehub_core::ports::SigningKeyPort>>,
     text_config: SettledTextConfig,
 ) -> batlehub_web::services::HotConfigBuilder {
     Arc::new(move |cfg: &AppConfig| {
@@ -582,8 +731,16 @@ pub(super) fn make_hot_builder(
         // configuration this server does not have is refused here, on the same
         // path the config editor's "validate" button takes.
         text_config.check(&cfg.search)?;
-        let (hot, access, rm, rmm, um, vuln_db, sumdb) =
-            build_hot_bundle(cfg, &beta_channel_store, &repo, &vuln_repo, &sbom_repo)?;
+        let (hot, access, rm, rmm, um, vuln_db, sumdb) = build_hot_bundle(
+            cfg,
+            &beta_channel_store,
+            &repo,
+            &vuln_repo,
+            &sbom_repo,
+            &grant_repo,
+            &policy_repo,
+            &signing_keys,
+        )?;
         let mut cargo_map: HashMap<String, CargoIndexProxy> = HashMap::new();
         for reg in &cfg.registries {
             if reg.registry_type == RegistryKind::Cargo.as_str()

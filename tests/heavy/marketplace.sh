@@ -53,6 +53,24 @@ IDEA_VERSION="${IDEA_VERSION:-2026.1.3}"
 IDE_CACHE="${IDE_CACHE:-$HOME/.cache/batlehub-heavy}"
 COVERAGE="${COVERAGE:-0}"
 
+# Every off-network download in this script either goes straight into `tar` or
+# is published back through the server, so the transport is the only thing
+# standing between an upstream redirect and code execution here. `--proto-redir`
+# pins the *redirect chain* as well as the first request: every one of these
+# URLs redirects to a CDN (GitHub releases to `objects.githubusercontent.com`,
+# both IDE sites to their own), and `-L` alone would happily follow a downgrade
+# to plain HTTP.
+#
+# A wrapper rather than an array of flags spliced into each call site: a call
+# site here names `fetch_https`, so it cannot quietly omit half of the pair, and
+# the flags stay lexically attached to the `curl` that uses them — which is also
+# how SonarCloud's "not enforcing HTTPS" hotspot reads a script. Splicing in
+# `"${HTTPS_ONLY[@]}"` hid them from it and raised three hotspots on code that
+# was already doing the right thing (docs/internal/sonar-triage-2026-08-30.md).
+fetch_https() {
+  curl -fsSL --proto '=https' --proto-redir '=https' "$@"
+}
+
 : "${DATABASE_URL:?DATABASE_URL must point at a reachable Postgres}"
 
 WORK="$(mktemp -d)"
@@ -126,9 +144,9 @@ VSIX="$WORK/weebo-bridge-notify-$WEEBO_VERSION.vsix"
 JBZIP="$WORK/weebo-bridge-notify-$WEEBO_VERSION.zip"
 
 log "Downloading weebo-bridge-notify v$WEEBO_VERSION release artifacts"
-curl -fsSL -o "$VSIX" \
+fetch_https -o "$VSIX" \
   "$WEEBO_BASE_URL/v$WEEBO_VERSION/weebo-bridge-notify-$WEEBO_VERSION.vsix"
-curl -fsSL -o "$JBZIP" \
+fetch_https -o "$JBZIP" \
   "$WEEBO_BASE_URL/v$WEEBO_VERSION/weebo-bridge-notify-$WEEBO_VERSION.zip"
 
 log "Publishing the VSIX to the local vscode-marketplace registry"
@@ -159,7 +177,8 @@ if [[ "${SKIP_VSCODE:-0}" != "1" ]]; then
       if [[ ! -x "$VSCODE_DIR/bin/code" ]]; then
         log "Downloading VS Code $VSCODE_VERSION"
         mkdir -p "$VSCODE_DIR"
-        curl -fsSL "https://update.code.visualstudio.com/$VSCODE_VERSION/linux-x64/stable" \
+        fetch_https \
+          "https://update.code.visualstudio.com/$VSCODE_VERSION/linux-x64/stable" \
           | tar -xz -C "$VSCODE_DIR" --strip-components=1
       fi
       CODE_BIN="$VSCODE_DIR/bin/code"
@@ -249,11 +268,13 @@ if [[ "${SKIP_JETBRAINS:-0}" != "1" ]]; then
     mkdir -p "$IDEA_DIR"
     # Unified installer naming since 2025.3; fall back to the old Community
     # edition tarball for overrides pinning an older IDEA_VERSION.
-    if ! curl -fsSL "https://download.jetbrains.com/idea/idea-$IDEA_VERSION.tar.gz" \
+    if ! fetch_https \
+        "https://download.jetbrains.com/idea/idea-$IDEA_VERSION.tar.gz" \
         | tar -xz -C "$IDEA_DIR" --strip-components=1; then
       rm -rf "$IDEA_DIR"
       mkdir -p "$IDEA_DIR"
-      curl -fsSL "https://download.jetbrains.com/idea/ideaIC-$IDEA_VERSION.tar.gz" \
+      fetch_https \
+        "https://download.jetbrains.com/idea/ideaIC-$IDEA_VERSION.tar.gz" \
         | tar -xz -C "$IDEA_DIR" --strip-components=1
     fi
   fi

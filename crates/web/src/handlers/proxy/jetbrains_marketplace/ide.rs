@@ -11,7 +11,6 @@ use batlehub_config::schema::RegistryMode;
 use batlehub_core::{
     entities::{Identity, PackageId, RegistryKind},
     error::CoreError,
-    rules::resource_type::RELEASES_READ,
     services::{
         validate_package_name, JetbrainsPluginVersion, LocalRegistryService, ProxyRequest,
         ProxyService,
@@ -26,6 +25,7 @@ use super::render::{plugin_json, search_hit_json, update_json, ExtraMeta, Render
 use super::{require_jbm, require_single_segment, STABLE_CHANNEL};
 use crate::handlers::schemas::UpstreamDocument;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
+use batlehub_core::entities::Action;
 
 const DEFAULT_SEARCH_MAX: usize = 50;
 
@@ -69,6 +69,57 @@ async fn local_search_entries(
 }
 
 /// Forward a search-shaped GET through the cached-forward helper.
+/// [`forward_search`], parsed, with every failure collapsed into `None`.
+///
+/// The hybrid merges below are best-effort by design: an unreachable
+/// marketplace, or one that answers with something that is not JSON, must not
+/// fail a search the local half has already answered.
+async fn forwarded_search_json(
+    svc: &Arc<ProxyService>,
+    upstream_map: &UpstreamMap,
+    client: &reqwest::Client,
+    registry: &str,
+    req: &HttpRequest,
+    path: &str,
+) -> Option<serde_json::Value> {
+    let fwd = forward_search(svc, upstream_map, client, registry, req, path)
+        .await
+        .ok()?;
+    serde_json::from_slice(&fwd.body).ok()
+}
+
+/// Append the upstream hits whose `xmlId` no local entry already claims.
+///
+/// Local wins: a plugin published here shadows the marketplace's copy of the
+/// same id, rather than appearing twice.
+fn merge_upstream_hits<'a>(
+    hits: &mut Vec<serde_json::Value>,
+    local_ids: &[&str],
+    upstream: impl Iterator<Item = &'a serde_json::Value>,
+    id_of: fn(&serde_json::Value) -> &str,
+) {
+    for hit in upstream {
+        let id = id_of(hit);
+        if !id.is_empty() && !local_ids.contains(&id) {
+            hits.push(hit.clone());
+        }
+    }
+}
+
+/// The search endpoints name a hit's plugin with `xmlId`.
+fn search_hit_id(hit: &serde_json::Value) -> &str {
+    hit.get("xmlId").and_then(|v| v.as_str()).unwrap_or("")
+}
+
+/// The compatible-updates endpoint has three spellings in the wild.
+fn update_hit_id(hit: &serde_json::Value) -> &str {
+    hit.get("pluginXmlId")
+        .or_else(|| hit.get("xmlId"))
+        .or_else(|| hit.get("pluginId"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+}
+
 async fn forward_search(
     svc: &Arc<ProxyService>,
     upstream_map: &UpstreamMap,
@@ -137,8 +188,7 @@ pub async fn jbm_search_plugins_ide(
     let mut hits: Vec<serde_json::Value> = local.iter().map(search_hit_json).collect();
 
     if mode == RegistryMode::Hybrid {
-        // Merge best-effort upstream hits, deduped by xmlId — local wins.
-        if let Ok(fwd) = forward_search(
+        if let Some(body) = forwarded_search_json(
             &svc,
             &upstream_map,
             &client,
@@ -148,20 +198,16 @@ pub async fn jbm_search_plugins_ide(
         )
         .await
         {
-            if let Ok(body) = serde_json::from_slice::<serde_json::Value>(&fwd.body) {
-                let local_ids: Vec<&str> = local.iter().map(|e| e.xml_id.as_str()).collect();
-                for hit in body
-                    .get("plugins")
+            let local_ids: Vec<&str> = local.iter().map(|e| e.xml_id.as_str()).collect();
+            merge_upstream_hits(
+                &mut hits,
+                &local_ids,
+                body.get("plugins")
                     .and_then(|p| p.as_array())
                     .into_iter()
-                    .flatten()
-                {
-                    let id = hit.get("xmlId").and_then(|v| v.as_str()).unwrap_or("");
-                    if !id.is_empty() && !local_ids.contains(&id) {
-                        hits.push(hit.clone());
-                    }
-                }
-            }
+                    .flatten(),
+                search_hit_id,
+            );
         }
     }
 
@@ -221,7 +267,7 @@ pub async fn jbm_search_plugins(
     let mut hits: Vec<serde_json::Value> = local.iter().map(search_hit_json).collect();
 
     if mode == RegistryMode::Hybrid {
-        if let Ok(fwd) = forward_search(
+        if let Some(body) = forwarded_search_json(
             &svc,
             &upstream_map,
             &client,
@@ -231,15 +277,13 @@ pub async fn jbm_search_plugins(
         )
         .await
         {
-            if let Ok(body) = serde_json::from_slice::<serde_json::Value>(&fwd.body) {
-                let local_ids: Vec<&str> = local.iter().map(|e| e.xml_id.as_str()).collect();
-                for hit in body.as_array().into_iter().flatten() {
-                    let id = hit.get("xmlId").and_then(|v| v.as_str()).unwrap_or("");
-                    if !id.is_empty() && !local_ids.contains(&id) {
-                        hits.push(hit.clone());
-                    }
-                }
-            }
+            let local_ids: Vec<&str> = local.iter().map(|e| e.xml_id.as_str()).collect();
+            merge_upstream_hits(
+                &mut hits,
+                &local_ids,
+                body.as_array().into_iter().flatten(),
+                search_hit_id,
+            );
         }
     }
 
@@ -323,7 +367,7 @@ pub async fn jbm_compatible_updates(
 
     if mode == RegistryMode::Hybrid {
         // Best-effort upstream merge for the ids without a local answer.
-        if let Ok(fwd) = cached_forward_post_json(
+        let upstream = cached_forward_post_json(
             &svc,
             &upstream_map,
             &client,
@@ -333,20 +377,15 @@ pub async fn jbm_compatible_updates(
             &cache_key,
         )
         .await
-        {
-            if let Ok(upstream) = serde_json::from_slice::<serde_json::Value>(&fwd.body) {
-                for hit in upstream.as_array().into_iter().flatten() {
-                    let id = hit
-                        .get("pluginXmlId")
-                        .or_else(|| hit.get("xmlId"))
-                        .or_else(|| hit.get("pluginId"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if !id.is_empty() && !local_ids.contains(&id) {
-                        updates.push(hit.clone());
-                    }
-                }
-            }
+        .ok()
+        .and_then(|fwd| serde_json::from_slice::<serde_json::Value>(&fwd.body).ok());
+        if let Some(upstream) = upstream {
+            merge_upstream_hits(
+                &mut updates,
+                &local_ids,
+                upstream.as_array().into_iter().flatten(),
+                update_hit_id,
+            );
         }
     }
 
@@ -376,7 +415,7 @@ async fn plugin_entries(
     let proxy_req = ProxyRequest {
         package_id: PackageId::new(registry, xml_id, "latest"),
         identity: identity.0,
-        resource_type: RELEASES_READ.to_owned(),
+        action: Action::ReleasesRead.to_owned(),
         ip_address: None,
         user_agent: None,
     };

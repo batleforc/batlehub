@@ -116,8 +116,15 @@ impl LocalRegistryService {
         identity: &Identity,
     ) -> Result<Vec<JetbrainsPluginVersion>, CoreError> {
         let names = self.backend.list_package_names(registry).await?;
+        let readable = self.readable_packages(registry, identity).await?;
         let mut plugins = Vec::new();
         for name in names {
+            // RFC 0015 §4.4 — this document names every plugin in the registry,
+            // so a caller without the read grant must not find one here. One
+            // resolution for the whole loop, not one per plugin (§13.2).
+            if !readable.contains(&name) {
+                continue;
+            }
             let versions = match self.load_visible_versions(registry, &name, identity).await {
                 Ok(v) => v,
                 Err(CoreError::AccessDenied(_)) => continue,

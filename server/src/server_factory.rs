@@ -181,6 +181,9 @@ pub(super) struct ServerParams {
     pub user_block_repo: Arc<dyn UserBlockRepository>,
     pub beta_channel_store: Arc<dyn BetaChannelPort>,
     pub team_namespace_store: Arc<dyn TeamNamespacePort>,
+    /// RFC 0015 §6.3 — the package and version policy tiers, written through the
+    /// admin API because §4.1 says a config file cannot enumerate them.
+    pub policy_repo: Arc<dyn batlehub_core::ports::PolicyRepository>,
     pub ip_blocking_cfg: Option<IpBlockingConfig>,
     /// Resolved `[server].trusted_proxies` (or the deprecated
     /// `[ip_blocking]` fallback). Registered as `app_data` so the middleware
@@ -234,6 +237,7 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
         user_block_repo,
         beta_channel_store,
         team_namespace_store,
+        policy_repo,
         ip_blocking_cfg,
         proxy_trust,
         registry_host_map,
@@ -295,6 +299,7 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
             .app_data(web::Data::new(Arc::clone(&user_block_repo)))
             .app_data(web::Data::new(Arc::clone(&beta_channel_store)))
             .app_data(web::Data::new(Arc::clone(&team_namespace_store)))
+            .app_data(web::Data::new(Arc::clone(&policy_repo)))
             .app_data(web::Data::new(Arc::clone(&reload_svc)))
             .app_data(web::Data::new(Arc::clone(&banner_svc)))
             .app_data(web::Data::new(proxy_trust.clone()))

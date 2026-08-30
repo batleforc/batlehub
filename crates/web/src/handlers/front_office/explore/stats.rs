@@ -36,17 +36,37 @@ pub struct ExploreRegistryStatsResponse {
 pub async fn explore_registry_stats(
     identity: AuthIdentity,
     admin_svc: web::Data<Arc<AdminService>>,
-    access: web::Data<crate::AccessConfigLock>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    let accessible: Vec<String> = access
-        .read()
-        .await
-        .explore_accessible_registries_for(&identity)
-        .into_iter()
-        .collect();
+    // RFC 0015 §4.2 — `catalogue:browse`, resolved from grants, in place of
+    // `AccessConfig`'s explore sets. §10 rule 2's conjunction reproduces those
+    // sets exactly (§13.5 measured the naive reading at 19 disagreements before
+    // it was corrected), so this is a substitution between two computations
+    // already known to agree — not a new policy.
+    let accessible: Vec<String> =
+        batlehub_core::services::authz::browsable_registries(&hot, &identity)
+            .await
+            .into_iter()
+            .collect();
 
+    // An empty accessible set is **nothing**, not "no restriction" — the same
+    // rule `explore_packages` states at length beside its own scope. The
+    // repository closes this too, so neither layer is the only thing standing
+    // between a caller with no browsable registry and the whole estate's
+    // numbers; survey finding 2 shipped because one layer was.
+    if accessible.is_empty() {
+        return Ok(web::Json(ExploreRegistryStatsResponse {
+            registries: vec![],
+            upstream_unavailable: false,
+        }));
+    }
+
+    // RFC 0015 §4.4 — every number below is an aggregate over packages, so it is
+    // computed over the ones this caller may see. The same viewer the listing
+    // beside it uses, so the tile and the page agree.
+    let viewer = crate::handlers::explore_viewer_for(&identity);
     let (stats, upstream_unavailable) = admin_svc
-        .registry_explore_stats(&accessible)
+        .registry_explore_stats(&accessible, &viewer)
         .await
         .map_err(AppError::from)?;
 
@@ -116,12 +136,10 @@ pub async fn explore_upstream_search(
     identity: AuthIdentity,
     proxy_svc: web::Data<Arc<ProxyService>>,
     admin_svc: web::Data<Arc<AdminService>>,
-    access: web::Data<crate::AccessConfigLock>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    let accessible = access
-        .read()
-        .await
-        .explore_accessible_registries_for(&identity);
+    // §4.2 — `catalogue:browse`, as in `explore_registry_stats` above.
+    let accessible = batlehub_core::services::authz::browsable_registries(&hot, &identity).await;
 
     tracing::info!(
         name = %query.name,

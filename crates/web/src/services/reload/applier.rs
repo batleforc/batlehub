@@ -275,7 +275,7 @@ impl ConfigReloadService {
         // Write editor-submitted content back to disk so the change survives a restart.
         // File-watcher reloads set content = None (the file is already correct on disk).
         if let Some(ref text) = pending.content {
-            if let Err(e) = tokio::fs::write(&self.config_path, text).await {
+            if let Err(e) = self.persist_config_to_disk(text, pending.id).await {
                 tracing::warn!(
                     path = %self.config_path,
                     error = %e,
@@ -289,6 +289,77 @@ impl ConfigReloadService {
             .await;
 
         Ok(pending.diff)
+    }
+
+    /// Replace the config file with `text`, atomically.
+    ///
+    /// The obvious `tokio::fs::write` truncates the file in place, so a process
+    /// killed between the truncate and the last byte — a pod eviction during a
+    /// config-editor save — leaves a half-written `config.toml` behind. The
+    /// in-memory config dies with the process and the file that was supposed to
+    /// carry it forward no longer parses, so the *next* boot fails. Writing a
+    /// complete temp file and `rename`-ing it over the target removes that
+    /// window: `rename(2)` within a filesystem is atomic, so a concurrent reader
+    /// (the file watcher) and the next boot see either the whole old file or the
+    /// whole new one, never a prefix.
+    ///
+    /// The temp file is created *beside* the target rather than in `/tmp`, because
+    /// a rename across a mount point fails with `EXDEV` — and `/etc/batlehub`
+    /// being its own mount is the normal container case, not an exotic one. It is
+    /// named from the pending reload's id so two applies cannot collide on it, and
+    /// it is removed on every failure path rather than left as litter next to the
+    /// config.
+    ///
+    /// The directory is deliberately not fsynced. That would buy durability of the
+    /// rename itself across a power cut, which is a different failure from the one
+    /// this guards, and opening a directory as a file is not portable off Unix.
+    async fn persist_config_to_disk(&self, text: &str, id: Uuid) -> std::io::Result<()> {
+        let target = std::path::Path::new(&self.config_path);
+        // `parent()` is `Some("")` for a bare relative name like `config.toml`;
+        // joining onto that keeps the temp file in the current directory, which is
+        // exactly where the target lives too.
+        let dir = target.parent().unwrap_or_else(|| std::path::Path::new(""));
+        let name = target
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("config.toml"));
+        let tmp = dir.join(format!(".{}.{id}.tmp", name.to_string_lossy()));
+
+        let staged = async {
+            Self::write_and_sync(&tmp, text).await?;
+            // Carry the target's mode onto the replacement. `rename` swaps in a
+            // whole new inode, so without this the 0644 that `File::create`
+            // produces would silently widen a `config.toml` an operator
+            // deliberately keeps at 0600 — and this file holds `database.url`,
+            // credentials included. The old in-place write had no such problem: it
+            // truncated the existing inode and kept its mode. Missing metadata
+            // means there is no prior file to inherit from (first write), which is
+            // not an error; a *failed* `set_permissions` is, because proceeding
+            // would publish the widened mode.
+            if let Ok(meta) = tokio::fs::metadata(target).await {
+                tokio::fs::set_permissions(&tmp, meta.permissions()).await?;
+            }
+            tokio::fs::rename(&tmp, target).await
+        }
+        .await;
+
+        if staged.is_err() {
+            // Best-effort: the write may have failed before the file existed.
+            let _ = tokio::fs::remove_file(&tmp).await;
+        }
+        staged
+    }
+
+    /// Write `text` to `path` and flush it to the device before returning.
+    ///
+    /// The `sync_all` is what makes the rename in [`Self::persist_config_to_disk`]
+    /// meaningful: without it the rename can publish the new inode while its data
+    /// is still only in the page cache, which on a crash yields precisely the
+    /// truncated file the atomic write exists to prevent.
+    async fn write_and_sync(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+        use tokio::io::AsyncWriteExt as _;
+        let mut file = tokio::fs::File::create(path).await?;
+        file.write_all(text.as_bytes()).await?;
+        file.sync_all().await
     }
 
     /// Returns the history of applied reloads from `config_changes`.

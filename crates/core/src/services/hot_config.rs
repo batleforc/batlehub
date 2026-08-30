@@ -2,9 +2,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use regex::Regex;
 use tokio::sync::RwLock;
 
+use crate::entities::{RegistryGrants, RegistryPolicyTiers};
 use crate::entities::{ResolutionPolicy, Role};
 use crate::ports::{BetaChannelPort, RegistryClient};
 use crate::rules::Rule;
@@ -86,6 +88,102 @@ pub struct SigningConfig {
     pub verify_on_download: bool,
     /// Hex-encoded 32-byte Ed25519 public keys trusted to sign artifacts.
     pub trusted_keys: Vec<String>,
+}
+
+/// Local retention policy stored in the service (mirrors config-layer
+/// `RetentionConfig`) — RFC 0016.
+///
+/// Registry tier. The namespace and package tiers RFC 0016 §4.1 describes need
+/// RFC 0015's namespace blocks and its `policy` table; the version-tier `keep`
+/// pin does not, and lives on the version row as `retention_keep`.
+#[derive(Debug, Clone)]
+pub struct RetentionPolicy {
+    /// Keep the newest N versions of each package.
+    pub keep_versions: Option<u32>,
+    /// Keep anything published within this window.
+    pub keep_for: Option<Duration>,
+    /// Keep anything downloaded within this window — the veto that makes
+    /// retention safe to switch on (RFC 0016 §4.3).
+    pub keep_if_pulled: Option<Duration>,
+    /// Keep yanked versions. Defaults to `true`.
+    pub keep_yanked: bool,
+    /// Before this instant, an absent download record proves nothing.
+    pub download_signal_floor: DateTime<Utc>,
+    /// Pause between reclamations, bounding the blast radius of a first live run
+    /// without leaving the estate in a state nothing else models.
+    pub reclaim_delay: Duration,
+    /// How long a tombstone keeps its detail before compaction strips it to the
+    /// coordinate. `None` — the default — keeps it forever.
+    pub tombstone_detail_for: Option<Duration>,
+    /// Report and write nothing. Defaults to `true`, so a configured policy does
+    /// nothing until an operator has read a report and turned it off.
+    pub dry_run: bool,
+}
+
+impl RetentionPolicy {
+    /// The plain-data policy the retention run takes. The two are separate types
+    /// on purpose: this one mirrors a config block and lives behind a lock, that
+    /// one is a snapshot a run is judged against for its whole duration.
+    pub fn for_run(&self) -> crate::services::retention::RetentionPolicy {
+        crate::services::retention::RetentionPolicy {
+            keep_versions: self.keep_versions,
+            keep_for: self.keep_for,
+            keep_if_pulled: self.keep_if_pulled,
+            keep_yanked: self.keep_yanked,
+            download_signal_floor: self.download_signal_floor,
+            reclaim_delay: self.reclaim_delay,
+            dry_run: self.dry_run,
+        }
+    }
+}
+
+/// `dry_run: true` and `keep_yanked: true`, matching the config layer. A derived
+/// `Default` would say `false` for both — the destructive direction — and the
+/// two definitions of "default" must not disagree about a policy that destroys
+/// the only copy of something.
+impl Default for RetentionPolicy {
+    fn default() -> Self {
+        Self {
+            keep_versions: None,
+            keep_for: None,
+            keep_if_pulled: None,
+            keep_yanked: true,
+            download_signal_floor: default_download_signal_floor(),
+            reclaim_delay: Duration::ZERO,
+            tombstone_detail_for: None,
+            dry_run: true,
+        }
+    }
+}
+
+/// [`crate::services::retention::DEFAULT_DOWNLOAD_SIGNAL_FLOOR`], parsed.
+///
+/// Infallible in practice — the constant is a literal this crate owns — and a
+/// parse failure falls back to [`DateTime::UNIX_EPOCH`], which disables the
+/// floor rather than enabling it for everything. Failing open here would keep
+/// every version forever; failing closed would reclaim on evidence the RFC says
+/// is not evidence.
+pub fn default_download_signal_floor() -> DateTime<Utc> {
+    crate::services::retention::DEFAULT_DOWNLOAD_SIGNAL_FLOOR
+        .parse()
+        .unwrap_or(DateTime::UNIX_EPOCH)
+}
+
+/// Resolve `download_signal_floor_days` — days before *now* — into the instant a
+/// run compares against, or [`default_download_signal_floor`] when unset.
+///
+/// Resolved once, at config load, and not per run: a floor recomputed from the
+/// clock would creep forward, so a version protected by it today would be
+/// reclaimable tomorrow. That is the opposite of a floor.
+///
+/// Here rather than in the server crate because it is chrono arithmetic and the
+/// server does not depend on chrono — and because a second implementation of
+/// "what does this number mean" is how the two would come to disagree.
+pub fn resolve_download_signal_floor(days_before_now: Option<u32>) -> DateTime<Utc> {
+    match days_before_now {
+        Some(d) => Utc::now() - chrono::Duration::days(i64::from(d)),
+        None => default_download_signal_floor(),
+    }
 }
 
 /// SBOM configuration stored in the service (mirrors config-layer `SbomConfig`).
@@ -269,6 +367,87 @@ pub struct HotConfig {
     pub registries: HashMap<String, Arc<dyn RegistryClient>>,
     /// Per-registry access policies. `Arc` allows cheap cloning (rules are not Clone).
     pub policies: HashMap<String, Arc<RegistryPolicy>>,
+    /// Per-namespace rule chains, for the namespaces that override a gate
+    /// (RFC 0015 §4.1).
+    ///
+    /// `(match_prefix, chain)` in config order, and **only for namespaces that
+    /// declared `rules`** — one with none runs the registry's chain from
+    /// `policies` above, and holding an identical copy would double the trait
+    /// objects for no behaviour change.
+    ///
+    /// Composition is deepest-wins, so the **last** matching prefix supplies the
+    /// chain: an operator who writes `@acme` and then `@acme/billing` gets the
+    /// more specific answer from the block they wrote second.
+    pub namespace_policies: HashMap<String, Vec<(String, Arc<RegistryPolicy>)>>,
+    /// Per-registry grant hierarchies (RFC 0015 §4.1).
+    ///
+    /// The registry and namespace tiers, built from the config file. Package and
+    /// version tiers come from the `policy` table and are not here.
+    ///
+    /// **A registry with no entry grants nothing**, which is the fail-closed
+    /// reading and the one §4.3 requires: absence is not "everything". Every
+    /// registry the server configures gets an entry, so a missing key only
+    /// happens in a test that did not build one — and such a test gets a closed
+    /// registry rather than an open one.
+    pub grants: HashMap<String, Arc<RegistryGrants>>,
+    /// RFC 0015 §4.1's tier above `registry` — the whole server.
+    ///
+    /// Where the control-surface verbs live, because about a dozen admin
+    /// endpoints name no registry and so had no node to attach a grant to. It is
+    /// prepended to every resolution path, so it composes by §4.3's union like
+    /// any other tier rather than by a rule of its own.
+    ///
+    /// `None` is **not** a seal: a deployment that has never written an instance
+    /// grant must behave as it did before this tier existed, and a union with
+    /// nothing is what that means. The empty-versus-absent distinction §4.3 draws
+    /// for a node's `grants` is carried by the `Node` inside, not by this
+    /// `Option`.
+    pub instance: Option<Arc<crate::entities::Node>>,
+    /// RFC 0015 §4.2 — the GPG keys a Terraform namespace signs its providers
+    /// with, read on the provider download path.
+    ///
+    /// `None` serves the empty list this server hardcoded before the store
+    /// existed, which is what an estate that has registered no key still gets.
+    pub signing_keys: Option<Arc<dyn crate::ports::SigningKeyPort>>,
+    /// Per-registry policy tiers (RFC 0015 §4.1) — the other five policies.
+    ///
+    /// `grants` above carries the one that composes by union; this carries
+    /// `visibility`, `prerelease_visibility`, `versioning`, `quota` and `rules`,
+    /// which compose deepest-wins.
+    ///
+    /// **A registry with no entry constrains nothing**, which is the opposite of
+    /// the reading `grants` takes and is not an inconsistency: grants only widen,
+    /// so a union of nothing is nothing and absence must fail closed; these are
+    /// constraints, so absence must leave behaviour exactly as it is today.
+    pub policy_tiers: HashMap<String, Arc<RegistryPolicyTiers>>,
+    /// Storage for the package and version tiers (RFC 0015 §6.3).
+    ///
+    /// `None` means those two tiers contribute nothing — which is the correct
+    /// reading for a deployment with no database and for a test fixture that
+    /// wired none, and is *not* the same as "they deny": a tier with no rows
+    /// inherits.
+    pub grant_repo: Option<Arc<dyn crate::ports::GrantRepository>>,
+    /// Storage for the package and version *policy* tiers (RFC 0015 §6.3).
+    ///
+    /// `None` means those two tiers contribute nothing, which is the correct
+    /// reading for a deployment with no database and for a fixture that wired
+    /// none — and is not the same as "they deny": a tier with no row inherits.
+    pub policy_repo: Option<Arc<dyn crate::ports::PolicyRepository>>,
+    /// What shadow mode would have refused (RFC 0015 §4.7).
+    ///
+    /// `None` disables the recording, not the shadow — a node in `dry_run` still
+    /// serves what it would refuse. That asymmetry is deliberate: the fail-open
+    /// behaviour is what the operator configured, and dropping it because a
+    /// buffer is missing would make the setting mean different things in
+    /// different builds. What a missing log costs is the *visibility*, which is
+    /// why every wiring path installs one.
+    pub shadow_log: Option<Arc<crate::services::shadow::ShadowLog>>,
+    /// Whole-registry documents, cached per grant set (RFC 0015 §11.7 arm 3).
+    ///
+    /// `None` disables the cache entirely, which is what every fixture that does
+    /// not build one gets — correct, because a missing cache is a slow answer
+    /// rather than a wrong one.
+    pub document_cache: Option<Arc<crate::services::document_cache::DocumentCache>>,
     /// Per-registry versioning policies (Clone, cheap).
     pub versioning: HashMap<String, VersioningPolicy>,
     /// Per-registry artifact signing configs (Clone, cheap).
@@ -301,6 +480,14 @@ pub struct HotConfig {
     pub integrity: HashMap<String, IntegrityPolicy>,
     /// Per-registry beta-channel gate ports.
     pub beta_channel: HashMap<String, Arc<dyn BetaChannelPort>>,
+    /// Per-registry local retention policies (Clone, cheap), from
+    /// `[registries.retention]` (RFC 0016).
+    ///
+    /// Keyed only by the registries that wrote the block down, like
+    /// `sbom` and unlike `readme`: absence here means keep everything forever,
+    /// which is both the default and what every instance did before this
+    /// existed. Nothing has to be populated for the absent case to be right.
+    pub retention: HashMap<String, RetentionPolicy>,
     /// Per-registry inputs for naming a package's resolution state, as plain
     /// data (Clone, cheap).
     ///
@@ -368,6 +555,15 @@ impl Default for HotConfig {
         Self {
             registries: HashMap::new(),
             policies: HashMap::new(),
+            namespace_policies: HashMap::new(),
+            grants: HashMap::new(),
+            instance: None,
+            signing_keys: None,
+            policy_tiers: HashMap::new(),
+            grant_repo: None,
+            policy_repo: None,
+            shadow_log: None,
+            document_cache: None,
             versioning: HashMap::new(),
             signing: HashMap::new(),
             sbom: HashMap::new(),
@@ -377,6 +573,7 @@ impl Default for HotConfig {
             feature_flags: HashMap::new(),
             integrity: HashMap::new(),
             beta_channel: HashMap::new(),
+            retention: HashMap::new(),
             resolution: HashMap::new(),
             signed_downloads: HashMap::new(),
             signed_url: None,

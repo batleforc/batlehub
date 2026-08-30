@@ -9,7 +9,6 @@ use batlehub_core::{
     services::{AdminService, BulkBlockItem, ProxyService},
 };
 
-use super::require_admin;
 use crate::{error::AppError, extractors::AuthIdentity};
 
 pub mod bulk;

@@ -24,7 +24,7 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { extname, join, resolve, dirname } from "node:path";
+import { extname, join, resolve, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -84,10 +84,19 @@ createServer(async (req, res) => {
   }
 
   // Static files, with the SPA fallback every client-side route needs.
-  const requested = join(DIST, url.pathname);
-  const file = url.pathname !== "/" && existsSync(requested) && extname(requested)
-    ? requested
-    : join(DIST, "index.html");
+  //
+  // The request path is resolved and then checked to still be *under* `DIST`
+  // before it is allowed to name a file. `new URL` already collapses `..`, so
+  // nothing here is known to escape today — but that is a property of the
+  // parser rather than of this handler, and it is the containment check, not
+  // the parser, that the next person reading this can verify. Anything outside
+  // falls through to the SPA shell, which is what an unknown route gets anyway.
+  const requested = resolve(DIST, `.${url.pathname}`);
+  const inDist = requested === DIST || requested.startsWith(DIST + sep);
+  const file =
+    inDist && url.pathname !== "/" && extname(requested) && existsSync(requested)
+      ? requested
+      : join(DIST, "index.html");
   try {
     const data = await readFile(file);
     res.writeHead(200, { "content-type": TYPES[extname(file)] ?? "application/octet-stream" });

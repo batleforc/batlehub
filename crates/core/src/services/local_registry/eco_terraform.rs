@@ -124,6 +124,16 @@ impl LocalRegistryService {
             ("", "")
         };
 
+        // Read before the response is built: the namespace is known by now, and
+        // an `entry(...)` closure cannot await.
+        let signing_keys: Vec<crate::entities::SigningKey> = {
+            let port = { self.hot.read().await.signing_keys.clone() };
+            match port {
+                Some(port) => port.list_signing_keys(registry, ns).await?,
+                None => Vec::new(),
+            }
+        };
+
         let base = base_url.trim_end_matches('/');
         let download_url =
             format!("{base}/v1/providers/{ns}/{ptype}/{version}/artifact/{os}/{arch}");
@@ -139,8 +149,21 @@ impl LocalRegistryService {
                     .cloned()
                     .unwrap_or(serde_json::json!([]))
             });
+            // RFC 0015 §4.2 — the namespace's registered keys, where there are
+            // any.
+            //
+            // This was `{"gpg_public_keys": []}`, hardcoded. Terraform verifies a
+            // provider's `SHASUMS` signature against whatever is here, and an
+            // empty list is not "unsigned, proceed" — it is the registry saying
+            // there is nothing to verify against, so **no locally published
+            // provider could be verified by anybody**.
+            //
+            // `entry(...).or_insert_with` still, so a provider whose own
+            // `index_metadata` carries `signing_keys` (a mirrored upstream one)
+            // keeps what it was published with. The store answers for providers
+            // published here, which is the set that had no answer at all.
             obj.entry("signing_keys")
-                .or_insert_with(|| serde_json::json!({"gpg_public_keys": []}));
+                .or_insert_with(|| serde_json::json!({ "gpg_public_keys": signing_keys }));
         }
         Ok(resp)
     }

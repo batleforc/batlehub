@@ -105,6 +105,15 @@ async fn make_me_app(
 
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
+            // RFC 0015 §4.2's instance tier, wired exactly as production wires it:
+            // `instance_node` is §10 rule 5's own translation, so the fixture's admin
+            // holds the control verbs and nobody else does. Without it every
+            // `require_verb` on a control endpoint refuses, including the admin the
+            // suite is asserting about — a fixture that does not build the model
+            // tests a server nobody runs (§13.5).
+            instance: Some(std::sync::Arc::new(
+                batlehub_core::services::authz::translate::instance_node(None),
+            )),
             registries,
             policies: HashMap::new(),
             ..Default::default()
@@ -220,6 +229,7 @@ async fn publish_version(
             signature_bytes: None,
             signature_type: None,
             visibility: Visibility::Public,
+            retention_keep: false,
         })
         .await
         .unwrap();

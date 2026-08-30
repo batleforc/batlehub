@@ -80,6 +80,7 @@ impl Rule for ReleaseAgeGateRule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entities::Action;
     use chrono::{Duration as CDuration, Utc};
 
     use crate::entities::{Identity, PackageId, PackageMetadata, Role};
@@ -114,7 +115,7 @@ mod tests {
         let ctx = RuleContext {
             identity: &identity,
             package: &meta,
-            resource_type: "releases:read",
+            action: Action::ReleasesRead,
             cache_entry: None,
             requested_version: None,
         };
@@ -129,7 +130,7 @@ mod tests {
         let ctx = RuleContext {
             identity: &identity,
             package: &meta,
-            resource_type: "releases:read",
+            action: Action::ReleasesRead,
             cache_entry: None,
             requested_version: None,
         };
@@ -147,7 +148,7 @@ mod tests {
         let ctx = RuleContext {
             identity: &identity,
             package: &meta,
-            resource_type: "releases:read",
+            action: Action::ReleasesRead,
             cache_entry: None,
             requested_version: None,
         };
@@ -174,7 +175,7 @@ mod tests {
         let ctx = RuleContext {
             identity: &identity,
             package: &meta,
-            resource_type: "releases:read",
+            action: Action::ReleasesRead,
             cache_entry: None,
             requested_version: None,
         };
@@ -190,7 +191,7 @@ mod tests {
         let ctx = RuleContext {
             identity: &identity,
             package: &meta,
-            resource_type: "releases:read",
+            action: Action::ReleasesRead,
             cache_entry: None,
             requested_version: None,
         };
@@ -211,7 +212,7 @@ mod tests {
         let ctx = RuleContext {
             identity: &identity,
             package: &meta,
-            resource_type: "releases:read",
+            action: Action::ReleasesRead,
             cache_entry: None,
             requested_version: None,
         };
@@ -227,7 +228,7 @@ mod tests {
         let ctx = RuleContext {
             identity: &identity,
             package: &meta,
-            resource_type: "releases:read",
+            action: Action::ReleasesRead,
             cache_entry: None,
             requested_version: None,
         };

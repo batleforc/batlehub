@@ -14,6 +14,19 @@ pub struct PgTeamNamespaceStore {
     pool: PgPool,
 }
 
+/// The claim's separator column, as a `char`.
+///
+/// The column is `TEXT` with a `length = 1` check, so this cannot silently
+/// truncate a real value — but a row written before migration 045, or by hand,
+/// falls back to `/`, which is what every claim matched on before the column
+/// existed.
+fn separator_of(r: &sqlx::postgres::PgRow) -> char {
+    r.try_get::<String, _>("separator")
+        .ok()
+        .and_then(|s| s.chars().next())
+        .unwrap_or('/')
+}
+
 impl PgTeamNamespaceStore {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
@@ -28,13 +41,19 @@ impl TeamNamespacePort for PgTeamNamespaceStore {
         package: &str,
     ) -> Result<Option<TeamNamespace>, CoreError> {
         // Longest-prefix match: a claim with prefix P covers package N when
-        // N == P  OR  N starts with P + '/'.
+        // N == P **or** N starts with P + the claim's own separator (§4.1).
+        //
+        // `tn.separator`, not `'/'`: the character is the ecosystem's, and every
+        // matcher here used to assume npm's. `TeamNamespace::covers` is the same
+        // rule in Rust and `LOCAL_VISIBILITY_PREDICATE` is the third copy;
+        // `pg_team_namespace_separator.rs` runs all three over one table of cases
+        // because §6.3 requires them to agree character for character.
         let row = sqlx::query(
-            "SELECT prefix, group_id, claimed_by FROM team_namespaces \
+            "SELECT prefix, group_id, claimed_by, separator FROM team_namespaces \
              WHERE registry = $1 \
                AND ($2 = prefix \
                     OR (LENGTH($2) > LENGTH(prefix) \
-                        AND SUBSTRING($2, 1, LENGTH(prefix) + 1) = prefix || '/')) \
+                        AND SUBSTRING($2, 1, LENGTH(prefix) + 1) = prefix || separator)) \
              ORDER BY LENGTH(prefix) DESC \
              LIMIT 1",
         )
@@ -49,6 +68,7 @@ impl TeamNamespacePort for PgTeamNamespaceStore {
             prefix: r.get("prefix"),
             group_id: r.get("group_id"),
             claimed_by: r.get("claimed_by"),
+            separator: separator_of(&r),
         }))
     }
 
@@ -70,19 +90,28 @@ impl TeamNamespacePort for PgTeamNamespaceStore {
                 prefix: r.get("prefix"),
                 group_id: r.get("group_id"),
                 claimed_by: r.get("claimed_by"),
+                separator: separator_of(&r),
             })
             .collect())
     }
 
     async fn claim_namespace(&self, ns: TeamNamespace) -> Result<(), CoreError> {
         sqlx::query(
-            "INSERT INTO team_namespaces (registry, prefix, group_id, claimed_by) \
-             VALUES ($1, $2, $3, $4)",
+            // The separator is written with the claim (§4.1). Leaving it to the
+            // column default made every new claim match on `/` whatever its
+            // ecosystem — the bug this column exists to fix, surviving into the
+            // write path — and `pg_namespace_separator.rs` caught it on the
+            // round-trip assertion rather than on a match, which is the sharper
+            // place for it: the matcher agreed with a stored value that was
+            // simply the wrong one.
+            "INSERT INTO team_namespaces (registry, prefix, group_id, claimed_by, separator) \
+             VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(&ns.registry)
         .bind(&ns.prefix)
         .bind(&ns.group_id)
         .bind(&ns.claimed_by)
+        .bind(ns.separator.to_string())
         .execute(&self.pool)
         .await
         .map_err(|e| {
@@ -181,6 +210,7 @@ impl TeamNamespacePort for PgTeamNamespaceStore {
                 prefix: r.get("prefix"),
                 group_id: r.get("group_id"),
                 claimed_by: r.get("claimed_by"),
+                separator: separator_of(&r),
             })
             .collect())
     }

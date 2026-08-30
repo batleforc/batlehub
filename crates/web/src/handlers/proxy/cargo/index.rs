@@ -7,6 +7,7 @@ use super::{
     RegistryModeMap, Responder,
 };
 use crate::handlers::schemas::{ArtifactBytes, ProtocolDocument, UpstreamDocument};
+use batlehub_core::entities::Action;
 
 /// Cargo sparse registry `config.json`.
 #[utoipa::path(
@@ -166,7 +167,7 @@ async fn proxy_upstream_index(
         svc,
         batlehub_core::entities::PackageId::new(registry, name, "__index__"),
         identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         batlehub_core::ports::DocumentKind::Versions,
         String::new(),
     )
@@ -214,7 +215,7 @@ pub async fn download_crate(
             artifact_suffix: "dl",
             local_content_type: "application/octet-stream",
             proxy_content_type: None,
-            resource_type: batlehub_core::rules::resource_type::SOURCE_READ,
+            action: Action::SourceRead,
             check_prerelease: true,
             append_signature: true,
         },

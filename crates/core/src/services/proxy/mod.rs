@@ -13,6 +13,7 @@ use std::time::Instant;
 use futures::{stream, StreamExt};
 
 use crate::entities::AccessEvent;
+use crate::entities::Action;
 use crate::error::CoreError;
 use crate::ports::{
     ArtifactCacheMeta, ArtifactStream, CacheStore, FetchedArtifact, PackageRepository,
@@ -28,7 +29,7 @@ pub struct ProxyRequest {
     pub package_id: crate::entities::PackageId,
     pub identity: crate::entities::Identity,
     /// The operation being checked against RBAC (e.g. `"releases:read"`).
-    pub resource_type: String,
+    pub action: Action,
     /// Caller's IP address (for audit log enrichment).
     pub ip_address: Option<String>,
     /// HTTP User-Agent header (for audit log enrichment).

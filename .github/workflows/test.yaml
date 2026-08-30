@@ -530,10 +530,121 @@ jobs:
           path: coverage-heavy-${{ matrix.suite }}.lcov
           if-no-files-found: error
 
+  # The authorization suite (tests/heavy/authz.sh), one job per target.
+  #
+  # A job of its own rather than more rows in `heavy-client`, because the shape
+  # is different in two ways that would make that matrix lie: every row runs the
+  # *same* script with a target argument, and one row — `matrix` — needs no
+  # client toolchain at all. It is also the row that matters most and the
+  # cheapest to run, so it must not be gated behind seven toolchain installs.
+  #
+  # What the rows other than `matrix` add is the half no `curl` can check: that
+  # a package manager handed a `403` stops, rather than reporting success over a
+  # partial install. See the script header for why that is a separate claim.
+  heavy-authz:
+    name: Heavy authorization (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      # One client being unhappy says nothing about the others, and which ones
+      # are is the thing being learned.
+      fail-fast: false
+      matrix:
+        include:
+          - target: matrix
+          - target: signing
+          - target: npm
+          - target: pypi
+          - target: openvsx
+          - target: conda
+          - target: nuget
+          - target: composer
+          - target: rubygems
+          - target: terraform
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: testpass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:testpass@localhost:5432/postgres
+      # Same pins, and the same reason, as `heavy-client`: what these assert is
+      # one client generation's behaviour. Kept in step with that job by being
+      # spelled the same way rather than shared, because a matrix cannot inherit
+      # another matrix's env.
+      NODE_VERSION: "24"
+      DOTNET_CHANNEL: "10.0"
+      TERRAFORM_VERSION: "1.8.5"
+      BUNDLER_VERSION: "4.0.17"
+      GEM_HOME: ${{ github.workspace }}/.gem
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: "stable"
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@b6b84cf49ebfe0176417bdce007c624f0db37f20 # v2.86.2
+        with:
+          tool: cargo-llvm-cov
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
+
+      - name: Set up Node (npm / Open VSX)
+        if: matrix.target == 'npm' || matrix.target == 'openvsx'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Install the .NET SDK
+        if: matrix.target == 'nuget'
+        run: |
+          curl -fsSL --proto '=https' --proto-redir '=https' \
+            https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
+          bash /tmp/dotnet-install.sh --channel "$DOTNET_CHANNEL" --install-dir "$HOME/.dotnet"
+          echo "$HOME/.dotnet" >> "$GITHUB_PATH"
+          echo "DOTNET_ROOT=$HOME/.dotnet" >> "$GITHUB_ENV"
+      - name: Install Terraform
+        if: matrix.target == 'terraform'
+        run: |
+          curl -fsSL --proto '=https' --proto-redir '=https' -o /tmp/terraform.zip \
+            "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+          sudo unzip -o -q /tmp/terraform.zip -d /usr/local/bin
+          terraform version
+      - name: Put the workspace gem bindir on PATH
+        if: matrix.target == 'rubygems'
+        run: echo "$GEM_HOME/bin" >> "$GITHUB_PATH"
+      - name: Cache heavy client downloads
+        if: matrix.target == 'conda' || matrix.target == 'composer'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/batlehub-heavy
+          key: heavy-authz-${{ matrix.target }}-${{ hashFiles('tests/heavy/authz.sh') }}
+
+      - name: Clean previous coverage data
+        run: cargo llvm-cov clean --workspace
+      - name: Run the authorization suite (${{ matrix.target }})
+        run: bash tests/heavy/authz.sh ${{ matrix.target }}
+        env:
+          COVERAGE: "1"
+      - name: Generate LCOV
+        run: >-
+          cargo llvm-cov report --lcov --output-path coverage-authz-${{ matrix.target }}.lcov
+          --ignore-filename-regex "${{ env.COVERAGE_EXCLUDE }}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-authz-${{ matrix.target }}
+          path: coverage-authz-${{ matrix.target }}.lcov
+          if-no-files-found: error
+
   coverage-report:
     name: Coverage report (merged)
     runs-on: ubuntu-latest
-    needs: [unit, integration, heavy-marketplace, heavy-bundler, heavy-client]
+    needs: [unit, integration, heavy-marketplace, heavy-bundler, heavy-client, heavy-authz]
     # Run even when a coverage job fails: merge_coverage.py renders an "absent"
     # row for any missing LCOV, so a partially-green pipeline still reports
     # (download-artifact with a pattern warns, not fails, on zero matches).
@@ -558,6 +669,16 @@ jobs:
             heavy-nuget=coverage-heavy-nuget.lcov \
             heavy-composer=coverage-heavy-composer.lcov \
             heavy-terraform=coverage-heavy-terraform.lcov \
+            authz-matrix=coverage-authz-matrix.lcov \
+            authz-signing=coverage-authz-signing.lcov \
+            authz-npm=coverage-authz-npm.lcov \
+            authz-pypi=coverage-authz-pypi.lcov \
+            authz-openvsx=coverage-authz-openvsx.lcov \
+            authz-conda=coverage-authz-conda.lcov \
+            authz-nuget=coverage-authz-nuget.lcov \
+            authz-composer=coverage-authz-composer.lcov \
+            authz-rubygems=coverage-authz-rubygems.lcov \
+            authz-terraform=coverage-authz-terraform.lcov \
             | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

@@ -196,7 +196,7 @@ function cancel(): void {
       <slot />
 
       <div v-if="needsTypedName" class="space-y-2">
-        <Label :for="'destructive-confirm-name'" class="text-xs text-muted-foreground">
+        <Label for="destructive-confirm-name" class="text-xs text-muted-foreground">
           <i18n-t keypath="destructive.typeToConfirm" tag="span">
             <template #name>
               <span class="font-mono text-foreground">{{ confirmName }}</span>

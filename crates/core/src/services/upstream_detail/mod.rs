@@ -219,15 +219,21 @@ pub fn listing_carries_links(kind: RegistryKind) -> bool {
     }
 }
 
-/// A semver-ish pre-release check, matching what the detail page already does.
+/// RFC 0015 §4.5's one definition of "pre-release", for the upstream half of
+/// the detail page's version table.
 ///
-/// Deliberately the same crude rule the existing version table uses (`contains
-/// '-'`) rather than a `semver` parse: the two lists sit in one table and a row
-/// that sorted differently depending on where it came from would be a visible
-/// inconsistency with no upside.
-pub(crate) fn is_prerelease(version: &str) -> bool {
-    version.contains('-')
-}
+/// This *was* the crude `contains('-')` rule, and its doc comment defended the
+/// crudeness with the table's own consistency: two lists in one table, and a row
+/// graded differently depending on which list it came from would be a visible
+/// inconsistency. The argument was sound and the conclusion was not — one shared
+/// function serves that consistency better than two matching approximations, and
+/// the local half of the same table now calls the same thing.
+///
+/// The re-export is kept rather than replaced at each call site because five
+/// ecosystem parsers in this module name it, and one of them
+/// (`rubygems.rs`) uses it only as a fallback behind the upstream's own
+/// `prerelease` flag.
+pub(crate) use crate::services::version_order::is_prerelease;
 
 /// Parse an RFC 3339 timestamp, ignoring anything that is not one.
 pub(crate) fn parse_time(raw: &str) -> Option<DateTime<Utc>> {

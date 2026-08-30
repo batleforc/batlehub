@@ -2009,3 +2009,665 @@ fn a_signing_secret_no_registry_uses_warns() {
         "{codes:?}"
     );
 }
+
+// ── Local retention (RFC 0016 §4.6) ───────────────────────────────────────────
+
+/// A `[registries.retention]` block on the given registry `mode`, with whatever
+/// keys the caller wants inside it.
+fn retention_config(mode: &str, block: &str) -> AppConfig {
+    parse_config(&format!(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "{mode}"
+        upstreams = ["https://registry.npmjs.org"]
+
+        [registries.retention]
+{block}"#
+    ))
+}
+
+#[test]
+fn retention_is_absent_by_default_and_valid() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local""#,
+    );
+    cfg.validate().expect("no block is the default");
+    assert!(cfg.registries[0].retention.is_none());
+}
+
+#[test]
+fn retention_dry_run_defaults_to_on() {
+    let cfg = retention_config("local", "        tombstone_detail_for_days = 730");
+    cfg.validate().expect("valid");
+    let ret = cfg.registries[0].retention.as_ref().unwrap();
+    assert_eq!(ret.tombstone_detail_for_days, Some(730));
+    assert!(
+        ret.dry_run,
+        "a configured window must do nothing until an operator turns dry_run off"
+    );
+}
+
+/// The derived `Default` would say `dry_run: false`, which is the destructive
+/// direction and the opposite of the `serde` default. The two must agree.
+#[test]
+fn retention_struct_default_matches_the_serde_default() {
+    let from_toml: RetentionConfig = toml::from_str("").expect("empty table parses");
+    let from_default = RetentionConfig::default();
+    assert_eq!(from_default.dry_run, from_toml.dry_run);
+    assert!(from_default.dry_run);
+    assert_eq!(
+        from_default.tombstone_detail_for_days,
+        from_toml.tombstone_detail_for_days
+    );
+}
+
+#[test]
+fn retention_on_a_proxy_registry_is_rejected() {
+    let err = retention_config("proxy", "        tombstone_detail_for_days = 730")
+        .validate()
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("locally published versions"), "{err}");
+    assert!(
+        err.contains("[registries.cache]"),
+        "the error must point at the block the operator actually meant: {err}"
+    );
+}
+
+#[test]
+fn an_empty_retention_block_is_rejected() {
+    let err = retention_config("local", "        # nothing at all")
+        .validate()
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no setting that does anything"), "{err}");
+}
+
+#[test]
+fn a_zero_or_short_detail_window_is_rejected() {
+    let zero = retention_config("local", "        tombstone_detail_for_days = 0")
+        .validate()
+        .unwrap_err()
+        .to_string();
+    assert!(zero.contains("never be investigated"), "{zero}");
+
+    let short = retention_config("local", "        tombstone_detail_for_days = 7")
+        .validate()
+        .unwrap_err()
+        .to_string();
+    assert!(short.contains("30-day floor"), "{short}");
+}
+
+/// The reclamation keys are phase 3 and depend on RFC 0015's `policy` table.
+/// They must fail to load rather than parse and sit inert — an operator who
+/// wrote one believes versions are being reclaimed.
+#[test]
+fn a_phase_three_retention_key_is_refused_rather_than_ignored() {
+    // Not through `parse_config`, which `expect`s the parse: the failure is the
+    // assertion here, not the setup.
+    let raw = r#"
+        [database]
+        type = "postgresql"
+        url = "postgresql://localhost/test"
+
+        [storage]
+        type = "filesystem"
+        path = "/tmp/batlehub-test"
+
+        [server]
+        host = "127.0.0.1"
+        port = 8080
+
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+
+        [registries.retention]
+        keep_if_pulled = "90d""#;
+    let err = toml::from_str::<AppConfig>(raw)
+        .expect_err("an unimplemented key must not load silently")
+        .to_string();
+    assert!(err.contains("keep_if_pulled"), "{err}");
+}
+
+#[test]
+fn live_compaction_warns_on_every_reload() {
+    let cfg = retention_config(
+        "local",
+        "        tombstone_detail_for_days = 730\n        dry_run = false",
+    );
+    cfg.validate().expect("legal — it is the only way it works");
+    let warning = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::RETENTION_COMPACTION_LIVE)
+        .expect("an armed compaction must be said out loud");
+    assert!(
+        warning.message.contains("coordinate claim is kept"),
+        "the warning must say what survives, not only what is lost: {}",
+        warning.message
+    );
+    assert_eq!(warning.path, "registries[0].retention");
+}
+
+#[test]
+fn a_dry_run_compaction_does_not_warn() {
+    let cfg = retention_config("local", "        tombstone_detail_for_days = 730");
+    let codes: Vec<String> = cfg.warnings().into_iter().map(|w| w.code).collect();
+    assert!(
+        !codes
+            .iter()
+            .any(|c| c == warnings::RETENTION_COMPACTION_LIVE),
+        "{codes:?}"
+    );
+}
+
+// ── Retention keep conditions (RFC 0016 §4.2, §4.6) ───────────────────────────
+
+#[test]
+fn retention_keep_conditions_parse_with_safe_defaults() {
+    let cfg = retention_config(
+        "local",
+        "        keep_versions = 10\n        keep_if_pulled_days = 90",
+    );
+    cfg.validate().expect("valid");
+    let ret = cfg.registries[0].retention.as_ref().unwrap();
+    assert_eq!(ret.keep_versions, Some(10));
+    assert_eq!(ret.keep_if_pulled_days, Some(90));
+    assert!(
+        ret.dry_run,
+        "a configured policy reclaims nothing until asked"
+    );
+    assert!(
+        ret.keep_yanked,
+        "a yank is not a reason to destroy the only copy"
+    );
+    assert_eq!(ret.reclaim_delay_ms, 0);
+    assert!(ret.download_signal_floor_days.is_none());
+}
+
+/// The block that would reclaim *everything* on its first live run: no keep
+/// condition, so the union of vetoes is empty and nothing vetoes.
+#[test]
+fn a_retention_block_with_no_keep_condition_is_rejected() {
+    let err = retention_config("local", "        keep_yanked = true")
+        .validate()
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("reclaim every version on its first live run"),
+        "the error must say what the empty block would do: {err}"
+    );
+}
+
+/// `keep_yanked` alone must not make an otherwise-empty block look configured —
+/// it defaults to true and only ever vetoes, so a block containing nothing else
+/// still destroys every unyanked version.
+#[test]
+fn keep_yanked_alone_does_not_count_as_a_keep_condition() {
+    let cfg = retention_config("local", "        keep_yanked = false");
+    assert!(cfg.validate().is_err());
+    assert!(!cfg.registries[0]
+        .retention
+        .as_ref()
+        .unwrap()
+        .reclaims_anything());
+}
+
+#[test]
+fn a_zero_keep_condition_is_rejected() {
+    for key in ["keep_versions", "keep_for_days", "keep_if_pulled_days"] {
+        let err = retention_config("local", &format!("        {key} = 0"))
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("keeps nothing"), "{key}: {err}");
+    }
+}
+
+/// **The mistake this feature exists to make hard** — reclaiming without
+/// consulting the download signal.
+#[test]
+fn live_reclamation_without_a_pull_veto_warns_loudly() {
+    let cfg = retention_config(
+        "local",
+        "        keep_versions = 10\n        dry_run = false",
+    );
+    cfg.validate()
+        .expect("legal, and exactly the dangerous shape");
+    let codes: Vec<String> = cfg.warnings().into_iter().map(|w| w.code).collect();
+    assert!(
+        codes.iter().any(|c| c == warnings::RETENTION_NO_PULL_VETO),
+        "{codes:?}"
+    );
+    assert!(
+        codes
+            .iter()
+            .any(|c| c == warnings::RETENTION_RECLAMATION_LIVE),
+        "{codes:?}"
+    );
+
+    let warning = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::RETENTION_NO_PULL_VETO)
+        .unwrap();
+    assert!(
+        warning.message.contains("pinned to"),
+        "the warning must describe the consequence, not the setting: {}",
+        warning.message
+    );
+}
+
+#[test]
+fn live_reclamation_with_a_pull_veto_warns_once_not_twice() {
+    let cfg = retention_config(
+        "local",
+        "        keep_versions = 10\n        keep_if_pulled_days = 90\n        dry_run = false",
+    );
+    let codes: Vec<String> = cfg.warnings().into_iter().map(|w| w.code).collect();
+    assert!(
+        !codes.iter().any(|c| c == warnings::RETENTION_NO_PULL_VETO),
+        "a policy that consults the signal must not be warned about it: {codes:?}"
+    );
+    assert!(
+        codes
+            .iter()
+            .any(|c| c == warnings::RETENTION_RECLAMATION_LIVE),
+        "it is still destroying the only copy: {codes:?}"
+    );
+}
+
+#[test]
+fn a_dry_run_policy_does_not_warn_about_reclamation() {
+    let cfg = retention_config("local", "        keep_versions = 10");
+    let codes: Vec<String> = cfg.warnings().into_iter().map(|w| w.code).collect();
+    assert!(
+        !codes
+            .iter()
+            .any(|c| c == warnings::RETENTION_RECLAMATION_LIVE
+                || c == warnings::RETENTION_NO_PULL_VETO),
+        "{codes:?}"
+    );
+}
+
+// ── RFC 0015 §4.9 — tiered-policy warnings ───────────────────────────────────
+//
+// Every case here is a **legal config that does nothing**, which is the whole
+// category §4.9 reserves warnings for. Each test asserts the config still
+// validates before asserting the warning, because a warning that fires on a
+// config the loader would have rejected anyway is not doing any work.
+
+fn codes(cfg: &AppConfig) -> Vec<String> {
+    cfg.warnings().into_iter().map(|w| w.code).collect()
+}
+
+/// `prerelease_visibility` on a registry that publishes nothing.
+///
+/// The one warning §4.9 argues for at length: it is a warning rather than a
+/// rejection because `[registries.beta_channel]` carries no mode restriction
+/// today and translates into this setting, so refusing it would stop an existing
+/// instance from booting on upgrade — the one thing §10 forbids.
+#[test]
+fn prerelease_visibility_on_a_proxy_registry_warns_rather_than_failing() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "proxy"
+        prerelease_visibility = "team""#,
+    );
+    cfg.validate()
+        .expect("must not fail: an upgraded beta_channel config lands exactly here");
+    let c = codes(&cfg);
+    assert!(
+        c.iter()
+            .any(|x| x == warnings::PRERELEASE_VISIBILITY_PROXY_MODE),
+        "{c:?}"
+    );
+}
+
+/// Pre-releases visible to a wider audience than releases is legal and is
+/// almost always a typo, since the setting exists to do the opposite.
+#[test]
+fn a_wider_prerelease_audience_warns() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+        visibility = "team"
+        prerelease_visibility = "public""#,
+    );
+    cfg.validate().expect("legal");
+    let c = codes(&cfg);
+    assert!(
+        c.iter().any(|x| x == warnings::PRERELEASE_VISIBILITY_WIDER),
+        "{c:?}"
+    );
+}
+
+/// …and the ordinary direction — pre-releases narrower than releases — is
+/// silent. Without this the test above would pass on a warning that fires on
+/// every configuration.
+#[test]
+fn a_narrower_prerelease_audience_is_silent() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+        visibility = "public"
+        prerelease_visibility = "team""#,
+    );
+    cfg.validate().expect("legal");
+    let c = codes(&cfg);
+    assert!(
+        !c.iter().any(|x| x == warnings::PRERELEASE_VISIBILITY_WIDER),
+        "the intended direction must not warn: {c:?}"
+    );
+}
+
+/// Grants decided *who*; nothing decided *how wide*. §4.5's two directions, met
+/// one at a time.
+#[test]
+fn a_namespace_with_grants_and_no_visibility_warns() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+
+        [[registries.namespaces]]
+        match = "@acme/billing"
+
+        [registries.namespaces.grants]
+        "group:*:platform" = ["releases:read"]"#,
+    );
+    cfg.validate().expect("legal");
+    let c = codes(&cfg);
+    assert!(
+        c.iter()
+            .any(|x| x == warnings::NAMESPACE_GRANTS_WITHOUT_VISIBILITY),
+        "{c:?}"
+    );
+}
+
+/// The same namespace, with visibility set, is silent — so the warning is about
+/// the missing half rather than about having grants at all.
+#[test]
+fn a_namespace_with_grants_and_visibility_is_silent() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+
+        [[registries.namespaces]]
+        match = "@acme/billing"
+        visibility = "team"
+
+        [registries.namespaces.grants]
+        "group:*:platform" = ["releases:read"]"#,
+    );
+    cfg.validate().expect("legal");
+    let c = codes(&cfg);
+    assert!(
+        !c.iter()
+            .any(|x| x == warnings::NAMESPACE_GRANTS_WITHOUT_VISIBILITY),
+        "{c:?}"
+    );
+}
+
+/// `immutable = "always"` makes `releases:overwrite` inert. Not a
+/// contradiction — a replace needs the verb *and* a mutable resource — but the
+/// operator who wrote both believes one of them is doing something.
+#[test]
+fn immutable_always_beside_an_overwrite_grant_warns() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+
+        [registries.grants]
+        "role:user" = ["releases:overwrite"]
+
+        [registries.versioning]
+        immutable = "always""#,
+    );
+    cfg.validate().expect("legal");
+    let c = codes(&cfg);
+    assert!(
+        c.iter()
+            .any(|x| x == warnings::IMMUTABLE_ALWAYS_WITH_OVERWRITE_GRANT),
+        "{c:?}"
+    );
+}
+
+/// `released` on a node that publishes no pre-releases can never take its second
+/// branch: it is `always`, written in two settings.
+#[test]
+fn immutable_released_without_prereleases_warns() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+
+        [registries.versioning]
+        immutable = "released"
+        allow_prerelease = false"#,
+    );
+    cfg.validate().expect("legal");
+    let c = codes(&cfg);
+    assert!(
+        c.iter()
+            .any(|x| x == warnings::IMMUTABLE_RELEASED_WITHOUT_PRERELEASES),
+        "{c:?}"
+    );
+}
+
+/// An ordinary tiered-policy config warns about nothing, which is what makes
+/// every assertion above meaningful.
+#[test]
+fn an_ordinary_namespace_policy_is_silent() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+        visibility = "public"
+
+        [[registries.namespaces]]
+        match = "@acme/billing"
+        visibility = "team"
+        prerelease_visibility = "team"
+
+        [registries.namespaces.grants]
+        "group:*:platform" = ["releases:read", "releases:publish"]
+
+        [registries.namespaces.versioning]
+        enforce_semver = true
+        immutable = "released"
+        monotonic = true"#,
+    );
+    cfg.validate().expect("legal");
+    let c = codes(&cfg);
+    for code in [
+        warnings::PRERELEASE_VISIBILITY_PROXY_MODE,
+        warnings::PRERELEASE_VISIBILITY_WIDER,
+        warnings::NAMESPACE_GRANTS_WITHOUT_VISIBILITY,
+        warnings::IMMUTABLE_ALWAYS_WITH_OVERWRITE_GRANT,
+        warnings::IMMUTABLE_RELEASED_WITHOUT_PRERELEASES,
+    ] {
+        assert!(!c.iter().any(|x| x == code), "{code} fired: {c:?}");
+    }
+}
+
+// ── RFC 0015 §4.7 — shadow mode ──────────────────────────────────────────────
+
+/// The warning §4.7 asks for on **every** reload, not once at the edit.
+///
+/// This is the most dangerous setting in RFC 0015: a request that would be
+/// refused is served. The warning names the expiry because the countdown is the
+/// point — a shadow that cannot be forgotten is what the required `until` buys.
+#[test]
+fn a_registry_in_shadow_warns_on_every_reload() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+
+        [registries.grants_shadow]
+        until = "2099-12-01""#,
+    );
+    cfg.validate().expect("legal — that is the whole problem");
+    let w = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::GRANTS_IN_SHADOW)
+        .expect("must warn");
+    assert!(
+        w.message.contains("2099-12-01"),
+        "the expiry is the point: {}",
+        w.message
+    );
+    assert!(
+        w.message.contains("bypass"),
+        "and the message must name the consequence, not the setting: {}",
+        w.message
+    );
+}
+
+/// A namespace shadow warns too, and names the namespace.
+#[test]
+fn a_namespace_in_shadow_warns() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+
+        [[registries.namespaces]]
+        match = "@acme"
+
+        [registries.namespaces.grants_shadow]
+        until = "2099-12-01""#,
+    );
+    cfg.validate().expect("legal");
+    let w = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::GRANTS_IN_SHADOW)
+        .expect("must warn");
+    assert!(w.message.contains("@acme"), "{}", w.message);
+}
+
+/// A config with no shadow is silent, which is what makes the two above
+/// meaningful.
+#[test]
+fn no_shadow_is_silent() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local""#,
+    );
+    cfg.validate().expect("legal");
+    assert!(!cfg
+        .warnings()
+        .iter()
+        .any(|w| w.code == warnings::GRANTS_IN_SHADOW));
+}
+
+/// `until` is **required by the type**, so a shadow with no expiry cannot be
+/// written at all.
+///
+/// §4.7 asks config load to reject the flag without a companion date. A
+/// rejection the type performs is stronger than one a validator remembers to,
+/// and this is the assertion that it is the type doing it.
+#[test]
+fn a_shadow_without_an_expiry_does_not_parse() {
+    let err = toml::from_str::<AppConfig>(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+
+        [registries.grants_shadow]"#,
+    )
+    .expect_err("a shadow with no expiry must not parse");
+    assert!(
+        err.to_string().contains("until"),
+        "the error must name the missing field: {err}"
+    );
+}
+
+/// `versioning.dry_run` warns, more quietly.
+///
+/// §4.7's table calls this direction **mixed** rather than fail-open: bad data
+/// lands, nothing leaks. It still warns, because the operator who sets it during
+/// an import is the operator who forgets to unset it afterwards.
+#[test]
+fn versioning_in_dry_run_warns() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+
+        [registries.versioning]
+        enforce_semver = true
+        dry_run = true"#,
+    );
+    cfg.validate().expect("legal");
+    assert!(cfg
+        .warnings()
+        .iter()
+        .any(|w| w.code == warnings::VERSIONING_IN_DRY_RUN));
+}
+
+/// …and `dry_run` defaults to `false` on `versioning`, as §4.7 requires.
+///
+/// Only `retention.dry_run` defaults to `true`, and RFC 0016 argues that from
+/// the fact that it is the only one of the three whose dry-run direction is
+/// unambiguously safe.
+#[test]
+fn versioning_dry_run_defaults_to_false() {
+    let cfg = parse_config(
+        r#"
+        [[registries]]
+        type = "npm"
+        name = "npm"
+        mode = "local"
+
+        [registries.versioning]
+        enforce_semver = true"#,
+    );
+    assert!(!cfg.registries[0].versioning.as_ref().unwrap().dry_run);
+    assert!(!cfg
+        .warnings()
+        .iter()
+        .any(|w| w.code == warnings::VERSIONING_IN_DRY_RUN));
+}

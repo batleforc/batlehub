@@ -240,7 +240,7 @@ const kebab = (s) =>
 
 /** Rewrite one `| Label | … |` row's value, keeping both columns' widths. */
 function setRow(text, label, value) {
-  const row = new RegExp(`^\\|(\\s*${label}\\s*)\\|([^|]*)\\|[ \\t]*$`, "m");
+  const row = new RegExp(String.raw`^\|(\s*${label}\s*)\|([^|]*)\|[ \t]*$`, "m");
   if (!row.test(text)) throw new Error(`the template has no "| ${label} | … |" row`);
   return text.replace(row, (_, pad, cell) => {
     // The value column is ragged in the existing RFCs once the prose outgrows
@@ -270,8 +270,7 @@ function cmdNew(opts) {
   let id;
   if (opts.bis) {
     const num = Number(opts.bis);
-    const base = rfcs.find((r) => r.num === num && !r.bis);
-    if (!base) {
+    if (!rfcs.some((r) => r.num === num && !r.bis)) {
       console.error(`no RFC ${opts.bis} to write a bis of`);
       process.exit(2);
     }

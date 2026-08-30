@@ -183,6 +183,20 @@ impl OwnershipPort for PgOwnershipStore {
             .collect())
     }
 
+    /// One statement rather than the port's read-then-delete-each default: the
+    /// caller is releasing a name, and a loop that fails partway leaves some of
+    /// the previous owner's authority standing over a package someone else may
+    /// already have taken.
+    async fn remove_all_owners(&self, registry: &str, package: &str) -> Result<(), CoreError> {
+        sqlx::query("DELETE FROM package_owners WHERE registry = $1 AND package_name = $2")
+            .bind(registry)
+            .bind(package)
+            .execute(&self.pool)
+            .await
+            .db_err()?;
+        Ok(())
+    }
+
     async fn list_owned_by(&self, identity: &Identity) -> Result<Vec<(String, String)>, CoreError> {
         // An anonymous caller with no groups owns nothing, and the query below
         // would otherwise compare `principal_id` against NULL for every row.

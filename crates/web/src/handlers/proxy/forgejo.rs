@@ -11,6 +11,7 @@ use batlehub_core::{entities::PackageId, services::ProxyService};
 use super::common::proxy_stream;
 use crate::handlers::schemas::ArtifactBytes;
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
+use batlehub_core::entities::Action;
 
 fn require_forgejo(registry: &str, map: &RegistryMap) -> Result<(), AppError> {
     match map.type_of(registry).as_deref() {
@@ -57,12 +58,5 @@ pub async fn fj_packages(
     batlehub_core::services::validate_path_safe("path", &api_path).map_err(AppError::from)?;
     let pkg = PackageId::new(&registry, "_packages", "_")
         .with_artifact(format!("pkgpath/api/packages/{api_path}"));
-    proxy_stream(
-        svc,
-        pkg,
-        identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
-        None,
-    )
-    .await
+    proxy_stream(svc, pkg, identity, Action::ReleasesRead, None).await
 }

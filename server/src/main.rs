@@ -1,4 +1,6 @@
 mod builders;
+mod explain;
+mod grants;
 mod hot_config;
 mod server_factory;
 mod setup;
@@ -17,8 +19,9 @@ use clap::{Parser, Subcommand};
 use metrics_exporter_prometheus::PrometheusBuilder;
 
 use batlehub_adapters::db::{
-    PgArtifactMetaRepository, PgBetaChannelStore, PgConfigChangeRepository, PgOwnershipStore,
-    PgPackageRepository, PgStorageAdminRepository, PgTeamNamespaceStore, PgVulnerabilityRepository,
+    PgArtifactMetaRepository, PgBetaChannelStore, PgConfigChangeRepository, PgGrantRepository,
+    PgOwnershipStore, PgPackageRepository, PgStorageAdminRepository, PgTeamNamespaceStore,
+    PgVulnerabilityRepository,
 };
 use batlehub_adapters::local_registry::PostgresLocalRegistry;
 use batlehub_adapters::vulnerability::OsvScanner;
@@ -29,6 +32,8 @@ use batlehub_core::services::{
 };
 use batlehub_web::services::{BannerService, ConfigReloadParams, ConfigReloadService};
 use batlehub_web::{new_access_lock, openapi_spec, RateLimitService};
+
+use crate::explain::explain_config;
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -54,6 +59,16 @@ enum Command {
         /// The plain-text token to hash.
         token: String,
     },
+    /// Print the permissions each subject holds on each registry, expanded.
+    ///
+    /// RFC 0015 §4.2 moves wildcard expansion to config load, so what a `"*"`
+    /// covers is a fact about the loaded model rather than something implied at
+    /// each decision. This is what makes it visible — an expansion nobody can
+    /// print is only half of that property.
+    ExplainConfig {
+        /// Config file to read. Defaults to the `--config` argument.
+        path: Option<String>,
+    },
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -70,6 +85,14 @@ async fn main() -> Result<()> {
         }
         Some(Command::HashToken { token }) => {
             println!("{}", batlehub_adapters::auth::hash_static_token(&token));
+            return Ok(());
+        }
+        Some(Command::ExplainConfig { ref path }) => {
+            let path = path
+                .clone()
+                .or_else(|| cli.config.clone())
+                .unwrap_or_else(|| "config.toml".to_owned());
+            explain_config(&path)?;
             return Ok(());
         }
         None => {}
@@ -165,12 +188,35 @@ async fn main() -> Result<()> {
         &config.registries,
     ));
     stores::spawn_quota_gauge_sampler(Arc::clone(&quota_svc));
-    let ownership_store = Arc::new(PgOwnershipStore::new(repo.pool()))
-        as Arc<dyn batlehub_core::ports::OwnershipPort>;
     let beta_channel_store: Arc<dyn BetaChannelPort> =
         Arc::new(PgBetaChannelStore::new(repo.pool()));
+    // RFC 0015 §6.3 — the package and version grant tiers.
+    let grant_repo: Option<Arc<dyn batlehub_core::ports::GrantRepository>> =
+        Some(Arc::new(PgGrantRepository::new(repo.pool())));
+    // RFC 0015 §10 rule 9 — ownership *is* a package-tier grant, so the store
+    // that records it writes both. Wrapped here rather than at each caller
+    // because ownership changes through five doors and four of them used to
+    // write only `package_owners`; see `OwnershipGrants`.
+    let ownership_store = {
+        let inner = Arc::new(PgOwnershipStore::new(repo.pool()))
+            as Arc<dyn batlehub_core::ports::OwnershipPort>;
+        match grant_repo.clone() {
+            Some(grants) => {
+                batlehub_core::services::ownership_grants::OwnershipGrants::wrap(inner, grants)
+            }
+            None => inner,
+        }
+    };
+    // RFC 0015 §4.2 — the GPG keys a Terraform namespace signs its providers
+    // with. Absent, the download response serves the empty list it always did.
+    let signing_key_store: Arc<dyn batlehub_core::ports::SigningKeyPort> =
+        Arc::new(batlehub_adapters::db::PgSigningKeyStore::new(repo.pool()));
     let team_namespace_store: Arc<dyn batlehub_core::ports::TeamNamespacePort> =
         Arc::new(PgTeamNamespaceStore::new(repo.pool()));
+    // RFC 0015 §6.3 — the package and version policy tiers, the twin of
+    // `grant_repo` above for the five policies that compose deepest-wins.
+    let policy_repo: Arc<dyn batlehub_core::ports::PolicyRepository> =
+        Arc::new(batlehub_adapters::db::PgPolicyRepository::new(repo.pool()));
 
     // Built before the hot bundle because `license_gate` reads the recorded
     // licence through it; `build_sbom_service` below wraps the same repository.
@@ -191,6 +237,9 @@ async fn main() -> Result<()> {
         &(repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>),
         &vuln_repo,
         &sbom_repo,
+        &grant_repo,
+        &Some(Arc::clone(&policy_repo)),
+        &Some(Arc::clone(&signing_key_store)),
     )?;
     let warming_clients: HashMap<String, Arc<dyn batlehub_core::ports::RegistryClient>> = init_hot
         .registries
@@ -314,6 +363,9 @@ async fn main() -> Result<()> {
         repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>,
         Arc::clone(&vuln_repo),
         Arc::clone(&sbom_repo),
+        grant_repo.clone(),
+        Some(Arc::clone(&policy_repo)),
+        Some(Arc::clone(&signing_key_store)),
         settled_text_config,
     );
     // Built once here so the same instance is shared with the reload service (for
@@ -446,6 +498,7 @@ async fn main() -> Result<()> {
         user_block_repo,
         beta_channel_store,
         team_namespace_store,
+        policy_repo,
         ip_blocking_cfg,
         proxy_trust,
         registry_host_map,

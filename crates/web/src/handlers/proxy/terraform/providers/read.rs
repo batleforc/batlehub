@@ -6,6 +6,7 @@ use super::{
     ProxyService, RegistryMap, RegistryMode, RegistryModeMap, Responder, TerraformPlatform,
 };
 use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
+use batlehub_core::entities::Action;
 use batlehub_core::services::SignedUrlCoordinate;
 
 /// Resolve the identity for one of the three routes Terraform fetches with no
@@ -159,7 +160,7 @@ pub async fn terraform_provider_download(
     let req_ctx = batlehub_core::services::ProxyRequest {
         package_id: base_pkg,
         identity: identity.0.clone(),
-        resource_type: batlehub_core::rules::resource_type::RELEASES_READ.to_owned(),
+        action: Action::ReleasesRead.to_owned(),
         ip_address: None,
         user_agent: None,
     };
@@ -185,7 +186,7 @@ pub async fn terraform_provider_download(
     let download_ctx = batlehub_core::services::ProxyRequest {
         package_id: PackageId::new(&registry, &download_name, &version),
         identity: identity.0,
-        resource_type: batlehub_core::rules::resource_type::RELEASES_READ.to_owned(),
+        action: Action::ReleasesRead.to_owned(),
         ip_address: None,
         user_agent: None,
     };
@@ -369,14 +370,7 @@ pub async fn terraform_provider_shasums(
     .await?;
 
     let pkg = PackageId::new(&registry, &auth_name, &version).with_artifact("shasums");
-    proxy_stream(
-        svc,
-        pkg,
-        identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
-        Some("text/plain"),
-    )
-    .await
+    proxy_stream(svc, pkg, identity, Action::ReleasesRead, Some("text/plain")).await
 }
 
 /// The detached signature over the checksum manifest. See
@@ -429,7 +423,7 @@ pub async fn terraform_provider_shasums_sig(
         svc,
         pkg,
         identity,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         Some("application/octet-stream"),
     )
     .await
@@ -502,7 +496,7 @@ pub async fn terraform_provider_artifact(
             svc,
             pkg,
             identity,
-            batlehub_core::rules::resource_type::RELEASES_READ,
+            Action::ReleasesRead,
             Some("application/zip"),
         )
         .await;
@@ -522,12 +516,7 @@ pub async fn terraform_provider_artifact(
     // Terraform installs.
     let pkg = PackageId::new(&registry, &auth_name, &version).with_artifact(format!("{os}/{arch}"));
     let buf = local_svc
-        .get_artifact_at_key(
-            &pkg,
-            &key,
-            batlehub_core::rules::resource_type::RELEASES_READ,
-            &identity,
-        )
+        .get_artifact_at_key(&pkg, &key, Action::ReleasesRead, &identity)
         .await
         .map_err(AppError::from)?
         .ok_or_else(|| {

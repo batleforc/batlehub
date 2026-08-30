@@ -1,6 +1,8 @@
 pub mod admin;
+pub mod authz;
 pub mod blocking;
 pub mod cache_control;
+pub mod document_cache;
 pub mod escaping;
 pub mod eviction;
 pub mod explore_cache;
@@ -8,12 +10,14 @@ pub mod hot_config;
 pub mod integrity;
 pub mod local_registry;
 pub mod metrics;
+pub mod ownership_grants;
 pub mod proxy;
 pub mod quota;
 pub mod readme;
-pub mod registry_authz;
+pub mod retention;
 pub mod sbom;
 pub mod search;
+pub mod shadow;
 pub mod signature;
 pub mod signed_url;
 pub mod stats_rollup;
@@ -30,7 +34,7 @@ pub use eviction::{CoherenceReport, EvictionConfig, EvictionReport, EvictionServ
 pub use explore_cache::ExploreCache;
 pub use hot_config::{
     new_hot_lock, FeatureFlags, HotConfig, HotConfigLock, IntegrityPolicy,
-    ReadmeConfig as HotReadmeConfig, RegistryPolicy, RemoteImagePolicy,
+    ReadmeConfig as HotReadmeConfig, RegistryPolicy, RemoteImagePolicy, RetentionPolicy,
     SbomConfig as HotSbomConfig, SigningConfig, UpstreamDetailConfig as HotUpstreamDetailConfig,
     VersioningPolicy, DEFAULT_CONSOLE_FETCH, DEFAULT_README_IMAGE_MAX_BYTES,
     DEFAULT_README_MAX_BYTES, DEFAULT_UPSTREAM_MAX_VERSIONS, DEFAULT_UPSTREAM_NEGATIVE_TTL_SECS,
@@ -49,6 +53,10 @@ pub use quota::{
     RegistryQuotaStatus,
 };
 pub use readme::{truncate_to, ReadmeCapture, ReadmeService, RecordOutcome};
+pub use retention::{
+    KeepReason, RetentionDecision, RetentionPolicy as RetentionRunPolicy, RetentionReport,
+    RetentionService, DEFAULT_DOWNLOAD_SIGNAL_FLOOR, MAX_REPORTED_DECISIONS,
+};
 pub use sbom::{SbomProxiedOptions, SbomPublishOptions, SbomService};
 pub use search::{SearchHit, SearchMode, SearchResults};
 pub use signed_url::{

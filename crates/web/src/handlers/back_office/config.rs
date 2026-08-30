@@ -12,7 +12,6 @@ use batlehub_core::{
     error::CoreError,
 };
 
-use super::require_admin;
 use crate::{
     error::AppError,
     extractors::AuthIdentity,
@@ -64,7 +63,7 @@ pub struct ReloadResponse {
     responses(
         (status = 200, description = "Config reloaded", body = ReloadResponse),
         (status = 400, description = "Validation or probe failure"),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`config:write` required"),
         (status = 503, description = "Hot reload disabled"),
     ),
     security(("bearer_token" = [])),
@@ -73,8 +72,15 @@ pub struct ReloadResponse {
 pub async fn reload_config(
     identity: AuthIdentity,
     reload_svc: web::Data<Arc<ConfigReloadService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::ConfigWrite,
+        None,
+        &hot,
+    )
+    .await?;
     require_hot_reload(&reload_svc)?;
     let user_id = identity.0.user_id.as_deref().unwrap_or("unknown");
     let diff = reload_svc
@@ -96,7 +102,7 @@ pub async fn reload_config(
     tag = "back-office",
     responses(
         (status = 200, description = "Pending reload snapshot", body = PendingReloadSnapshot),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`config:read` required"),
         (status = 404, description = "No pending reload"),
         (status = 503, description = "Hot reload disabled"),
     ),
@@ -106,8 +112,15 @@ pub async fn reload_config(
 pub async fn get_pending_reload(
     identity: AuthIdentity,
     reload_svc: web::Data<Arc<ConfigReloadService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::ConfigRead,
+        None,
+        &hot,
+    )
+    .await?;
     require_hot_reload(&reload_svc)?;
     reload_svc
         .pending_snapshot()
@@ -122,7 +135,7 @@ pub async fn get_pending_reload(
     tag = "back-office",
     responses(
         (status = 200, description = "Pending reload applied", body = ReloadResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`config:write` required"),
         (status = 404, description = "No pending reload"),
         (status = 409, description = "Pending reload expired"),
         (status = 503, description = "Hot reload disabled"),
@@ -133,8 +146,15 @@ pub async fn get_pending_reload(
 pub async fn apply_pending_reload(
     identity: AuthIdentity,
     reload_svc: web::Data<Arc<ConfigReloadService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::ConfigWrite,
+        None,
+        &hot,
+    )
+    .await?;
     require_hot_reload(&reload_svc)?;
     let user_id = identity.0.user_id.as_deref().unwrap_or("unknown");
     let diff = reload_svc.apply(user_id).await.map_err(|e| {
@@ -159,7 +179,7 @@ pub async fn apply_pending_reload(
     tag = "back-office",
     responses(
         (status = 204, description = "Pending reload discarded"),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`config:write` required"),
         (status = 404, description = "No pending reload"),
         (status = 503, description = "Hot reload disabled"),
     ),
@@ -169,8 +189,15 @@ pub async fn apply_pending_reload(
 pub async fn discard_pending_reload(
     identity: AuthIdentity,
     reload_svc: web::Data<Arc<ConfigReloadService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::ConfigWrite,
+        None,
+        &hot,
+    )
+    .await?;
     require_hot_reload(&reload_svc)?;
     if reload_svc.discard_pending() {
         Ok(HttpResponse::NoContent().finish())
@@ -225,7 +252,7 @@ pub struct ConfigChangesResponse {
     params(ChangesQuery),
     responses(
         (status = 200, description = "Config change history", body = ConfigChangesResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`config:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -234,8 +261,15 @@ pub async fn list_config_changes(
     identity: AuthIdentity,
     query: web::Query<ChangesQuery>,
     reload_svc: web::Data<Arc<ConfigReloadService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::ConfigRead,
+        None,
+        &hot,
+    )
+    .await?;
     let (page, per_page) = crate::handlers::clamp_pagination(query.page, query.per_page);
     let (items, total) = tokio::try_join!(
         reload_svc.list_changes(page, per_page),
@@ -267,7 +301,7 @@ pub struct ConfigContentResponse {
     tag = "back-office",
     responses(
         (status = 200, description = "Raw config TOML content", body = ConfigContentResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`config:read` required"),
         (status = 500, description = "Config file could not be read"),
     ),
     security(("bearer_token" = [])),
@@ -276,8 +310,15 @@ pub struct ConfigContentResponse {
 pub async fn get_config_content(
     identity: AuthIdentity,
     reload_svc: web::Data<Arc<ConfigReloadService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::ConfigRead,
+        None,
+        &hot,
+    )
+    .await?;
     let content = reload_svc
         .config_content()
         .await
@@ -310,7 +351,7 @@ pub struct ConfigFromContentRequest {
     responses(
         (status = 200, description = "Config is valid; diff returned", body = ReloadResponse),
         (status = 400, description = "Validation failure"),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`config:read` required"),
         (status = 503, description = "Hot reload disabled"),
     ),
     security(("bearer_token" = [])),
@@ -320,8 +361,15 @@ pub async fn validate_config_content(
     identity: AuthIdentity,
     body: web::Json<ConfigFromContentRequest>,
     reload_svc: web::Data<Arc<ConfigReloadService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::ConfigRead,
+        None,
+        &hot,
+    )
+    .await?;
     require_hot_reload(&reload_svc)?;
     let outcome = reload_svc
         .validate_content(&body.content)
@@ -348,7 +396,7 @@ pub async fn validate_config_content(
     responses(
         (status = 200, description = "Pending reload created", body = ReloadResponse),
         (status = 400, description = "Validation failure"),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`config:write` required"),
         (status = 503, description = "Hot reload disabled"),
     ),
     security(("bearer_token" = [])),
@@ -358,8 +406,15 @@ pub async fn load_config_from_content(
     identity: AuthIdentity,
     body: web::Json<ConfigFromContentRequest>,
     reload_svc: web::Data<Arc<ConfigReloadService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::ConfigWrite,
+        None,
+        &hot,
+    )
+    .await?;
     require_hot_reload(&reload_svc)?;
     let outcome = reload_svc
         .load_pending_from_content(&body.content, crate::services::ReloadSource::AdminRequest)
@@ -391,7 +446,7 @@ pub struct ConfigWarningsResponse {
     tag = "back-office",
     responses(
         (status = 200, description = "Warnings for the active config", body = ConfigWarningsResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`config:read` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -399,8 +454,15 @@ pub struct ConfigWarningsResponse {
 pub async fn get_config_warnings(
     identity: AuthIdentity,
     reload_svc: web::Data<Arc<ConfigReloadService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::ConfigRead,
+        None,
+        &hot,
+    )
+    .await?;
     Ok(web::Json(ConfigWarningsResponse {
         warnings: reload_svc.warnings(),
     }))
@@ -422,7 +484,7 @@ pub struct SetBannerRequest {
     request_body = SetBannerRequest,
     responses(
         (status = 200, description = "Banner set", body = OkResponse),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`config:write` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -431,8 +493,15 @@ pub async fn set_banner(
     identity: AuthIdentity,
     body: web::Json<SetBannerRequest>,
     banner_svc: web::Data<Arc<BannerService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::ConfigWrite,
+        None,
+        &hot,
+    )
+    .await?;
     let set_by = identity
         .0
         .user_id
@@ -457,7 +526,7 @@ pub async fn set_banner(
     tag = "back-office",
     responses(
         (status = 204, description = "Banner cleared"),
-        (status = 403, description = "Admin role required"),
+        (status = 403, description = "`config:write` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -465,8 +534,15 @@ pub async fn set_banner(
 pub async fn clear_banner(
     identity: AuthIdentity,
     banner_svc: web::Data<Arc<BannerService>>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    require_admin(&identity)?;
+    crate::handlers::back_office::require_verb(
+        &identity,
+        batlehub_core::entities::Action::ConfigWrite,
+        None,
+        &hot,
+    )
+    .await?;
     banner_svc.clear().await.map_err(AppError::from)?;
     Ok(HttpResponse::NoContent().finish())
 }
@@ -476,25 +552,6 @@ pub async fn clear_banner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use batlehub_core::entities::{Identity, Role};
-
-    fn admin_id() -> AuthIdentity {
-        AuthIdentity(Identity {
-            user_id: Some("admin".into()),
-            role: Role::Admin,
-            auth_provider: None,
-            groups: vec![],
-        })
-    }
-
-    fn user_id() -> AuthIdentity {
-        AuthIdentity(Identity {
-            user_id: Some("user".into()),
-            role: Role::User,
-            auth_provider: None,
-            groups: vec![],
-        })
-    }
 
     fn disabled_svc() -> Arc<ConfigReloadService> {
         use crate::services::{ConfigReloadParams, HotConfigBuilder};
@@ -586,11 +643,5 @@ mod tests {
             banner: None,
         }));
         assert!(require_hot_reload(&svc).is_ok());
-    }
-
-    #[test]
-    fn require_admin_blocks_non_admin() {
-        assert!(require_admin(&user_id()).is_err());
-        assert!(require_admin(&admin_id()).is_ok());
     }
 }

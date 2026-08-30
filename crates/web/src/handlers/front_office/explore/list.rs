@@ -195,13 +195,15 @@ pub async fn explore_packages(
     admin_svc: web::Data<Arc<AdminService>>,
     local_svc: web::Data<Arc<LocalRegistryService>>,
     proxy_svc: web::Data<Arc<ProxyService>>,
-    access: web::Data<crate::AccessConfigLock>,
     search_cfg: web::Data<crate::SearchConfigLock>,
+    hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
-    let accessible = access
-        .read()
-        .await
-        .explore_accessible_registries_for(&identity);
+    // RFC 0015 §4.2 — `catalogue:browse`, resolved from grants, in place of
+    // `AccessConfig`'s explore sets. §10 rule 2's conjunction reproduces those
+    // sets exactly (§13.5 measured the naive reading at 19 disagreements before
+    // it was corrected), so this is a substitution between two computations
+    // already known to agree — not a new policy.
+    let accessible = batlehub_core::services::authz::browsable_registries(&hot, &identity).await;
 
     // `[limits].packages_per_page` is both the unasked-for default and the
     // ceiling — one key, because the question an operator has is one question

@@ -192,6 +192,7 @@ pub async fn terraform_provider_binary_upload(
                 artifact_len,
                 signature_bytes: None,
                 signature_type: None,
+                artifact_key: None,
             },
             &identity.0,
         )

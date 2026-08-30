@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use semver::{Version, VersionReq};
 
-use crate::entities::Role;
+use crate::entities::{Identity, Role};
 use crate::rules::{Rule, RuleContext, RuleDecision};
 
 /// A single allow/block entry: either an exact version string or a semver range.
@@ -69,15 +69,27 @@ impl VersionGateRule {
         }
     }
 
-    /// Turn a gate violation into a `Deny`, or a `RequireRole` when bypass roles
-    /// are configured (mirrors `DenyLatestRule`: the least-privileged bypass role
-    /// becomes the minimum).
-    fn gate(&self, reason: String) -> RuleDecision {
+    /// Turn a gate violation into a verdict, admitting a caller who holds one of
+    /// the configured bypass roles.
+    ///
+    /// The least-privileged bypass role is the bar, mirroring `DenyLatestRule`.
+    /// The comparison happens here rather than being handed back as a
+    /// `RequireRole` for the caller to resolve — that variant is deleted, and
+    /// the reason is in `RuleDecision`'s own documentation.
+    fn gate(&self, identity: &Identity, reason: String) -> RuleDecision {
         if self.bypass_roles.is_empty() {
             return RuleDecision::Deny { reason };
         }
-        let minimum = self.bypass_roles.iter().min().expect("non-empty").clone();
-        RuleDecision::RequireRole { minimum }
+        let minimum = self.bypass_roles.iter().min().expect("non-empty");
+        if identity.has_role_at_least(minimum) {
+            return RuleDecision::Allow;
+        }
+        RuleDecision::Deny {
+            reason: format!(
+                "{reason} (bypass requires role '{minimum}' or higher, you have '{}')",
+                identity.role
+            ),
+        }
     }
 }
 
@@ -91,15 +103,17 @@ impl Rule for VersionGateRule {
         let version = ctx.package.id.version.as_str();
 
         if self.block.iter().any(|m| m.matches(version)) {
-            return self.gate(format!(
-                "version '{version}' is blocked by policy (known issue)"
-            ));
+            return self.gate(
+                ctx.identity,
+                format!("version '{version}' is blocked by policy (known issue)"),
+            );
         }
 
         if !self.allow.is_empty() && !self.allow.iter().any(|m| m.matches(version)) {
-            return self.gate(format!(
-                "version '{version}' is not in the approved allowlist"
-            ));
+            return self.gate(
+                ctx.identity,
+                format!("version '{version}' is not in the approved allowlist"),
+            );
         }
 
         RuleDecision::Allow
@@ -109,6 +123,7 @@ impl Rule for VersionGateRule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entities::Action;
     use crate::entities::{Identity, PackageId, PackageMetadata, Role};
     use crate::rules::RuleContext;
 
@@ -137,7 +152,7 @@ mod tests {
         RuleContext {
             identity,
             package: meta,
-            resource_type: "releases:read",
+            action: Action::ReleasesRead,
             cache_entry: None,
             requested_version: Some(meta.id.version.as_str()),
         }
@@ -231,7 +246,7 @@ mod tests {
         let rule = VersionGateRule::new(&[], &strings(&["1.4.7"]), vec![Role::Admin]);
         let m = meta("1.4.7");
         let admin = identity(Role::Admin);
-        let decision = rule.evaluate(&ctx(&m, &admin)).await.resolve(&admin);
+        let decision = rule.evaluate(&ctx(&m, &admin)).await;
         assert!(matches!(decision, RuleDecision::Allow));
     }
 
@@ -240,7 +255,7 @@ mod tests {
         let rule = VersionGateRule::new(&[], &strings(&["1.4.7"]), vec![Role::Admin]);
         let m = meta("1.4.7");
         let anon = identity(Role::Anonymous);
-        let decision = rule.evaluate(&ctx(&m, &anon)).await.resolve(&anon);
+        let decision = rule.evaluate(&ctx(&m, &anon)).await;
         assert!(matches!(decision, RuleDecision::Deny { .. }));
     }
 

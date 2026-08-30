@@ -14,6 +14,7 @@ use crate::handlers::proxy::common::{
 };
 use crate::handlers::schemas::{ArtifactBytes, UpstreamDocument};
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap, RegistryModeMap, UpstreamMap};
+use batlehub_core::entities::Action;
 
 // ── packages.json ─────────────────────────────────────────────────────────────
 
@@ -62,11 +63,13 @@ pub async fn composer_packages_json(
     // `release_age.deny_missing_timestamp`, `require_signed_release` or
     // `license_gate.allow_unknown = false` would then refuse `packages.json`
     // outright, which breaks `composer install` for the whole registry rather
-    // than gating anything. See `registry_authz::authorize_listing`.
+    // than gating anything. See `authz::authorize_listing`.
     svc.authorize_listing(
         &PackageId::new(&registry, "repo", "_"),
         &identity.0,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        // §4.2 — this document names many packages and no single version, which
+        // is `releases:list`'s definition.
+        Action::ReleasesList,
     )
     .await
     .map_err(AppError::from)?;
@@ -97,7 +100,7 @@ pub async fn composer_packages_json(
     let available_packages: Option<Vec<String>> = if mode == RegistryMode::Local {
         Some(
             local_svc
-                .get_composer_packages_list(&registry)
+                .get_composer_packages_list(&registry, &identity.0)
                 .await
                 .unwrap_or_default(),
         )
@@ -204,7 +207,7 @@ pub async fn composer_p2_metadata(
         },
         not_found_msg,
         pkg,
-        batlehub_core::rules::resource_type::RELEASES_READ,
+        Action::ReleasesRead,
         doc_kind,
         "application/json",
         base_url,
@@ -258,7 +261,7 @@ pub async fn composer_dist(
             artifact_suffix: "dist",
             local_content_type: "application/zip",
             proxy_content_type: Some("application/zip"),
-            resource_type: batlehub_core::rules::resource_type::RELEASES_READ,
+            action: Action::ReleasesRead,
             check_prerelease: true,
             append_signature: false,
         },

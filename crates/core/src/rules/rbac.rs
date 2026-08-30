@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 
-use crate::entities::Role;
+use crate::entities::{expand_patterns, Action, ActionParseError, Role, WildcardScope};
 use crate::rules::{Rule, RuleContext, RuleDecision};
 
 /// Checks whether the caller's role or group membership permits the requested operation.
@@ -15,25 +15,70 @@ use crate::rules::{Rule, RuleContext, RuleDecision};
 /// [registries.rbac.groups]
 /// "team-a" = ["releases:read", "source:read"]
 /// ```
+///
+/// # Verbs are resolved here, not at evaluation
+///
+/// The maps hold [`Action`], not `String`. Until RFC 0015 phase 1 they held the
+/// config's strings and compared them per request (`p == "*" || p == wanted`),
+/// which put two decisions on the hot path that belong at load: whether a verb
+/// exists at all, and what a wildcard covers. Both were unobservable — an
+/// unknown verb simply never matched — so a typo in a config was a permission
+/// silently granted to nobody.
+///
+/// Expansion now happens once, in [`RbacRule::from_patterns`], and an unknown
+/// verb is a config-load error. `task config:explain` prints the result, because
+/// an expansion nobody can print is only half of the property this paragraph
+/// claims (RFC 0015 §4.2).
 pub struct RbacRule {
-    pub permissions: HashMap<Role, Vec<String>>,
-    pub group_permissions: HashMap<String, Vec<String>>,
+    pub permissions: HashMap<Role, Vec<Action>>,
+    pub group_permissions: HashMap<String, Vec<Action>>,
 }
 
 impl RbacRule {
-    pub fn new(permissions: HashMap<Role, Vec<String>>) -> Self {
+    /// Build from already-resolved verbs.
+    pub fn new(permissions: HashMap<Role, Vec<Action>>) -> Self {
         Self {
             permissions,
             group_permissions: HashMap::new(),
         }
     }
 
-    pub fn with_groups(mut self, group_permissions: HashMap<String, Vec<String>>) -> Self {
+    /// Build from the config's patterns, expanding each one.
+    ///
+    /// [`WildcardScope::Legacy`], which is RFC 0015 §10 rule 3: a `"*"` in
+    /// `[registries.rbac]` has always meant "both of the two verbs that exist",
+    /// and reading it as the new wildcard would hand publish, overwrite, yank,
+    /// delete, `packages:block`, `gates:exempt` and `audit:read` to every config
+    /// that ever wrote one — which `config.example.toml` does eight times.
+    pub fn from_patterns(
+        permissions: HashMap<Role, Vec<String>>,
+    ) -> Result<Self, ActionParseError> {
+        let mut resolved = HashMap::new();
+        for (role, patterns) in permissions {
+            resolved.insert(role, expand_patterns(&patterns, WildcardScope::Legacy)?);
+        }
+        Ok(Self::new(resolved))
+    }
+
+    pub fn with_groups(mut self, group_permissions: HashMap<String, Vec<Action>>) -> Self {
         self.group_permissions = group_permissions;
         self
     }
 
-    fn is_permitted(&self, role: &Role, resource_type: &str) -> bool {
+    /// [`Self::with_groups`] over the config's patterns.
+    pub fn with_group_patterns(
+        mut self,
+        group_permissions: HashMap<String, Vec<String>>,
+    ) -> Result<Self, ActionParseError> {
+        let mut resolved = HashMap::new();
+        for (group, patterns) in group_permissions {
+            resolved.insert(group, expand_patterns(&patterns, WildcardScope::Legacy)?);
+        }
+        self.group_permissions = resolved;
+        Ok(self)
+    }
+
+    fn is_permitted(&self, role: &Role, action: Action) -> bool {
         // Walk from the requested role down to Anonymous, granting if any level permits.
         // This implements role inheritance: Admin inherits User's permissions, etc.
         let roles_to_check: Vec<&Role> = match role {
@@ -44,7 +89,7 @@ impl RbacRule {
 
         for check_role in roles_to_check {
             if let Some(perms) = self.permissions.get(check_role) {
-                if perms.iter().any(|p| p == "*" || p == resource_type) {
+                if perms.contains(&action) {
                     return true;
                 }
             }
@@ -52,23 +97,23 @@ impl RbacRule {
         false
     }
 
-    fn perms_allow(&self, key: &str, resource_type: &str) -> bool {
+    fn perms_allow(&self, key: &str, action: Action) -> bool {
         self.group_permissions
             .get(key)
-            .map(|perms| perms.iter().any(|p| p == "*" || p == resource_type))
+            .map(|perms| perms.contains(&action))
             .unwrap_or(false)
     }
 
-    fn is_permitted_by_group(&self, groups: &[String], resource_type: &str) -> bool {
+    fn is_permitted_by_group(&self, groups: &[String], action: Action) -> bool {
         groups.iter().any(|g| {
             // Exact match: "oidc1:team-a"
-            if self.perms_allow(g, resource_type) {
+            if self.perms_allow(g, action) {
                 return true;
             }
             // Wildcard match: "*:team-a" covers any provider prefix
             if let Some(colon) = g.find(':') {
                 let wildcard = format!("*:{}", &g[colon + 1..]);
-                if self.perms_allow(&wildcard, resource_type) {
+                if self.perms_allow(&wildcard, action) {
                     return true;
                 }
             }
@@ -84,15 +129,15 @@ impl Rule for RbacRule {
     }
 
     async fn evaluate(&self, ctx: &RuleContext<'_>) -> RuleDecision {
-        if self.is_permitted(&ctx.identity.role, ctx.resource_type)
-            || self.is_permitted_by_group(&ctx.identity.groups, ctx.resource_type)
+        if self.is_permitted(&ctx.identity.role, ctx.action)
+            || self.is_permitted_by_group(&ctx.identity.groups, ctx.action)
         {
             RuleDecision::Allow
         } else {
             RuleDecision::Deny {
                 reason: format!(
                     "role '{}' is not permitted to perform '{}' on this registry",
-                    ctx.identity.role, ctx.resource_type
+                    ctx.identity.role, ctx.action
                 ),
             }
         }
@@ -123,7 +168,7 @@ mod tests {
     }
 
     fn make_rule() -> RbacRule {
-        RbacRule::new(HashMap::from([
+        RbacRule::from_patterns(HashMap::from([
             (Role::Anonymous, vec!["releases:read".to_owned()]),
             (
                 Role::User,
@@ -131,6 +176,7 @@ mod tests {
             ),
             (Role::Admin, vec!["*".to_owned()]),
         ]))
+        .expect("fixture patterns are valid")
     }
 
     #[tokio::test]
@@ -149,7 +195,7 @@ mod tests {
         let ctx = RuleContext {
             identity: &identity,
             package: &meta,
-            resource_type: "releases:read",
+            action: Action::ReleasesRead,
             cache_entry: None,
             requested_version: None,
         };
@@ -172,7 +218,7 @@ mod tests {
         let ctx = RuleContext {
             identity: &identity,
             package: &meta,
-            resource_type: "source:read",
+            action: Action::SourceRead,
             cache_entry: None,
             requested_version: None,
         };
@@ -182,8 +228,22 @@ mod tests {
         ));
     }
 
+    /// A legacy `"*"` covers the **read** verbs, and `catalogue:browse` is not
+    /// one of them.
+    ///
+    /// It asserted `resource_type: "actions:read"` — a verb nothing defines and
+    /// nothing ever asked for — and passed because `"*"` matched any string at
+    /// evaluation time. RFC 0015 §10 rule 3 removes that reading: a legacy `"*"`
+    /// expands at load to today's reachable read set, so the unspellable case is
+    /// now unconstructible rather than allowed.
+    ///
+    /// It then asserted `catalogue:browse`, which rule 3 as written listed among
+    /// the four — and which §10 rule 2 says may only come from the conjunction of
+    /// the `explore` flag with proxy access. The two rules disagreed and rule 3
+    /// was wrong; see `LEGACY_WILDCARD_EXPANSION`. The verb this asserts is now
+    /// one the wildcard genuinely covers.
     #[tokio::test]
-    async fn admin_can_do_anything() {
+    async fn admin_wildcard_covers_the_read_verbs() {
         let rule = make_rule();
         let identity = make_identity(Role::Admin);
         let meta = crate::entities::PackageMetadata {
@@ -198,7 +258,7 @@ mod tests {
         let ctx = RuleContext {
             identity: &identity,
             package: &meta,
-            resource_type: "actions:read",
+            action: Action::SourceRead,
             cache_entry: None,
             requested_version: None,
         };
@@ -206,18 +266,20 @@ mod tests {
     }
 
     fn make_group_rule() -> RbacRule {
-        RbacRule::new(HashMap::from([
+        RbacRule::from_patterns(HashMap::from([
             (Role::Anonymous, vec![]),
             (Role::User, vec!["releases:read".to_owned()]),
             (Role::Admin, vec!["*".to_owned()]),
         ]))
-        .with_groups(HashMap::from([
+        .expect("fixture patterns are valid")
+        .with_group_patterns(HashMap::from([
             (
                 "team-a".to_owned(),
                 vec!["releases:read".to_owned(), "source:read".to_owned()],
             ),
             ("team-b".to_owned(), vec!["releases:read".to_owned()]),
         ]))
+        .expect("fixture patterns are valid")
     }
 
     fn make_meta() -> crate::entities::PackageMetadata {
@@ -240,7 +302,7 @@ mod tests {
         let ctx = RuleContext {
             identity: &identity,
             package: &meta,
-            resource_type: "source:read",
+            action: Action::SourceRead,
             cache_entry: None,
             requested_version: None,
         };
@@ -255,7 +317,7 @@ mod tests {
         let ctx = RuleContext {
             identity: &identity,
             package: &meta,
-            resource_type: "source:read",
+            action: Action::SourceRead,
             cache_entry: None,
             requested_version: None,
         };
@@ -273,7 +335,7 @@ mod tests {
         let ctx = RuleContext {
             identity: &identity,
             package: &meta,
-            resource_type: "source:read",
+            action: Action::SourceRead,
             cache_entry: None,
             requested_version: None,
         };
@@ -281,17 +343,19 @@ mod tests {
     }
 
     fn make_wildcard_rule() -> RbacRule {
-        RbacRule::new(HashMap::from([
+        RbacRule::from_patterns(HashMap::from([
             (Role::Anonymous, vec![]),
             (Role::User, vec![]),
             (Role::Admin, vec!["*".to_owned()]),
         ]))
-        .with_groups(HashMap::from([
+        .expect("fixture patterns are valid")
+        .with_group_patterns(HashMap::from([
             // Wildcard entry: any provider's "team-a" group gets releases:read
             ("*:team-a".to_owned(), vec!["releases:read".to_owned()]),
             // Exact entry: only oidc2's "team-b" gets source:read
             ("oidc2:team-b".to_owned(), vec!["source:read".to_owned()]),
         ]))
+        .expect("fixture patterns are valid")
     }
 
     #[tokio::test]
@@ -303,7 +367,7 @@ mod tests {
             let ctx = RuleContext {
                 identity: &identity,
                 package: &meta,
-                resource_type: "releases:read",
+                action: Action::ReleasesRead,
                 cache_entry: None,
                 requested_version: None,
             };
@@ -323,7 +387,7 @@ mod tests {
         let ctx = RuleContext {
             identity: &identity,
             package: &meta,
-            resource_type: "source:read",
+            action: Action::SourceRead,
             cache_entry: None,
             requested_version: None,
         };
@@ -341,7 +405,7 @@ mod tests {
         let ctx = RuleContext {
             identity: &identity,
             package: &meta,
-            resource_type: "source:read",
+            action: Action::SourceRead,
             cache_entry: None,
             requested_version: None,
         };
@@ -356,7 +420,7 @@ mod tests {
         let ctx = RuleContext {
             identity: &identity,
             package: &meta,
-            resource_type: "releases:read",
+            action: Action::ReleasesRead,
             cache_entry: None,
             requested_version: None,
         };

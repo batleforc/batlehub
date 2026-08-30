@@ -49,6 +49,15 @@ async fn make_app_with_ns_store(
     let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
     let policies: HashMap<String, Arc<RegistryPolicy>> = HashMap::new();
     let hot = new_hot_lock(HotConfig {
+        // RFC 0015 §4.2's instance tier, wired exactly as production wires it:
+        // `instance_node` is §10 rule 5's own translation, so the fixture's admin
+        // holds the control verbs and nobody else does. Without it every
+        // `require_verb` on a control endpoint refuses, including the admin the
+        // suite is asserting about — a fixture that does not build the model
+        // tests a server nobody runs (§13.5).
+        instance: Some(std::sync::Arc::new(
+            batlehub_core::services::authz::translate::instance_node(None),
+        )),
         registries,
         policies,
         ..Default::default()
@@ -151,7 +160,7 @@ async fn make_ns_cargo_app_with_backend(
     // *visibility* axis, which is enforced independently inside the local read.
     let policies: HashMap<String, Arc<RegistryPolicy>> = [(
         "local-cargo".to_owned(),
-        Arc::new(rbac_policy_anon_source(repo_dyn.clone())),
+        Arc::new(rbac_policy_anon_source(repo_dyn.clone()).0),
     )]
     .into();
 
@@ -159,6 +168,15 @@ async fn make_ns_cargo_app_with_backend(
         backend: backend.clone(),
         storage: storage.clone(),
         hot: new_hot_lock(HotConfig {
+            // RFC 0015 §4.2's instance tier, wired exactly as production wires it:
+            // `instance_node` is §10 rule 5's own translation, so the fixture's admin
+            // holds the control verbs and nobody else does. Without it every
+            // `require_verb` on a control endpoint refuses, including the admin the
+            // suite is asserting about — a fixture that does not build the model
+            // tests a server nobody runs (§13.5).
+            instance: Some(std::sync::Arc::new(
+                batlehub_core::services::authz::translate::instance_node(None),
+            )),
             ..Default::default()
         }),
         quota: None,
@@ -172,6 +190,15 @@ async fn make_ns_cargo_app_with_backend(
 
     let proxy_svc = Arc::new(ProxyService {
         hot: new_hot_lock(HotConfig {
+            // RFC 0015 §4.2's instance tier, wired exactly as production wires it:
+            // `instance_node` is §10 rule 5's own translation, so the fixture's admin
+            // holds the control verbs and nobody else does. Without it every
+            // `require_verb` on a control endpoint refuses, including the admin the
+            // suite is asserting about — a fixture that does not build the model
+            // tests a server nobody runs (§13.5).
+            instance: Some(std::sync::Arc::new(
+                batlehub_core::services::authz::translate::instance_node(None),
+            )),
             registries,
             policies,
             ..Default::default()
@@ -630,6 +657,7 @@ async fn cargo_publish_to_claimed_namespace_blocks_non_member() {
             prefix: "internal".to_owned(),
             group_id: "team-alpha".to_owned(),
             claimed_by: None,
+            separator: '/',
         })
         .await
         .unwrap();
@@ -653,6 +681,7 @@ async fn cargo_publish_to_claimed_namespace_allows_member() {
             prefix: "internal".to_owned(),
             group_id: "team-alpha".to_owned(),
             claimed_by: None,
+            separator: '/',
         })
         .await
         .unwrap();
@@ -690,6 +719,7 @@ async fn cargo_admin_can_publish_to_any_claimed_namespace() {
             prefix: "secured".to_owned(),
             group_id: "team-alpha".to_owned(),
             claimed_by: None,
+            separator: '/',
         })
         .await
         .unwrap();
@@ -798,6 +828,7 @@ async fn cargo_download_team_package_blocks_non_member() {
             prefix: "secured".to_owned(),
             group_id: "team-alpha".to_owned(),
             claimed_by: None,
+            separator: '/',
         })
         .await
         .unwrap();
@@ -827,6 +858,7 @@ async fn cargo_download_team_package_allows_member() {
             prefix: "secured".to_owned(),
             group_id: "team-alpha".to_owned(),
             claimed_by: None,
+            separator: '/',
         })
         .await
         .unwrap();
@@ -912,6 +944,7 @@ async fn cargo_index_team_blocks_non_member() {
             prefix: "priv-tool".to_owned(),
             group_id: "team-alpha".to_owned(),
             claimed_by: None,
+            separator: '/',
         })
         .await
         .unwrap();
@@ -939,6 +972,7 @@ async fn cargo_index_team_allows_member() {
             prefix: "priv-tool".to_owned(),
             group_id: "team-alpha".to_owned(),
             claimed_by: None,
+            separator: '/',
         })
         .await
         .unwrap();
@@ -988,6 +1022,7 @@ async fn visibility_set_via_api_then_download_blocked() {
             prefix: "lib-x".to_owned(),
             group_id: "team-alpha".to_owned(),
             claimed_by: None,
+            separator: '/',
         })
         .await
         .unwrap();
@@ -1063,6 +1098,7 @@ async fn me_namespaces_returns_only_caller_groups_namespaces() {
             prefix: "team-pkg".to_owned(),
             group_id: "team-alpha".to_owned(),
             claimed_by: None,
+            separator: '/',
         })
         .await
         .unwrap();
@@ -1073,6 +1109,7 @@ async fn me_namespaces_returns_only_caller_groups_namespaces() {
             prefix: "other-pkg".to_owned(),
             group_id: "team-beta".to_owned(),
             claimed_by: None,
+            separator: '/',
         })
         .await
         .unwrap();
@@ -1100,6 +1137,7 @@ async fn me_namespaces_returns_empty_for_user_with_no_groups() {
             prefix: "team-pkg".to_owned(),
             group_id: "team-alpha".to_owned(),
             claimed_by: None,
+            separator: '/',
         })
         .await
         .unwrap();
@@ -1133,6 +1171,7 @@ async fn me_namespace_packages_lists_published_packages() {
         prefix: "internal".to_owned(),
         group_id: "team-alpha".to_owned(),
         claimed_by: None,
+        separator: '/',
     }])
     .await;
 
@@ -1171,6 +1210,7 @@ async fn me_namespace_packages_blocks_non_member() {
             prefix: "internal".to_owned(),
             group_id: "team-alpha".to_owned(),
             claimed_by: None,
+            separator: '/',
         })
         .await
         .unwrap();
@@ -1190,6 +1230,7 @@ async fn me_namespace_packages_admin_can_query_any_namespace() {
         prefix: "internal".to_owned(),
         group_id: "team-alpha".to_owned(),
         claimed_by: None,
+        separator: '/',
     }])
     .await;
 
@@ -1220,6 +1261,7 @@ async fn me_namespace_packages_pagination() {
         prefix: "paged".to_owned(),
         group_id: "team-alpha".to_owned(),
         claimed_by: None,
+        separator: '/',
     }])
     .await;
 

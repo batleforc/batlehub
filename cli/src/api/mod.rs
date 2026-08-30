@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod auth;
+pub mod authz;
 pub mod ide;
 pub mod owner;
 pub mod package;

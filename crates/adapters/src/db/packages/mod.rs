@@ -12,8 +12,8 @@ use uuid::Uuid;
 use batlehub_core::{
     entities::{
         AccessAction, AccessEvent, AccessResult, EventFilter, ExploreEntry, ExploreFilter,
-        ExploreSortBy, PackageFilter, PackageId, PackageSource, PackageStatus, PackageSummary,
-        RegistryStat, Role,
+        ExploreSortBy, ExploreViewer, PackageFilter, PackageId, PackageSource, PackageStatus,
+        PackageSummary, RegistryStat, Role,
     },
     error::CoreError,
     ports::{PackageRepository, RecentErrorRecord},
@@ -97,13 +97,56 @@ pub(super) fn map_package_summary(r: PgRow) -> PackageSummary {
 /// `check_team_visibility`'s `None` arm (which denies rather than falling back).
 /// That follows here for free: the subquery yields no row.
 ///
+/// # `private` is excluded, and the asymmetry with `check_visibility` is
+/// deliberate
+///
+/// RFC 0015 §4.5's fourth value matches none of the arms below, so a `private`
+/// row is invisible to every non-admin here. `check_visibility` is *wider*: it
+/// admits a caller holding a read grant written on the package itself, which is
+/// what `private` means — inherited grants do not apply, grants on the node do.
+///
+/// So this predicate refuses one caller the download path would serve. That is
+/// the safe direction and the doc comment above says why the other direction is
+/// not: a listing more permissive than the check discloses names the download
+/// path would refuse. A listing *less* permissive hides a package from someone
+/// entitled to it, which is a worse experience and not a disclosure.
+///
+/// Closing it is §6.3's "the SQL visibility predicate becomes a grant
+/// predicate", which is a hierarchical join rather than a column comparison and
+/// is the part of this design §11.7 measured separately before allowing it. It
+/// is not attempted inline here: the arm is written out explicitly so the
+/// exclusion is a decision in the SQL rather than a row that happened to match
+/// nothing.
+///
 /// Placeholders: `$4` = is_admin (bool), `$5` = is_authenticated (bool),
 /// `$6` = viewer's space-stripped group ids (text[]).
-pub(super) const LOCAL_VISIBILITY_PREDICATE: &str = r#"
+///
+/// The numbering is today's, and it is only a default — see
+/// [`local_visibility_predicate_at`], which is where the body lives so that a
+/// query needing different positions gets the same rule rather than a second
+/// copy of it.
+pub(super) fn local_visibility_predicate() -> String {
+    local_visibility_predicate_at("$4", "$5", "$6")
+}
+
+/// [`local_visibility_predicate`] at explicit placeholder positions.
+///
+/// Parameterised because the aggregate queries bind fewer things than the
+/// listing ones and cannot spare `$1`–`$3`. The alternative was a second copy of
+/// the rule with different numbers, and a visibility rule that exists twice is
+/// one that will disagree with itself — which on this predicate means a listing
+/// more permissive than the download gate, the exact defect its own doc comment
+/// warns about.
+pub(super) fn local_visibility_predicate_at(admin: &str, authed: &str, groups: &str) -> String {
+    format!(
+        r#"
             AND (
-                $4::boolean
+                {admin}::boolean
+                -- RFC 0015 §4.5: `private` is deliberately absent from this
+                -- list. Only grants written on the package admit a caller, and
+                -- this predicate does not read grants. See the doc comment.
                 OR lp.visibility = 'public'
-                OR (lp.visibility = 'internal' AND $5::boolean)
+                OR (lp.visibility = 'internal' AND {authed}::boolean)
                 OR (
                     lp.visibility = 'team'
                     AND EXISTS (
@@ -114,16 +157,18 @@ pub(super) const LOCAL_VISIBILITY_PREDICATE: &str = r#"
                               AND (lp.name = tn.prefix
                                    OR (LENGTH(lp.name) > LENGTH(tn.prefix)
                                        AND SUBSTRING(lp.name, 1, LENGTH(tn.prefix) + 1)
-                                           = tn.prefix || '/'))
+                                           = tn.prefix || tn.separator))
                             ORDER BY LENGTH(tn.prefix) DESC
                             LIMIT 1
                         ) claim
-                        WHERE REPLACE(claim.group_id, ' ', '') = ANY($6::text[])
+                        WHERE REPLACE(claim.group_id, ' ', '') = ANY({groups}::text[])
                     )
                 )
-            )"#;
+            )"#
+    )
+}
 
-/// The same gate as [`LOCAL_VISIBILITY_PREDICATE`], for a row that reaches the
+/// The same gate as [`local_visibility_predicate`], for a row that reaches the
 /// catalogue through `package_statuses` rather than through `local_packages`.
 ///
 /// `record_access` writes a `package_statuses` row on **any allowed** download
@@ -144,19 +189,45 @@ pub(super) const LOCAL_VISIBILITY_PREDICATE: &str = r#"
 /// Correlates on `ps`, so the CTE it is spliced into must alias
 /// `package_statuses` as `ps`.
 pub(super) fn proxied_visibility_predicate(visibility: &str) -> String {
+    visible_package_predicate("ps.registry", "ps.package_name", visibility)
+}
+
+/// [`proxied_visibility_predicate`], for any table that names a `(registry,
+/// package)` pair.
+///
+/// The rule is the same wherever it is applied and is stated once here: **a row
+/// whose package has no local entry is proxied-only and stays visible** — its
+/// name came from upstream and was never a secret — and a row whose package has
+/// local entries is visible only if at least one of them is visible to this
+/// viewer.
+///
+/// Generalised for the aggregates (RFC 0015 §4.4): `access_events` and
+/// `artifact_cache_meta` each carry a `(registry, package_name)` pair and each
+/// feeds a dashboard tile, so both need this rule and neither is
+/// `package_statuses`. Writing it out per table would be three copies of a
+/// disclosure boundary; §4.4's own warning is that a tile *reads* as presentation
+/// and is a query.
+///
+/// Correlates on whatever `registry_col` and `name_col` name, so the caller's
+/// query must alias the table it passes.
+pub(super) fn visible_package_predicate(
+    registry_col: &str,
+    name_col: &str,
+    visibility: &str,
+) -> String {
     format!(
         r#"
             AND (
                 NOT EXISTS (
                     SELECT 1 FROM local_packages lp
-                    WHERE lp.registry = ps.registry
-                      AND lp.name = ps.package_name
+                    WHERE lp.registry = {registry_col}
+                      AND lp.name = {name_col}
                       AND lp.status = 'published'
                 )
                 OR EXISTS (
                     SELECT 1 FROM local_packages lp
-                    WHERE lp.registry = ps.registry
-                      AND lp.name = ps.package_name
+                    WHERE lp.registry = {registry_col}
+                      AND lp.name = {name_col}
                       AND lp.status = 'published'
                       {visibility}
                 )
@@ -251,6 +322,8 @@ pub(super) fn action_to_str(action: &AccessAction) -> &'static str {
         AccessAction::ClaimNamespace => "claim_namespace",
         AccessAction::ReleaseNamespace => "release_namespace",
         AccessAction::ResetQuota => "reset_quota",
+        AccessAction::TombstoneCompact => "tombstone_compact",
+        AccessAction::SetRetentionPin => "set_retention_pin",
     }
 }
 
@@ -280,6 +353,8 @@ pub(super) fn str_to_action(s: &str) -> Result<AccessAction, CoreError> {
         "claim_namespace" => Ok(AccessAction::ClaimNamespace),
         "release_namespace" => Ok(AccessAction::ReleaseNamespace),
         "reset_quota" => Ok(AccessAction::ResetQuota),
+        "tombstone_compact" => Ok(AccessAction::TombstoneCompact),
+        "set_retention_pin" => Ok(AccessAction::SetRetentionPin),
         other => Err(CoreError::Database(format!(
             "invalid access action in db: '{other}'"
         ))),
@@ -375,6 +450,14 @@ impl PackageRepository for PgPackageRepository {
         explore::purge_events_before_impl(&self.pool, before).await
     }
 
+    async fn last_downloads(
+        &self,
+        registry: &str,
+        package: &str,
+    ) -> Result<Vec<(String, DateTime<Utc>)>, CoreError> {
+        explore::last_downloads_impl(&self.pool, registry, package).await
+    }
+
     async fn distinct_event_subjects(
         &self,
         contains: Option<&str>,
@@ -397,8 +480,9 @@ impl PackageRepository for PgPackageRepository {
     async fn registry_explore_stats(
         &self,
         accessible_registries: &[String],
+        viewer: &ExploreViewer,
     ) -> Result<Vec<RegistryStat>, CoreError> {
-        explore::registry_explore_stats_impl(&self.pool, accessible_registries).await
+        explore::registry_explore_stats_impl(&self.pool, accessible_registries, viewer).await
     }
 
     async fn registry_package_counts(

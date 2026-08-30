@@ -364,7 +364,10 @@ impl RealProxy {
                     serve_stale_metadata: false,
                     artifact_ttl: None,
                     rules: vec![
-                        Box::new(RbacRule::new(perms)),
+                        Box::new(
+                            RbacRule::from_patterns(perms)
+                                .expect("fixture rbac patterns are valid"),
+                        ),
                         Box::new(BlockListRule::new(repo.clone())),
                     ],
                 });
@@ -509,7 +512,10 @@ impl RealProxy {
                     serve_stale_metadata: false,
                     artifact_ttl: None,
                     rules: vec![
-                        Box::new(RbacRule::new(perms)),
+                        Box::new(
+                            RbacRule::from_patterns(perms)
+                                .expect("fixture rbac patterns are valid"),
+                        ),
                         Box::new(BlockListRule::new(repo.clone())),
                     ],
                 });
