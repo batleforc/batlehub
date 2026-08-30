@@ -130,13 +130,32 @@ META_PKG="@metaonly/probe-$HEAVY_RUN"
 # On the shadowed registry, under the namespace whose grants are in shadow.
 SHADOW_PKG="@shadowed/probe-$HEAVY_RUN"
 
+# ── The literals this suite repeats ──────────────────────────────────────────
+#
+# Named rather than retyped, because each of them is load-bearing in a way a
+# typo does not announce. A JSON body sent without the header is a `400` from an
+# extractor that runs *before* the handler, so the request never reaches the gate
+# and a negative arm passes without authorization having been consulted (the
+# reason the body is not optional at §13's `explore/invalidate`). A wire
+# assertion spelled `-> 403` in twenty places and `->403` in one is an assertion
+# that silently stops matching. And a label is what `heavy_fail` prints: the same
+# subject has to read the same way in every line of the report.
+HDR_JSON="Content-Type: application/json"
+WIRE_403="-> 403"
+IP_BLOCKS="/api/v1/admin/ip-blocks"
+WHO_DENIED="the denied user"
+
 # ── Assertion helpers ────────────────────────────────────────────────────────
 
 AUTHZ_CHECKS=0
 # Verbs this run has exercised, checked against the enum at the end.
 declare -A AUTHZ_VERB_SEEN=()
 
-authz_note_verb() { AUTHZ_VERB_SEEN["$1"]=1; return 0; }
+authz_note_verb() {
+  local verb="$1"
+  AUTHZ_VERB_SEEN["$verb"]=1
+  return 0
+}
 
 # authz_status <method> <token|-> <path> [curl args…] — echoes the status code.
 #
@@ -150,6 +169,7 @@ authz_status() {
     args+=(-H "Authorization: Bearer $token")
   fi
   curl "${args[@]}" "$@" "$HEAVY_TAP_BASE$path"
+  return 0
 }
 
 # authz_body <method> <token|-> <path> [curl args…] — echoes the response body.
@@ -161,6 +181,7 @@ authz_body() {
     args+=(-H "Authorization: Bearer $token")
   fi
   curl "${args[@]}" "$@" "$HEAVY_TAP_BASE$path"
+  return 0
 }
 
 # authz_denied <verb> <label> <method> <token> <path> [curl args…]
@@ -171,11 +192,14 @@ authz_body() {
 authz_denied() {
   local verb="$1" label="$2"
   shift 2
+  # What is left is `<method> <token> <path> [curl args…]`, and the report names
+  # the request rather than the argument position it came from.
+  local method="$1" path="$3"
   authz_note_verb "$verb"
   local got
   got="$(authz_status "$@")"
   if [[ "$got" != "403" ]]; then
-    heavy_fail "$verb — $label: expected 403, got $got ($1 $3)"
+    heavy_fail "$verb — $label: expected 403, got $got ($method $path)"
   fi
   AUTHZ_CHECKS=$((AUTHZ_CHECKS + 1))
   return 0
@@ -194,11 +218,12 @@ authz_denied() {
 authz_allowed() {
   local verb="$1" label="$2"
   shift 2
+  local method="$1" path="$3"
   authz_note_verb "$verb"
   local got
   got="$(authz_status "$@")"
   if [[ "$got" == "403" || "$got" == "401" ]]; then
-    heavy_fail "$verb — $label: expected anything but a refusal, got $got ($1 $3). \
+    heavy_fail "$verb — $label: expected anything but a refusal, got $got ($method $path). \
 This is the positive control: the verb is requested by a route nobody can reach."
   fi
   AUTHZ_CHECKS=$((AUTHZ_CHECKS + 1))
@@ -250,6 +275,7 @@ try:
 except Exception:
     print("?")
 '
+  return 0
 }
 
 # authz_oracle <verb> <registry> <subject> <expected> [package]
@@ -302,7 +328,8 @@ PY
   # whole name as one path segment, which is what npm itself sends.
   local encoded="${name//\//%2f}"
   authz_status PUT "$token" "/proxy/$NPM/$encoded" \
-    -H "Content-Type: application/json" --data-binary @"$body"
+    -H "$HDR_JSON" --data-binary @"$body"
+  return 0
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -337,7 +364,7 @@ phase_matrix() {
   heavy_mark "source-read"
   heavy_log "source:read — the pull boundary"
 
-  authz_denied source:read "the denied user pulls an artifact" \
+  authz_denied source:read "$WHO_DENIED pulls an artifact" \
     GET "$T_DENIED" "/proxy/$NPM/$PKG/1.0.0/tarball"
   authz_allowed source:read "the reader pulls the same artifact" \
     GET "$T_READER" "/proxy/$NPM/$PKG/1.0.0/tarball"
@@ -384,7 +411,7 @@ phase_matrix() {
 
   authz_denied releases:list "the lister reads an npm packument (the split is not wired here)" \
     GET "$T_LISTER" "/proxy/$NPM/$PKG"
-  authz_denied releases:list "the denied user reads the packument" \
+  authz_denied releases:list "$WHO_DENIED reads the packument" \
     GET "$T_DENIED" "/proxy/$NPM/$PKG"
   authz_allowed releases:list "the reader, who holds releases:read as well" \
     GET "$T_READER" "/proxy/$NPM/$PKG"
@@ -405,7 +432,7 @@ phase_matrix() {
 
   local team_enc="${TEAM_PKG//\//%2f}" teamx_enc="${TEAMX_PKG//\//%2f}"
   local meta_enc="${META_PKG//\//%2f}"
-  authz_allowed source:read "the denied user pulls from the namespace that grants them" \
+  authz_allowed source:read "$WHO_DENIED pulls from the namespace that grants them" \
     GET "$T_DENIED" "/proxy/$NPM/$team_enc/1.0.0/tarball"
   authz_denied source:read "…and is still refused one namespace over" \
     GET "$T_DENIED" "/proxy/$NPM/$teamx_enc/1.0.0/tarball"
@@ -520,7 +547,7 @@ print(json.dumps({
 }))
 PY
   rc="$(authz_status PUT "$T_ADMIN" "/proxy/$SHADOW/${SHADOW_PKG//\//%2f}" \
-    -H "Content-Type: application/json" --data-binary @"$shadow_body")"
+    -H "$HDR_JSON" --data-binary @"$shadow_body")"
   [[ "$rc" == 2* ]] || heavy_fail "seeding the shadowed registry failed with $rc"
 
   authz_allowed source:read "a caller the grants refuse is served under a shadow" \
@@ -586,6 +613,7 @@ try:
 except Exception:
     print("? ?")
 ' <<<"$body")"
+    return 0
   }
 
   authz_note_verb catalogue:browse
@@ -632,20 +660,20 @@ because an anonymous publish creates an owner-less package and \`can_publish\` a
 
   authz_allowed releases:yank "the administrator yanks" \
     POST "$T_ADMIN" "/api/v1/admin/registries/$NPM/bulk-yank" \
-    -H "Content-Type: application/json" \
+    -H "$HDR_JSON" \
     --data "{\"packages\":[{\"name\":\"$PKG\",\"version\":\"1.0.0\"}]}"
-  authz_denied releases:yank "the denied user yanks" \
+  authz_denied releases:yank "$WHO_DENIED yanks" \
     POST "$T_DENIED" "/api/v1/admin/registries/$NPM/bulk-yank" \
-    -H "Content-Type: application/json" \
+    -H "$HDR_JSON" \
     --data "{\"packages\":[{\"name\":\"$PKG\",\"version\":\"1.0.0\"}]}"
 
   authz_allowed releases:delete "the administrator deletes" \
     POST "$T_ADMIN" "/api/v1/admin/packages/delete" \
-    -H "Content-Type: application/json" \
+    -H "$HDR_JSON" \
     --data "{\"registry\":\"$NPM\",\"name\":\"gone-$HEAVY_RUN\",\"version\":\"1.0.0\"}"
-  authz_denied releases:delete "the denied user deletes" \
+  authz_denied releases:delete "$WHO_DENIED deletes" \
     POST "$T_DENIED" "/api/v1/admin/packages/delete" \
-    -H "Content-Type: application/json" \
+    -H "$HDR_JSON" \
     --data "{\"registry\":\"$NPM\",\"name\":\"$PKG\",\"version\":\"1.0.0\"}"
 
   # `releases:overwrite` is consumed at exactly `immutable`'s scope, and this
@@ -666,28 +694,28 @@ because an anonymous publish creates an owner-less package and \`can_publish\` a
 
   authz_allowed owners:read "the administrator reads owners" \
     GET "$T_ADMIN" "/api/v1/admin/registries/$NPM/packages/$PKG/owners"
-  authz_denied owners:read "the denied user reads owners" \
+  authz_denied owners:read "$WHO_DENIED reads owners" \
     GET "$T_DENIED" "/api/v1/admin/registries/$NPM/packages/$PKG/owners"
 
   authz_allowed owners:write "the administrator adds an owner" \
     POST "$T_ADMIN" "/api/v1/admin/registries/$NPM/packages/$PKG/owners" \
-    -H "Content-Type: application/json" --data '{"principal_type":"user","principal_id":"authz-reader"}'
-  authz_denied owners:write "the denied user adds an owner" \
+    -H "$HDR_JSON" --data '{"principal_type":"user","principal_id":"authz-reader"}'
+  authz_denied owners:write "$WHO_DENIED adds an owner" \
     POST "$T_DENIED" "/api/v1/admin/registries/$NPM/packages/$PKG/owners" \
-    -H "Content-Type: application/json" --data '{"principal_type":"user","principal_id":"authz-denied"}'
+    -H "$HDR_JSON" --data '{"principal_type":"user","principal_id":"authz-denied"}'
 
   authz_allowed packages:block "the administrator blocks" \
     POST "$T_ADMIN" "/api/v1/admin/packages/block" \
-    -H "Content-Type: application/json" \
+    -H "$HDR_JSON" \
     --data "{\"registry\":\"$NPM\",\"name\":\"$PKG\",\"version\":\"1.0.0\",\"reason\":\"heavy authz probe\"}"
-  authz_denied packages:block "the denied user blocks" \
+  authz_denied packages:block "$WHO_DENIED blocks" \
     POST "$T_DENIED" "/api/v1/admin/packages/block" \
-    -H "Content-Type: application/json" \
+    -H "$HDR_JSON" \
     --data "{\"registry\":\"$NPM\",\"name\":\"$PKG\",\"version\":\"1.0.0\",\"reason\":\"nope\"}"
 
   authz_allowed packages:read "the administrator reads the inventory" \
     GET "$T_ADMIN" "/api/v1/admin/packages"
-  authz_denied packages:read "the denied user reads the inventory" \
+  authz_denied packages:read "$WHO_DENIED reads the inventory" \
     GET "$T_DENIED" "/api/v1/admin/packages"
 
   # §4.4's boundary for an aggregate, made explicit: **held nowhere is a 403,
@@ -700,7 +728,7 @@ because an anonymous publish creates an owner-less package and \`can_publish\` a
   # the note in config.authz.toml.
   authz_allowed stats:read "the administrator reads the aggregates" \
     GET "$T_ADMIN" "/api/v1/admin/stats"
-  authz_denied stats:read "the denied user reads the aggregates" \
+  authz_denied stats:read "$WHO_DENIED reads the aggregates" \
     GET "$T_DENIED" "/api/v1/admin/stats"
   authz_refused_anonymous stats:read "an unauthenticated caller reads the aggregates" \
     GET "/api/v1/admin/stats"
@@ -712,11 +740,11 @@ because an anonymous publish creates an owner-less package and \`can_publish\` a
   heavy_log "gates:exempt — the one verb the administrator does not hold"
   authz_denied gates:exempt "the administrator, who holds every other verb" \
     PUT "$T_ADMIN" "/api/v1/admin/registries/$NPM/policy/version/$PKG/1.0.0/rules/cve_gate" \
-    -H "Content-Type: application/json" \
+    -H "$HDR_JSON" \
     --data '{"reason":"heavy authz probe","exempt_until":"2030-01-01T00:00:00Z"}'
   authz_allowed gates:exempt "the token the config grants it to" \
     PUT "$T_GATE" "/api/v1/admin/registries/$NPM/policy/version/$PKG/1.0.0/rules/cve_gate" \
-    -H "Content-Type: application/json" \
+    -H "$HDR_JSON" \
     --data '{"reason":"heavy authz probe","exempt_until":"2030-01-01T00:00:00Z"}'
 
   # ── 11. The audit pair ─────────────────────────────────────────────────────
@@ -730,7 +758,7 @@ because an anonymous publish creates an owner-less package and \`can_publish\` a
 
   authz_allowed audit:read "the auditor reads the log" \
     GET "$T_AUDITOR" "/api/v1/admin/audit-log"
-  authz_denied audit:read "the denied user reads the log" \
+  authz_denied audit:read "$WHO_DENIED reads the log" \
     GET "$T_DENIED" "/api/v1/admin/audit-log"
   authz_denied audit:purge "the auditor erases the log" \
     DELETE "$T_AUDITOR" "/api/v1/admin/audit-log?before=2020-01-01T00:00:00Z"
@@ -744,7 +772,7 @@ because an anonymous publish creates an owner-less package and \`can_publish\` a
 
   authz_allowed quota:read "support reads quota usage" \
     GET "$T_SUPPORT" "/api/v1/admin/quota"
-  authz_denied quota:read "the denied user reads quota usage" \
+  authz_denied quota:read "$WHO_DENIED reads quota usage" \
     GET "$T_DENIED" "/api/v1/admin/quota"
   authz_denied quota:write "support resets a user's counters" \
     DELETE "$T_SUPPORT" "/api/v1/admin/quota/$NPM/authz-reader"
@@ -763,7 +791,7 @@ because an anonymous publish creates an owner-less package and \`can_publish\` a
 
   authz_allowed system:read "the SRE reads health" \
     GET "$T_SRE" "/api/v1/admin/health"
-  authz_denied system:read "the denied user reads health" \
+  authz_denied system:read "$WHO_DENIED reads health" \
     GET "$T_DENIED" "/api/v1/admin/health"
   # The body is not optional: `web::Json<ExploreInvalidateRequest>` is an
   # extractor, so it runs before the handler and a missing one is a `400` that
@@ -771,10 +799,10 @@ because an anonymous publish creates an owner-less package and \`can_publish\` a
   # without authorization having been consulted at all.
   authz_denied system:write "the SRE, who holds only the read half" \
     POST "$T_SRE" "/api/v1/admin/explore/invalidate" \
-    -H "Content-Type: application/json" --data '{}'
+    -H "$HDR_JSON" --data '{}'
   authz_allowed system:write "the administrator" \
     POST "$T_ADMIN" "/api/v1/admin/explore/invalidate" \
-    -H "Content-Type: application/json" --data '{}'
+    -H "$HDR_JSON" --data '{}'
 
   authz_allowed config:read "the administrator reads the warnings" \
     GET "$T_ADMIN" "/api/v1/admin/config/warnings"
@@ -782,20 +810,20 @@ because an anonymous publish creates an owner-less package and \`can_publish\` a
     GET "$T_SRE" "/api/v1/admin/config/warnings"
   authz_allowed config:write "the administrator reloads" \
     POST "$T_ADMIN" "/api/v1/admin/config/reload"
-  authz_denied config:write "the denied user reloads" \
+  authz_denied config:write "$WHO_DENIED reloads" \
     POST "$T_DENIED" "/api/v1/admin/config/reload"
 
   authz_allowed blocks:read "the administrator lists IP blocks" \
-    GET "$T_ADMIN" "/api/v1/admin/ip-blocks"
-  authz_denied blocks:read "the denied user lists IP blocks" \
-    GET "$T_DENIED" "/api/v1/admin/ip-blocks"
+    GET "$T_ADMIN" "$IP_BLOCKS"
+  authz_denied blocks:read "$WHO_DENIED lists IP blocks" \
+    GET "$T_DENIED" "$IP_BLOCKS"
   authz_allowed blocks:write "the administrator places one" \
-    POST "$T_ADMIN" "/api/v1/admin/ip-blocks" \
-    -H "Content-Type: application/json" \
+    POST "$T_ADMIN" "$IP_BLOCKS" \
+    -H "$HDR_JSON" \
     --data '{"ip":"192.0.2.1","reason":"heavy authz probe"}'
-  authz_denied blocks:write "the denied user places one" \
-    POST "$T_DENIED" "/api/v1/admin/ip-blocks" \
-    -H "Content-Type: application/json" --data '{"ip":"192.0.2.2","reason":"nope"}'
+  authz_denied blocks:write "$WHO_DENIED places one" \
+    POST "$T_DENIED" "$IP_BLOCKS" \
+    -H "$HDR_JSON" --data '{"ip":"192.0.2.2","reason":"nope"}'
 
   authz_allowed authz:read "the administrator probes the resolver" \
     GET "$T_ADMIN" "/api/v1/admin/authz/shadow"
@@ -807,22 +835,22 @@ because an anonymous publish creates an owner-less package and \`can_publish\` a
   # That composition is the reason both scopes exist rather than one.
   authz_allowed cache:evict "the SRE, holding it at the instance tier, evicts on a registry" \
     POST "$T_SRE" "/api/v1/admin/registries/$NPM/clear-cache"
-  authz_denied cache:evict "the denied user" \
+  authz_denied cache:evict "$WHO_DENIED" \
     POST "$T_DENIED" "/api/v1/admin/registries/$NPM/clear-cache"
 
   authz_allowed cache:warm "the administrator reads the warming state" \
     GET "$T_ADMIN" "/api/v1/admin/warming"
-  authz_denied cache:warm "the denied user" \
+  authz_denied cache:warm "$WHO_DENIED" \
     GET "$T_DENIED" "/api/v1/admin/warming"
 
   authz_allowed retention:run "the administrator runs retention" \
     POST "$T_ADMIN" "/api/v1/admin/registries/$NPM/retention?dry_run=true"
-  authz_denied retention:run "the denied user" \
+  authz_denied retention:run "$WHO_DENIED" \
     POST "$T_DENIED" "/api/v1/admin/registries/$NPM/retention?dry_run=true"
 
   authz_allowed tombstones:read "the administrator reads tombstones" \
     GET "$T_ADMIN" "/api/v1/admin/registries/$NPM/tombstones"
-  authz_denied tombstones:read "the denied user" \
+  authz_denied tombstones:read "$WHO_DENIED" \
     GET "$T_DENIED" "/api/v1/admin/registries/$NPM/tombstones"
 
   # ── 14. The ecosystem verbs ────────────────────────────────────────────────
@@ -837,28 +865,28 @@ because an anonymous publish creates an owner-less package and \`can_publish\` a
 
   authz_allowed terraform:signing-keys:write "the administrator registers a signing key" \
     PUT "$T_ADMIN" "/api/v1/admin/registries/$TFREG/signing-keys/hashicorp" \
-    -H "Content-Type: application/json" \
+    -H "$HDR_JSON" \
     --data '{"key_id":"51852D87348FFC4C","ascii_armor":"-----BEGIN PGP PUBLIC KEY BLOCK-----\nnot-a-key\n-----END PGP PUBLIC KEY BLOCK-----"}'
-  authz_denied terraform:signing-keys:write "the denied user" \
+  authz_denied terraform:signing-keys:write "$WHO_DENIED" \
     PUT "$T_DENIED" "/api/v1/admin/registries/$TFREG/signing-keys/hashicorp" \
-    -H "Content-Type: application/json" --data '{"key_id":"x","ascii_armor":"x"}'
+    -H "$HDR_JSON" --data '{"key_id":"x","ascii_armor":"x"}'
 
   authz_allowed jetbrains:channel:assign "the administrator assigns a channel" \
     PUT "$T_ADMIN" "/api/v1/admin/registries/$JB/plugins/com.example.probe/1.0.0/channel" \
-    -H "Content-Type: application/json" --data '{"channel":"eap"}'
-  authz_denied jetbrains:channel:assign "the denied user" \
+    -H "$HDR_JSON" --data '{"channel":"eap"}'
+  authz_denied jetbrains:channel:assign "$WHO_DENIED" \
     PUT "$T_DENIED" "/api/v1/admin/registries/$JB/plugins/com.example.probe/1.0.0/channel" \
-    -H "Content-Type: application/json" --data '{"channel":"eap"}'
+    -H "$HDR_JSON" --data '{"channel":"eap"}'
 
   # Administrative rather than self-service, deliberately: a namespace is a tier
   # grants are written on, so upstream's first-come model would let a user mint
   # the scope their own permissions are then read from.
   authz_allowed openvsx:namespace:claim "the administrator claims a namespace" \
     POST "$T_ADMIN" "/proxy/$VSX/api/-/namespace/create?name=heavyorg" \
-    -H "Content-Type: application/json" --data '{"group_id":"heavy"}'
+    -H "$HDR_JSON" --data '{"group_id":"heavy"}'
   authz_denied openvsx:namespace:claim "a user claims one for themselves" \
     POST "$T_DENIED" "/proxy/$VSX/api/-/namespace/create?name=heavygrab" \
-    -H "Content-Type: application/json" --data '{"group_id":"heavy"}'
+    -H "$HDR_JSON" --data '{"group_id":"heavy"}'
 
   # ── 15. Listings filter, they do not refuse (§4.4) ─────────────────────────
   #
@@ -882,10 +910,11 @@ empty document"
   authz_note_verb releases:list
   AUTHZ_CHECKS=$((AUTHZ_CHECKS + 1))
 
-  authz_denied releases:list "the denied user asks for the whole-registry document" \
+  authz_denied releases:list "$WHO_DENIED asks for the whole-registry document" \
     GET "$T_DENIED" "/proxy/$COMPOSER_REG/packages.json"
 
   heavy_log "MATRIX-OK ($AUTHZ_CHECKS assertions)"
+  return 0
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -906,13 +935,14 @@ phase_npm() {
   heavy_log "npm $(npm --version)"
 
   local base="$HEAVY_TAP_BASE/proxy/$NPM/"
-  local host_key="//127.0.0.1:$HEAVY_TAP_PORT/proxy/$NPM/"
 
-  # npm keys auth by `//host/path/`; a token on the wrong key is silently no
-  # token at all, and the request then goes out anonymous — which would make
-  # every denial below pass for the wrong reason.
-  npmrc_for() {  # token -> echoes the file path
-    local token="$1" file="$HEAVY_WORK/npmrc-$2"
+  npmrc_for() {  # token, suffix -> echoes the file path
+    local token="$1" suffix="$2"
+    local file="$HEAVY_WORK/npmrc-$suffix"
+    # npm keys auth by `//host/path/`; a token on the wrong key is silently no
+    # token at all, and the request then goes out anonymous — which would make
+    # every denial below pass for the wrong reason.
+    local host_key="//127.0.0.1:$HEAVY_TAP_PORT/proxy/$NPM/"
     {
       echo "registry=$base"
       if [[ "$token" != "$T_ANON" ]]; then
@@ -920,17 +950,20 @@ phase_npm() {
       fi
     } > "$file"
     echo "$file"
+    return 0
   }
 
   export NPM_CONFIG_FUND=false NPM_CONFIG_AUDIT=false NPM_CONFIG_UPDATE_NOTIFIER=false
 
   make_pkg() {  # dir, name, version
-    mkdir -p "$1"
-    cat > "$1/package.json" <<EOF
-{ "name": "$2", "version": "$3", "description": "RFC 0015 heavy authz probe",
+    local dir="$1" name="$2" version="$3"
+    mkdir -p "$dir"
+    cat > "$dir/package.json" <<EOF
+{ "name": "$name", "version": "$version", "description": "RFC 0015 heavy authz probe",
   "license": "MIT", "main": "index.js" }
 EOF
-    echo "module.exports = '$2';" > "$1/index.js"
+    echo "module.exports = '$name';" > "$dir/index.js"
+    return 0
   }
 
   # ── seed ──
@@ -967,7 +1000,7 @@ EOF
     cat "$HEAVY_WORK/npm-deny.log" >&2
     heavy_fail "npm install SUCCEEDED for a caller holding no read verb — the boundary is not there"
   fi
-  heavy_wire_after "npm-deny" "-> 403" \
+  heavy_wire_after "npm-deny" "$WIRE_403" \
     "npm was stopped, but no 403 appears in the transcript after the denial phase — it failed \
 for some other reason, which is a denial that proves nothing"
   [[ -d "$HEAVY_WORK/consumer-deny/node_modules/$PKG" ]] \
@@ -1024,12 +1057,12 @@ for some other reason, which is a denial that proves nothing"
 outside its own subtree"
 
   heavy_log "NPM-AUTHZ-OK (refused, served, and the namespace grant visible to the client)"
+  return 0
 }
 
 phase_pypi() {
   heavy_need python3 "python3 with venv"
 
-  local simple="$HEAVY_TAP_BASE/proxy/$PYPI/simple/"
   local upload="$HEAVY_TAP_BASE/proxy/$PYPI/legacy/"
   local dist="authz-probe-$HEAVY_RUN" module="authz_probe_$HEAVY_RUN"
 
@@ -1081,7 +1114,7 @@ EOF
   set -e
   [[ $deny_rc -ne 0 ]] || { cat "$HEAVY_WORK/pip-deny.log" >&2; \
     heavy_fail "pip install SUCCEEDED for a caller holding no read verb"; }
-  heavy_wire_after "pypi-deny" "-> 403" "pip was stopped without a 403 in the transcript"
+  heavy_wire_after "pypi-deny" "$WIRE_403" "pip was stopped without a 403 in the transcript"
 
   heavy_mark "pypi-allow"
   heavy_log "pip install as the reader — must succeed"
@@ -1100,6 +1133,7 @@ EOF
   page_status="$(authz_status GET "$T_LISTER" "/proxy/$PYPI/simple/$dist/")"
   [[ "$page_status" == "200" ]] || heavy_fail "the lister got $page_status from the simple page, expected 200"
   heavy_log "PYPI-AUTHZ-OK (refused, served, and the listing/artifact split visible)"
+  return 0
 }
 
 phase_nuget() {
@@ -1171,6 +1205,7 @@ EOF
     (cd "$dir" && "${dotnet[@]}" pack -c Release -o "$dir/out") >>"$HEAVY_WORK/pack.log" 2>&1 \
       || { tail -30 "$HEAVY_WORK/pack.log" >&2; heavy_fail "dotnet pack failed for $pkg_id"; }
     echo "$dir/out/$pkg_id.1.0.0.nupkg"
+    return 0
   }
 
   # ── the client, pushing where it may ──
@@ -1197,7 +1232,7 @@ EOF
   [[ $sealed_rc -ne 0 ]] || { tail -30 "$HEAVY_WORK/push-sealed.log" >&2; heavy_fail \
     "dotnet nuget push put a package into a sealed prefix — a seal that role:admin walks \
 through is not a seal"; }
-  heavy_wire_after "nuget-sealed" "-> 403" \
+  heavy_wire_after "nuget-sealed" "$WIRE_403" \
     "the push was rejected without a 403 on the wire, so it failed for some other reason"
 
   # ── the read boundary, over curl for the reason above ──
@@ -1224,6 +1259,7 @@ through is not a seal"; }
 authenticate, so restore the dotnet restore arms this phase gave up on."
 
   heavy_log "NUGET-AUTHZ-OK (a seal the client meets, and the read boundary beside it)"
+  return 0
 }
 
 phase_composer() {
@@ -1279,8 +1315,9 @@ phase_composer() {
   # satisfies is a resolve BatleHub was not asked for — which for a *denial*
   # test would be a fallback that hides the boundary rather than a slow path.
   project() {  # dir
-    mkdir -p "$1"
-    cat > "$1/composer.json" <<EOF
+    local dir="$1"
+    mkdir -p "$dir"
+    cat > "$dir/composer.json" <<EOF
 {
   "name": "heavyauthz/consumer",
   "config": { "secure-http": false },
@@ -1291,6 +1328,7 @@ phase_composer() {
   "require": { "$pkg": "1.0.0" }
 }
 EOF
+    return 0
   }
 
   # Composer carries a bearer credential per host, which is how a private
@@ -1309,7 +1347,7 @@ EOF
     heavy_fail "composer update SUCCEEDED for a caller holding no read verb"; }
   [[ -d "$HEAVY_WORK/composer-deny/vendor/$pkg" ]] \
     && heavy_fail "composer failed and installed the package anyway"
-  heavy_wire_after "composer-deny" "-> 403" "composer was stopped without a 403 in the transcript"
+  heavy_wire_after "composer-deny" "$WIRE_403" "composer was stopped without a 403 in the transcript"
 
   heavy_mark "composer-allow"
   heavy_log "composer update as the reader — must succeed"
@@ -1324,6 +1362,7 @@ EOF
     || heavy_fail "$pkg was not installed into vendor/"
 
   heavy_log "COMPOSER-AUTHZ-OK (refused, served)"
+  return 0
 }
 
 phase_conda() {
@@ -1354,10 +1393,15 @@ phase_conda() {
   local allow_channel="http://authz-reader:$T_READER@$host/proxy/$CONDA"
 
   create_env() {  # suffix, channel, package
-    local root="$HEAVY_WORK/mamba-root-$1"
+    local suffix="$1" channel_url="$2" package="$3"
+    local root="$HEAVY_WORK/mamba-root-$suffix"
     mkdir -p "$root"
     MAMBA_ROOT_PREFIX="$root" "$mm" create -y --no-rc --override-channels \
-      -c "$2" --platform "$subdir" -n probe "$3"
+      -c "$channel_url" --platform "$subdir" -n probe "$package"
+    # micromamba's exit status **is** the assertion in both arms below — the
+    # denial reads it out of `$?` under `set +e`, and the positive control hangs
+    # a `||` off it. `return 0` here would make both pass unconditionally.
+    return $?
   }
 
   # **`repodata.json` filters, it does not refuse** — it is a whole-registry
@@ -1399,6 +1443,7 @@ fetches this document on every install, so that is the channel's inventory discl
   [[ -d "$HEAVY_WORK/mamba-root-allow/envs/probe" ]] || heavy_fail "no environment was created"
 
   heavy_log "CONDA-AUTHZ-OK (refused, served)"
+  return 0
 }
 
 phase_rubygems() {
@@ -1412,7 +1457,9 @@ phase_rubygems() {
   else
     heavy_fail "no working ruby (and no mise toolchain for ruby@$ruby_version)"
   fi
-  ruby_run() { "${rb[@]}" "$@"; }
+  # The status is the answer at the `gem list -i` probe below, so it is returned
+  # rather than swallowed.
+  ruby_run() { "${rb[@]}" "$@"; return $?; }
 
   heavy_log "Ruby: $(ruby_run ruby -v)"
   if ! ruby_run gem list -i bundler -v "$bundler_version" >/dev/null 2>&1; then
@@ -1438,19 +1485,22 @@ phase_rubygems() {
     --data-binary @"$HEAVY_WORK/gems/$gem_name/$gem_name-1.0.0.gem" \
     "$source/api/v1/gems" || heavy_fail "publishing the gem failed"
 
-  local host="127.0.0.1:$HEAVY_TAP_PORT"
   export BUNDLE_USER_HOME="$HEAVY_WORK/bundle-home"
   mkdir -p "$BUNDLE_USER_HOME"
 
   bundle_install() {  # suffix, credential
-    local dir="$HEAVY_WORK/proj-$1"
+    local suffix="$1" credential="$2"
+    local host="127.0.0.1:$HEAVY_TAP_PORT"
+    local dir="$HEAVY_WORK/proj-$suffix"
     mkdir -p "$dir"
     cat > "$dir/Gemfile" <<EOF
-source "http://$2@$host/proxy/$GEMS"
+source "http://$credential@$host/proxy/$GEMS"
 gem "$gem_name"
 EOF
     (cd "$dir" && "${rb[@]}" bundle "_${bundler_version}_" config set --local path "$dir/vendor" >/dev/null \
       && "${rb[@]}" bundle "_${bundler_version}_" install)
+    # Bundler's exit status is what both arms assert on — see `create_env`.
+    return $?
   }
 
   # **The compact index filters, it does not refuse.** `/versions` is a
@@ -1490,12 +1540,12 @@ Bundler fetches this document on every resolve, so that is the registry's invent
     || heavy_fail "$gem_name missing from Gemfile.lock"
 
   heavy_log "RUBYGEMS-AUTHZ-OK (refused, served)"
+  return 0
 }
 
 phase_openvsx() {
   heavy_need npx "nodejs"
   local ovsx_version="${OVSX_VERSION:-1.1.1}"
-  local vsce_version="${VSCE_VERSION:-3.9.2}"
   local ext_name="probe$HEAVY_RUN"
   local registry_url="$HEAVY_TAP_BASE/proxy/$VSX"
 
@@ -1519,7 +1569,9 @@ phase_openvsx() {
   #            still cannot fetch an extension.
 
   build_vsix() {  # publisher -> echoes the vsix path
-    local publisher="$1" dir="$HEAVY_WORK/ext-$1"
+    local publisher="$1"
+    local dir="$HEAVY_WORK/ext-$publisher"
+    local vsce_version="${VSCE_VERSION:-3.9.2}"
     mkdir -p "$dir"
     cat > "$dir/package.json" <<EOF
 { "name": "$ext_name", "displayName": "RFC 0015 heavy authz probe",
@@ -1537,6 +1589,7 @@ EOF
       >>"$HEAVY_WORK/vsce.log" 2>&1 \
       || { tail -30 "$HEAVY_WORK/vsce.log" >&2; heavy_fail "vsce package failed for $publisher"; }
     echo "$vsix"
+    return 0
   }
 
   # ── the client, publishing where it may ──
@@ -1561,7 +1614,7 @@ EOF
   set -e
   [[ $sealed_rc -ne 0 ]] || { cat "$HEAVY_WORK/vsx-sealed.log" >&2; heavy_fail \
     "ovsx published into a sealed namespace — a seal that role:admin walks through is not a seal"; }
-  heavy_wire_after "vsx-sealed" "-> 403" \
+  heavy_wire_after "vsx-sealed" "$WIRE_403" \
     "ovsx was stopped, but no 403 followed the sealed publish — so it failed for some other reason"
 
   # ── the read boundary, over curl for the reason above ──
@@ -1577,6 +1630,7 @@ EOF
     "the reader got $reader_status for the VSIX — the positive control"
 
   heavy_log "OPENVSX-AUTHZ-OK (a seal the client meets, and the read boundary beside it)"
+  return 0
 }
 
 phase_terraform() {
@@ -1608,15 +1662,17 @@ EOF
   mkdir -p "$TF_PLUGIN_CACHE_DIR"
   export TF_IN_AUTOMATION=1 CHECKPOINT_DISABLE=1
 
-  tf_credentials() {  # token
-    export TF_CLI_CONFIG_FILE="$HEAVY_WORK/terraformrc-$2"
+  tf_credentials() {  # token, suffix
+    local token="$1" suffix="$2"
+    export TF_CLI_CONFIG_FILE="$HEAVY_WORK/terraformrc-$suffix"
     cat > "$TF_CLI_CONFIG_FILE" <<EOF
 plugin_cache_dir = "$TF_PLUGIN_CACHE_DIR"
 disable_checkpoint = true
 credentials "$tf_host" {
-  token = "$1"
+  token = "$token"
 }
 EOF
+    return 0
   }
 
   # Terraform sends its credential to the two metadata documents and fetches the
@@ -1708,6 +1764,7 @@ carries a minted capability and must be no-store, or a shared cache replays one 
 signature to the next"
 
   heavy_log "TERRAFORM-AUTHZ-OK (refused, installed end-to-end on a closed registry, and the signature proven load-bearing)"
+  return 0
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1770,6 +1827,7 @@ block.append("")
 
 open(path, "w").write("\n".join(lines[:start] + block + lines[end:]))
 PY
+  return 0
 }
 
 # signing_reload <what> <ttl> <secret> [previous-secret…] — put that signing
@@ -1807,7 +1865,7 @@ print(json.dumps({"content": open(sys.argv[1]).read()}))
 ' "$HEAVY_AUTHZ_SIGNING_STAGE" > "$HEAVY_WORK/from-content.json"
 
   staged="$(authz_body POST "$T_ADMIN" "/api/v1/admin/config/from-content" \
-    -H "Content-Type: application/json" --data-binary @"$HEAVY_WORK/from-content.json")"
+    -H "$HDR_JSON" --data-binary @"$HEAVY_WORK/from-content.json")"
   created="$(python3 -c '
 import json, sys
 try:
@@ -1824,6 +1882,7 @@ except Exception:
     heavy_fail "applying the config for '$what' answered $status: $body"
   fi
   heavy_log "reloaded: $what"
+  return 0
 }
 
 # signing_exp_in <signed-path> — seconds from now until the capability expires.
@@ -1834,6 +1893,7 @@ except Exception:
 # cannot tell "the TTL is not enforced" from "the TTL was never applied", and
 # those have opposite fixes.
 signing_exp_in() {
+  local signed_path="$1"
   python3 -c '
 import base64, json, sys, time, urllib.parse
 
@@ -1849,16 +1909,19 @@ try:
     print(int(json.loads(base64.urlsafe_b64decode(raw))["exp"] - time.time()))
 except Exception:
     print("unparseable")
-' "$1"
+' "$signed_path"
+  return 0
 }
 
 # signing_path <absolute-url> — the path+query, for the assertion helpers.
 signing_path() {
+  local url="$1"
   python3 -c '
 import sys, urllib.parse
 u = urllib.parse.urlsplit(sys.argv[1])
 print(u.path + ("?" + u.query if u.query else ""))
-' "$1"
+' "$url"
+  return 0
 }
 
 # signing_mint <field> — echo the signed path the download document carries.
@@ -1884,6 +1947,7 @@ except Exception:
 serving an unsigned document and every assertion in this phase would be vacuous" ;;
   esac
   signing_path "$url"
+  return 0
 }
 
 phase_signing() {
@@ -2033,6 +2097,7 @@ signed, which is the only reason to rotate one"
 200 — rotation invalidated the wrong generation"
 
   heavy_log "SIGNING-AUTHZ-OK (bound to its artifact, expires, and rotates in both directions)"
+  return 0
 }
 
 # ── Vocabulary coverage ──────────────────────────────────────────────────────
@@ -2057,6 +2122,10 @@ drifted from the file and this check is no longer checking anything"
       # `latest`, and storing them has no good answer when the tagged version is
       # withdrawn. There is nothing to drive, so there is nothing to assert.
       npm:dist-tags:write) continue ;;
+      # Every other verb falls through to the coverage check below, which is the
+      # point: a verb added tomorrow is not in this list, so it is required to
+      # have been exercised.
+      *) ;;
     esac
     if [[ -z "${AUTHZ_VERB_SEEN[$verb]:-}" ]]; then
       missing+=("$verb")
@@ -2069,6 +2138,7 @@ in this run: ${missing[*]}. Either add the pair, or add it to the exception list
 the reason."
   fi
   heavy_log "vocabulary covered: ${#all[@]} verbs in the enum, one deliberate exception"
+  return 0
 }
 
 # ── Run ──────────────────────────────────────────────────────────────────────

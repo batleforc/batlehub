@@ -24,7 +24,10 @@ const { t } = useI18n();
     SonarCloud flags the `tabindex` here ("should only be declared on
     interactive elements") and is wrong: its rule has no exception for scroll
     containers, and removing the attribute trades a heuristic finding for a real
-    WCAG 2.1.1 failure that axe catches. Resolved as a false positive — see
+    WCAG 2.1.1 failure that axe catches. Web:S6845 is ignored for this one file
+    in sonar-project.properties, with the reasoning there — a per-issue
+    resolution in the UI does not survive the next branch that touches this file,
+    which is how the finding came back. See
     docs/internal/sonar-triage-2026-08-30.md. Do not "fix" it.
   -->
   <!-- `<section>`, not `<div role="region">`: a named section carries the role

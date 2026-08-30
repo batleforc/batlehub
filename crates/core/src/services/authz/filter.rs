@@ -293,21 +293,34 @@ fn feed(hasher: &mut sha2::Sha256, s: &str) {
     hasher.update(s.as_bytes());
 }
 
+/// A boolean as one length-prefixed field, so it hashes like every other.
+///
+/// Named rather than written out at each of the four flags: the spelling has to
+/// be identical everywhere, because two flags that disagree on how `false` is
+/// spelled are two flags that can swap places without changing the digest.
+fn bit(flag: bool) -> &'static str {
+    if flag {
+        "1"
+    } else {
+        "0"
+    }
+}
+
 fn feed_readable(hasher: &mut sha2::Sha256, readable: &Readable) {
     match readable {
         Readable::Everything => feed(hasher, "*"),
         Readable::Scoped(scope) => {
             feed(hasher, "scoped");
             feed(hasher, scope.kind.as_str());
-            feed(hasher, if scope.registry_grants_read { "1" } else { "0" });
-            feed(hasher, if scope.floor_survives { "1" } else { "0" });
+            feed(hasher, bit(scope.registry_grants_read));
+            feed(hasher, bit(scope.floor_survives));
             // Config order, which is the order that makes "the deepest seal"
             // well defined — so it is part of the answer, not an accident of
             // iteration.
             for ns in &scope.namespaces {
                 feed(hasher, &ns.prefix);
-                feed(hasher, if ns.grants_read { "1" } else { "0" });
-                feed(hasher, if ns.sealed { "1" } else { "0" });
+                feed(hasher, bit(ns.grants_read));
+                feed(hasher, bit(ns.sealed));
             }
             // Already sorted and deduplicated by `with_package_grants`.
             for package in &scope.packages {

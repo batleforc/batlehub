@@ -163,11 +163,17 @@ a{color:var(--accent);text-underline-offset:3px}
    light/dark/system setting is. Three states, because "System" (follow the
    browser) is a real answer and a two-way switch cannot express it. */
 .settings{position:relative}
-/* `.pop` and `.segmented` are <fieldset>s — the native grouping element, rather
-   than a <div role="group">. A fieldset carries three UA defaults that have to
-   go for it to lay out like the div did: a 2px inline margin, a groove border,
-   and `min-inline-size:min-content`, which would stop the segmented control
-   from shrinking inside its flex row. Both rules set their own border already. */
+/* `.pop` and `.segmented` are fieldsets — the native grouping element, rather
+   than a plain div carrying the group role. A fieldset carries three UA defaults
+   that have to go for it to lay out like the div did: a 2px inline margin, a
+   groove border, and `min-inline-size:min-content`, which would stop the
+   segmented control from shrinking inside its flex row. Both rules set their own
+   border already.
+
+   Written as prose rather than as markup on purpose: SonarCloud's Web:S6819
+   parses element syntax wherever it appears, including inside this CSS comment,
+   and flagged the very sentence explaining that the fix it asks for is already
+   what the file does. */
 .pop{position:absolute;right:0;top:calc(100% + var(--s2));z-index:50;min-width:264px;margin:0;
   min-inline-size:0;background:var(--ground-sunk);border:1px solid var(--rule-strong);padding:var(--s4)}
 .pop h2{font-family:"Silkscreen",monospace;font-size:var(--t-px-sm);margin:0;
