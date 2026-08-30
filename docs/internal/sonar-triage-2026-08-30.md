@@ -24,11 +24,53 @@ record of why.
 | `crates/core/src/entities/permission.rs` | redundant `'static` | dropped the annotation |
 | `crates/web/src/handlers/back_office/packages/bulk.rs` | blank line after attribute | removed |
 | `perf/k6/scenarios/08_…js`, `09_…js` | prefer optional chain | `data.metrics[n]?.values` |
-| `tests/heavy/marketplace.sh` | `'=https'` literal ×6 | hoisted to a `HTTPS_ONLY` array constant |
+| `tests/heavy/marketplace.sh` | `'=https'` literal ×6 | a `fetch_https` wrapper — see the second pass below |
 
 None of the complexity refactors changed behaviour: the full workspace suite is
 green, and the two refactored tests still assert exactly what they did before
 (the `authz_matrix` canonicaliser is byte-identical, just relocated).
+
+---
+
+## Second pass — `tests/heavy/marketplace.sh`, three new HTTPS hotspots
+
+The first pass fixed a duplicated-literal smell by hoisting
+`--proto '=https' --proto-redir '=https'` into a `HTTPS_ONLY` array and splicing
+`"${HTTPS_ONLY[@]}"` into each `curl`. The next analysis raised three *new*
+security hotspots — "Not enforcing HTTPS here might allow for redirections to
+insecure websites" — on precisely the three call sites that had just been
+de-duplicated, and on none of them before. One rule's fix tripped another: the
+hotspot rule reads the flags lexically at the `curl` token, and an array splat
+is opaque to it.
+
+Both rules are now satisfied by structure rather than by argument. The flags
+live inline on a single `curl` inside a `fetch_https` wrapper, and the call
+sites invoke the wrapper:
+
+```bash
+fetch_https() {
+  curl -fsSL --proto '=https' --proto-redir '=https' "$@"
+}
+```
+
+One occurrence of the literal, so nothing to de-duplicate; the flags lexically
+attached to the only `curl` the rule can see, so nothing to flag; and a call
+site can no longer omit half of the pair, which the array could not guarantee
+either.
+
+The hotspot also turned up a gap it had not flagged. The two
+`$WEEBO_BASE_URL` release downloads (the VSIX and the JetBrains zip) were plain
+`curl -fsSL` with no pinning at all — Sonar said nothing because the URL is a
+variable. GitHub releases redirect to `objects.githubusercontent.com`, so they
+are the same redirect-chain exposure as the IDE tarballs. Both now go through
+`fetch_https`. The remaining bare `curl`s in the script address `$BASE`, the
+local server over plain HTTP, and are correct as they are.
+
+**Action:** no hotspot to resolve in SonarCloud — the next analysis clears all
+three. The lesson is the transferable part: **when a fix for one rule moves an
+argument away from the call it guards, re-check the rules that read that call.**
+De-duplication that hides a security flag from the analyser also hides it from
+the reader.
 
 ---
 
@@ -62,7 +104,7 @@ never fixed**, unless the migration has not yet shipped.
 
 ---
 
-## FP 2 — `ui/src/components/ui/table/Table.vue:27`, "tabindex should only be declared on interactive elements"
+## FP 2 — `ui/src/components/ui/table/Table.vue`, the `<section>` scroll container, "tabindex should only be declared on interactive elements"
 
 The element is the table's scroll container. It carries `tabindex="0"` because a
 region that scrolls but cannot be reached by keyboard is unreachable content for
