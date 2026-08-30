@@ -1,3 +1,4 @@
+use super::read::DocumentSlot;
 use super::{CoreError, Identity, LocalRegistryService};
 
 impl LocalRegistryService {
@@ -128,16 +129,22 @@ impl LocalRegistryService {
     ) -> Result<String, CoreError> {
         use md5::{Digest as _, Md5};
 
-        // §11.7 arm 3: one entry per *grant set*, not per caller. Phase 0b
-        // found this key load-bearing rather than optional.
-        let cache_slot = self.cached_document(registry, "versions", identity).await?;
-        let (cache_key, generation) = match cache_slot {
-            Ok(body) => return Ok(body.to_string()),
-            Err(slot) => slot,
-        };
+        // §11.7 arm 3: one entry per *audience*, not per caller. Phase 0b found
+        // this key load-bearing rather than optional — and §4.4 rule 3 decides
+        // what the audience has to include. The slot hands back the read set it
+        // keyed on, so this document is filtered with the same resolution the
+        // key describes.
+        let (cache_key, generation, readable) =
+            match self.cached_document(registry, "versions", identity).await? {
+                DocumentSlot::Hit(body) => return Ok(body.to_string()),
+                DocumentSlot::Miss {
+                    key,
+                    generation,
+                    readable,
+                } => (key, generation, readable),
+            };
 
         let names = self.backend.list_package_names(registry).await?;
-        let readable = self.readable_packages(registry, identity).await?;
         // A fixed epoch rather than "now": Bundler treats this header as the
         // point its incremental fetches start from, and a timestamp that moves
         // on every request invalidates every cache on every request.
@@ -185,14 +192,17 @@ impl LocalRegistryService {
         identity: &Identity,
     ) -> Result<String, CoreError> {
         // §11.7 arm 3, as `/versions` above.
-        let cache_slot = self.cached_document(registry, "names", identity).await?;
-        let (cache_key, generation) = match cache_slot {
-            Ok(body) => return Ok(body.to_string()),
-            Err(slot) => slot,
-        };
+        let (cache_key, generation, readable) =
+            match self.cached_document(registry, "names", identity).await? {
+                DocumentSlot::Hit(body) => return Ok(body.to_string()),
+                DocumentSlot::Miss {
+                    key,
+                    generation,
+                    readable,
+                } => (key, generation, readable),
+            };
 
         let names = self.backend.list_package_names(registry).await?;
-        let readable = self.readable_packages(registry, identity).await?;
         let mut out = String::from("---\n");
         for name in &names {
             // §4.4, same as `/versions`: this document names every gem in the

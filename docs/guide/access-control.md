@@ -66,8 +66,9 @@ granted to nobody.
 | `gates:exempt` | exempt a version from a gate ([below](#exemptions)) |
 | `stats:read` | read the dashboard's aggregates |
 | `audit:read` | read the audit log |
+| `audit:purge` | delete audit-log entries older than a cutoff |
 
-Thirteen more authorise the **control surfaces** — the server itself rather than
+Fourteen more authorise the **control surfaces** — the server itself rather than
 what is published on it. They were one `require_admin` check until they were
 split, so an administrator holds all of them and each is now delegable on its
 own:
@@ -84,6 +85,7 @@ own:
 | `cache:evict` | drop cached artifacts |
 | `cache:warm` | pre-fetch them |
 | `quota:read` | read quota usage |
+| `quota:write` | reset a user's quota counters |
 | `retention:run` | run retention, and pin a version against it |
 | `tombstones:read` | read tombstones, and compact their detail |
 | `packages:read` | the administrative package list |
@@ -99,7 +101,7 @@ define them:
 | `npm:dist-tags:write` | `npm` | *reserved* — dist-tags are derived here, so nothing requests it ([RFC 0015](/rfc/0015-grants-on-the-resource-hierarchy) §4.2 has the argument) |
 
 ::: tip The list above is the whole vocabulary
-All 31 verbs, checked against the enum by a test rather than maintained by hand
+All 33 verbs, checked against the enum by a test rather than maintained by hand
 — an earlier version of this table listed three verbs that did not exist, and
 copying one into a config file failed the server at startup.
 :::
@@ -205,7 +207,7 @@ Sealing is the one construct in the model that takes access away, so it is
 confined to the config file — there is no way to seal a package through the API.
 An **administrative floor** survives every seal, so a sealed subtree is never one
 an administrator cannot reopen. It sits on the `instance` tier and gives
-`role:admin` the thirteen control verbs, `audit:read`, `stats:read`,
+`role:admin` the fourteen control verbs, both `audit:` verbs, `stats:read`,
 `packages:block`, both `owners:` verbs, `releases:yank`, `releases:delete` and
 the three ecosystem verbs that no legacy setting translates to.
 

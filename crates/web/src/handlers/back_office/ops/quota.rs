@@ -164,7 +164,7 @@ pub async fn get_quota_for_user(
     ),
     responses(
         (status = 200, description = "Quota reset", body = OkResponse),
-        (status = 403, description = "`quota:read` required"),
+        (status = 403, description = "`quota:write` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -177,9 +177,14 @@ pub async fn reset_quota_for_user(
     hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
     let (registry, user_id) = path.into_inner();
+    // **`quota:write`, not `quota:read`.** The three reads above ask for the
+    // read verb; this one zeroes the counters. Every other control surface in
+    // the vocabulary splits the two — `config:*`, `system:*`, `blocks:*` — and
+    // quota was the one that did not, so a support engineer granted the read to
+    // inspect usage could also defeat the limit on every user in the registry.
     crate::handlers::back_office::require_verb(
         &identity,
-        batlehub_core::entities::Action::QuotaRead,
+        batlehub_core::entities::Action::QuotaWrite,
         Some(&registry),
         &hot,
     )

@@ -284,6 +284,7 @@ pub fn translate_rbac(
             Action::CacheEvict,
             Action::CacheWarm,
             Action::QuotaRead,
+            Action::QuotaWrite,
             Action::RetentionRun,
             Action::TombstonesRead,
             Action::PackagesRead,
@@ -330,6 +331,7 @@ pub fn instance_node(explicit: Option<&GrantMap>) -> Node {
             Action::CacheEvict,
             Action::CacheWarm,
             Action::QuotaRead,
+            Action::QuotaWrite,
             Action::RetentionRun,
             Action::TombstonesRead,
             Action::PackagesRead,
@@ -337,6 +339,7 @@ pub fn instance_node(explicit: Option<&GrantMap>) -> Node {
             // instance-wide endpoint that reads them (the audit log spans every
             // registry) resolves for an administrator without naming one.
             Action::AuditRead,
+            Action::AuditPurge,
             Action::StatsRead,
             Action::PackagesBlock,
             // The governance and lifecycle verbs the admin API's own endpoints
@@ -711,11 +714,13 @@ mod control_surface_tests {
             Action::CacheEvict,
             Action::CacheWarm,
             Action::QuotaRead,
+            Action::QuotaWrite,
             Action::RetentionRun,
             Action::TombstonesRead,
             Action::PackagesRead,
             Action::PackagesBlock,
             Action::AuditRead,
+            Action::AuditPurge,
             Action::StatsRead,
             Action::OwnersRead,
             Action::OwnersWrite,

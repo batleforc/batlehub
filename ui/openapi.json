@@ -213,7 +213,7 @@
             }
           },
           "403": {
-            "description": "`audit:read` required"
+            "description": "`audit:purge` required"
           }
         },
         "security": [
@@ -1926,7 +1926,7 @@
             }
           },
           "403": {
-            "description": "`quota:read` required"
+            "description": "`quota:write` required"
           }
         },
         "security": [

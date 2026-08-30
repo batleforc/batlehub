@@ -93,6 +93,19 @@ async fn make_quota_app(
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
+    make_quota_app_with(quota_svc, None).await
+}
+
+/// `make_quota_app`, plus whatever an operator wrote in a top-level `[grants]`
+/// block — which is how a control verb becomes delegable at all.
+async fn make_quota_app_with(
+    quota_svc: Arc<QuotaService>,
+    explicit: Option<batlehub_core::entities::GrantMap>,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
     use batlehub_web::handlers::back_office::ops::quota::{
         get_quota_for_user, list_quota, list_quota_for_registry, reset_quota_for_user,
     };
@@ -104,7 +117,7 @@ async fn make_quota_app(
             batlehub_core::services::hot_config::new_hot_lock(
                 batlehub_core::services::hot_config::HotConfig {
                     instance: Some(std::sync::Arc::new(
-                        batlehub_core::services::authz::translate::instance_node(None),
+                        batlehub_core::services::authz::translate::instance_node(explicit.as_ref()),
                     )),
                     ..Default::default()
                 },
@@ -218,6 +231,90 @@ async fn admin_quota_reset_requires_admin() {
         .insert_header(("Authorization", bearer(USER_TOKEN)))
         .to_request();
     assert_eq!(call_service(&app, req).await.status(), 403);
+}
+
+// ── The read verb is a read verb ──────────────────────────────────────────────
+//
+// `admin_quota_reset_requires_admin` above cannot see this: it uses a bare
+// `role:user` holding no grant at all, so it passes whether the reset is gated
+// on `quota:read` or on `quota:write`. The delegation is the whole return on
+// §4.2's decomposition, and it is the delegated caller — not the anonymous one —
+// who is standing in front of the wrong verb.
+
+/// A delegate granted `quota:read` reads usage and **cannot reset it**.
+#[actix_web::test]
+async fn quota_read_delegated_to_a_user_does_not_confer_the_reset() {
+    use batlehub_core::entities::{Action, GrantMap, Role, SubjectMatcher};
+
+    let repo = InMemoryQuotaRepository::new();
+    repo.record_publish("alice", "cargo", 1024).await.unwrap();
+    let svc = Arc::new(QuotaService::new(repo.clone(), HashMap::new()));
+    let app = make_quota_app_with(
+        svc,
+        Some(GrantMap::new().grant(SubjectMatcher::Role(Role::User), [Action::QuotaRead])),
+    )
+    .await;
+
+    // The read the grant names.
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/quota/cargo/alice")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(
+        call_service(&app, req).await.status(),
+        200,
+        "a positive control: without this the assertion below passes for the \
+         wrong reason, because every request from this caller is refused"
+    );
+
+    // The write it does not.
+    let req = TestRequest::delete()
+        .uri("/api/v1/admin/quota/cargo/alice")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(
+        call_service(&app, req).await.status(),
+        403,
+        "`quota:read` is published as \"read quota usage\"; an operator \
+         delegating it to a support engineer is not also handing them the \
+         ability to defeat the limit on every user in the registry"
+    );
+    assert_eq!(
+        repo.get_usage("alice", "cargo")
+            .await
+            .unwrap()
+            .bytes_published,
+        1024,
+        "and the refusal has to happen before the reset, not after it"
+    );
+}
+
+/// …and `quota:write` is what does confer it.
+#[actix_web::test]
+async fn quota_write_delegated_to_a_user_is_honoured() {
+    use batlehub_core::entities::{Action, GrantMap, Role, SubjectMatcher};
+
+    let repo = InMemoryQuotaRepository::new();
+    repo.record_publish("alice", "cargo", 1024).await.unwrap();
+    let svc = Arc::new(QuotaService::new(repo.clone(), HashMap::new()));
+    let app = make_quota_app_with(
+        svc,
+        Some(GrantMap::new().grant(SubjectMatcher::Role(Role::User), [Action::QuotaWrite])),
+    )
+    .await;
+
+    let req = TestRequest::delete()
+        .uri("/api/v1/admin/quota/cargo/alice")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+    assert_eq!(
+        repo.get_usage("alice", "cargo")
+            .await
+            .unwrap()
+            .bytes_published,
+        0
+    );
 }
 
 // ── Package ownership ─────────────────────────────────────────────────────────
@@ -814,4 +911,92 @@ async fn purge_audit_log_returns_200_with_deleted_count() {
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
     assert_eq!(body["deleted"], 0);
+}
+
+/// An app carrying only the audit handlers, with `explicit` unioned onto the
+/// instance node exactly as a top-level `[grants]` block would be.
+async fn make_audit_app(
+    explicit: batlehub_core::entities::GrantMap,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    use batlehub_web::handlers::back_office::audit::{audit_log, purge_audit_log};
+
+    let admin_svc = Arc::new(AdminService::new(InMemoryRepo::new()));
+    let app = actix_web::App::new()
+        .app_data(actix_web::web::Data::new(
+            batlehub_core::services::hot_config::new_hot_lock(
+                batlehub_core::services::hot_config::HotConfig {
+                    instance: Some(std::sync::Arc::new(
+                        batlehub_core::services::authz::translate::instance_node(Some(&explicit)),
+                    )),
+                    ..Default::default()
+                },
+            ),
+        ))
+        .app_data(actix_web::web::Data::new(admin_svc))
+        .service(audit_log)
+        .service(purge_audit_log);
+    init_service(app.wrap(AuthMiddlewareFactory::new(test_auth_providers()))).await
+}
+
+/// **A reviewer who may read the trail may not erase it.**
+///
+/// `purge_audit_log_requires_admin` above cannot see this — a bare `role:user`
+/// holds nothing, so it is refused whichever verb the handler asks for. The
+/// delegation is the case that matters: `audit:read` is published as "read the
+/// audit log", and an estate granting it to a compliance reviewer is doing the
+/// thing §4.2's decomposition exists to make possible. If the purge shared that
+/// verb, the reviewer could delete the trail — including the record of their own
+/// actions, and including the `audit:purge` event the purge writes, which a
+/// second call with the same cutoff removes.
+#[actix_web::test]
+async fn audit_read_delegated_to_a_user_does_not_confer_the_purge() {
+    use batlehub_core::entities::{Action, GrantMap, Role, SubjectMatcher};
+
+    let app = make_audit_app(
+        GrantMap::new().grant(SubjectMatcher::Role(Role::User), [Action::AuditRead]),
+    )
+    .await;
+
+    let req = TestRequest::get()
+        .uri("/api/v1/admin/audit-log")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(
+        call_service(&app, req).await.status(),
+        200,
+        "the positive control: the grant does reach the read it names"
+    );
+
+    let req = TestRequest::delete()
+        .uri("/api/v1/admin/audit-log?before=2026-01-01T00:00:00Z")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(
+        call_service(&app, req).await.status(),
+        403,
+        "reading the audit log and destroying it are one grant apart, and the \
+         endpoint was `require_admin` before the decomposition — so this is a \
+         reduction nobody asked for, not a preserved capability"
+    );
+}
+
+/// …and `audit:purge` is what does confer it.
+#[actix_web::test]
+async fn audit_purge_delegated_to_a_user_is_honoured() {
+    use batlehub_core::entities::{Action, GrantMap, Role, SubjectMatcher};
+
+    let app = make_audit_app(
+        GrantMap::new().grant(SubjectMatcher::Role(Role::User), [Action::AuditPurge]),
+    )
+    .await;
+
+    let req = TestRequest::delete()
+        .uri("/api/v1/admin/audit-log?before=2026-01-01T00:00:00Z")
+        .insert_header(("Authorization", bearer(USER_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
 }

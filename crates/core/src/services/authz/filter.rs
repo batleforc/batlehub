@@ -38,7 +38,7 @@
 //! deeper tiers grant the read on the packages this caller may see. §4.4's
 //! opening sentence describes precisely that configuration.
 
-use crate::entities::{Action, GrantSet, Subject};
+use crate::entities::{Action, GrantSet, Identity, Role, Subject};
 
 /// What a caller may do with one package in a listing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,16 +146,175 @@ pub fn filter_listing<T>(
 /// > merged local hits under a key that named no identity, so one caller's
 /// > private results were replayed to the next.
 ///
-/// The key is the *grant set*, not the caller — that is what makes the cache
-/// affordable (§11.7 arm 3: callers sharing a set share an entry) and what makes
-/// it correct (two callers with the same set are entitled to the same bytes).
+/// The key is a *class of caller*, not a caller — that is what makes the cache
+/// affordable (§11.7 arm 3: callers entitled to the same bytes share an entry)
+/// and what makes it correct. [`DocumentAudience`] is that class, and its
+/// documentation records what "entitled to the same bytes" turned out to mean.
+pub fn document_cache_key(prefix: &str, audience: &DocumentAudience<'_>) -> String {
+    format!("{prefix}:audience={}", audience.digest())
+}
+
+/// Everything about a caller that can change the bytes of a whole-registry
+/// document.
 ///
-/// `resolved` must be the set for the tiers that are **constant across the
-/// document**. For a whole-registry index that is the registry and namespace
-/// tiers; mixing in a package-tier grant would key the whole document by one
-/// package's permissions, and the next package's would miss.
-pub fn document_cache_key(prefix: &str, resolved: &GrantSet) -> String {
-    format!("{prefix}:grants={}", resolved.cache_key())
+/// # Why this is not the grant set of the registry node
+///
+/// It was, and that was a disclosure. The key was
+/// `resolve(&[grants.registry], subject)` while the document was filtered by
+/// four further things a registry-tier grant set does not describe — so two
+/// callers who agreed on that one node, and on nothing else, shared an entry
+/// and the first one in decided what the second was served:
+///
+/// - **the instance and namespace tiers.** [`Readable`] resolves them and the
+///   registry node alone does not. A namespace grant widens the document; a
+///   seal narrows it. The contract sentence this function used to carry already
+///   said so — "the tiers that are constant across the document ... the
+///   registry **and namespace** tiers" — and the call site did not.
+/// - **`releases:list`.** A different verb from `releases:read`, resolved over
+///   the same hierarchy: `check_read_access` runs `authorize_listing` on it
+///   before the read set is consulted, so two callers with the same read set
+///   and different list sets get different documents.
+/// - **`private` visibility (§4.5).** It drops everything inherited and admits
+///   only a grant written *on the package*. Two callers that
+///   [`Readable::Everything`] collapses — both hold the read at the registry
+///   tier, neither has anything to filter — are still entitled to different
+///   documents, because only one of them holds the grant written on the private
+///   package. That is why `local_read_grants` is carried separately rather than
+///   read back out of `readable`: the fast path does not fetch it.
+/// - **`team` visibility and the beta channel.** Group membership and channel
+///   membership. No grant resolves either, and both remove packages and
+///   versions from what a caller may see.
+///
+/// Each is a route by which one caller's document is replayed to another —
+/// finding 11 again, on the surface §4.4 warns is easiest to forget.
+/// [`explore_cache`](crate::services::explore_cache)'s `viewer_key_part` folds
+/// the same material in for the same reason, and says the same thing about it:
+/// load-bearing for correctness, not for hit rate.
+///
+/// # It is still a class, and the sharing property survives
+///
+/// Every field is a property of *what the caller may see*, never of who they
+/// are: no user id, no token, no provider. An estate where everyone resolves to
+/// the same answer — the overwhelming majority, since grants only widen and a
+/// registry-tier read reaches everything — still shares one entry, which is the
+/// property §11.7 arm 3 measures. What the key stopped doing is claiming two
+/// callers agree when only one node of five says so.
+///
+/// # What it deliberately does not cover
+///
+/// `authorize_listing` resolves the *version* tier too, for the sentinel
+/// coordinate `{package}@latest`. A grant written on that literal string, for
+/// one subject, is not in this digest. It is out of scope rather than
+/// overlooked: `latest` is a sentinel this funnel passes because a listing has
+/// no version, not a version anyone publishes, so a row on it is not something
+/// an operator can write about a real release.
+pub struct DocumentAudience<'a> {
+    /// Which packages the caller may read.
+    readable: &'a Readable,
+    /// Which packages the caller may list — `releases:list`, resolved
+    /// separately over the same hierarchy.
+    listable: &'a Readable,
+    /// `internal` visibility admits `role:user` and refuses `role:anonymous`,
+    /// and that distinction appears in no grant set.
+    role: Role,
+    /// Group ids with spaces stripped, sorted and deduplicated — the exact
+    /// comparison [`check_team_visibility`] makes, so membership order (which
+    /// varies between tokens from one provider) does not fragment the cache.
+    ///
+    /// [`check_team_visibility`]: crate::services::local_registry::check_team_visibility
+    groups: Vec<String>,
+    /// Package-tier grants naming this caller with the read, sorted — §4.5's
+    /// `private` audience, which the `Everything` fast path cannot express.
+    local_read_grants: &'a [String],
+    /// Beta-channel membership: a non-member's document has no pre-releases in
+    /// it.
+    beta_member: bool,
+}
+
+impl<'a> DocumentAudience<'a> {
+    pub fn new(
+        identity: &Identity,
+        readable: &'a Readable,
+        listable: &'a Readable,
+        local_read_grants: &'a [String],
+        beta_member: bool,
+    ) -> Self {
+        let mut groups: Vec<String> = identity.groups.iter().map(|g| g.replace(' ', "")).collect();
+        groups.sort();
+        groups.dedup();
+        Self {
+            readable,
+            listable,
+            role: identity.role.clone(),
+            groups,
+            local_read_grants,
+            beta_member,
+        }
+    }
+
+    /// 16 hex characters of SHA-256 over every field.
+    ///
+    /// A cache key, not a security boundary, exactly as [`GrantSet::cache_key`]
+    /// says of its own: a collision serves one audience's document to another,
+    /// so it has to be improbable rather than infeasible.
+    fn digest(&self) -> String {
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+        feed(&mut hasher, &self.role.to_string());
+        feed(&mut hasher, if self.beta_member { "beta" } else { "-" });
+        feed_readable(&mut hasher, self.readable);
+        feed_readable(&mut hasher, self.listable);
+        for group in &self.groups {
+            feed(&mut hasher, group);
+        }
+        feed(&mut hasher, "|");
+        for package in self.local_read_grants {
+            feed(&mut hasher, package);
+        }
+        hasher
+            .finalize()
+            .iter()
+            .take(8)
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+}
+
+/// Length-prefixed rather than delimiter-joined.
+///
+/// The lesson [`GrantSet::cache_key`] records and `signed_url.rs` records
+/// before it — "a group holding a separator cannot pose as two". Every field
+/// here is operator-authored text: a namespace prefix, a package name, a group
+/// id. Any delimiter this could have used occurs inside at least one of them.
+fn feed(hasher: &mut sha2::Sha256, s: &str) {
+    use sha2::Digest as _;
+    hasher.update((s.len() as u32).to_le_bytes());
+    hasher.update(s.as_bytes());
+}
+
+fn feed_readable(hasher: &mut sha2::Sha256, readable: &Readable) {
+    match readable {
+        Readable::Everything => feed(hasher, "*"),
+        Readable::Scoped(scope) => {
+            feed(hasher, "scoped");
+            feed(hasher, scope.kind.as_str());
+            feed(hasher, if scope.registry_grants_read { "1" } else { "0" });
+            feed(hasher, if scope.floor_survives { "1" } else { "0" });
+            // Config order, which is the order that makes "the deepest seal"
+            // well defined — so it is part of the answer, not an accident of
+            // iteration.
+            for ns in &scope.namespaces {
+                feed(hasher, &ns.prefix);
+                feed(hasher, if ns.grants_read { "1" } else { "0" });
+                feed(hasher, if ns.sealed { "1" } else { "0" });
+            }
+            // Already sorted and deduplicated by `with_package_grants`.
+            for package in &scope.packages {
+                feed(hasher, package);
+            }
+        }
+    }
 }
 
 /// The subject a listing is being built for, and the verb it is filtered on.
@@ -553,38 +712,6 @@ mod tests {
             "list without read is the configuration §4.4 is written for"
         );
     }
-
-    /// Two grant sets get two cache keys, so one caller's document cannot be
-    /// replayed to the other.
-    ///
-    /// Finding 11's regression test, in the shape §11.4 asks for: a broad caller
-    /// populates the cache, a narrow caller makes the same request, and the
-    /// narrow caller must not be served the broad one's bytes.
-    #[test]
-    fn a_broad_callers_document_cannot_be_replayed_to_a_narrow_one() {
-        let broad = set_for(&[Action::ReleasesRead, Action::ReleasesList]);
-        let narrow = set_for(&[Action::ReleasesList]);
-        assert_ne!(
-            document_cache_key("reg/versions", &broad),
-            document_cache_key("reg/versions", &narrow),
-            "the search cache held merged local hits under a key that named no \
-             identity, and replayed one caller's private results to the next"
-        );
-    }
-
-    /// The document key carries the document's own identity too.
-    ///
-    /// Two documents of the same registry — `/versions` and `/names` — have
-    /// different bytes for the same grant set, so the prefix has to be part of
-    /// the key.
-    #[test]
-    fn two_documents_do_not_share_a_key() {
-        let set = set_for(&[Action::ReleasesRead]);
-        assert_ne!(
-            document_cache_key("reg/versions", &set),
-            document_cache_key("reg/names", &set)
-        );
-    }
 }
 
 #[cfg(test)]
@@ -902,5 +1029,259 @@ mod readable_tests {
             }
         }
         compared
+    }
+}
+
+/// §4.4 rule 3 in the key itself: every way one caller's whole-registry
+/// document could be replayed to another.
+///
+/// Each test below names a filter the document applies and asserts that two
+/// callers who differ *only* in that filter do not share an entry. They are
+/// written one filter per test rather than as a matrix because each is a
+/// separate disclosure with a separate fix, and a matrix failure would not say
+/// which.
+#[cfg(test)]
+mod document_key_tests {
+    use super::*;
+    use crate::entities::{GrantMap, Node, RegistryGrants, RegistryKind, SubjectMatcher, Tier};
+
+    fn identity(role: Role, user: Option<&str>, groups: &[&str]) -> Identity {
+        Identity {
+            user_id: user.map(str::to_owned),
+            role,
+            auth_provider: None,
+            groups: groups.iter().map(|g| (*g).to_owned()).collect(),
+        }
+    }
+
+    /// A registry granting `actions` to everyone, with an optional sealed
+    /// namespace to force the `Scoped` path.
+    fn registry(actions: &[Action], sealed_namespace: Option<&str>) -> RegistryGrants {
+        RegistryGrants {
+            kind: RegistryKind::Npm,
+            registry: Node::new(
+                Tier::Registry,
+                "registry:reg",
+                Some(GrantMap::new().grant(SubjectMatcher::Anyone, actions.to_vec())),
+            ),
+            namespaces: sealed_namespace
+                .into_iter()
+                .map(|prefix| {
+                    (
+                        prefix.to_owned(),
+                        Node::new(
+                            Tier::Namespace,
+                            format!("namespace:{prefix}"),
+                            Some(GrantMap::sealed()),
+                        ),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn readable(grants: &RegistryGrants, action: Action, id: &Identity) -> Readable {
+        Readable::from_registry(None, grants, action, &Subject::Identity(id.clone()))
+    }
+
+    fn key(
+        id: &Identity,
+        read: &Readable,
+        list: &Readable,
+        local: &[String],
+        beta: bool,
+    ) -> String {
+        document_cache_key(
+            "reg/versions",
+            &DocumentAudience::new(id, read, list, local, beta),
+        )
+    }
+
+    /// The baseline the sharing property rests on: two callers who agree on
+    /// everything share one entry.
+    ///
+    /// §11.7 arm 3 is only viable if this holds — an estate of ten thousand
+    /// `role:user` callers with no groups must not hold ten thousand copies of
+    /// the same bytes. The fix for the disclosures below is only a fix if it
+    /// leaves this alone.
+    #[test]
+    fn two_callers_entitled_to_the_same_document_share_an_entry() {
+        let one = identity(Role::User, Some("alice"), &[]);
+        let other = identity(Role::User, Some("bob"), &[]);
+        let all = Readable::Everything;
+        assert_eq!(
+            key(&one, &all, &all, &[], false),
+            key(&other, &all, &all, &[], false),
+            "no user id, no token, no provider — the key is a class of caller"
+        );
+    }
+
+    /// Group membership order does not fragment the cache, and neither does
+    /// whitespace.
+    ///
+    /// `check_team_visibility` compares group ids with spaces stripped, so the
+    /// key normalises the same way: a token that reports `acme dev` and one
+    /// that reports `acmedev` resolve to the same team and must share bytes.
+    #[test]
+    fn group_order_and_spacing_do_not_fragment_the_cache() {
+        let one = identity(Role::User, Some("alice"), &["acme dev", "payments"]);
+        let other = identity(Role::User, Some("bob"), &["payments", "acmedev"]);
+        let all = Readable::Everything;
+        assert_eq!(
+            key(&one, &all, &all, &[], false),
+            key(&other, &all, &all, &[], false)
+        );
+    }
+
+    /// **The disclosure this key was rewritten for.** A namespace grant or seal
+    /// changes the document, and the registry node does not mention it.
+    ///
+    /// The old key was `resolve(&[grants.registry], subject)`. Both callers
+    /// here resolve that node identically — it grants the read to everyone —
+    /// and are entitled to different documents, because a seal withholds a
+    /// namespace from one of them and not the other.
+    #[test]
+    fn a_namespace_seal_is_part_of_the_key() {
+        let alice = identity(Role::User, Some("alice"), &[]);
+        let open = registry(&[Action::ReleasesRead, Action::ReleasesList], None);
+        let sealed = registry(
+            &[Action::ReleasesRead, Action::ReleasesList],
+            Some("@acme/secrets"),
+        );
+
+        let unsealed_read = readable(&open, Action::ReleasesRead, &alice);
+        let sealed_read = readable(&sealed, Action::ReleasesRead, &alice);
+        assert_ne!(
+            key(&alice, &unsealed_read, &unsealed_read, &[], false),
+            key(&alice, &sealed_read, &sealed_read, &[], false),
+            "the registry node is identical in both; the seal is the whole \
+             difference between the two documents"
+        );
+    }
+
+    /// `releases:list` is resolved separately from `releases:read`, so it is
+    /// keyed separately.
+    ///
+    /// `check_read_access` runs `authorize_listing` on the list verb before the
+    /// read set is consulted. Two callers with the same read set and different
+    /// list sets get different documents.
+    #[test]
+    fn the_list_verb_is_part_of_the_key() {
+        let alice = identity(Role::User, Some("alice"), &[]);
+        let read_only = registry(&[Action::ReleasesRead], Some("@acme/secrets"));
+        let both = registry(
+            &[Action::ReleasesRead, Action::ReleasesList],
+            Some("@acme/secrets"),
+        );
+
+        let read = readable(&read_only, Action::ReleasesRead, &alice);
+        assert_ne!(
+            key(
+                &alice,
+                &read,
+                &readable(&read_only, Action::ReleasesList, &alice),
+                &[],
+                false
+            ),
+            key(
+                &alice,
+                &read,
+                &readable(&both, Action::ReleasesList, &alice),
+                &[],
+                false
+            ),
+            "the read set is the same object in both keys"
+        );
+    }
+
+    /// §4.5 `private`: a grant written on the package admits its holder and
+    /// nobody else, and the `Everything` fast path cannot express that.
+    ///
+    /// This is the case that survives every other field being equal. Both
+    /// callers hold `releases:read` at the registry tier, so both resolve to
+    /// `Readable::Everything` and neither has anything to filter — and one of
+    /// them is entitled to see a private package the other is not.
+    #[test]
+    fn a_private_package_grant_is_part_of_the_key() {
+        let alice = identity(Role::User, Some("alice"), &[]);
+        let bob = identity(Role::User, Some("bob"), &[]);
+        let all = Readable::Everything;
+        let grant = ["@acme/secrets".to_owned()];
+        assert_ne!(
+            key(&alice, &all, &all, &grant, false),
+            key(&bob, &all, &all, &[], false),
+            "both callers are Everything; only one holds the grant written on \
+             the private package"
+        );
+    }
+
+    /// `team` visibility is a group question, and no grant answers it.
+    #[test]
+    fn team_membership_is_part_of_the_key() {
+        let member = identity(Role::User, Some("alice"), &["oidc:acme"]);
+        let outsider = identity(Role::User, Some("bob"), &[]);
+        let all = Readable::Everything;
+        assert_ne!(
+            key(&member, &all, &all, &[], false),
+            key(&outsider, &all, &all, &[], false)
+        );
+    }
+
+    /// `internal` visibility admits `role:user` and refuses `role:anonymous`,
+    /// and a registry that grants the read to `*` resolves both to the same
+    /// set.
+    #[test]
+    fn the_role_is_part_of_the_key() {
+        let user = identity(Role::User, Some("alice"), &[]);
+        let anon = identity(Role::Anonymous, None, &[]);
+        let all = Readable::Everything;
+        assert_ne!(
+            key(&user, &all, &all, &[], false),
+            key(&anon, &all, &all, &[], false)
+        );
+    }
+
+    /// A beta-channel member's document carries pre-releases; a non-member's
+    /// does not.
+    #[test]
+    fn beta_channel_membership_is_part_of_the_key() {
+        let alice = identity(Role::User, Some("alice"), &[]);
+        let all = Readable::Everything;
+        assert_ne!(
+            key(&alice, &all, &all, &[], true),
+            key(&alice, &all, &all, &[], false)
+        );
+    }
+
+    /// The document key carries the document's own identity too.
+    ///
+    /// Two documents of the same registry — `/versions` and `/names` — have
+    /// different bytes for the same audience, so the prefix has to be part of
+    /// the key.
+    #[test]
+    fn two_documents_do_not_share_a_key() {
+        let alice = identity(Role::User, Some("alice"), &[]);
+        let all = Readable::Everything;
+        let audience = DocumentAudience::new(&alice, &all, &all, &[], false);
+        assert_ne!(
+            document_cache_key("reg/versions", &audience),
+            document_cache_key("reg/names", &audience)
+        );
+    }
+
+    /// A separator inside a group id cannot pose as two groups.
+    ///
+    /// The length-prefix property, asserted rather than assumed: `feed` is the
+    /// only thing standing between an operator-authored group id and a key
+    /// collision with a different membership.
+    #[test]
+    fn a_separator_in_a_group_id_does_not_collide() {
+        let one = identity(Role::User, Some("alice"), &["a,b"]);
+        let other = identity(Role::User, Some("alice"), &["a", "b"]);
+        let all = Readable::Everything;
+        assert_ne!(
+            key(&one, &all, &all, &[], false),
+            key(&other, &all, &all, &[], false)
+        );
     }
 }

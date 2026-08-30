@@ -77,6 +77,7 @@ const ACTIONS = [
   "gates:exempt",
   "stats:read",
   "audit:read",
+  "audit:purge",
 ];
 
 /**

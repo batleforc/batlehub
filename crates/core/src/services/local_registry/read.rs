@@ -3,6 +3,43 @@ use super::{
     PublishedPackage, StreamExt,
 };
 use crate::entities::Action;
+use crate::services::authz::filter::Readable;
+
+/// The result of asking the document cache for a whole-registry document.
+///
+/// A named type rather than `Result<Arc<String>, (String, u64)>`, because the
+/// miss arm now carries the [`Readable`] the document must be filtered with and
+/// a tuple of three would not say which is which. That coupling is the point:
+/// the cache key is a digest of the read set, so handing the two back together
+/// is what stops a caller from keying on one resolution and filtering with
+/// another.
+pub(super) enum DocumentSlot {
+    /// A current entry. Serve it as-is.
+    Hit(std::sync::Arc<String>),
+    Miss {
+        /// Where to store the built document. **Empty when there is nothing to
+        /// store under** — no cache configured, or no configured hierarchy to
+        /// key against — and [`LocalRegistryService::store_document`] treats an
+        /// empty key as "do not store".
+        key: String,
+        /// The registry's generation as of *before* the build.
+        generation: u64,
+        /// What this caller may read, resolved once.
+        readable: Readable,
+    },
+}
+
+impl DocumentSlot {
+    /// A miss that will never be stored: build the document, serve it, keep
+    /// nothing.
+    fn uncached(readable: Readable) -> Self {
+        DocumentSlot::Miss {
+            key: String::new(),
+            generation: 0,
+            readable,
+        }
+    }
+}
 
 impl LocalRegistryService {
     /// Return the sparse index file content (newline-delimited JSON) for a Cargo crate.
@@ -687,41 +724,123 @@ impl LocalRegistryService {
         }
     }
 
-    /// A cached whole-registry document, or the generation to store one under.
+    /// A cached whole-registry document, or everything needed to build and
+    /// store one.
     ///
-    /// Returns `Ok(Err(generation))` on a miss: the generation is read *before*
-    /// the document is built, so a publish landing mid-render invalidates the
-    /// result rather than being stamped with a value that postdates it.
+    /// The generation in [`DocumentSlot::Miss`] is read *before* the document is
+    /// built, so a publish landing mid-render invalidates the result rather than
+    /// being stamped with a value that postdates it.
+    ///
+    /// # The read set is resolved here, not by the caller
+    ///
+    /// The key is a digest of what the caller may see (see
+    /// [`DocumentAudience`]), so the slot hands back the very
+    /// [`Readable`] the document must be filtered with. A caller that resolved
+    /// its own would be a second answer to one question, and the two would be
+    /// free to disagree — which is exactly the disagreement the key exists to
+    /// make impossible.
+    ///
+    /// # One query the fast path did not used to make
+    ///
+    /// [`Self::readable_packages`] skips the package-tier query whenever the
+    /// broad tiers already grant the read, and that is still right *for
+    /// filtering*: grants only widen, so there is nothing left to filter.
+    /// It is not right for the **key**. §4.5's `private` visibility drops
+    /// everything inherited and admits only a grant written on the package
+    /// itself, so two callers that the fast path collapses into
+    /// [`Readable::Everything`] — both hold the registry-tier read, neither has
+    /// anything to filter — are still entitled to different documents. The rows
+    /// have to be fetched to know which. One indexed query per whole-registry
+    /// request, over rows that are few because an operator wrote each one
+    /// deliberately; the N+1 phase 0b measured at 806× was a query *per
+    /// package*, and this is not that.
     pub(super) async fn cached_document(
         &self,
         registry: &str,
         document: &str,
         identity: &Identity,
-    ) -> Result<Result<std::sync::Arc<String>, (String, u64)>, CoreError> {
-        use crate::entities::{resolve, Subject};
-        use crate::services::authz::filter::document_cache_key;
+    ) -> Result<DocumentSlot, CoreError> {
+        use crate::entities::Subject;
+        use crate::services::authz::filter::{document_cache_key, DocumentAudience, Readable};
 
-        let (grants, cache) = {
+        let (grants, instance, repo, cache, beta) = {
             let hot = self.hot.read().await;
             (
                 hot.grants.get(registry).cloned(),
+                hot.instance.clone(),
+                hot.grant_repo.clone(),
                 hot.document_cache.clone(),
+                hot.beta_channel.get(registry).cloned(),
             )
-        };
-        let (Some(grants), Some(cache)) = (grants, cache) else {
-            // No hierarchy or no cache: build it every time. A missing cache is
-            // a slow answer, never a wrong one.
-            return Ok(Err((String::new(), 0)));
         };
 
         let subject = Subject::Identity(identity.clone());
-        let broad = resolve(std::slice::from_ref(&grants.registry), &subject);
-        let key = document_cache_key(&format!("{registry}/{document}"), &broad);
+        let Some(grants) = grants else {
+            // No configured hierarchy — `readable_packages` answers
+            // `Everything` here for the same reason, and there is no node to
+            // key against.
+            return Ok(DocumentSlot::uncached(Readable::Everything));
+        };
+        let Some(cache) = cache else {
+            // No cache: build it every time. A missing cache is a slow answer,
+            // never a wrong one — and with nothing to key, the read set is all
+            // that is wanted, on `readable_packages`' own fast path.
+            return Ok(DocumentSlot::uncached(
+                self.readable_packages(registry, identity).await?,
+            ));
+        };
+
+        let mut readable =
+            Readable::from_registry(instance.as_deref(), &grants, Action::ReleasesRead, &subject);
+        let mut listable =
+            Readable::from_registry(instance.as_deref(), &grants, Action::ReleasesList, &subject);
+
+        // One fetch, three consumers: the read set, the list set, and §4.5's
+        // `private` audience. Fetching it once is also what keeps them
+        // consistent — three queries could observe three different states.
+        let mut local_read_grants: Vec<String> = Vec::new();
+        if let Some(repo) = repo {
+            let rows: Vec<(String, _, Vec<Action>)> = repo
+                .package_grants_in_registry(registry)
+                .await?
+                .into_iter()
+                .map(|g| (g.node_key, g.subject, g.actions))
+                .collect();
+            local_read_grants.extend(
+                rows.iter()
+                    .filter(|(_, matcher, actions)| {
+                        actions.contains(&Action::ReleasesRead) && matcher.matches(&subject)
+                    })
+                    .map(|(name, _, _)| name.clone()),
+            );
+            local_read_grants.sort();
+            local_read_grants.dedup();
+
+            readable = readable.with_package_grants(rows.clone(), Action::ReleasesRead, &subject);
+            listable = listable.with_package_grants(rows, Action::ReleasesList, &subject);
+        }
+
+        let beta_member = match beta {
+            Some(port) => port.is_member(registry, identity).await?,
+            None => false,
+        };
+        let audience = DocumentAudience::new(
+            identity,
+            &readable,
+            &listable,
+            &local_read_grants,
+            beta_member,
+        );
+        let key = document_cache_key(&format!("{registry}/{document}"), &audience);
 
         let generation = cache.generation(registry).await;
         match cache.get(registry, &key).await {
-            Some(body) => Ok(Ok(body)),
-            None => Ok(Err((key, generation))),
+            Some(body) => Ok(DocumentSlot::Hit(body)),
+            None => Ok(DocumentSlot::Miss {
+                key,
+                generation,
+                readable,
+            }),
         }
     }
 

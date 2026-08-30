@@ -96,6 +96,18 @@ pub enum Action {
     StatsRead,
     /// The access log.
     AuditRead,
+    /// Deleting access events older than a cutoff.
+    ///
+    /// Its own verb rather than `audit:read`'s, and the distinction is the point
+    /// of the delegation: an estate that wants a reviewer to *read* the trail
+    /// does not thereby want them able to erase it — including the record of
+    /// their own actions, and including the `audit:purge` event the purge itself
+    /// writes, which a second call with the same cutoff removes.
+    ///
+    /// Before RFC 0015 the endpoint was `require_admin`, so the delegation was
+    /// not expressible and the question did not arise. Decomposing it onto the
+    /// read verb would have made it expressible and answered it wrongly.
+    AuditPurge,
 
     // ── control surfaces (RFC 0015 §4.2's deferred `require_admin` split) ────
     //
@@ -132,6 +144,15 @@ pub enum Action {
     CacheWarm,
     /// Reading quota usage.
     QuotaRead,
+    /// Resetting a user's quota counters.
+    ///
+    /// Split from `quota:read` for the reason every other control surface in
+    /// this list is split — `config:read`/`config:write`,
+    /// `system:read`/`system:write`, `blocks:read`/`blocks:write`. A support
+    /// engineer granted the read to *inspect* usage would otherwise also be able
+    /// to zero it on every user in the registry, which is not what the verb's
+    /// published description ("read quota usage") says they are getting.
+    QuotaWrite,
     /// Running a retention pass ([RFC 0016](/rfc/0016-retention-and-the-permanence-of-a-published-name)).
     RetentionRun,
     /// Reading tombstones and compacting their detail.
@@ -219,6 +240,7 @@ impl Action {
         Action::GatesExempt,
         Action::StatsRead,
         Action::AuditRead,
+        Action::AuditPurge,
         Action::ConfigRead,
         Action::ConfigWrite,
         Action::SystemRead,
@@ -229,6 +251,7 @@ impl Action {
         Action::CacheEvict,
         Action::CacheWarm,
         Action::QuotaRead,
+        Action::QuotaWrite,
         Action::RetentionRun,
         Action::TombstonesRead,
         Action::PackagesRead,
@@ -255,6 +278,7 @@ impl Action {
             Action::GatesExempt => "gates:exempt",
             Action::StatsRead => "stats:read",
             Action::AuditRead => "audit:read",
+            Action::AuditPurge => "audit:purge",
             Action::ConfigRead => "config:read",
             Action::ConfigWrite => "config:write",
             Action::SystemRead => "system:read",
@@ -265,6 +289,7 @@ impl Action {
             Action::CacheEvict => "cache:evict",
             Action::CacheWarm => "cache:warm",
             Action::QuotaRead => "quota:read",
+            Action::QuotaWrite => "quota:write",
             Action::RetentionRun => "retention:run",
             Action::TombstonesRead => "tombstones:read",
             Action::PackagesRead => "packages:read",

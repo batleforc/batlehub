@@ -262,7 +262,7 @@ pub struct PurgeResponse {
     params(PurgeQuery),
     responses(
         (status = 200, description = "Number of rows deleted", body = PurgeResponse),
-        (status = 403, description = "`audit:read` required"),
+        (status = 403, description = "`audit:purge` required"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -273,9 +273,16 @@ pub async fn purge_audit_log(
     admin_svc: web::Data<Arc<AdminService>>,
     hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
+    // **`audit:purge`, not `audit:read`.** The two reads above ask for the read
+    // verb and this deletes the table, so sharing one verb would make "let the
+    // auditor read the trail" and "let the auditor erase it" the same grant —
+    // and the purge writes its own `audit:purge` event, which a second call with
+    // the same cutoff removes. This endpoint was `require_admin` before RFC 0015
+    // decomposed it, so no estate loses it: §10 rule 5 hands the new verb to
+    // `role:admin` at the instance tier, which is the only tier it names.
     crate::handlers::back_office::require_verb(
         &identity,
-        batlehub_core::entities::Action::AuditRead,
+        batlehub_core::entities::Action::AuditPurge,
         None,
         &hot,
     )

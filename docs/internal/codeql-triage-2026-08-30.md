@@ -2,7 +2,8 @@
 
 **Scope:** the four `High` Rust alerts standing on `main` and re-reported on every
 pull request, one `rust/uncontrolled-allocation-size` and three
-`rust/path-injection`.
+`rust/path-injection`; plus the relocation of one of them on `feat/rework-role`
+(see the addendum at the end).
 **Verdict:** all four are false positives. None is dismissible by editing the
 code without making the code worse; all four are resolved in the scanner, with
 the reasoning recorded here.
@@ -151,3 +152,49 @@ The line between them is whether the tool is reporting a fact about the world
 (a published CVE) or an inference about this code. The first is not ours to
 dismiss. The second is, provided the reasoning is recorded where the next person
 will find it — which is what this file is for.
+
+---
+
+## Addendum — alert 3 relocated by the atomic config write
+
+**Reported as:** `rust/path-injection`, `High`, on
+`crates/web/src/services/reload/applier.rs` in `persist_config_to_disk`
+(the `tokio::fs::remove_file(&tmp)` cleanup, and the `write_and_sync` /
+`set_permissions` / `rename` calls it stages).
+
+**This is alert 3, moved — not a fifth finding.** On `main` the write-back at the
+end of `apply` was a single `tokio::fs::write(&self.config_path, text)` on
+line 278. `feat/rework-role` replaced it with a temp-file-plus-`rename` so a
+process killed mid-save cannot leave a truncated `config.toml` behind. The sink
+therefore moved out of `apply` and into the new helper, and CodeQL fingerprints
+an alert by rule + location, so the dismissal recorded for line 278 does not
+follow it. The alert has to be dismissed again at its new location.
+
+**The taint path is unchanged.** `tmp` is built entirely from values this code
+controls:
+
+```rust
+let target = std::path::Path::new(&self.config_path);
+let dir  = target.parent().unwrap_or_else(|| std::path::Path::new(""));
+let name = target.file_name().unwrap_or_else(|| std::ffi::OsStr::new("config.toml"));
+let tmp  = dir.join(format!(".{}.{id}.tmp", name.to_string_lossy()));
+```
+
+`self.config_path` is the same boot-time operator input analysed in alerts 2–4
+(`server/src/main.rs:101-104`, clap `--config` or `BATLEHUB_CONFIG`), and `id` is
+a locally generated `Uuid::new_v4()` from the pending reload. The only
+request-borne value that reaches this function is `text` — the TOML *content*
+submitted to the config editor — and it is written, never joined into a path.
+
+**On the flagged `remove_file` specifically.** It is not a deletion primitive.
+It runs only on the failure path of the staged write, and its argument is the
+temp name this function constructed three lines earlier — a dotfile beside the
+operator's own config, suffixed with a UUID that exists nowhere else. An attacker
+who could choose that path would already have had to choose the process's
+arguments.
+
+**Action:** dismiss as `false positive`, same command as above, with the comment
+pointing at this file. Do not restructure `persist_config_to_disk` to satisfy the
+query: dropping the temp file would reintroduce the truncated-config-on-eviction
+window the helper exists to close, which is a real failure mode traded away for a
+scanner inference that is wrong.
