@@ -1,0 +1,20 @@
+name: BatleHub CodeQL config
+
+# `perf/` is the performance harness, not shipped code: `perf/mock-upstream` is
+# its own workspace (note the bare `[workspace]` in its Cargo.toml, so
+# `cargo build --workspace` at the repo root never builds it), `perf/k6` is the
+# load-test scripts, and `perf/corpus-seed` fabricates fixture data. None of it
+# is deployed or reachable from the server binary, so a taint path that ends in
+# a mock handler describes an attack on the benchmark, not on BatleHub.
+#
+# Concretely this drops the two `rust/uncontrolled-allocation-size` alerts on
+# `perf/mock-upstream/src/main.rs` (82, 128). Both are `req.connection_info()`,
+# where the "allocation" is actix copying a request header into a `String` —
+# bounded to the HTTP/1 head at `MAX_BUFFER_SIZE = 131_072`
+# (actix-http `src/h1/decoder.rs`), so not attacker-controlled in size either.
+#
+# Scope this narrowly. Everything that ships — crates/, server/, cli/, ui/ —
+# stays in the analysis; excluding a path because its alerts are inconvenient
+# is how a real finding gets filed under "benchmark noise".
+paths-ignore:
+  - perf/**

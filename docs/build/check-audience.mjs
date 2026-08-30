@@ -120,9 +120,13 @@ for (const file of all) {
   // `\Z`, so that alternative was matching a literal "Z" and the section could
   // only ever be ended by a following `## ` — a "See also" that ran to the end of
   // the page was skipped entirely.
-  const afterHeading = src.split(/^## See also\n/m)[1];
-  if (afterHeading === undefined) continue;
-  const seeAlso = afterHeading.split(/^## /m)[0];
+  // Test the split's arity rather than comparing `parts[1] === undefined`: the
+  // element type is `string`, so that comparison reads as always-false to a
+  // static analyser (sonar javascript:S3403) even though the index really is
+  // out of range on a page with no "See also".
+  const parts = src.split(/^## See also\n/m);
+  if (parts.length < 2) continue;
+  const seeAlso = parts[1].split(/^## /m)[0];
   const here = urlOf(file);
   const dir = here.slice(0, here.lastIndexOf("/") + 1);
 
