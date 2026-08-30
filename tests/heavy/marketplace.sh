@@ -53,6 +53,14 @@ IDEA_VERSION="${IDEA_VERSION:-2026.1.3}"
 IDE_CACHE="${IDE_CACHE:-$HOME/.cache/batlehub-heavy}"
 COVERAGE="${COVERAGE:-0}"
 
+# Every IDE tarball this script downloads is piped straight into `tar`, so the
+# transport is the only thing standing between an upstream redirect and code
+# execution here. `--proto-redir` pins the *redirect chain* as well as the first
+# request: both of these URLs redirect to a CDN, and `-L` alone would happily
+# follow a downgrade to plain HTTP. Defined once so a new download site cannot
+# quietly omit half of the pair.
+readonly HTTPS_ONLY=(--proto '=https' --proto-redir '=https')
+
 : "${DATABASE_URL:?DATABASE_URL must point at a reachable Postgres}"
 
 WORK="$(mktemp -d)"
@@ -159,10 +167,7 @@ if [[ "${SKIP_VSCODE:-0}" != "1" ]]; then
       if [[ ! -x "$VSCODE_DIR/bin/code" ]]; then
         log "Downloading VS Code $VSCODE_VERSION"
         mkdir -p "$VSCODE_DIR"
-        # --proto-redir pins the redirect chain to https as well as the first
-        # request: this URL redirects to a CDN, and -L alone would follow a
-        # downgrade to plain HTTP and pipe the result straight into tar.
-        curl -fsSL --proto '=https' --proto-redir '=https' \
+        curl -fsSL "${HTTPS_ONLY[@]}" \
           "https://update.code.visualstudio.com/$VSCODE_VERSION/linux-x64/stable" \
           | tar -xz -C "$VSCODE_DIR" --strip-components=1
       fi
@@ -253,13 +258,12 @@ if [[ "${SKIP_JETBRAINS:-0}" != "1" ]]; then
     mkdir -p "$IDEA_DIR"
     # Unified installer naming since 2025.3; fall back to the old Community
     # edition tarball for overrides pinning an older IDEA_VERSION.
-    # See the VS Code download above for why the redirect chain is pinned too.
-    if ! curl -fsSL --proto '=https' --proto-redir '=https' \
+    if ! curl -fsSL "${HTTPS_ONLY[@]}" \
         "https://download.jetbrains.com/idea/idea-$IDEA_VERSION.tar.gz" \
         | tar -xz -C "$IDEA_DIR" --strip-components=1; then
       rm -rf "$IDEA_DIR"
       mkdir -p "$IDEA_DIR"
-      curl -fsSL --proto '=https' --proto-redir '=https' \
+      curl -fsSL "${HTTPS_ONLY[@]}" \
         "https://download.jetbrains.com/idea/ideaIC-$IDEA_VERSION.tar.gz" \
         | tar -xz -C "$IDEA_DIR" --strip-components=1
     fi

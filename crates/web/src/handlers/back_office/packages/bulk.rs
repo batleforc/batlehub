@@ -20,7 +20,6 @@ macro_rules! registries_named {
 // ── Bulk block / unblock ──────────────────────────────────────────────────────
 
 #[derive(Deserialize, ToSchema)]
-
 pub struct BulkBlockRequestItem {
     pub registry: String,
     pub name: String,

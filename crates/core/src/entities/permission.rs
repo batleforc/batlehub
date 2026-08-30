@@ -204,7 +204,7 @@ impl Action {
     ///
     /// Kept in step with the enum by `all_is_exhaustive` below, which fails
     /// if a variant is missing from it.
-    pub const ALL: &'static [Action] = &[
+    pub const ALL: &[Action] = &[
         Action::ReleasesRead,
         Action::ReleasesList,
         Action::SourceRead,

@@ -16,5 +16,24 @@ name: BatleHub CodeQL config
 # Scope this narrowly. Everything that ships — crates/, server/, cli/, ui/ —
 # stays in the analysis; excluding a path because its alerts are inconvenient
 # is how a real finding gets filed under "benchmark noise".
+#
+# There is deliberately **no `query-filters` block here**, and the four standing
+# `High` alerts on shipped code are not silenced by one. They are dismissed
+# per-alert in Code scanning, on `main`, with the reasoning written down in
+# `docs/internal/codeql-triage-2026-08-30.md`:
+#
+#   - `rust/uncontrolled-allocation-size` on
+#     `crates/web/src/middleware/proxy_trust.rs` — the same `connection_info()`
+#     header copy as the `perf/` pair above, bounded by the same 128 KiB.
+#   - `rust/path-injection` ×3 on `crates/web/src/services/reload/applier.rs` —
+#     the `--config` path, read once at boot; no request-borne route reaches it.
+#
+# A query-filter would have been the easy fix and the wrong one:
+# `rust/path-injection` is a query this codebase needs live, because several
+# handlers build storage keys out of request-supplied package coordinates and
+# `ensure_safe_key` is the backstop for precisely that. Turning it off repo-wide
+# to quiet three boot-time reads of a CLI flag trades a real control for a green
+# check. If a future alert is genuinely unfixable in code, dismiss it and add it
+# to the triage note — do not add it here.
 paths-ignore:
   - perf/**

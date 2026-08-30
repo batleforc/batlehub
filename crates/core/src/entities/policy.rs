@@ -296,25 +296,7 @@ impl PolicyPath {
             }
 
             // ── deepest wins, per rule ───────────────────────────────────────
-            //
-            // A node overriding `release_age` leaves `cve_gate` alone. This is
-            // the one policy where a deeper block does *not* replace what it
-            // does not mention, and §4.1 gives the reason: a wholesale rule
-            // override would make a forgotten gate a silently disabled one.
-            for over in &node.rules {
-                if let Some(existing) = out.rules.iter_mut().find(|r| r.gate == over.gate) {
-                    *existing = over.clone();
-                } else {
-                    out.rules.push(over.clone());
-                }
-                match out.sources.rules.iter_mut().find(|(g, _)| *g == over.gate) {
-                    Some(slot) => slot.1 = node.key.clone(),
-                    None => out
-                        .sources
-                        .rules
-                        .push((over.gate.clone(), node.key.clone())),
-                }
-            }
+            Self::apply_rule_overrides(node, &mut out);
         }
 
         // A pre-release is not a narrower audience by default; it is the same
@@ -327,6 +309,28 @@ impl PolicyPath {
         }
 
         out
+    }
+
+    /// Merge one node's rule overrides into `out`, gate by gate.
+    ///
+    /// A node overriding `release_age` leaves `cve_gate` alone. This is the one
+    /// policy where a deeper block does *not* replace what it does not mention,
+    /// and §4.1 gives the reason: a wholesale rule override would make a
+    /// forgotten gate a silently disabled one.
+    fn apply_rule_overrides(node: &PolicyNode, out: &mut ResolvedPolicy) {
+        for over in &node.rules {
+            match out.rules.iter_mut().find(|r| r.gate == over.gate) {
+                Some(existing) => *existing = over.clone(),
+                None => out.rules.push(over.clone()),
+            }
+            match out.sources.rules.iter_mut().find(|(g, _)| *g == over.gate) {
+                Some(slot) => slot.1 = node.key.clone(),
+                None => out
+                    .sources
+                    .rules
+                    .push((over.gate.clone(), node.key.clone())),
+            }
+        }
     }
 
     /// §4.1's compensating warning: a deeper tier that **drops** a constraint
@@ -349,52 +353,65 @@ impl PolicyPath {
                 continue;
             };
             if let Some(parent) = inherited {
-                for (dropped, held) in [
-                    (
-                        "enforce_semver",
-                        parent.enforce_semver && !here.enforce_semver,
-                    ),
-                    ("monotonic", parent.monotonic && !here.monotonic),
-                    (
-                        "version_pattern",
-                        parent.version_pattern.is_some() && here.version_pattern.is_none(),
-                    ),
-                    (
-                        "allow_prerelease = false",
-                        !parent.allow_prerelease && here.allow_prerelease,
-                    ),
-                ] {
-                    if held {
-                        out.push((
-                            node.key.clone(),
-                            format!(
-                                "drops `{dropped}`, which `{inherited_from}` declares. \
-                                 `versioning` composes wholesale, so this node's block replaces \
-                                 its parent's entirely rather than adding to it — if the \
-                                 constraint was meant to keep applying, restate it here."
-                            ),
-                        ));
-                    }
-                }
-                // Immutability is an ordering rather than a set of flags, so it
-                // is checked as one: `always` is stricter than `released`, which
-                // is stricter than `never`.
-                if here.immutable < parent.immutable {
-                    out.push((
-                        node.key.clone(),
-                        format!(
-                            "relaxes `immutable` from `{}` to `{}`, which `{inherited_from}` \
-                             declares. Versions frozen by the parent become replaceable here.",
-                            parent.immutable.as_str(),
-                            here.immutable.as_str()
-                        ),
-                    ));
-                }
+                Self::dropped_constraints(parent, here, inherited_from, &node.key, &mut out);
             }
             inherited = Some(here);
             inherited_from = &node.key;
         }
         out
+    }
+
+    /// Everything `here` stops enforcing that `parent` declared, as
+    /// `(node_key, what_was_dropped)` pairs appended to `out`.
+    fn dropped_constraints(
+        parent: &VersioningRules,
+        here: &VersioningRules,
+        inherited_from: &str,
+        key: &str,
+        out: &mut Vec<(String, String)>,
+    ) {
+        for (dropped, held) in [
+            (
+                "enforce_semver",
+                parent.enforce_semver && !here.enforce_semver,
+            ),
+            ("monotonic", parent.monotonic && !here.monotonic),
+            (
+                "version_pattern",
+                parent.version_pattern.is_some() && here.version_pattern.is_none(),
+            ),
+            (
+                "allow_prerelease = false",
+                !parent.allow_prerelease && here.allow_prerelease,
+            ),
+        ] {
+            if held {
+                out.push((
+                    key.to_owned(),
+                    format!(
+                        "drops `{dropped}`, which `{inherited_from}` declares. \
+                         `versioning` composes wholesale, so this node's block replaces \
+                         its parent's entirely rather than adding to it — if the \
+                         constraint was meant to keep applying, restate it here."
+                    ),
+                ));
+            }
+        }
+
+        // Immutability is an ordering rather than a set of flags, so it is
+        // checked as one: `always` is stricter than `released`, which is
+        // stricter than `never`.
+        if here.immutable < parent.immutable {
+            out.push((
+                key.to_owned(),
+                format!(
+                    "relaxes `immutable` from `{}` to `{}`, which `{inherited_from}` \
+                     declares. Versions frozen by the parent become replaceable here.",
+                    parent.immutable.as_str(),
+                    here.immutable.as_str()
+                ),
+            ));
+        }
     }
 }
 

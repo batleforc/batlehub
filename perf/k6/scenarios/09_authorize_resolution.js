@@ -103,7 +103,7 @@ export default function authorizeResolution() {
 }
 
 export function handleSummary(data) {
-  const m = (n) => data.metrics[n] && data.metrics[n].values;
+  const m = (n) => data.metrics[n]?.values;
   const g = m("resolve_granted_ms");
   const u = m("resolve_ungranted_ms");
   const fmt = (v) => (v == null ? "—" : v.toFixed(2));

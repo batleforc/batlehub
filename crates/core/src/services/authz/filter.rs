@@ -860,23 +860,47 @@ mod readable_tests {
                             registry,
                             &[("@acme/billing", *first), ("@acme/secrets", *second)],
                         );
-                        for subj in &subjects {
-                            let readable = Readable::from_registry(None, &grants, verb, subj);
-                            for package in packages {
-                                let expected = resolve(&grants.path_for(package), subj).holds(verb);
-                                assert_eq!(
-                                    readable.contains(package),
-                                    expected,
-                                    "Scope disagreed with resolve on {package} for {verb}: \
-                                     registry={registry:?} ns=({first:?}, {second:?})"
-                                );
-                                compared += 1;
-                            }
-                        }
+                        compared += compare_hierarchy(
+                            &grants,
+                            verb,
+                            &subjects,
+                            &packages,
+                            &format!("registry={registry:?} ns=({first:?}, {second:?})"),
+                        );
                     }
                 }
             }
         }
         assert!(compared > 500, "the matrix should be wide: {compared}");
+    }
+
+    /// One cell of the matrix: assert `Scope::contains` and `resolve` agree for
+    /// every (subject, package) pair under `grants`, and return how many pairs
+    /// were compared.
+    ///
+    /// Split out of the matrix loop so the two implementations being compared
+    /// stay visible; the six nested `for`s above are bookkeeping over the
+    /// hierarchy space, and this is the actual assertion.
+    fn compare_hierarchy(
+        grants: &RegistryGrants,
+        verb: Action,
+        subjects: &[Subject],
+        packages: &[&str],
+        arm: &str,
+    ) -> usize {
+        let mut compared = 0usize;
+        for subj in subjects {
+            let readable = Readable::from_registry(None, grants, verb, subj);
+            for package in packages {
+                let expected = resolve(&grants.path_for(package), subj).holds(verb);
+                assert_eq!(
+                    readable.contains(package),
+                    expected,
+                    "Scope disagreed with resolve on {package} for {verb}: {arm}"
+                );
+                compared += 1;
+            }
+        }
+        compared
     }
 }

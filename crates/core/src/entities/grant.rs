@@ -518,28 +518,42 @@ pub fn resolve(path: &[Node], subject: &Subject) -> GrantSet {
     let start = seal.map_or(0, |i| i + 1);
 
     for node in &path[start..] {
-        if let Some(grants) = &node.grants {
-            for (action, matcher) in grants.for_subject(subject) {
-                set.add(action, &node.label, &matcher);
-            }
+        let Some(grants) = &node.grants else {
+            continue;
+        };
+        for (action, matcher) in grants.for_subject(subject) {
+            set.add(action, &node.label, &matcher);
         }
     }
 
     // The floor, when a seal cut the path: only what the subject already held at
     // registry tier, and only the administrative verbs.
     if seal.is_some() {
-        if let Some(registry) = path.first() {
-            if let Some(grants) = &registry.grants {
-                for (action, matcher) in grants.for_subject(subject) {
-                    if ADMINISTRATIVE_FLOOR.contains(&action) {
-                        set.add(action, &registry.label, &matcher);
-                    }
-                }
-            }
-        }
+        add_administrative_floor(path.first(), subject, &mut set);
     }
 
     set
+}
+
+/// Re-add the [`ADMINISTRATIVE_FLOOR`] verbs the subject already held at
+/// registry tier, after a seal cut them off.
+///
+/// Only ever called for a sealed path, and only ever *adds*: a subject who held
+/// nothing at registry tier gains nothing here. That is what keeps the floor a
+/// recovery rather than a privilege — it restores what the seal took, and not
+/// one verb more.
+fn add_administrative_floor(registry: Option<&Node>, subject: &Subject, set: &mut GrantSet) {
+    let Some(registry) = registry else {
+        return;
+    };
+    let Some(grants) = &registry.grants else {
+        return;
+    };
+    for (action, matcher) in grants.for_subject(subject) {
+        if ADMINISTRATIVE_FLOOR.contains(&action) {
+            set.add(action, &registry.label, &matcher);
+        }
+    }
 }
 
 /// A registry's configured grant hierarchy: the registry node, and its

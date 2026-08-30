@@ -36,6 +36,7 @@
 mod report;
 pub use report::{KeepReason, RetentionDecision, RetentionReport};
 
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -158,87 +159,127 @@ impl RetentionService {
                 continue;
             }
             let downloads = self.last_downloads(registry, &name).await?;
+            let doomed = Self::judge(&versions, &downloads, policy, now, &mut report);
 
-            // `get_versions` is `published_at ASC`; rank 0 must be the newest.
-            let total = versions.len();
-            let mut doomed: Vec<&PublishedPackage> = Vec::new();
-
-            for (i, pkg) in versions.iter().enumerate() {
-                let candidate = Candidate {
-                    pkg,
-                    rank_from_newest: total - 1 - i,
-                    last_download: downloads
-                        .iter()
-                        .find(|(v, _)| *v == pkg.version)
-                        .map(|(_, t)| *t),
-                };
-                report.examined += 1;
-                let decision = Self::decide(&candidate, policy, now);
-                if decision.is_none() {
-                    doomed.push(pkg);
-                } else {
-                    report.kept += 1;
-                }
-                if report.decisions.len() < MAX_REPORTED_DECISIONS {
-                    report.decisions.push(RetentionDecision {
-                        name: pkg.name.clone(),
-                        version: pkg.version.clone(),
-                        kept_because: decision,
-                    });
-                } else {
-                    report.decisions_truncated += 1;
-                }
-            }
-
-            for pkg in doomed {
-                if policy.dry_run {
-                    report.reclaimed += 1;
-                    report
-                        .reclaimed_coordinates
-                        .push(format!("{}@{}", pkg.name, pkg.version));
-                    continue;
-                }
-                // The same call a human deletion goes through, so a reclaimed
-                // version leaves the same tombstone, drops the same bytes and
-                // records the same audit event — with the run's identity as the
-                // subject, which is what tells the two apart in the trail.
-                match self
-                    .local
-                    .delete_version(registry, &pkg.name, &pkg.version, identity)
-                    .await
-                {
-                    Ok(_) => {
-                        report.reclaimed += 1;
-                        report
-                            .reclaimed_coordinates
-                            .push(format!("{}@{}", pkg.name, pkg.version));
-                    }
-                    // **Stop, and say so.** Not `?`: by the time one delete
-                    // fails the run has already reclaimed real versions, and
-                    // returning an error would throw away the only record of
-                    // which ones — leaving an operator to work out what happened
-                    // from the audit log. Not "continue", either: a delete that
-                    // failed is a storage or database problem, and grinding
-                    // through 200 000 more packages against a broken backend
-                    // turns one fault into a very long one.
-                    Err(e) => {
-                        report.incomplete_because = Some(format!(
-                            "stopped at {}@{}: {e}. Everything listed above was reclaimed; \
-                             nothing after it was attempted.",
-                            pkg.name, pkg.version
-                        ));
-                        report.reclaimed_coordinates.sort();
-                        return Ok(report);
-                    }
-                }
-                if !policy.reclaim_delay.is_zero() {
-                    tokio::time::sleep(policy.reclaim_delay).await;
-                }
+            // A `Break` means one delete failed. The report is returned as it
+            // stands rather than propagated as an error — see `reclaim`.
+            if self
+                .reclaim(registry, &doomed, policy, identity, &mut report)
+                .await
+                .is_break()
+            {
+                break;
             }
         }
 
         report.reclaimed_coordinates.sort();
         Ok(report)
+    }
+
+    /// Score every version of one package: record a decision against each, and
+    /// return the ones no condition kept.
+    ///
+    /// Split out of [`Self::run`] so the judging pass and the destructive pass
+    /// are separately readable — and separately reviewable, which matters more
+    /// here than usual, because everything this returns is about to be deleted.
+    fn judge<'a>(
+        versions: &'a [PublishedPackage],
+        downloads: &[(String, DateTime<Utc>)],
+        policy: &RetentionPolicy,
+        now: DateTime<Utc>,
+        report: &mut RetentionReport,
+    ) -> Vec<&'a PublishedPackage> {
+        // `get_versions` is `published_at ASC`; rank 0 must be the newest.
+        let total = versions.len();
+        let mut doomed: Vec<&PublishedPackage> = Vec::new();
+
+        for (i, pkg) in versions.iter().enumerate() {
+            let candidate = Candidate {
+                pkg,
+                rank_from_newest: total - 1 - i,
+                last_download: downloads
+                    .iter()
+                    .find(|(v, _)| *v == pkg.version)
+                    .map(|(_, t)| *t),
+            };
+            report.examined += 1;
+            let decision = Self::decide(&candidate, policy, now);
+            if decision.is_none() {
+                doomed.push(pkg);
+            } else {
+                report.kept += 1;
+            }
+            if report.decisions.len() < MAX_REPORTED_DECISIONS {
+                report.decisions.push(RetentionDecision {
+                    name: pkg.name.clone(),
+                    version: pkg.version.clone(),
+                    kept_because: decision,
+                });
+            } else {
+                report.decisions_truncated += 1;
+            }
+        }
+
+        doomed
+    }
+
+    /// Reclaim the versions `judge` condemned.
+    ///
+    /// [`ControlFlow::Break`] means a delete failed and the sweep must stop;
+    /// `report.incomplete_because` carries the reason and the coordinate it
+    /// stopped at. Not a `Result`, because there is nothing for the caller to
+    /// propagate: **the report is the return value even on failure.** By the time
+    /// one delete fails the run has already reclaimed real versions, and an error
+    /// would throw away the only record of which ones, leaving an operator to
+    /// reconstruct it from the audit log. Nor does it continue: a failed delete
+    /// is a storage or database fault, and grinding through 200 000 more packages
+    /// against a broken backend turns one fault into a very long one.
+    async fn reclaim(
+        &self,
+        registry: &str,
+        doomed: &[&PublishedPackage],
+        policy: &RetentionPolicy,
+        identity: &Identity,
+        report: &mut RetentionReport,
+    ) -> ControlFlow<()> {
+        for pkg in doomed {
+            if policy.dry_run {
+                report.reclaimed += 1;
+                report
+                    .reclaimed_coordinates
+                    .push(format!("{}@{}", pkg.name, pkg.version));
+                continue;
+            }
+            // The same call a human deletion goes through, so a reclaimed
+            // version leaves the same tombstone, drops the same bytes and
+            // records the same audit event — with the run's identity as the
+            // subject, which is what tells the two apart in the trail.
+            match self
+                .local
+                .delete_version(registry, &pkg.name, &pkg.version, identity)
+                .await
+            {
+                Ok(_) => {
+                    report.reclaimed += 1;
+                    report
+                        .reclaimed_coordinates
+                        .push(format!("{}@{}", pkg.name, pkg.version));
+                }
+                Err(e) => {
+                    report.incomplete_because = Some(format!(
+                        "stopped at {}@{}: {e}. Everything listed above was reclaimed; \
+                         nothing after it was attempted.",
+                        pkg.name, pkg.version
+                    ));
+                    return ControlFlow::Break(());
+                }
+            }
+            if !policy.reclaim_delay.is_zero() {
+                tokio::time::sleep(policy.reclaim_delay).await;
+            }
+        }
+
+        ControlFlow::Continue(())
     }
 
     /// **The union of vetoes.** `Some(reason)` keeps, `None` reclaims.
@@ -268,24 +309,31 @@ impl RetentionService {
             return Some(KeepReason::Pinned);
         }
 
-        if let Some(n) = policy.keep_versions {
-            if candidate.rank_from_newest < n as usize {
-                return Some(KeepReason::KeepVersions);
-            }
+        // Each condition is one flat question. An unconfigured condition never
+        // fires, so `is_some_and` reads exactly as the policy does: "keep it if
+        // the operator asked for this and it holds".
+        if policy
+            .keep_versions
+            .is_some_and(|n| candidate.rank_from_newest < n as usize)
+        {
+            return Some(KeepReason::KeepVersions);
         }
 
-        if let Some(window) = policy.keep_for {
-            if within(candidate.pkg.published_at, window, now) {
-                return Some(KeepReason::KeepFor);
-            }
+        if policy
+            .keep_for
+            .is_some_and(|window| within(candidate.pkg.published_at, window, now))
+        {
+            return Some(KeepReason::KeepFor);
         }
 
-        if let Some(window) = policy.keep_if_pulled {
-            if let Some(last) = candidate.last_download {
-                if within(last, window, now) {
-                    return Some(KeepReason::KeepIfPulled);
-                }
-            }
+        // Both halves are required: a window with no download record cannot
+        // keep, which is what the signal-floor check below exists to catch.
+        if policy
+            .keep_if_pulled
+            .zip(candidate.last_download)
+            .is_some_and(|(window, last)| within(last, window, now))
+        {
+            return Some(KeepReason::KeepIfPulled);
         }
 
         if policy.keep_yanked && candidate.pkg.yanked {

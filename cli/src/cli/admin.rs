@@ -8,6 +8,7 @@ use crate::api::{
         NotificationChannelEntry, NotificationSubscriptionEntry, RegistryHealthEntry,
         SimulateAccessRequest, StatsResponse, TeamNamespaceEntry,
     },
+    version::RetentionReport,
     BatleHubClient,
 };
 
@@ -747,6 +748,14 @@ async fn handle_retention(
         report.examined, report.kept, report.reclaimed
     );
 
+    print_retention_lists(&report, show_kept);
+    print_retention_notes(&report);
+    Ok(())
+}
+
+/// The per-version detail of a retention report: what was (or would be)
+/// reclaimed, and optionally what survived and why.
+fn print_retention_lists(report: &RetentionReport, show_kept: bool) {
     if !report.reclaimed_coordinates.is_empty() {
         let verb = if report.dry_run {
             "would reclaim"
@@ -766,7 +775,11 @@ async fn handle_retention(
             println!("  {}@{}  ({reason})", d.name, d.version);
         }
     }
+}
 
+/// The three footnotes that qualify the counts above them — each one exists
+/// because reading the report without it leads an operator to the wrong action.
+fn print_retention_notes(report: &RetentionReport) {
     // Never silent about a bounded list: a truncated report read as complete is
     // how an operator approves a reclamation they have not actually seen.
     if report.decisions_truncated > 0 {
@@ -787,7 +800,6 @@ async fn handle_retention(
     if let Some(reason) = &report.incomplete_because {
         println!("\nRUN INCOMPLETE: {reason}");
     }
-    Ok(())
 }
 
 async fn handle_banner(cmd: BannerCommand, client: &BatleHubClient) -> Result<()> {

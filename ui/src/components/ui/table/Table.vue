@@ -20,6 +20,12 @@ const { t } = useI18n();
 
     This is also the Own-Container Overflow Rule's container: wide content
     scrolls here so the body never scrolls sideways.
+
+    SonarCloud flags the `tabindex` here ("should only be declared on
+    interactive elements") and is wrong: its rule has no exception for scroll
+    containers, and removing the attribute trades a heuristic finding for a real
+    WCAG 2.1.1 failure that axe catches. Resolved as a false positive — see
+    docs/internal/sonar-triage-2026-08-30.md. Do not "fix" it.
   -->
   <!-- `<section>`, not `<div role="region">`: a named section carries the role
        natively, and the native element is the one assistive technology has the

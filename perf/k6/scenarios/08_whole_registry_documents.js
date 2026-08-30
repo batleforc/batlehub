@@ -149,7 +149,7 @@ export default function wholeRegistryDocuments() {
  * measurement turns into "roughly the same, I think".
  */
 export function handleSummary(data) {
-  const m = (name) => data.metrics[name] && data.metrics[name].values;
+  const m = (name) => data.metrics[name]?.values;
   const rows = [];
 
   for (const doc of ["versions", "names"]) {

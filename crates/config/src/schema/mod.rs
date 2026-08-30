@@ -582,105 +582,126 @@ impl AppConfig {
     /// config load in `server/src/grants.rs`, beside the namespace checks they
     /// extend.
     fn tiered_policy_warnings(&self, out: &mut Vec<ConfigWarning>) {
+        for (index, registry) in self.registries.iter().enumerate() {
+            let registry_visibility = registry.visibility.unwrap_or_default();
+            Self::registry_policy_warnings(index, registry, registry_visibility, out);
+            for (n, ns) in registry.namespaces.iter().enumerate() {
+                Self::namespace_policy_warnings(index, n, registry, ns, registry_visibility, out);
+            }
+        }
+    }
+
+    /// The registry-tier half of [`Self::tiered_policy_warnings`].
+    fn registry_policy_warnings(
+        index: usize,
+        registry: &RegistryConfig,
+        registry_visibility: batlehub_core::entities::Visibility,
+        out: &mut Vec<ConfigWarning>,
+    ) {
+        let path = |suffix: &str| format!("registries[{index}].{suffix}");
+
+        // `prerelease_visibility` on a registry that publishes nothing.
+        if registry.prerelease_visibility.is_some() && registry.mode == RegistryMode::Proxy {
+            out.push(ConfigWarning::new(
+                warnings::PRERELEASE_VISIBILITY_PROXY_MODE,
+                path("prerelease_visibility"),
+                format!(
+                    "registry '{}' is in proxy mode and publishes nothing, so \
+                     prerelease_visibility has no versions of its own to apply to. Accepted \
+                     rather than refused because [registries.beta_channel] carries no mode \
+                     restriction today and translates into this setting — refusing it would \
+                     stop an existing instance from booting.",
+                    registry.name,
+                ),
+            ));
+        }
+
+        // A pre-release audience wider than the release audience.
+        if let Some(pre) = registry
+            .prerelease_visibility
+            .filter(|p| *p < registry_visibility)
+        {
+            out.push(ConfigWarning::new(
+                warnings::PRERELEASE_VISIBILITY_WIDER,
+                path("prerelease_visibility"),
+                format!(
+                    "registry '{}' shows pre-releases to a WIDER audience ({pre}) than \
+                     releases ({registry_visibility}). Legal, and almost always a typo: the \
+                     setting exists to do the opposite.",
+                    registry.name,
+                ),
+            ));
+        }
+
+        if let Some(versioning) = &registry.versioning {
+            Self::versioning_warnings(
+                versioning,
+                registry.grants.as_ref(),
+                &path("versioning"),
+                &format!("registry '{}'", registry.name),
+                out,
+            );
+        }
+    }
+
+    /// The namespace-tier half of [`Self::tiered_policy_warnings`], for one
+    /// namespace of one registry.
+    ///
+    /// `registry_visibility` is passed in rather than re-derived: it is the
+    /// default a namespace inherits when it declares no visibility of its own,
+    /// and computing it twice is how the two tiers would come to disagree.
+    fn namespace_policy_warnings(
+        index: usize,
+        n: usize,
+        registry: &RegistryConfig,
+        ns: &NamespaceConfig,
+        registry_visibility: batlehub_core::entities::Visibility,
+        out: &mut Vec<ConfigWarning>,
+    ) {
         use batlehub_core::entities::Visibility;
 
-        for (index, registry) in self.registries.iter().enumerate() {
-            let path = |suffix: &str| format!("registries[{index}].{suffix}");
-            let registry_visibility = registry.visibility.unwrap_or_default();
+        let ns_path = |suffix: &str| format!("registries[{index}].namespaces[{n}].{suffix}");
+        let node = format!(
+            "registry '{}', namespace \"{}\"",
+            registry.name, ns.match_prefix
+        );
 
-            // `prerelease_visibility` on a registry that publishes nothing.
-            if registry.prerelease_visibility.is_some() && registry.mode == RegistryMode::Proxy {
-                out.push(ConfigWarning::new(
-                    warnings::PRERELEASE_VISIBILITY_PROXY_MODE,
-                    path("prerelease_visibility"),
-                    format!(
-                        "registry '{}' is in proxy mode and publishes nothing, so \
-                         prerelease_visibility has no versions of its own to apply to. Accepted \
-                         rather than refused because [registries.beta_channel] carries no mode \
-                         restriction today and translates into this setting — refusing it would \
-                         stop an existing instance from booting.",
-                        registry.name,
-                    ),
-                ));
-            }
+        // Grants decided who; nothing decided how wide.
+        let has_grants = ns.grants.as_ref().is_some_and(|g| !g.is_empty());
+        if has_grants && ns.visibility.is_none() && registry_visibility == Visibility::Public {
+            out.push(ConfigWarning::new(
+                warnings::NAMESPACE_GRANTS_WITHOUT_VISIBILITY,
+                ns_path("grants"),
+                format!(
+                    "{node} names who may reach it but leaves its packages readable by \
+                     everyone: the registry default is public and this namespace sets no \
+                     visibility. Grants only widen (§4.3) — they cannot narrow the \
+                     audience a package already has. Set visibility on the namespace if \
+                     the grants were meant to be the whole answer.",
+                ),
+            ));
+        }
 
-            // A pre-release audience wider than the release audience.
-            if let (Some(pre), vis) = (registry.prerelease_visibility, registry_visibility) {
-                if pre < vis {
-                    out.push(ConfigWarning::new(
-                        warnings::PRERELEASE_VISIBILITY_WIDER,
-                        path("prerelease_visibility"),
-                        format!(
-                            "registry '{}' shows pre-releases to a WIDER audience ({pre}) than \
-                             releases ({vis}). Legal, and almost always a typo: the setting \
-                             exists to do the opposite.",
-                            registry.name,
-                        ),
-                    ));
-                }
-            }
+        let ns_visibility = ns.visibility.unwrap_or(registry_visibility);
+        if let Some(pre) = ns.prerelease_visibility.filter(|p| *p < ns_visibility) {
+            out.push(ConfigWarning::new(
+                warnings::PRERELEASE_VISIBILITY_WIDER,
+                ns_path("prerelease_visibility"),
+                format!(
+                    "{node} shows pre-releases to a WIDER audience ({pre}) than \
+                     releases ({ns_visibility}). Legal, and almost always a typo.",
+                ),
+            ));
+        }
 
-            if let Some(versioning) = &registry.versioning {
-                Self::versioning_warnings(
-                    versioning,
-                    registry.grants.as_ref(),
-                    &path("versioning"),
-                    &format!("registry '{}'", registry.name),
-                    out,
-                );
-            }
-
-            for (n, ns) in registry.namespaces.iter().enumerate() {
-                let ns_path =
-                    |suffix: &str| format!("registries[{index}].namespaces[{n}].{suffix}");
-                let node = format!(
-                    "registry '{}', namespace \"{}\"",
-                    registry.name, ns.match_prefix
-                );
-
-                // Grants decided who; nothing decided how wide.
-                let has_grants = ns.grants.as_ref().is_some_and(|g| !g.is_empty());
-                if has_grants
-                    && ns.visibility.is_none()
-                    && registry_visibility == Visibility::Public
-                {
-                    out.push(ConfigWarning::new(
-                        warnings::NAMESPACE_GRANTS_WITHOUT_VISIBILITY,
-                        ns_path("grants"),
-                        format!(
-                            "{node} names who may reach it but leaves its packages readable by \
-                             everyone: the registry default is public and this namespace sets no \
-                             visibility. Grants only widen (§4.3) — they cannot narrow the \
-                             audience a package already has. Set visibility on the namespace if \
-                             the grants were meant to be the whole answer.",
-                        ),
-                    ));
-                }
-
-                let ns_visibility = ns.visibility.unwrap_or(registry_visibility);
-                if let Some(pre) = ns.prerelease_visibility {
-                    if pre < ns_visibility {
-                        out.push(ConfigWarning::new(
-                            warnings::PRERELEASE_VISIBILITY_WIDER,
-                            ns_path("prerelease_visibility"),
-                            format!(
-                                "{node} shows pre-releases to a WIDER audience ({pre}) than \
-                                 releases ({ns_visibility}). Legal, and almost always a typo.",
-                            ),
-                        ));
-                    }
-                }
-
-                if let Some(versioning) = &ns.versioning {
-                    Self::versioning_warnings(
-                        versioning,
-                        ns.grants.as_ref(),
-                        &ns_path("versioning"),
-                        &node,
-                        out,
-                    );
-                }
-            }
+        if let Some(versioning) = &ns.versioning {
+            Self::versioning_warnings(
+                versioning,
+                ns.grants.as_ref(),
+                &ns_path("versioning"),
+                &node,
+                out,
+            );
         }
     }
 

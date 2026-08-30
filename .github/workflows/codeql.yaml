@@ -1,27 +1,27 @@
 name: CodeQL
+# Deliberately **unfiltered**: this runs on every push to main and every pull
+# request, whatever the diff touches.
+#
+# It used to carry a `paths:` filter for the source extensions. Two problems with
+# that, and the second is the one that bit:
+#
+#  1. A `paths`-filtered workflow does not run — it does not "pass". If this check
+#     is ever made required, a PR that changes no matching file leaves it pending
+#     forever, and the usual fix (a dummy always-succeeding job) means the branch
+#     protection is satisfied by a job that analysed nothing.
+#  2. The filter did not list `.github/codeql/codeql-config.yaml`, so a change to
+#     the analysis configuration itself — the file that decides what is scanned
+#     and what is excluded — did not trigger an analysis. A scope change could
+#     land without a single query being re-run against it.
+#
+# CodeQL's own alert diffing already handles the "nothing changed" case cheaply,
+# and the Rust job's build is cached by `Swatinem/rust-cache`. Paying for a run on
+# a docs-only PR is the cheaper mistake.
 on:
   push:
     branches: ["main"]
-    paths:
-      - "**/*.rs"
-      - "**/*.ts"
-      - "**/*.vue"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "ui/package.json"
-      - "ui/pnpm-lock.yaml"
-      - ".github/workflows/codeql.yaml"
   pull_request:
     branches: ["main"]
-    paths:
-      - "**/*.rs"
-      - "**/*.ts"
-      - "**/*.vue"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "ui/package.json"
-      - "ui/pnpm-lock.yaml"
-      - ".github/workflows/codeql.yaml"
   schedule:
     - cron: "50 23 * * 0"
   workflow_dispatch:
