@@ -96,7 +96,7 @@ pub async fn jbm_plugins_xml_ids(
     if mode == RegistryMode::Hybrid {
         // Best-effort union with upstream; upstream loss keeps the local list.
         let key = forward_cache_key(&registry, "files/pluginsXMLIds.json", "");
-        if let Ok(fwd) = cached_forward_get(
+        let upstream_ids = cached_forward_get(
             &svc,
             &upstream_map,
             &client,
@@ -105,21 +105,27 @@ pub async fn jbm_plugins_xml_ids(
             &key,
         )
         .await
-        {
-            if let Ok(upstream_ids) = serde_json::from_slice::<Vec<String>>(&fwd.body) {
-                // Upstream carries tens of thousands of ids — a Vec::contains
-                // scan per id would make this union quadratic.
-                let mut seen: std::collections::HashSet<String> = ids.iter().cloned().collect();
-                for id in upstream_ids {
-                    if seen.insert(id.clone()) {
-                        ids.push(id);
-                    }
-                }
-            }
+        .ok()
+        .and_then(|fwd| serde_json::from_slice::<Vec<String>>(&fwd.body).ok());
+        if let Some(upstream_ids) = upstream_ids {
+            extend_unseen(&mut ids, upstream_ids);
         }
     }
 
     Ok(HttpResponse::Ok().json(ids))
+}
+
+/// Append the ids `ids` does not already hold, preserving local order.
+///
+/// Set-backed rather than `Vec::contains`: upstream carries tens of thousands
+/// of ids, and a linear scan per id would make this union quadratic.
+fn extend_unseen(ids: &mut Vec<String>, incoming: Vec<String>) {
+    let mut seen: std::collections::HashSet<String> = ids.iter().cloned().collect();
+    for id in incoming {
+        if seen.insert(id.clone()) {
+            ids.push(id);
+        }
+    }
 }
 
 // rustfmt is not idempotent on the utoipa attribute inside a macro body (it

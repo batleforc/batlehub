@@ -193,7 +193,7 @@ impl BatleHubClient {
         let bytes = std::fs::read(file_path)?;
         let file_name = file_path
             .file_name()
-            .and_then(|n| n.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .unwrap_or("package.whl")
             .to_string();
         let sha2_hex = hex::encode(Sha256::digest(&bytes));
@@ -234,7 +234,7 @@ impl BatleHubClient {
         let bytes = std::fs::read(file_path)?;
         let file_name = file_path
             .file_name()
-            .and_then(|n| n.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .unwrap_or("package.tgz")
             .to_string();
         let length = bytes.len();

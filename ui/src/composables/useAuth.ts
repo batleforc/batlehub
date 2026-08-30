@@ -78,7 +78,7 @@ function viewerFingerprint(): string {
     token.value,
     id?.user_id ?? "",
     id?.role ?? "",
-    [...(id?.groups ?? [])].sort().join(","),
+    [...(id?.groups ?? [])].sort((a, b) => a.localeCompare(b)).join(","),
   ].join("::");
 }
 

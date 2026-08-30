@@ -138,14 +138,26 @@ export interface Oklch {
   alpha: number;
 }
 
+/** A CSS numeric token, bare or as a percentage where the grammar allows one. */
+const NUM = String.raw`[\d.]+`;
+
+/**
+ * `oklch(L C H)` and `oklch(L C H / A)`.
+ *
+ * Assembled from `NUM` rather than written out: spelled inline, the same
+ * character class appears four times and the pattern reads as punctuation.
+ */
+const OKLCH = new RegExp(
+  String.raw`^oklch\(\s*(${NUM}%?)\s+(${NUM})\s+(${NUM})\s*(?:/\s*(${NUM}%?)\s*)?\)$`,
+  "i",
+);
+
 /**
  * Parse `oklch(L C H)` / `oklch(L C H / A)`, accepting the percentage form for
  * lightness and alpha that CSS also allows.
  */
 export function parseOklch(value: string): Oklch | null {
-  const match = /^oklch\(\s*([\d.]+%?)\s+([\d.]+)\s+([\d.]+)\s*(?:\/\s*([\d.]+%?)\s*)?\)$/i.exec(
-    value.trim(),
-  );
+  const match = OKLCH.exec(value.trim());
   if (!match) return null;
 
   const num = (raw: string): number =>

@@ -555,9 +555,9 @@ async function runPending(): Promise<void> {
     <!-- Outside the selection-gated bar above: every bulk handler clears the
          selection in its `finally`, so a message rendered inside that bar was
          written into a node destroyed in the same tick and never seen. -->
-    <p v-if="bulkResultMsg" role="status" class="text-sm text-muted-foreground">
+    <output v-if="bulkResultMsg" class="block text-sm text-muted-foreground">
       {{ bulkResultMsg }}
-    </p>
+    </output>
 
     <!-- Package list -->
     <Card>

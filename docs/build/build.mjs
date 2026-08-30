@@ -20,11 +20,15 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
+// The lockfile's own vitepress, addressed from this file rather than looked up on
+// `PATH` through a shell. Two things come off with the lookup: the build stops
+// depending on whatever `vitepress` an ambient `PATH` happens to reach, and
+// `process.argv` stops being handed to a shell to re-parse.
+const VITEPRESS = fileURLToPath(new URL("../node_modules/.bin/vitepress", import.meta.url));
 const SSR_FAILURE = /^(?:\w*Error|Uncaught)\b/;
 
-const child = spawn("vitepress", ["build", ...process.argv.slice(2)], {
+const child = spawn(VITEPRESS, ["build", ...process.argv.slice(2)], {
   cwd: ROOT,
-  shell: true,
   stdio: ["inherit", "pipe", "pipe"],
 });
 

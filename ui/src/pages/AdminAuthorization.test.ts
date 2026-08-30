@@ -234,6 +234,139 @@ describe("the authorization page", () => {
     expect(panel).toContain("left-pad");
   });
 
+  /**
+   * A panel that failed and a panel that is empty are different answers.
+   *
+   * Each of the three standing-risk panels loads on its own, so one of them can
+   * fail while the others populate. On this page the empty copy reads as an
+   * all-clear — "No node is in shadow", "no exemption" — so a panel that could
+   * not load and says nothing is the one misreading §4.8 exists to prevent.
+   */
+  it("shows the API's message when a panel fails to load", async () => {
+    mocks.authzShadow.mockResolvedValue({ error: { message: "shadow report unavailable" } });
+    mocks.listExemptions.mockResolvedValue({ error: { message: "exemptions unavailable" } });
+    mocks.auditLog.mockResolvedValue({ error: "audit log unavailable" });
+    mockRoute = { query: { registry: "npm1" } };
+    const w = await mountPage();
+
+    const shadow = w.get('[data-testid="panel-shadow"]').text();
+    expect(shadow).toContain("shadow report unavailable");
+    expect(shadow).not.toContain("No node is in shadow");
+    expect(w.get('[data-testid="panel-exemptions"]').text()).toContain("exemptions unavailable");
+    expect(w.get('[data-testid="panel-denials"]').text()).toContain("audit log unavailable");
+  });
+
+  /** …and the same when the request never returns an answer at all. */
+  it("reports a thrown request as the panel's own error", async () => {
+    mocks.authzShadow.mockRejectedValue(new Error("shadow: network down"));
+    mocks.listExemptions.mockRejectedValue(new Error("exemptions: network down"));
+    // Not an `Error`: the catch has to stringify whatever it caught rather than
+    // read `.message` off it and render "undefined".
+    mocks.auditLog.mockRejectedValue("audit: connection reset");
+    mockRoute = { query: { registry: "npm1" } };
+    const w = await mountPage();
+
+    expect(w.get('[data-testid="panel-shadow"]').text()).toContain("shadow: network down");
+    expect(w.get('[data-testid="panel-exemptions"]').text()).toContain("exemptions: network down");
+    expect(w.get('[data-testid="panel-denials"]').text()).toContain("audit: connection reset");
+  });
+
+  /**
+   * The whole coordinate travels in the query string.
+   *
+   * The page is linked to from a ticket and from the package detail page, and a
+   * link that restores four of the five fields lands the operator on a question
+   * that is not the one they were sent to ask.
+   */
+  it("takes the whole coordinate from the query string", async () => {
+    mocks.adminAuthzExplain.mockResolvedValue(explainAnswer());
+    mockRoute = {
+      query: {
+        registry: "npm1",
+        package: "lodash",
+        version: "1.0.0",
+        subject: "role:admin",
+        action: "releases:publish",
+      },
+    };
+    const w = await mountPage();
+    await w.get("form").trigger("submit");
+    await flushPromises();
+
+    expect(mocks.adminAuthzExplain).toHaveBeenCalledWith({
+      query: {
+        registry: "npm1",
+        subject: "role:admin",
+        action: "releases:publish",
+        package: "lodash",
+        version: "1.0.0",
+      },
+    });
+  });
+
+  /** A failed explain is not a verdict — the result block has to go. */
+  it("shows the explain error instead of a verdict", async () => {
+    mocks.adminAuthzExplain.mockResolvedValueOnce(explainAnswer());
+    const w = await mountPage();
+    (w.vm as unknown as { registry: string }).registry = "npm1";
+    await w.get("form").trigger("submit");
+    await flushPromises();
+    expect(w.find('[data-testid="explain-result"]').exists()).toBe(true);
+
+    mocks.adminAuthzExplain.mockResolvedValueOnce({ error: { error: "unknown action" } });
+    await w.get("form").trigger("submit");
+    await flushPromises();
+
+    expect(w.get('[data-testid="panel-explain"]').text()).toContain("unknown action");
+    expect(w.find('[data-testid="explain-result"]').exists()).toBe(false);
+  });
+
+  /** …including when the call throws rather than answering. */
+  it("shows a thrown explain as its error", async () => {
+    mocks.adminAuthzExplain.mockRejectedValue(new Error("explain: gateway timeout"));
+    const w = await mountPage();
+    (w.vm as unknown as { registry: string }).registry = "npm1";
+    await w.get("form").trigger("submit");
+    await flushPromises();
+
+    expect(w.get('[data-testid="panel-explain"]').text()).toContain("explain: gateway timeout");
+    expect(w.find('[data-testid="explain-result"]').exists()).toBe(false);
+  });
+
+  /**
+   * The audit endpoint answers with an envelope, and the denials panel reads
+   * either shape.
+   *
+   * A bare array is what the in-memory adapter returns and `{ events: [...] }`
+   * is what the paginated one does; reading only the first renders an empty
+   * "no denials" panel against a server that is refusing requests.
+   */
+  it("reads denials out of the events envelope", async () => {
+    mocks.auditLog.mockResolvedValue({
+      data: {
+        events: [
+          {
+            timestamp: "2026-08-29T10:00:00Z",
+            user_id: "alice",
+            package_id: "npm1/lodash@1.0.0",
+            action: "releases:read",
+            reason: "no grant",
+          },
+          // Every optional column absent: the row still has to render, with a
+          // placeholder rather than "undefined".
+          { timestamp: "2026-08-29T11:00:00Z" },
+        ],
+      },
+    });
+    const w = await mountPage();
+
+    const panel = w.get('[data-testid="panel-denials"]').text();
+    expect(panel).toContain("alice");
+    expect(panel).toContain("npm1/lodash@1.0.0");
+    expect(panel).toContain("no grant");
+    expect(panel).not.toContain("undefined");
+  });
+
   /** All five panels §4.8 names are on the page. */
   it("renders every panel", async () => {
     const w = await mountPage();

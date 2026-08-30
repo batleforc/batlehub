@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
-import { ref, computed } from "vue";
+import { ref, computed, toRef } from "vue";
 import {
   listSubscriptions,
   listNotificationChannels,
@@ -40,7 +40,6 @@ import { Select } from "@/components/ui/select";
 import { Combobox } from "@/components/ui/combobox";
 import { useRegistryOptions } from "@/composables/useRegistryOptions";
 import { usePackageNameSuggestions } from "@/composables/useSuggestions";
-import { toRef } from "vue";
 
 const { t } = useI18n();
 

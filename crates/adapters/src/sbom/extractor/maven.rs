@@ -96,77 +96,96 @@ fn apply_maven_end(
     }
 }
 
+/// The bookkeeping [`parse_maven_pom`] carries from one event to the next.
+#[derive(Default)]
+struct PomParser {
+    deps: Vec<SbomDependency>,
+    in_dependency: u32,
+    current_group: String,
+    current_artifact: String,
+    current_version: String,
+    capture_field: Option<&'static str>,
+    /// `<name>` is also the project's own display name, so the licence capture
+    /// is scoped to `<licenses>` rather than matched on the element alone.
+    in_licenses: u32,
+    capture_license_name: bool,
+    licenses: Vec<String>,
+}
+
+impl PomParser {
+    fn start(&mut self, e: &quick_xml::events::BytesStart<'_>) {
+        let ln = e.local_name();
+        let local = std::str::from_utf8(ln.as_ref()).unwrap_or("");
+        apply_maven_start(local, &mut self.in_dependency, &mut self.capture_field);
+        if local == "licenses" {
+            self.in_licenses += 1;
+        } else if local == "name" && self.in_licenses > 0 {
+            self.capture_license_name = true;
+        }
+    }
+
+    fn text(&mut self, e: &quick_xml::events::BytesText<'_>) {
+        if self.capture_license_name {
+            self.capture_license_name = false;
+            let text = decode_xml_text(e);
+            let text = text.trim();
+            if !text.is_empty() {
+                self.licenses.push(text.to_owned());
+            }
+            return;
+        }
+        let Some(field) = self.capture_field.take() else {
+            return;
+        };
+        let text = decode_xml_text(e);
+        match field {
+            "groupId" => self.current_group = text,
+            "artifactId" => self.current_artifact = text,
+            "version" => self.current_version = text,
+            _ => {}
+        }
+    }
+
+    fn end(&mut self, e: &quick_xml::events::BytesEnd<'_>) {
+        let ln = e.local_name();
+        let local = std::str::from_utf8(ln.as_ref()).unwrap_or("");
+        if local == "licenses" && self.in_licenses > 0 {
+            self.in_licenses -= 1;
+        }
+        if local == "name" {
+            self.capture_license_name = false;
+        }
+        apply_maven_end(
+            local,
+            &mut self.in_dependency,
+            &mut self.current_group,
+            &mut self.current_artifact,
+            &mut self.current_version,
+            &mut self.deps,
+        );
+    }
+}
+
 fn parse_maven_pom(content: &str) -> ExtractedManifest {
     use quick_xml::{events::Event, Reader};
 
     let mut reader = Reader::from_str(content);
     reader.config_mut().trim_text(true);
 
-    let mut deps = Vec::new();
-    let mut in_dependency = 0u32;
-    let mut current_group = String::new();
-    let mut current_artifact = String::new();
-    let mut current_version = String::new();
-    let mut capture_field: Option<&'static str> = None;
+    let mut state = PomParser::default();
 
-    // `<name>` is also the project's own display name, so the licence capture
-    // is scoped to `<licenses>` rather than matched on the element alone.
-    let mut in_licenses = 0u32;
-    let mut capture_license_name = false;
-    let mut licenses: Vec<String> = Vec::new();
-
+    // One line per event kind: what each event *means* lives on `PomParser`, so
+    // this loop stays a dispatch table rather than the machine itself.
     loop {
         match reader.read_event() {
-            Ok(Event::Start(ref e)) => {
-                let ln = e.local_name();
-                let local = std::str::from_utf8(ln.as_ref()).unwrap_or("");
-                apply_maven_start(local, &mut in_dependency, &mut capture_field);
-                if local == "licenses" {
-                    in_licenses += 1;
-                } else if local == "name" && in_licenses > 0 {
-                    capture_license_name = true;
-                }
-            }
-            Ok(Event::Text(ref e)) => {
-                if capture_license_name {
-                    capture_license_name = false;
-                    let text = decode_xml_text(e);
-                    let text = text.trim();
-                    if !text.is_empty() {
-                        licenses.push(text.to_owned());
-                    }
-                } else if let Some(field) = capture_field.take() {
-                    let text = decode_xml_text(e);
-                    match field {
-                        "groupId" => current_group = text,
-                        "artifactId" => current_artifact = text,
-                        "version" => current_version = text,
-                        _ => {}
-                    }
-                }
-            }
-            Ok(Event::End(ref e)) => {
-                let ln = e.local_name();
-                let local = std::str::from_utf8(ln.as_ref()).unwrap_or("");
-                if local == "licenses" && in_licenses > 0 {
-                    in_licenses -= 1;
-                }
-                if local == "name" {
-                    capture_license_name = false;
-                }
-                apply_maven_end(
-                    local,
-                    &mut in_dependency,
-                    &mut current_group,
-                    &mut current_artifact,
-                    &mut current_version,
-                    &mut deps,
-                );
-            }
+            Ok(Event::Start(ref e)) => state.start(e),
+            Ok(Event::Text(ref e)) => state.text(e),
+            Ok(Event::End(ref e)) => state.end(e),
             Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }
     }
+    let PomParser { deps, licenses, .. } = state;
 
     ExtractedManifest {
         dependencies: deps,

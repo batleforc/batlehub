@@ -304,7 +304,15 @@ async function confirmUnblock() {
       </template>
     </PageHeader>
 
-    <Input v-model="filter" :placeholder="t('adminBlocks.filter')" class="max-w-sm" />
+    <!-- A placeholder is not an accessible name: it is gone the moment there is
+         a value, so a screen reader returning to a filled field announces
+         nothing. The label is carried explicitly. -->
+    <Input
+      v-model="filter"
+      :placeholder="t('adminBlocks.filter')"
+      :aria-label="t('adminBlocks.filter')"
+      class="max-w-sm"
+    />
 
     <AsyncState :loading="loading && !rows.length" :error="error">
       <EmptyState

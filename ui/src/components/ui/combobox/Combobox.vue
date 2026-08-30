@@ -146,7 +146,11 @@ function move(delta: number) {
      returns you to your own words instead of jumping to the bottom of a list
      you were leaving. */
   const next = activeIndex.value + delta;
-  activeIndex.value = next < -1 ? count - 1 : next >= count ? -1 : next;
+  if (next < -1) {
+    activeIndex.value = count - 1;
+  } else {
+    activeIndex.value = next >= count ? -1 : next;
+  }
   void nextTick(scrollActiveIntoView);
 }
 

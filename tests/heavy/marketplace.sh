@@ -159,7 +159,11 @@ if [[ "${SKIP_VSCODE:-0}" != "1" ]]; then
       if [[ ! -x "$VSCODE_DIR/bin/code" ]]; then
         log "Downloading VS Code $VSCODE_VERSION"
         mkdir -p "$VSCODE_DIR"
-        curl -fsSL "https://update.code.visualstudio.com/$VSCODE_VERSION/linux-x64/stable" \
+        # --proto-redir pins the redirect chain to https as well as the first
+        # request: this URL redirects to a CDN, and -L alone would follow a
+        # downgrade to plain HTTP and pipe the result straight into tar.
+        curl -fsSL --proto '=https' --proto-redir '=https' \
+          "https://update.code.visualstudio.com/$VSCODE_VERSION/linux-x64/stable" \
           | tar -xz -C "$VSCODE_DIR" --strip-components=1
       fi
       CODE_BIN="$VSCODE_DIR/bin/code"
@@ -249,11 +253,14 @@ if [[ "${SKIP_JETBRAINS:-0}" != "1" ]]; then
     mkdir -p "$IDEA_DIR"
     # Unified installer naming since 2025.3; fall back to the old Community
     # edition tarball for overrides pinning an older IDEA_VERSION.
-    if ! curl -fsSL "https://download.jetbrains.com/idea/idea-$IDEA_VERSION.tar.gz" \
+    # See the VS Code download above for why the redirect chain is pinned too.
+    if ! curl -fsSL --proto '=https' --proto-redir '=https' \
+        "https://download.jetbrains.com/idea/idea-$IDEA_VERSION.tar.gz" \
         | tar -xz -C "$IDEA_DIR" --strip-components=1; then
       rm -rf "$IDEA_DIR"
       mkdir -p "$IDEA_DIR"
-      curl -fsSL "https://download.jetbrains.com/idea/ideaIC-$IDEA_VERSION.tar.gz" \
+      curl -fsSL --proto '=https' --proto-redir '=https' \
+        "https://download.jetbrains.com/idea/ideaIC-$IDEA_VERSION.tar.gz" \
         | tar -xz -C "$IDEA_DIR" --strip-components=1
     fi
   fi

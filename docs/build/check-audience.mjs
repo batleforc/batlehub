@@ -64,17 +64,20 @@ const add = (kind, detail) => findings.push({ kind, detail });
 /* ── One sidebar per page ─────────────────────────────────────────────────── */
 
 const config = readFileSync(join(DOCS, ".vitepress", "config.ts"), "utf8");
-const sidebars = [...config.matchAll(/^      "(\/[^"]*)": \[$/gm)].map((m) => m[1]);
+const sidebars = [...config.matchAll(/^ {6}"(\/[^"]*)": \[$/gm)].map((m) => m[1]);
 
 /** Every `link:` under each sidebar key, keyed by the sidebar it belongs to. */
 const listedIn = new Map(); // link → [sidebar, …]
 for (const key of sidebars) {
   const start = config.indexOf(`      "${key}": [`);
-  const next = sidebars
+  // The last sidebar has no successor to stop at, so it runs to the close of the
+  // object literal instead.
+  const later = sidebars
     .map((k) => config.indexOf(`      "${k}": [`))
     .filter((i) => i > start)
-    .sort((a, b) => a - b)[0];
-  const body = config.slice(start, next === undefined ? config.indexOf("\n    },", start) : next);
+    .sort((a, b) => a - b);
+  const end = later.length > 0 ? later[0] : config.indexOf("\n    },", start);
+  const body = config.slice(start, end);
   const links = [...body.matchAll(/link:\s*"([^"]+)"/g)].map((m) => m[1]);
 
   sizes.push(`${key} ${links.length}`);
@@ -113,12 +116,21 @@ const textOf = new Map(all.map((f) => [f, readFileSync(f, "utf8")]));
 
 for (const file of all) {
   const src = textOf.get(file);
-  const seeAlso = src.match(/^## See also\n([\s\S]*?)(?=^## |\Z)/m);
-  if (!seeAlso) continue;
+  // Split rather than a lazy `[\s\S]*?` with a `(?=^## |\Z)` lookahead: JS has no
+  // `\Z`, so that alternative was matching a literal "Z" and the section could
+  // only ever be ended by a following `## ` — a "See also" that ran to the end of
+  // the page was skipped entirely.
+  const afterHeading = src.split(/^## See also\n/m)[1];
+  if (afterHeading === undefined) continue;
+  const seeAlso = afterHeading.split(/^## /m)[0];
   const here = urlOf(file);
   const dir = here.slice(0, here.lastIndexOf("/") + 1);
 
-  for (const [, target] of seeAlso[1].matchAll(/\]\((\/[^)#\s]*)[^)]*\)/g)) {
+  // The whole `(…)` destination in one linear capture, then trimmed at the
+  // fragment. Two adjacent greedy classes that both accept `#` backtrack.
+  for (const [, dest] of seeAlso.matchAll(/\]\(([^)]*)\)/g)) {
+    const target = dest.split(/[#\s]/)[0];
+    if (!target.startsWith("/")) continue;
     const targetFile = all.find((f) => urlOf(f) === target || urlOf(f) === target + "/");
     if (!targetFile) continue;
     const back = [...textOf.get(targetFile).matchAll(/\]\((\/[^)#\s]*)/g)].filter((m) =>
@@ -136,7 +148,7 @@ for (const file of all) {
 /* ── The counts, because "we reduced it" is not a test ────────────────────── */
 
 const home = readFileSync(join(DOCS, "index.md"), "utf8");
-const cards = (home.match(/^  - icon:/gm) ?? []).length;
+const cards = (home.match(/^ {2}- icon:/gm) ?? []).length;
 if (cards !== HOME_CARDS) {
   add("home page", `${cards} feature cards, expected ${HOME_CARDS}`);
 }

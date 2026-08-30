@@ -14,7 +14,7 @@ function cspPlugin(apiBaseUrl: string, livePort: number | null): Plugin {
   return {
     name: "batlehub-csp",
     transformIndexHtml(html) {
-      return html.replace(/%VITE_CSP%/g, buildCsp(apiBaseUrl, livePort));
+      return html.replaceAll("%VITE_CSP%", buildCsp(apiBaseUrl, livePort));
     },
   };
 }

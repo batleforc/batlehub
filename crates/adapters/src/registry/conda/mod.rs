@@ -72,9 +72,8 @@ impl CondaRegistryClient {
 /// packages and is tried first because it is the smallest repodata file.
 fn default_list_platforms() -> Vec<String> {
     ["noarch", "linux-64", "osx-64", "osx-arm64", "win-64"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
+        .map(String::from)
+        .to_vec()
 }
 
 #[cfg(test)]

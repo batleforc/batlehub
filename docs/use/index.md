@@ -106,31 +106,14 @@ The built-in **Setup Guide** at `https://batlehub.example.com/setup` generates r
 
 ## Per-registry setup {#registries}
 
-Every registry type now has a dedicated page in the [Registries reference](/registries/) covering its proxy setup, publishing (in `local`/`hybrid` mode), and authentication. Pick your ecosystem below:
+Every registry type has a dedicated page in the [Registries reference](/registries/),
+covering its proxy setup, publishing (in `local`/`hybrid` mode), and authentication.
+Pick your ecosystem there — source hosting, the language registries, editor
+extensions, OS packages, and the binary mirrors are grouped on that one page.
 
-| Category | Registry | Reference |
-|----------|----------|-----------|
-| Source hosting | GitHub | [/registries/github](/registries/github) |
-| Source hosting | Forgejo / Gitea | [/registries/forgejo](/registries/forgejo) |
-| Source hosting | GitLab | [/registries/gitlab](/registries/gitlab) |
-| Language | npm | [/registries/npm](/registries/npm) |
-| Language | Cargo | [/registries/cargo](/registries/cargo) |
-| Language | Go Modules | [/registries/goproxy](/registries/goproxy) |
-| Language | Maven | [/registries/maven](/registries/maven) |
-| Language | PyPI | [/registries/pypi](/registries/pypi) |
-| Language | Conda | [/registries/conda](/registries/conda) |
-| Language | Composer | [/registries/composer](/registries/composer) |
-| Language | RubyGems | [/registries/rubygems](/registries/rubygems) |
-| Language | NuGet | [/registries/nuget](/registries/nuget) |
-| Language | Terraform | [/registries/terraform](/registries/terraform) |
-| Editor extensions | OpenVSX (VS Code) | [/registries/openvsx](/registries/openvsx) |
-| Editor extensions | VS Code Marketplace | [/registries/vscode-marketplace](/registries/vscode-marketplace) |
-| Editor extensions | JetBrains Marketplace | [/registries/jetbrains-marketplace](/registries/jetbrains-marketplace) |
-| OS packages | Debian / APT | [/registries/deb](/registries/deb) |
-| OS packages | RPM / YUM / DNF | [/registries/rpm](/registries/rpm) |
-| OS packages | Pacman / Arch | [/registries/pacman](/registries/pacman) |
-| Binaries & mirrors | JetBrains IDEs | [/registries/jetbrains](/registries/jetbrains) |
-| Binaries & mirrors | Generic mirror | [/registries/generic](/registries/generic) |
+The list itself lives there and only there. A second copy on this page is a second
+copy to keep in step, and the one that fell behind would be the one a reader found
+first.
 
 ---
 

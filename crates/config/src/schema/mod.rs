@@ -1469,96 +1469,15 @@ impl AppConfig {
     /// that claimed it, a registry nothing can reach, the admin API shadowed by a
     /// vanity host, or routing driven by a header the server has no policy about.
     fn validate_host_routing(&self) -> Result<()> {
-        if let Some(subdomain) = self.subdomain_routing.as_ref() {
-            if subdomain.enabled {
-                let base = subdomain.base_domain.as_deref().unwrap_or_default();
-                if normalise_host(base).is_empty() {
-                    bail!(
-                        "[subdomain_routing]: 'enabled = true' requires a non-empty 'base_domain' \
-                         (e.g. base_domain = \"hub.example.com\"); without one no wildcard host \
-                         is derived and the section routes nothing"
-                    );
-                }
-                // A pasted URL normalises to something non-empty ("https://hub.example.com" ->
-                // "https"), so it would otherwise flow into the wildcard hosts, the public URLs
-                // and the collision checks below as a plausible-looking domain.
-                validate_host_entry(base).map_err(|e| {
-                    anyhow::anyhow!("[subdomain_routing]: invalid 'base_domain' '{base}': {e}")
-                })?;
-            }
-        }
-
+        self.validate_base_domain()?;
         // Syntax first, so a pasted URL is reported as such rather than as a
         // mystery collision after normalisation.
-        for registry in &self.registries {
-            for host in &registry.hosts {
-                validate_host_entry(host).map_err(|e| {
-                    anyhow::anyhow!(
-                        "registry '{}': invalid 'hosts' entry '{host}': {e}",
-                        registry.name
-                    )
-                })?;
-            }
-        }
+        self.validate_host_syntax()?;
+        self.validate_base_domain_not_claimed()?;
 
-        // The bare base_domain stays the main host: it serves the admin API, the
-        // SPA, /healthz and /metrics. A vanity host equal to it would rewrite all
-        // of that into one registry and hide the admin API entirely.
-        if let Some(base) = self
-            .subdomain_routing
-            .as_ref()
-            .and_then(|s| s.base_domain.as_deref())
-            .map(normalise_host)
-            .filter(|d| !d.is_empty())
-        {
-            for registry in &self.registries {
-                if registry.hosts.iter().any(|h| normalise_host(h) == base) {
-                    bail!(
-                        "registry '{}': 'hosts' entry '{base}' is the [subdomain_routing] \
-                         base_domain itself; that host serves the admin API and the SPA, and \
-                         binding it to a registry would hide them",
-                        registry.name
-                    );
-                }
-            }
-        }
-
-        // One host, one registry. Same-registry duplicates are fine — an explicit
-        // `hosts` entry that repeats that registry's own wildcard host just wins.
-        let mut claimed: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
         let bindings = self.registry_host_bindings();
-        for binding in &bindings {
-            match claimed.get(binding.host.as_str()) {
-                Some(&owner) if owner != binding.registry => bail!(
-                    "host '{}' is claimed by both registry '{owner}' and registry '{}'; \
-                     a host routes to exactly one registry",
-                    binding.host,
-                    binding.registry
-                ),
-                Some(_) => {}
-                None => {
-                    claimed.insert(binding.host.as_str(), binding.registry.as_str());
-                }
-            }
-        }
-
-        // A registry with neither ingress is unreachable — catch it here rather
-        // than as a stream of 404s nobody can explain.
-        for registry in &self.registries {
-            if registry.path_routing {
-                continue;
-            }
-            let has_host = bindings.iter().any(|b| b.registry == registry.name);
-            if !has_host {
-                bail!(
-                    "registry '{}': 'path_routing = false' leaves it with no ingress — it has \
-                     no 'hosts' entry, and no wildcard host is derived for it (either \
-                     [subdomain_routing] is off, or the name is not a valid DNS label). Add a \
-                     host, or drop 'path_routing = false'.",
-                    registry.name
-                );
-            }
-        }
+        Self::validate_one_host_one_registry(&bindings)?;
+        self.validate_every_registry_reachable(&bindings)?;
 
         // Routing now depends on a header, so an unstated trust policy is not a
         // state we let a deployment reach. The deprecated key counts as a policy
@@ -1575,6 +1494,113 @@ impl AppConfig {
             );
         }
 
+        Ok(())
+    }
+
+    /// An enabled `[subdomain_routing]` names a base domain that is one.
+    fn validate_base_domain(&self) -> Result<()> {
+        let Some(subdomain) = self.subdomain_routing.as_ref() else {
+            return Ok(());
+        };
+        if !subdomain.enabled {
+            return Ok(());
+        }
+        let base = subdomain.base_domain.as_deref().unwrap_or_default();
+        if normalise_host(base).is_empty() {
+            bail!(
+                "[subdomain_routing]: 'enabled = true' requires a non-empty 'base_domain' \
+                 (e.g. base_domain = \"hub.example.com\"); without one no wildcard host \
+                 is derived and the section routes nothing"
+            );
+        }
+        // A pasted URL normalises to something non-empty ("https://hub.example.com" ->
+        // "https"), so it would otherwise flow into the wildcard hosts, the public URLs
+        // and the collision checks below as a plausible-looking domain.
+        validate_host_entry(base).map_err(|e| {
+            anyhow::anyhow!("[subdomain_routing]: invalid 'base_domain' '{base}': {e}")
+        })?;
+        Ok(())
+    }
+
+    /// Every `hosts` entry is a host rather than a pasted URL.
+    fn validate_host_syntax(&self) -> Result<()> {
+        for registry in &self.registries {
+            for host in &registry.hosts {
+                validate_host_entry(host).map_err(|e| {
+                    anyhow::anyhow!(
+                        "registry '{}': invalid 'hosts' entry '{host}': {e}",
+                        registry.name
+                    )
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The bare base_domain stays the main host: it serves the admin API, the
+    /// SPA, /healthz and /metrics. A vanity host equal to it would rewrite all
+    /// of that into one registry and hide the admin API entirely.
+    fn validate_base_domain_not_claimed(&self) -> Result<()> {
+        let Some(base) = self
+            .subdomain_routing
+            .as_ref()
+            .and_then(|s| s.base_domain.as_deref())
+            .map(normalise_host)
+            .filter(|d| !d.is_empty())
+        else {
+            return Ok(());
+        };
+        for registry in &self.registries {
+            if registry.hosts.iter().any(|h| normalise_host(h) == base) {
+                bail!(
+                    "registry '{}': 'hosts' entry '{base}' is the [subdomain_routing] \
+                     base_domain itself; that host serves the admin API and the SPA, and \
+                     binding it to a registry would hide them",
+                    registry.name
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// One host, one registry. Same-registry duplicates are fine — an explicit
+    /// `hosts` entry that repeats that registry's own wildcard host just wins.
+    fn validate_one_host_one_registry(bindings: &[RegistryHostBinding]) -> Result<()> {
+        let mut claimed: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        for binding in bindings {
+            match claimed.get(binding.host.as_str()) {
+                Some(&owner) if owner != binding.registry => bail!(
+                    "host '{}' is claimed by both registry '{owner}' and registry '{}'; \
+                     a host routes to exactly one registry",
+                    binding.host,
+                    binding.registry
+                ),
+                Some(_) => {}
+                None => {
+                    claimed.insert(binding.host.as_str(), binding.registry.as_str());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A registry with neither ingress is unreachable — catch it here rather
+    /// than as a stream of 404s nobody can explain.
+    fn validate_every_registry_reachable(&self, bindings: &[RegistryHostBinding]) -> Result<()> {
+        for registry in &self.registries {
+            if registry.path_routing {
+                continue;
+            }
+            if !bindings.iter().any(|b| b.registry == registry.name) {
+                bail!(
+                    "registry '{}': 'path_routing = false' leaves it with no ingress — it has \
+                     no 'hosts' entry, and no wildcard host is derived for it (either \
+                     [subdomain_routing] is off, or the name is not a valid DNS label). Add a \
+                     host, or drop 'path_routing = false'.",
+                    registry.name
+                );
+            }
+        }
         Ok(())
     }
 
@@ -1669,16 +1695,14 @@ impl AppConfig {
         Ok(())
     }
 
+    /// Every fail-fast check the file has to pass before the server comes up.
+    ///
+    /// A list of delegations rather than the checks themselves: each `validate_*`
+    /// below owns one subject and states its own reasons, and the order here is
+    /// the order an operator meets the errors in. Adding a check means adding a
+    /// method and a line, not another branch in a function nobody can hold.
     pub fn validate(&self) -> Result<()> {
-        if let Some(v) = self.config_version {
-            if v > CURRENT_CONFIG_VERSION {
-                bail!(
-                    "config_version {v} is newer than this binary supports (max {CURRENT_CONFIG_VERSION}); \
-                     upgrade batlehub-server, or lower config_version if you intended to target an \
-                     older schema"
-                );
-            }
-        }
+        self.validate_config_version()?;
         // Reject malformed proxy-trust entries up front: a typo here silently
         // widens or narrows which peers may set `X-Forwarded-*`, and the
         // consequence (a spoofable routing header, or generated URLs pointing at
@@ -1699,12 +1723,34 @@ impl AppConfig {
         self.validate_actions_oidc_audience()?;
         self.validate_host_routing()?;
         self.validate_signed_urls()?;
+        self.validate_page_sizes()?;
+        self.validate_search()?;
+        self.validate_registries()?;
+        Ok(())
+    }
 
-        // A page size of zero is a list that can never answer, and the failure
-        // would land on a page rather than at startup. The ceiling is the same
-        // argument `upstream_detail.max_versions` makes one level up: every row
-        // is built, held in memory and serialised, and these keys are the *most*
-        // any caller may ask for.
+    /// The file does not declare a schema this binary is too old to read.
+    fn validate_config_version(&self) -> Result<()> {
+        if let Some(v) = self.config_version {
+            if v > CURRENT_CONFIG_VERSION {
+                bail!(
+                    "config_version {v} is newer than this binary supports (max {CURRENT_CONFIG_VERSION}); \
+                     upgrade batlehub-server, or lower config_version if you intended to target an \
+                     older schema"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// `[limits]` page sizes are answerable and bounded.
+    ///
+    /// A page size of zero is a list that can never answer, and the failure
+    /// would land on a page rather than at startup. The ceiling is the same
+    /// argument `upstream_detail.max_versions` makes one level up: every row
+    /// is built, held in memory and serialised, and these keys are the *most*
+    /// any caller may ask for.
+    fn validate_page_sizes(&self) -> Result<()> {
         const PER_PAGE_CEILING: u64 = 1_000;
         for (key, value, default, empties) in [
             (
@@ -1734,15 +1780,20 @@ impl AppConfig {
                 );
             }
         }
+        Ok(())
+    }
 
-        // The index is a Postgres generated column with a GIN index. There is no
-        // other backend to put it in, and failing at startup beats a search that
-        // quietly matches nothing (RFC 0007-bis §4.5).
-        // Both spellings, because `[database] type` is documented as
-        // `postgresql` and written as `postgres` about as often. Nothing else
-        // reads this field — the adapter layer is Postgres-only — so the check
-        // exists to give an operator who wrote something else an answer here
-        // rather than a search that quietly matches nothing.
+    /// `[search]` has somewhere to put its index and something to build it with.
+    ///
+    /// The index is a Postgres generated column with a GIN index. There is no
+    /// other backend to put it in, and failing at startup beats a search that
+    /// quietly matches nothing (RFC 0007-bis §4.5).
+    /// Both spellings, because `[database] type` is documented as
+    /// `postgresql` and written as `postgres` about as often. Nothing else
+    /// reads this field — the adapter layer is Postgres-only — so the check
+    /// exists to give an operator who wrote something else an answer here
+    /// rather than a search that quietly matches nothing.
+    fn validate_search(&self) -> Result<()> {
         let postgres = matches!(
             self.database.db_type.to_ascii_lowercase().as_str(),
             "postgres" | "postgresql"
@@ -1761,7 +1812,11 @@ impl AppConfig {
                  \"english\", \"simple\", \"french\"); an empty value is not one"
             );
         }
+        Ok(())
+    }
 
+    /// Every `[[registries]]` entry, in the order an operator meets the errors.
+    fn validate_registries(&self) -> Result<()> {
         // The set of storage backend names a registry's `storage` field may
         // reference. In single-backend mode only the implicit "default" exists;
         // in multi mode it is the declared `[[storage.backends]]` names. A
@@ -1789,182 +1844,241 @@ impl AppConfig {
                     registry.name
                 );
             }
-            if let Some(backend) = &registry.storage {
-                if !known_backends.contains(backend.as_str()) {
-                    match &self.storage {
-                        StoragesConfig::Single(_) => bail!(
-                            "registry '{}': 'storage = \"{}\"' requires a multi-backend \
-                             [[storage.backends]] configuration; single-backend storage has no \
-                             named backends to select",
-                            registry.name,
-                            backend
-                        ),
-                        StoragesConfig::Multi(_) => bail!(
-                            "registry '{}': 'storage = \"{}\"' does not match any backend name in \
-                             [[storage.backends]]",
-                            registry.name,
-                            backend
-                        ),
-                    }
-                }
-            }
+            self.validate_registry_storage(registry, &known_backends)?;
+
             let kind: batlehub_core::entities::RegistryKind =
                 registry.registry_type.parse().map_err(anyhow::Error::msg)?;
-            if matches!(registry.mode, RegistryMode::Local | RegistryMode::Hybrid)
-                && !kind.supports_local_mode()
-            {
-                bail!(
-                    "registry '{}': mode 'local'/'hybrid' is not supported for {} registries (no local publish model)",
-                    registry.name,
-                    kind
-                );
-            }
-            if registry.mode == RegistryMode::Hybrid && registry.upstreams.is_empty() {
-                bail!(
-                    "registry '{}': hybrid mode requires at least one upstream URL",
-                    registry.name
-                );
-            }
+            Self::validate_registry_mode(registry, kind)?;
             self.validate_retention(registry)?;
-            // deb/rpm have no universal default upstream, so proxy mode (which would
-            // otherwise fall back to an unreachable placeholder) also requires an
-            // explicit upstream. Caught at startup instead of every fetch failing.
-            if registry.mode == RegistryMode::Proxy
-                && registry.upstreams.is_empty()
-                && kind.requires_explicit_upstream_in_proxy_mode()
-            {
-                bail!(
-                    "registry '{}': {} proxy mode requires at least one upstream URL (no default upstream exists)",
-                    registry.name,
-                    kind
-                );
-            }
-            // `path_allow` gates a raw upstream path passthrough, so it only means
-            // anything for the path-addressed kinds. Accepting it silently elsewhere
-            // would read as a working restriction while gating nothing.
-            if !registry.path_allow.is_empty() && !kind.is_path_addressed() {
-                bail!(
-                    "registry '{}': 'path_allow' is only supported for path-addressed registry types \
-                     (deb, rpm, pacman, jetbrains, generic), not {}",
-                    registry.name,
-                    kind
-                );
-            }
-            // A `generic` registry mirrors an arbitrary file tree on a host that may
-            // serve unrelated content, so the allowlist is mandatory rather than
-            // opt-in. `["**"]` is the explicit way to mirror everything.
-            if kind == batlehub_core::entities::RegistryKind::Generic
-                && registry.path_allow.is_empty()
-            {
-                bail!(
-                    "registry '{}': generic registries require a non-empty 'path_allow' allowlist \
-                     (use path_allow = [\"**\"] to mirror the whole upstream deliberately)",
-                    registry.name
-                );
-            }
-            for pattern in &registry.path_allow {
-                glob::Pattern::new(pattern).map_err(|e| {
-                    anyhow::anyhow!(
-                        "registry '{}': invalid path_allow glob '{pattern}': {e}",
-                        registry.name
-                    )
-                })?;
-            }
-            if let Some(readme) = &registry.readme {
-                // An unrecognised `remote_images` must not silently become the
-                // default: the two behaviours differ in what leaves the network,
-                // and an operator who typed `"allow"` expecting images believes
-                // the opposite of what they would get.
-                if batlehub_core::services::RemoteImagePolicy::parse(&readme.remote_images)
-                    .is_none()
-                {
-                    bail!(
-                        "registry '{}': invalid readme.remote_images '{}' (expected \"strip\" or \
-                         \"proxy\"; there is no \"allow\" — the console's CSP is baked in at build \
-                         time, so it could only ever show broken images)",
-                        registry.name,
-                        readme.remote_images
-                    );
-                }
-                if readme.enabled && readme.max_bytes == 0 {
-                    bail!(
-                        "registry '{}': readme.max_bytes = 0 with enabled = true stores nothing \
-                         while claiming to be on; set enabled = false to turn the feature off",
-                        registry.name
-                    );
-                }
-                // The value is a row in a transactional store, read on a page
-                // load and held in memory while it renders.
-                const README_MAX_BYTES_CEILING: usize = 4 * 1024 * 1024;
-                if readme.max_bytes > README_MAX_BYTES_CEILING {
-                    bail!(
-                        "registry '{}': readme.max_bytes = {} exceeds the {README_MAX_BYTES_CEILING} \
-                         byte ceiling; a README is a database row read on every page load",
-                        registry.name,
-                        readme.max_bytes
-                    );
-                }
-                // The image cap is a separate number from `max_bytes` because
-                // the two bound different things, and it gets the same two
-                // guards for the same reasons (RFC 0007-bis §4.5).
-                if readme.remote_images == "proxy" && readme.image_max_bytes == 0 {
-                    bail!(
-                        "registry '{}': readme.image_max_bytes = 0 with remote_images = \"proxy\" \
-                         serves no image while claiming to render them; set remote_images = \
-                         \"strip\" to chart them instead",
-                        registry.name
-                    );
-                }
-                // The bytes are buffered in memory to check the type and the cap
-                // before anything is stored, so a ceiling makes that bound a
-                // statement rather than a hope.
-                const IMAGE_MAX_BYTES_CEILING: usize = 16 * 1024 * 1024;
-                if readme.image_max_bytes > IMAGE_MAX_BYTES_CEILING {
-                    bail!(
-                        "registry '{}': readme.image_max_bytes = {} exceeds the \
-                         {IMAGE_MAX_BYTES_CEILING} byte ceiling; an image is held in memory while \
-                         its type and size are checked",
-                        registry.name,
-                        readme.image_max_bytes
-                    );
-                }
-            }
-            if let Some(detail) = &registry.upstream_detail {
-                if detail.enabled && detail.max_versions == 0 {
-                    bail!(
-                        "registry '{}': upstream_detail.max_versions = 0 with enabled = true \
-                         attempts the fetch and discards every result — the egress happens and \
-                         nothing is shown; set enabled = false instead",
-                        registry.name
-                    );
-                }
-                // One page's version table, held in memory and serialised to
-                // JSON per request.
-                const UPSTREAM_MAX_VERSIONS_CEILING: usize = 5_000;
-                if detail.max_versions > UPSTREAM_MAX_VERSIONS_CEILING {
-                    bail!(
-                        "registry '{}': upstream_detail.max_versions = {} exceeds the \
-                         {UPSTREAM_MAX_VERSIONS_CEILING} ceiling; one page's version table is \
-                         held in memory and serialised to JSON on every request",
-                        registry.name,
-                        detail.max_versions
-                    );
-                }
-            }
-            // `version_pattern` is a publish-time restriction (a security
-            // control), so an uncompilable regex must fail the config load
-            // rather than silently degrade to "allow every version" (fail-open).
-            if let Some(versioning) = &registry.versioning {
-                if let Some(pattern) = &versioning.version_pattern {
-                    regex::Regex::new(pattern).map_err(|e| {
-                        anyhow::anyhow!(
-                            "registry '{}': invalid version_pattern '{pattern}': {e}",
-                            registry.name
-                        )
-                    })?;
-                }
-            }
+            Self::validate_registry_upstreams(registry, kind)?;
+            Self::validate_registry_path_allow(registry, kind)?;
+            Self::validate_registry_readme(registry)?;
+            Self::validate_registry_upstream_detail(registry)?;
+            Self::validate_registry_versioning(registry)?;
         }
+        Ok(())
+    }
+
+    /// A registry's `storage` names a backend that exists.
+    fn validate_registry_storage(
+        &self,
+        registry: &RegistryConfig,
+        known_backends: &std::collections::HashSet<&str>,
+    ) -> Result<()> {
+        let Some(backend) = &registry.storage else {
+            return Ok(());
+        };
+        if known_backends.contains(backend.as_str()) {
+            return Ok(());
+        }
+        match &self.storage {
+            StoragesConfig::Single(_) => bail!(
+                "registry '{}': 'storage = \"{}\"' requires a multi-backend \
+                 [[storage.backends]] configuration; single-backend storage has no \
+                 named backends to select",
+                registry.name,
+                backend
+            ),
+            StoragesConfig::Multi(_) => bail!(
+                "registry '{}': 'storage = \"{}\"' does not match any backend name in \
+                 [[storage.backends]]",
+                registry.name,
+                backend
+            ),
+        }
+    }
+
+    /// The declared `mode` is one this registry kind can actually serve.
+    fn validate_registry_mode(
+        registry: &RegistryConfig,
+        kind: batlehub_core::entities::RegistryKind,
+    ) -> Result<()> {
+        if matches!(registry.mode, RegistryMode::Local | RegistryMode::Hybrid)
+            && !kind.supports_local_mode()
+        {
+            bail!(
+                "registry '{}': mode 'local'/'hybrid' is not supported for {} registries (no local publish model)",
+                registry.name,
+                kind
+            );
+        }
+        if registry.mode == RegistryMode::Hybrid && registry.upstreams.is_empty() {
+            bail!(
+                "registry '{}': hybrid mode requires at least one upstream URL",
+                registry.name
+            );
+        }
+        Ok(())
+    }
+
+    /// A proxy-mode registry of a kind with no default upstream names one.
+    ///
+    /// deb/rpm have no universal default upstream, so proxy mode (which would
+    /// otherwise fall back to an unreachable placeholder) also requires an
+    /// explicit upstream. Caught at startup instead of every fetch failing.
+    fn validate_registry_upstreams(
+        registry: &RegistryConfig,
+        kind: batlehub_core::entities::RegistryKind,
+    ) -> Result<()> {
+        if registry.mode == RegistryMode::Proxy
+            && registry.upstreams.is_empty()
+            && kind.requires_explicit_upstream_in_proxy_mode()
+        {
+            bail!(
+                "registry '{}': {} proxy mode requires at least one upstream URL (no default upstream exists)",
+                registry.name,
+                kind
+            );
+        }
+        Ok(())
+    }
+
+    /// `path_allow` is meaningful for this kind, present where it is mandatory,
+    /// and made of globs that compile.
+    fn validate_registry_path_allow(
+        registry: &RegistryConfig,
+        kind: batlehub_core::entities::RegistryKind,
+    ) -> Result<()> {
+        // `path_allow` gates a raw upstream path passthrough, so it only means
+        // anything for the path-addressed kinds. Accepting it silently elsewhere
+        // would read as a working restriction while gating nothing.
+        if !registry.path_allow.is_empty() && !kind.is_path_addressed() {
+            bail!(
+                "registry '{}': 'path_allow' is only supported for path-addressed registry types \
+                 (deb, rpm, pacman, jetbrains, generic), not {}",
+                registry.name,
+                kind
+            );
+        }
+        // A `generic` registry mirrors an arbitrary file tree on a host that may
+        // serve unrelated content, so the allowlist is mandatory rather than
+        // opt-in. `["**"]` is the explicit way to mirror everything.
+        if kind == batlehub_core::entities::RegistryKind::Generic && registry.path_allow.is_empty()
+        {
+            bail!(
+                "registry '{}': generic registries require a non-empty 'path_allow' allowlist \
+                 (use path_allow = [\"**\"] to mirror the whole upstream deliberately)",
+                registry.name
+            );
+        }
+        for pattern in &registry.path_allow {
+            glob::Pattern::new(pattern).map_err(|e| {
+                anyhow::anyhow!(
+                    "registry '{}': invalid path_allow glob '{pattern}': {e}",
+                    registry.name
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    /// `[registries.readme]`: a policy that exists, and caps that mean something.
+    fn validate_registry_readme(registry: &RegistryConfig) -> Result<()> {
+        let Some(readme) = &registry.readme else {
+            return Ok(());
+        };
+        // An unrecognised `remote_images` must not silently become the
+        // default: the two behaviours differ in what leaves the network,
+        // and an operator who typed `"allow"` expecting images believes
+        // the opposite of what they would get.
+        if batlehub_core::services::RemoteImagePolicy::parse(&readme.remote_images).is_none() {
+            bail!(
+                "registry '{}': invalid readme.remote_images '{}' (expected \"strip\" or \
+                 \"proxy\"; there is no \"allow\" — the console's CSP is baked in at build \
+                 time, so it could only ever show broken images)",
+                registry.name,
+                readme.remote_images
+            );
+        }
+        if readme.enabled && readme.max_bytes == 0 {
+            bail!(
+                "registry '{}': readme.max_bytes = 0 with enabled = true stores nothing \
+                 while claiming to be on; set enabled = false to turn the feature off",
+                registry.name
+            );
+        }
+        // The value is a row in a transactional store, read on a page
+        // load and held in memory while it renders.
+        const README_MAX_BYTES_CEILING: usize = 4 * 1024 * 1024;
+        if readme.max_bytes > README_MAX_BYTES_CEILING {
+            bail!(
+                "registry '{}': readme.max_bytes = {} exceeds the {README_MAX_BYTES_CEILING} \
+                 byte ceiling; a README is a database row read on every page load",
+                registry.name,
+                readme.max_bytes
+            );
+        }
+        // The image cap is a separate number from `max_bytes` because
+        // the two bound different things, and it gets the same two
+        // guards for the same reasons (RFC 0007-bis §4.5).
+        if readme.remote_images == "proxy" && readme.image_max_bytes == 0 {
+            bail!(
+                "registry '{}': readme.image_max_bytes = 0 with remote_images = \"proxy\" \
+                 serves no image while claiming to render them; set remote_images = \
+                 \"strip\" to chart them instead",
+                registry.name
+            );
+        }
+        // The bytes are buffered in memory to check the type and the cap
+        // before anything is stored, so a ceiling makes that bound a
+        // statement rather than a hope.
+        const IMAGE_MAX_BYTES_CEILING: usize = 16 * 1024 * 1024;
+        if readme.image_max_bytes > IMAGE_MAX_BYTES_CEILING {
+            bail!(
+                "registry '{}': readme.image_max_bytes = {} exceeds the \
+                 {IMAGE_MAX_BYTES_CEILING} byte ceiling; an image is held in memory while \
+                 its type and size are checked",
+                registry.name,
+                readme.image_max_bytes
+            );
+        }
+        Ok(())
+    }
+
+    /// `[registries.upstream_detail]`: a fetch that shows something, bounded.
+    fn validate_registry_upstream_detail(registry: &RegistryConfig) -> Result<()> {
+        let Some(detail) = &registry.upstream_detail else {
+            return Ok(());
+        };
+        if detail.enabled && detail.max_versions == 0 {
+            bail!(
+                "registry '{}': upstream_detail.max_versions = 0 with enabled = true \
+                 attempts the fetch and discards every result — the egress happens and \
+                 nothing is shown; set enabled = false instead",
+                registry.name
+            );
+        }
+        // One page's version table, held in memory and serialised to
+        // JSON per request.
+        const UPSTREAM_MAX_VERSIONS_CEILING: usize = 5_000;
+        if detail.max_versions > UPSTREAM_MAX_VERSIONS_CEILING {
+            bail!(
+                "registry '{}': upstream_detail.max_versions = {} exceeds the \
+                 {UPSTREAM_MAX_VERSIONS_CEILING} ceiling; one page's version table is \
+                 held in memory and serialised to JSON on every request",
+                registry.name,
+                detail.max_versions
+            );
+        }
+        Ok(())
+    }
+
+    /// `version_pattern` is a publish-time restriction (a security
+    /// control), so an uncompilable regex must fail the config load
+    /// rather than silently degrade to "allow every version" (fail-open).
+    fn validate_registry_versioning(registry: &RegistryConfig) -> Result<()> {
+        let Some(versioning) = &registry.versioning else {
+            return Ok(());
+        };
+        let Some(pattern) = &versioning.version_pattern else {
+            return Ok(());
+        };
+        regex::Regex::new(pattern).map_err(|e| {
+            anyhow::anyhow!(
+                "registry '{}': invalid version_pattern '{pattern}': {e}",
+                registry.name
+            )
+        })?;
         Ok(())
     }
 
@@ -2011,35 +2125,47 @@ impl AppConfig {
             }
         }
 
+        /// One numeric override: read, parse, and assign only if both succeed.
+        ///
+        /// The `Option`-of-`Option` nesting this replaces is what the branch
+        /// count was made of — every numeric key spent two `if let`s saying the
+        /// same two things.
+        fn set_parsed<T: std::str::FromStr>(
+            env: &dyn Fn(&str) -> Option<String>,
+            key: &str,
+            field: &mut T,
+        ) {
+            let Some(raw) = env(key) else { return };
+            if let Some(parsed) = parse_env_or_warn(key, &raw) {
+                *field = parsed;
+            }
+        }
+
         if let Some(v) = env("PROXY_CACHE__SERVER__HOST") {
             self.server.host = v;
         }
-        if let Some(v) = env("PROXY_CACHE__SERVER__PORT") {
-            if let Some(p) = parse_env_or_warn("PROXY_CACHE__SERVER__PORT", &v) {
-                self.server.port = p;
-            }
-        }
+        set_parsed(&env, "PROXY_CACHE__SERVER__PORT", &mut self.server.port);
         if let Some(v) = env("PROXY_CACHE__SERVER__STATIC_DIR") {
             self.server.static_dir = Some(v);
         }
         if let Some(v) = env("PROXY_CACHE__DATABASE__URL") {
             self.database.url = v;
         }
-        if let Some(v) = env("PROXY_CACHE__DATABASE__MAX_CONNECTIONS") {
-            if let Some(n) = parse_env_or_warn("PROXY_CACHE__DATABASE__MAX_CONNECTIONS", &v) {
-                self.database.max_connections = n;
-            }
-        }
-        if let Some(v) = env("PROXY_CACHE__DATABASE__MIN_CONNECTIONS") {
-            if let Some(n) = parse_env_or_warn("PROXY_CACHE__DATABASE__MIN_CONNECTIONS", &v) {
-                self.database.min_connections = n;
-            }
-        }
-        if let Some(v) = env("PROXY_CACHE__DATABASE__ACQUIRE_TIMEOUT_SECS") {
-            if let Some(n) = parse_env_or_warn("PROXY_CACHE__DATABASE__ACQUIRE_TIMEOUT_SECS", &v) {
-                self.database.acquire_timeout_secs = n;
-            }
-        }
+        set_parsed(
+            &env,
+            "PROXY_CACHE__DATABASE__MAX_CONNECTIONS",
+            &mut self.database.max_connections,
+        );
+        set_parsed(
+            &env,
+            "PROXY_CACHE__DATABASE__MIN_CONNECTIONS",
+            &mut self.database.min_connections,
+        );
+        set_parsed(
+            &env,
+            "PROXY_CACHE__DATABASE__ACQUIRE_TIMEOUT_SECS",
+            &mut self.database.acquire_timeout_secs,
+        );
 
         apply_storage_env_overrides(&mut self.storage, &env);
         apply_otel_env_overrides(&mut self.otel, &env);

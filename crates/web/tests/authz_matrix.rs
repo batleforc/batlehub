@@ -1093,6 +1093,65 @@ fn every_unexercised_route_gives_a_reason() {
     );
 }
 
+/// What one axis of one row asserts, and how it words itself when it fails.
+struct Axis {
+    /// The `[chain]` / `[visibility]` prefix every message from this axis carries.
+    label: &'static str,
+    expect: Expect,
+    /// Appended to the broken-control message, which differs per axis.
+    control_note: &'static str,
+    /// The middle of the "disclosed …" message, which also differs per axis.
+    served_note: &'static str,
+}
+
+/// The three lists the final report is built from.
+struct AxisReport<'a> {
+    failures: &'a mut Vec<String>,
+    broken_controls: &'a mut Vec<String>,
+    gaps_now_fixed: &'a mut Vec<String>,
+}
+
+/// Run one axis: the positive control first, then the anonymous assertion.
+///
+/// The two axes differ only in which app they drive, which `Expect` they read
+/// and how they word themselves — so they share this, and a fix to the control
+/// logic cannot land on one axis and miss the other.
+async fn check_axis<S>(app: &S, row: &Row, axis: Axis, out: &mut AxisReport<'_>)
+where
+    S: actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+{
+    let label = axis.label;
+    // Positive control: a caller the policy grants must be served, or the
+    // negative assertion below proves nothing.
+    if row.control {
+        let (shown, status) = disclosed_as(app, row, Some(USER_TOKEN)).await;
+        if !shown {
+            out.broken_controls.push(format!(
+                "[{label}] {} {} — a permitted caller did NOT see the package (status {status}). {}",
+                row.kind, row.uri, axis.control_note,
+            ));
+            return;
+        }
+    }
+
+    let (served, status) = disclosed(app, row).await;
+    match axis.expect {
+        Expect::Denied if served => out.failures.push(format!(
+            "[{label}] {} {} — {} (status {status})",
+            row.kind, row.uri, axis.served_note,
+        )),
+        Expect::KnownGap(_) if !served => out.gaps_now_fixed.push(format!(
+            "[{label}] {} {} — now correctly refuses ({status}). Flip this row to Expect::Denied.",
+            row.kind, row.uri,
+        )),
+        _ => {}
+    }
+}
+
 /// The matrix.
 ///
 /// One test rather than one per row, because the value is in the table being
@@ -1103,82 +1162,49 @@ async fn every_local_read_route_enforces_the_registry_rule_chain() {
     let mut broken_controls: Vec<String> = Vec::new();
     let mut gaps_now_fixed: Vec<String> = Vec::new();
 
+    let mut report = AxisReport {
+        failures: &mut failures,
+        broken_controls: &mut broken_controls,
+        gaps_now_fixed: &mut gaps_now_fixed,
+    };
+
     for row in matrix() {
         // ── Axis A: the registry rule chain ──────────────────────────────────
         let app = app_for(&row).await;
-
-        // Positive control: a caller the policy grants must be served, or the
-        // negative assertion below proves nothing.
-        let mut control_ok = true;
-        if row.control {
-            let (shown, status) = disclosed_as(&app, &row, Some(USER_TOKEN)).await;
-            if !shown {
-                broken_controls.push(format!(
-                    "[chain] {} {} — a permitted caller did NOT see the package (status {status}). \
-                     The fixture or the route is wrong, and the anonymous assertion below proves \
-                     nothing until it is fixed.",
-                    row.kind, row.uri,
-                ));
-                control_ok = false;
-            }
-        }
-
-        if control_ok {
-            // Anonymous, whom the registry's RBAC grants nothing.
-            let (served, status) = disclosed(&app, &row).await;
-            match row.expect {
-                Expect::Denied if served => failures.push(format!(
-                    "[chain] {} {} — disclosed the package to a caller the registry's RBAC denies \
-                     (status {status})",
-                    row.kind, row.uri
-                )),
-                Expect::KnownGap(_) if !served => gaps_now_fixed.push(format!(
-                    "[chain] {} {} — now correctly refuses ({status}). Flip this row to \
-                     Expect::Denied.",
-                    row.kind, row.uri,
-                )),
-                _ => {}
-            }
-        }
+        check_axis(
+            &app,
+            &row,
+            Axis {
+                label: "chain",
+                expect: row.expect,
+                control_note: "The fixture or the route is wrong, and the anonymous assertion \
+                               below proves nothing until it is fixed.",
+                served_note: "disclosed the package to a caller the registry's RBAC denies",
+            },
+            &mut report,
+        )
+        .await;
 
         // ── Axis B: per-package visibility ───────────────────────────────────
         if matches!(row.expect_vis, Expect::NotChecked(_)) {
             continue;
         }
+        // A `User` is above the bar `Visibility::Internal` sets, so the same
+        // request must still be served — the control for this axis. Anonymous:
+        // the chain allows, and only `check_visibility` can refuse.
         let vapp = vis_app_for(&row).await;
-
-        let mut vis_control_ok = true;
-        if row.control {
-            // A `User` is above the bar `Visibility::Internal` sets, so the same
-            // request must still be served — the control for this axis.
-            let (shown, status) = disclosed_as(&vapp, &row, Some(USER_TOKEN)).await;
-            if !shown {
-                broken_controls.push(format!(
-                    "[visibility] {} {} — a permitted caller did NOT see the package (status \
-                     {status}); fixture or route is wrong",
-                    row.kind, row.uri,
-                ));
-                vis_control_ok = false;
-            }
-        }
-
-        if vis_control_ok {
-            // Anonymous. The chain allows; only `check_visibility` can refuse.
-            let (served, status) = disclosed(&vapp, &row).await;
-            match row.expect_vis {
-                Expect::Denied if served => failures.push(format!(
-                    "[visibility] {} {} — disclosed an Internal-visibility package to an \
-                     anonymous caller (status {status})",
-                    row.kind, row.uri
-                )),
-                Expect::KnownGap(_) if !served => gaps_now_fixed.push(format!(
-                    "[visibility] {} {} — now correctly refuses ({status}). Flip this row to \
-                     Expect::Denied.",
-                    row.kind, row.uri,
-                )),
-                _ => {}
-            }
-        }
+        check_axis(
+            &vapp,
+            &row,
+            Axis {
+                label: "visibility",
+                expect: row.expect_vis,
+                control_note: "fixture or route is wrong",
+                served_note: "disclosed an Internal-visibility package to an anonymous caller",
+            },
+            &mut report,
+        )
+        .await;
     }
 
     let mut report = String::new();

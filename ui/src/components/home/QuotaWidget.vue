@@ -48,7 +48,8 @@ type WireState = MyQuotaDto["state"];
  * meters the same would say otherwise (RFC 0004 §4.2).
  */
 function meterState(state: WireState | null | undefined): MeterState {
-  return state === "at_limit" ? "at-limit" : state === "warning" ? "warning" : "ok";
+  if (state === "at_limit") return "at-limit";
+  return state === "warning" ? "warning" : "ok";
 }
 
 /**

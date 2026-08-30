@@ -21,14 +21,16 @@ const { t } = useI18n();
     This is also the Own-Container Overflow Rule's container: wide content
     scrolls here so the body never scrolls sideways.
   -->
-  <div
+  <!-- `<section>`, not `<div role="region">`: a named section carries the role
+       natively, and the native element is the one assistive technology has the
+       fewest ways to get wrong. -->
+  <section
     class="relative w-full overflow-auto"
     tabindex="0"
-    role="region"
     :aria-label="label ?? t('a11y.tableScroll')"
   >
     <table :class="cn('w-full caption-bottom text-sm', props.class)">
       <slot />
     </table>
-  </div>
+  </section>
 </template>

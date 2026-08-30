@@ -41,8 +41,8 @@ const headerOf = (raw) => raw.split(/^## /m)[0];
 
 /** One `| Field | Value |` row out of a header table, or undefined. */
 export function headerField(raw, name) {
-  const row = headerOf(raw).match(new RegExp(`^\\|\\s*${name}\\s*\\|([^|]*)\\|`, "m"));
-  return row?.[1].replace(/\*\*/g, "").trim() || undefined;
+  const row = new RegExp(String.raw`^\|\s*${name}\s*\|([^|]*)\|`, "m").exec(headerOf(raw));
+  return row?.[1].replaceAll("**", "").trim() || undefined;
 }
 
 /**
@@ -111,7 +111,7 @@ export function parseFilename(file) {
  */
 export function readRfcs(rfcDir) {
   const rfcs = [];
-  for (const file of readdirSync(rfcDir).sort()) {
+  for (const file of readdirSync(rfcDir).sort((a, b) => a.localeCompare(b))) {
     const parsed = parseFilename(file);
     if (!parsed) continue;
 
@@ -128,7 +128,10 @@ export function readRfcs(rfcDir) {
       return value;
     };
 
-    const title = raw.match(/^# RFC [\d-]+(?:bis)?\s*—\s*(.+)$/m)?.[1].trim();
+    // Anchored on `[ \t]` rather than `\s` throughout: `\s` matches newlines, so
+    // it both overlaps the `.`/`\S` that follows it — the ambiguity that makes
+    // these patterns backtrack super-linearly — and lets a "heading" span lines.
+    const title = /^# RFC \d{4}(?:-bis)?[ \t]*—[ \t]*(\S.*)$/m.exec(raw)?.[1].trim();
     if (!title) {
       throw new Error(`${file}: no "# RFC NNNN — Title" heading.`);
     }
@@ -136,8 +139,17 @@ export function readRfcs(rfcDir) {
     // "### Still open" is the template's own readiness test: the RFC is ready
     // for sign-off when the section is empty. Counted, not read, so
     // `task rfc:status` can say which documents still owe a decision.
-    const open = raw.match(/^### Still open\s*$([\s\S]*?)(?=^##|\Z)/m)?.[1] ?? "";
-    const openQuestions = (open.match(/^\s*(?:\d+\.|[-*])\s+\S/gm) ?? []).length;
+    //
+    // Split rather than one lazy `[\s\S]*?` with a lookahead: the section ends at
+    // the next heading or at the end of the file, and JS has no end-of-input
+    // escape to spell that second case with. The `\Z` this used to carry was not
+    // one — in JS it is a literal "Z" — so the old pattern could only ever end a
+    // section at a following `##`, and would have counted nothing in an RFC whose
+    // final section was "Still open". Latent today; every such section is
+    // currently followed by another heading.
+    const afterHeading = raw.split(/^### Still open[ \t]*\r?\n/m)[1] ?? "";
+    const open = afterHeading.split(/^##/m)[0];
+    const openQuestions = (open.match(/^[ \t]*(?:\d+\.|[-*])[ \t]+\S/gm) ?? []).length;
 
     rfcs.push({
       ...parsed,

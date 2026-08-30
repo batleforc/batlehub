@@ -132,7 +132,7 @@ export const REGISTRY_PATH_TYPES: RegistryPathTypeDef[] = [
               out.filename = parts[5] ?? "";
             }
           } else if (parts[2] === "archive") {
-            const last = parts[parts.length - 1];
+            const last = parts.at(-1) ?? "";
             out.ref = last.replace(/\.(tar\.gz|zip)$/, "").replace(/^refs\/tags\//, "");
           } else if (parts[2] === "blob" && parts[3]) {
             out.ref = parts[3];
@@ -327,7 +327,7 @@ export const REGISTRY_PATH_TYPES: RegistryPathTypeDef[] = [
           if (parts[1] && parts[1] !== "-") {
             out.version = parts[1];
           } else if (parts[1] === "-" && parts[2]) {
-            const m = parts[2].match(/-(\d[\w.\-+]*)\.tgz$/);
+            const m = /-(\d[\w.\-+]*)\.tgz$/.exec(parts[2]);
             if (m) out.version = m[1];
           }
           return out;
@@ -494,7 +494,7 @@ export const REGISTRY_PATH_TYPES: RegistryPathTypeDef[] = [
       {
         matchesHost: (h) => h === "files.pythonhosted.org",
         parse: (parts): Record<string, string> => {
-          const filename = parts[parts.length - 1];
+          const filename = parts.at(-1);
           return filename ? { filename } : {};
         },
       },

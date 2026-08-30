@@ -29,4 +29,11 @@ paths = [
     '''website/guide/configuration\.md''',
     '''docs/configuration\.md''',
     '''docs/installation\.md''',
+    # The perf harness's warm-up curl. `perf-user-token` is not a credential:
+    # `perf/scripts/seed.sh` mints it against a throwaway local server, and
+    # `perf/k6/config.js` and the scenarios carry the same two literals. Only
+    # this one is written as a `curl -H 'Authorization: Bearer …'`, which is the
+    # shape `curl-auth-header` matches — so the README is the only file of the
+    # set the scan flags.
+    '''perf/README-authz-11-7\.md''',
 ]

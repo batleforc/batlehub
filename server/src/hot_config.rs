@@ -484,6 +484,55 @@ fn build_signed_url_service(cfg: &AppConfig) -> Option<Arc<SignedUrlService>> {
     )))
 }
 
+/// Which role tiers one registry's `rbac` block reaches, cumulatively.
+///
+/// Admin implies user implies anonymous — an admin-only registry is still
+/// "admin accessible" even with an empty `rbac.anonymous`/`rbac.user`.
+struct RegistryTiers {
+    anonymous: bool,
+    user: bool,
+    admin: bool,
+    /// A registry reachable *only* through `[registries.rbac.groups]` — a
+    /// team-only registry — has all three role tiers empty. Its proxy access
+    /// is granted per-caller by `accessible_registries_for`, which unions the
+    /// group grants in, so gating the explore sets on the role tiers alone
+    /// left it out of every one of them: `explore_accessible_registries_for`
+    /// intersects proxy access with the explore set, so a team member's
+    /// explore set came back empty for the one registry they can pull from.
+    ///
+    /// Harmless while the set was only a listing filter (an empty vector
+    /// reads as "no restriction" in `ExploreFilter`); a hard `404` on the
+    /// detail, README and image endpoints once those refuse on the set
+    /// itself. `rbac.explore.*` documents itself as defaulting to "any role
+    /// that has proxy access", and a group member has proxy access.
+    ///
+    /// Safe to widen with because the intersection still applies: naming a
+    /// group-only registry in `explore_user` grants nothing to a caller whose
+    /// `accessible_registries_for` does not already contain it, and
+    /// `r.rbac.explore.*` is still honoured.
+    group: bool,
+}
+
+impl RegistryTiers {
+    fn of(r: &batlehub_config::schema::RegistryConfig) -> Self {
+        let anonymous = !r.rbac.anonymous.is_empty();
+        let user = anonymous || !r.rbac.user.is_empty();
+        let admin = user || !r.rbac.admin.is_empty();
+        Self {
+            anonymous,
+            user,
+            admin,
+            group: !r.rbac.groups.is_empty(),
+        }
+    }
+}
+
+fn insert_if(condition: bool, set: &mut HashSet<String>, name: &str) {
+    if condition {
+        set.insert(name.to_owned());
+    }
+}
+
 pub(super) fn build_access_config(config: &AppConfig) -> AccessConfig {
     let mut group_access: HashMap<String, HashSet<String>> = HashMap::new();
     let mut anonymous = HashSet::new();
@@ -507,47 +556,28 @@ pub(super) fn build_access_config(config: &AppConfig) -> AccessConfig {
                 .insert(r.name.clone());
         }
 
-        let has_anonymous = !r.rbac.anonymous.is_empty();
-        let has_user = has_anonymous || !r.rbac.user.is_empty();
-        let has_admin = has_user || !r.rbac.admin.is_empty();
-        // A registry reachable *only* through `[registries.rbac.groups]` — a
-        // team-only registry — has all three role tiers empty. Its proxy access
-        // is granted per-caller by `accessible_registries_for`, which unions the
-        // group grants in, so gating the explore sets on the role tiers alone
-        // left it out of every one of them: `explore_accessible_registries_for`
-        // intersects proxy access with the explore set, so a team member's
-        // explore set came back empty for the one registry they can pull from.
-        //
-        // Harmless while the set was only a listing filter (an empty vector
-        // reads as "no restriction" in `ExploreFilter`); a hard `404` on the
-        // detail, README and image endpoints once those refuse on the set
-        // itself. `rbac.explore.*` documents itself as defaulting to "any role
-        // that has proxy access", and a group member has proxy access.
-        //
-        // Safe to widen here because the intersection still applies: naming a
-        // group-only registry in `explore_user` grants nothing to a caller whose
-        // `accessible_registries_for` does not already contain it, and
-        // `r.rbac.explore.*` is still honoured.
-        let has_group = !r.rbac.groups.is_empty();
-
-        if has_anonymous {
-            anonymous.insert(r.name.clone());
-        }
-        if has_user {
-            user.insert(r.name.clone());
-        }
-        if has_admin {
-            admin.insert(r.name.clone());
-        }
-        if (has_anonymous || has_group) && r.rbac.explore.anonymous {
-            explore_anonymous.insert(r.name.clone());
-        }
-        if (has_user || has_group) && r.rbac.explore.user {
-            explore_user.insert(r.name.clone());
-        }
-        if (has_admin || has_group) && r.rbac.explore.admin {
-            explore_admin.insert(r.name.clone());
-        }
+        let tiers = RegistryTiers::of(r);
+        // `insert_if` rather than six `if` blocks: the conditions are the whole
+        // content of this loop, and stated as expressions they sit next to each
+        // other where they can be compared.
+        insert_if(tiers.anonymous, &mut anonymous, &r.name);
+        insert_if(tiers.user, &mut user, &r.name);
+        insert_if(tiers.admin, &mut admin, &r.name);
+        insert_if(
+            (tiers.anonymous || tiers.group) && r.rbac.explore.anonymous,
+            &mut explore_anonymous,
+            &r.name,
+        );
+        insert_if(
+            (tiers.user || tiers.group) && r.rbac.explore.user,
+            &mut explore_user,
+            &r.name,
+        );
+        insert_if(
+            (tiers.admin || tiers.group) && r.rbac.explore.admin,
+            &mut explore_admin,
+            &r.name,
+        );
     }
 
     AccessConfig {

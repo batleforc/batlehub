@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, toRef } from "vue";
 import { useI18n } from "vue-i18n";
 import { listBetaMembers, addBetaMember, removeBetaMember } from "@/client/sdk.gen";
 import type { BetaChannelMemberDto } from "@/client/types.gen";
@@ -24,7 +24,6 @@ import {
 import { Dialog } from "@/components/ui/dialog";
 import { Combobox } from "@/components/ui/combobox";
 import { useSubjectSuggestions } from "@/composables/useSuggestions";
-import { toRef } from "vue";
 
 const { t } = useI18n();
 

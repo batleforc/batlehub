@@ -148,7 +148,7 @@ fn parse_pkg_go_dev_search(html: &str, limit: usize) -> Vec<UpstreamPackage> {
                     .map(|e| chunk[start..start + e].trim())
             })
             .filter(|s| !s.is_empty())
-            .map(|s| s.to_owned());
+            .map(str::to_owned);
 
         out.push(UpstreamPackage {
             name: path.to_owned(),

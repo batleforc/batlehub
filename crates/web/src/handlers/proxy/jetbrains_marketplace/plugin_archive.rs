@@ -125,93 +125,20 @@ fn read_descriptor_entry<R: Read + std::io::Seek>(
 /// Parse `plugin.xml` — same accumulate-text state machine as the adapter's
 /// plugin-repository parser (entities arrive as separate events in quick-xml).
 fn parse_plugin_xml(xml: &[u8]) -> Result<PluginDescriptor, AppError> {
-    fn parse_err(e: impl std::fmt::Display) -> AppError {
-        AppError::unprocessable(format!("plugin.xml parse: {e}"))
-    }
-
     let mut reader = XmlReader::from_reader(xml);
-    let mut d = PluginDescriptor::default();
-    let mut current_tag = String::new();
-    let mut text_buf = String::new();
-    let mut depth = 0u32;
+    let mut state = PluginXmlParser::default();
     let mut buf = Vec::new();
 
+    // One line per event kind: what each event *means* lives on `PluginXmlParser`,
+    // so this loop stays a dispatch table rather than the machine itself.
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(XmlEvent::Start(e)) => {
-                depth += 1;
-                let local = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
-                // Only direct children of <idea-plugin> are descriptor fields;
-                // nested extension blocks are skipped.
-                if depth == 2 {
-                    if local == "idea-version" {
-                        d.since_build = attr(&e, "since-build");
-                        d.until_build = attr(&e, "until-build");
-                    }
-                    current_tag = local;
-                    text_buf.clear();
-                } else if depth != 2 {
-                    current_tag.clear();
-                }
-            }
-            Ok(XmlEvent::Empty(e)) => {
-                let local = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
-                if depth == 1 && local == "idea-version" {
-                    d.since_build = attr(&e, "since-build");
-                    d.until_build = attr(&e, "until-build");
-                }
-            }
-            Ok(XmlEvent::Text(e)) => {
-                if depth == 2 && !current_tag.is_empty() {
-                    text_buf.push_str(&e.decode().map_err(parse_err)?);
-                }
-            }
-            Ok(XmlEvent::CData(e)) => {
-                if depth == 2 && !current_tag.is_empty() {
-                    text_buf.push_str(&String::from_utf8_lossy(&e));
-                }
-            }
-            Ok(XmlEvent::GeneralRef(e)) => {
-                if depth == 2 && !current_tag.is_empty() {
-                    if let Some(ch) = e.resolve_char_ref().map_err(parse_err)? {
-                        text_buf.push(ch);
-                    } else {
-                        match e.decode().map_err(parse_err)?.as_ref() {
-                            "amp" => text_buf.push('&'),
-                            "lt" => text_buf.push('<'),
-                            "gt" => text_buf.push('>'),
-                            "quot" => text_buf.push('"'),
-                            "apos" => text_buf.push('\''),
-                            other => {
-                                text_buf.push('&');
-                                text_buf.push_str(other);
-                                text_buf.push(';');
-                            }
-                        }
-                    }
-                }
-            }
-            Ok(XmlEvent::End(_)) => {
-                if depth == 2 {
-                    let text = text_buf.trim();
-                    if !text.is_empty() {
-                        let text = text.to_owned();
-                        match current_tag.as_str() {
-                            "id" => d.id = Some(text),
-                            "name" => d.name = Some(text),
-                            "version" => d.version = Some(text),
-                            "vendor" => d.vendor = Some(text),
-                            "description" => d.description = Some(text),
-                            "change-notes" => d.change_notes = Some(text),
-                            "depends" => d.depends.push(text),
-                            _ => {}
-                        }
-                    }
-                    current_tag.clear();
-                    text_buf.clear();
-                }
-                depth = depth.saturating_sub(1);
-            }
+            Ok(XmlEvent::Start(e)) => state.start(&e),
+            Ok(XmlEvent::Empty(e)) => state.empty(&e),
+            Ok(XmlEvent::Text(e)) => state.push_text(&e.decode().map_err(parse_err)?),
+            Ok(XmlEvent::CData(e)) => state.push_text(&String::from_utf8_lossy(&e)),
+            Ok(XmlEvent::GeneralRef(e)) => state.push_entity(&e)?,
+            Ok(XmlEvent::End(_)) => state.end(),
             Ok(XmlEvent::Eof) => break,
             Err(e) => return Err(parse_err(e)),
             _ => {}
@@ -219,7 +146,115 @@ fn parse_plugin_xml(xml: &[u8]) -> Result<PluginDescriptor, AppError> {
         buf.clear();
     }
 
-    Ok(d)
+    Ok(state.descriptor)
+}
+
+fn parse_err(e: impl std::fmt::Display) -> AppError {
+    AppError::unprocessable(format!("plugin.xml parse: {e}"))
+}
+
+/// The bookkeeping [`parse_plugin_xml`] carries from one event to the next.
+///
+/// `depth == 2` is the whole selection rule: only direct children of
+/// `<idea-plugin>` are descriptor fields, and a nested `<extensions>` block is
+/// walked past rather than read. Text arrives in pieces — quick-xml emits
+/// `Text`, `CData` and each entity reference separately — so a field's value is
+/// only assigned on its `End`.
+#[derive(Default)]
+struct PluginXmlParser {
+    descriptor: PluginDescriptor,
+    current_tag: String,
+    text_buf: String,
+    depth: u32,
+}
+
+impl PluginXmlParser {
+    /// Whether text events belong to a descriptor field right now.
+    fn in_field(&self) -> bool {
+        self.depth == 2 && !self.current_tag.is_empty()
+    }
+
+    fn start(&mut self, e: &quick_xml::events::BytesStart<'_>) {
+        self.depth += 1;
+        if self.depth != 2 {
+            self.current_tag.clear();
+            return;
+        }
+        let local = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+        if local == "idea-version" {
+            self.descriptor.since_build = attr(e, "since-build");
+            self.descriptor.until_build = attr(e, "until-build");
+        }
+        self.current_tag = local;
+        self.text_buf.clear();
+    }
+
+    /// `<idea-version …/>` carries its bounds on attributes, so the self-closing
+    /// form is the one that actually appears.
+    fn empty(&mut self, e: &quick_xml::events::BytesStart<'_>) {
+        if self.depth != 1 || String::from_utf8_lossy(e.local_name().as_ref()) != "idea-version" {
+            return;
+        }
+        self.descriptor.since_build = attr(e, "since-build");
+        self.descriptor.until_build = attr(e, "until-build");
+    }
+
+    fn push_text(&mut self, text: &str) {
+        if self.in_field() {
+            self.text_buf.push_str(text);
+        }
+    }
+
+    fn push_entity(&mut self, e: &quick_xml::events::BytesRef<'_>) -> Result<(), AppError> {
+        if !self.in_field() {
+            return Ok(());
+        }
+        if let Some(ch) = e.resolve_char_ref().map_err(parse_err)? {
+            self.text_buf.push(ch);
+            return Ok(());
+        }
+        match e.decode().map_err(parse_err)?.as_ref() {
+            "amp" => self.text_buf.push('&'),
+            "lt" => self.text_buf.push('<'),
+            "gt" => self.text_buf.push('>'),
+            "quot" => self.text_buf.push('"'),
+            "apos" => self.text_buf.push('\''),
+            other => {
+                self.text_buf.push('&');
+                self.text_buf.push_str(other);
+                self.text_buf.push(';');
+            }
+        }
+        Ok(())
+    }
+
+    fn end(&mut self) {
+        if self.depth == 2 {
+            self.assign_field();
+            self.current_tag.clear();
+            self.text_buf.clear();
+        }
+        self.depth = self.depth.saturating_sub(1);
+    }
+
+    fn assign_field(&mut self) {
+        let text = self.text_buf.trim();
+        if text.is_empty() {
+            return;
+        }
+        let text = text.to_owned();
+        let d = &mut self.descriptor;
+        match self.current_tag.as_str() {
+            "id" => d.id = Some(text),
+            "name" => d.name = Some(text),
+            "version" => d.version = Some(text),
+            "vendor" => d.vendor = Some(text),
+            "description" => d.description = Some(text),
+            "change-notes" => d.change_notes = Some(text),
+            "depends" => d.depends.push(text),
+            _ => {}
+        }
+    }
 }
 
 fn attr(e: &quick_xml::events::BytesStart<'_>, name: &str) -> Option<String> {
