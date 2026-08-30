@@ -16,6 +16,7 @@
 //! URL helper and the IP-based middlewares all read the same answer instead of
 //! each re-deriving it.
 
+use std::collections::VecDeque;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
@@ -245,6 +246,23 @@ pub fn client_ip(req: &HttpRequest, trust: PeerTrust) -> String {
     }
 }
 
+/// How many trailing `X-Forwarded-For` entries [`forwarded_client_ip`] keeps.
+///
+/// The walk only ever reads from the right, and it stops at the first hop that is
+/// not one of our own proxies — so this bounds how many *consecutive configured
+/// proxies* may sit at the end of the chain before the answer is given up on, not
+/// how long a chain may be. Real deployments put one to three proxies there; 64 is
+/// far enough past that to be unreachable in practice while keeping the retained
+/// window at about a kilobyte.
+///
+/// Truncation degrades in the safe direction. Dropping the left-hand entries can
+/// only ever discard values the *client* chose — those are exactly what the
+/// right-to-left walk exists to ignore — and a chain whose last 64 entries are all
+/// configured proxies yields `None`, which falls back to the TCP peer address.
+/// That is the same fallback the all-hops-are-ours case already took, and it is
+/// never a value an attacker can steer.
+const MAX_FORWARDED_HOPS: usize = 64;
+
 /// Walk `X-Forwarded-For` right to left and return the first hop that is not
 /// itself a configured proxy.
 ///
@@ -272,14 +290,29 @@ fn forwarded_client_ip(req: &HttpRequest) -> Option<IpAddr> {
     };
 
     // Multiple header lines are one logical list, joined in the order received.
-    let hops: Vec<&str> = req
+    //
+    // Only the right-hand end is ever read, so only the right-hand end is kept:
+    // this retains the last `MAX_FORWARDED_HOPS` entries in a fixed-size ring and
+    // discards the rest as it goes. Collecting the whole list into a `Vec` instead
+    // let a client turn its 128 KiB header budget into a much larger allocation —
+    // the shortest possible entry is two bytes (`1,`), so a full HTTP/1 head buys
+    // ~65 K hops, and at 16 bytes per `&str` that is a ~1 MiB `Vec` from a 128 KiB
+    // request, once per request. Bounded and freed immediately, so this was an
+    // amplification factor rather than a leak, but there is no reason to pay it.
+    let mut tail: VecDeque<&str> = VecDeque::with_capacity(MAX_FORWARDED_HOPS);
+    for hop in req
         .headers()
         .get_all("x-forwarded-for")
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(','))
-        .collect();
+    {
+        if tail.len() == MAX_FORWARDED_HOPS {
+            tail.pop_front();
+        }
+        tail.push_back(hop);
+    }
 
-    for hop in hops.iter().rev() {
+    for hop in tail.iter().rev() {
         // An entry that does not parse ends the walk rather than being skipped:
         // an unrecognisable hop cannot be shown to be one of our proxies, and
         // stepping over it would resume trusting values from further left —
@@ -593,6 +626,42 @@ mod tests {
             .append_header(("x-forwarded-for", "203.0.113.5, 10.42.0.2"))
             .to_http_request();
         assert_eq!(client_ip(&req, PeerTrust::Trusted), "203.0.113.5");
+    }
+
+    #[test]
+    fn client_ip_reads_the_right_end_of_an_oversized_chain() {
+        // The shape a flood actually takes: the client prepends thousands of
+        // entries, the proxy appends the one address it observed. The answer is at
+        // the right end, so the retained window finds it on the first step and the
+        // junk is never examined.
+        let mut xff = "1.1.1.1, ".repeat(10_000);
+        xff.push_str("203.0.113.77");
+        let req = trusted_req(&["10.42.0.0/16"], &xff);
+        assert_eq!(client_ip(&req, PeerTrust::Trusted), "203.0.113.77");
+    }
+
+    #[test]
+    fn client_ip_falls_back_to_peer_when_the_window_is_all_our_own_proxies() {
+        // More consecutive configured proxies at the tail than the window holds,
+        // so the walk never reaches the client value to their left. Truncation has
+        // to degrade to the peer address — the same answer the all-hops-are-ours
+        // case gives — and never to the attacker-chosen entry.
+        let mut xff = String::from("203.0.113.5, ");
+        xff.push_str(&"10.42.0.2, ".repeat(MAX_FORWARDED_HOPS + 8));
+        let xff = xff.trim_end_matches(", ").to_owned();
+        let req = trusted_req(&["10.42.0.0/16"], &xff);
+        assert_eq!(client_ip(&req, PeerTrust::Trusted), "10.42.0.1");
+    }
+
+    #[test]
+    fn client_ip_is_unaffected_by_the_bound_for_a_realistic_chain() {
+        // A chain comfortably inside the window behaves exactly as before the
+        // bound existed: skip our own proxies, return the first hop that is not.
+        let mut xff = String::from("203.0.113.9, ");
+        xff.push_str(&"10.42.0.2, ".repeat(MAX_FORWARDED_HOPS - 8));
+        let xff = xff.trim_end_matches(", ").to_owned();
+        let req = trusted_req(&["10.42.0.0/16"], &xff);
+        assert_eq!(client_ip(&req, PeerTrust::Trusted), "203.0.113.9");
     }
 
     #[test]

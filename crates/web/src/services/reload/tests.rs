@@ -620,6 +620,84 @@ async fn apply_writes_editor_content_to_disk() {
     assert_eq!(via_svc, new_toml);
 }
 
+/// The write-back replaces the file by `rename`, which swaps in a whole new
+/// inode — so the mode has to be carried over explicitly. `config.toml` holds
+/// `database.url` with its credentials, and `NamedTempFile` creates at 0600, so a
+/// regression to `File::create`'s default 0644 would be a real widening of a
+/// secret-bearing file.
+#[cfg(unix)]
+#[tokio::test]
+async fn apply_preserves_the_config_file_mode() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let (svc, tmp) = make_svc_with_file(true, "# initial\n").await;
+    std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o600))
+        .expect("chmod 600");
+
+    *svc.pending.lock().unwrap() = Some(PendingReload {
+        content: Some("# after editor apply\n".to_owned()),
+        ..empty_pending()
+    });
+    svc.apply("test-user").await.unwrap();
+
+    let mode = std::fs::metadata(tmp.path()).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "rename must not widen the config file's mode");
+}
+
+/// A failed or successful write must not leave the staging file next to the
+/// config — an operator listing `/etc/batlehub` should not find debris, and the
+/// file watcher should not be handed a second `.toml`-adjacent file to notice.
+#[tokio::test]
+async fn apply_leaves_no_temp_file_beside_the_config() {
+    let (svc, tmp) = make_svc_with_file(true, "# initial\n").await;
+    let dir = tmp.path().parent().unwrap().to_owned();
+    let name = tmp
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+
+    *svc.pending.lock().unwrap() = Some(PendingReload {
+        content: Some("# after editor apply\n".to_owned()),
+        ..empty_pending()
+    });
+    svc.apply("test-user").await.unwrap();
+
+    let leftovers: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|f| f.starts_with(&format!(".{name}.")) && f.ends_with(".tmp"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "staging files left behind: {leftovers:?}"
+    );
+}
+
+/// A write-back to a path whose directory does not exist must fail *without*
+/// taking down the reload: the new config is already live in memory, and the
+/// documented contract of this branch is a warning, not an error.
+#[tokio::test]
+async fn apply_survives_an_unwritable_config_path() {
+    let builder: HotConfigBuilder = Arc::new(|_| anyhow::bail!("builder not used in this test"));
+    let svc = Arc::new(ConfigReloadService::new(reload_params(
+        "/nonexistent-dir-for-test/config.toml".to_owned(),
+        true,
+        builder,
+    )));
+
+    *svc.pending.lock().unwrap() = Some(PendingReload {
+        content: Some("# unwritable\n".to_owned()),
+        ..empty_pending()
+    });
+
+    svc.apply("test-user")
+        .await
+        .expect("a failed disk write must not fail the reload");
+}
+
 #[tokio::test]
 async fn apply_with_no_content_leaves_file_unchanged() {
     let initial = "# unchanged\n";
