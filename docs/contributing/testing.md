@@ -22,6 +22,7 @@ BatleHub's tests fall into six layers, in increasing order of infrastructure cos
 | **CLI subprocess integration** | `cli/tests/integration.rs` | none — CLI binary vs. in-memory actix server | `task test:cli:integration` |
 | **External integration** | `crates/adapters/tests/*.rs` | real Postgres / MinIO(S3) / Redis via Podman | `task test:pg-*`, `task test:s3` |
 | **Heavy client** | `tests/heavy/*.sh` | real Postgres **and a real client** — VS Code, IntelliJ, Bundler, npm, pip, ovsx, micromamba, dotnet, composer, terraform | `task test:heavy`, or one `task test:<ecosystem>-heavy` |
+| **Heavy authorization** | `tests/heavy/authz.sh` | real Postgres, grants from a **real config file**, and the same clients | `task test:authz-heavy`, or `task test:authz-matrix-heavy` for the fast half |
 | **Fuzz** | `fuzz/fuzz_targets/*.rs` | nightly toolchain to *run*, none to check | `task fuzz:check`, `task fuzz` |
 
 The in-process layer is the workhorse: every test there spins up a real
@@ -75,6 +76,8 @@ task test:conda-heavy         # micromamba: the HEAD probe and a post-warm publi
 task test:nuget-heavy         # `dotnet nuget push` / `package search` / `add package`
 task test:composer-heavy      # local + proxy resolution with Packagist disabled
 task test:terraform-heavy     # `terraform init` over TLS, host-routed discovery
+task test:authz-matrix-heavy  # every verb in the vocabulary, both directions, over curl
+task test:authz-heavy         # …plus signed-URL expiry/rotation and each real client
 
 # Coverage (starts Postgres + MinIO + Redis; HTML report in coverage/html/)
 task coverage
@@ -246,6 +249,7 @@ found by running the client, by nothing else, twice over.
 | `nuget.sh` | dotnet | the client can *select* the search resource, `skip` advances the page, and `push` hits the path it appends a slash to |
 | `composer.sh` | composer | proxy-mode resolution with Packagist disabled, `dist.shasum` the client accepts, and `search.json` reached through the advertised template |
 | `terraform.sh` | terraform | `init` over TLS: host-routed discovery, download document, shasums, signature and archive, all through the proxy |
+| `authz.sh` | all of the above | a caller who **may not pull** is stopped, the one who may is not stopped by accident, and [RFC 0012](/rfc/0012-signed-urls-for-terraform)'s signed URLs let a *closed* Terraform registry install end to end |
 
 Conventions worth knowing before adding one:
 
@@ -262,6 +266,107 @@ Conventions worth knowing before adding one:
 - Assertions scope to a phase with `heavy_mark` / `heavy_wire_after`: the
   transcript accumulates, and an unscoped match can be satisfied by an earlier
   phase.
+
+### 7-ter. The authorization suite
+
+`tests/heavy/authz.sh` is a heavy suite in the same harness, aimed at RFC 0015's
+grants rather than at one ecosystem's protocol. It takes a target:
+
+```bash
+tests/heavy/authz.sh matrix        # every verb, both directions, over curl
+tests/heavy/authz.sh signing       # RFC 0012 capabilities: binding, expiry, rotation
+tests/heavy/authz.sh npm           # …and the boundary as npm meets it
+tests/heavy/authz.sh <ecosystem>   # pypi nuget composer conda openvsx rubygems terraform
+```
+
+One target per invocation, because each starts its own server and tap and the
+Terraform one has to terminate TLS. `task test:authz-heavy` runs them in
+sequence; CI runs them as the `heavy-authz` matrix.
+
+Four rules it is built on, each of which has a scar behind it:
+
+- **Every assertion is a pair.** The denial *and* the identical request working
+  for somebody. RFC 0015 §13.16 records all three new ecosystem verbs shipping
+  unreachable — `403` to the administrator — with passing tests, because each
+  test granted its own verb and nothing asserted anyone could use it. A negative
+  test cannot distinguish a correct denial from a denial for the wrong reason.
+- **The negative arm is exactly `403`; the positive arm is "not a refusal".** A
+  `404` where a `403` was meant hides a routing failure, and a holder can
+  legitimately meet a `404`, `400` or `409` past the gate — asserting `200`
+  would make every positive control a hostage to its fixture.
+- **The vocabulary is read out of the enum at run time**, and the run fails on a
+  verb it never exercised. Same shape as `vocabulary_dead_ends.rs`, asked of the
+  wire.
+- **`explain` is asked about the request the wire just answered.** §11.6: *"a
+  diagnostic that can disagree with reality is worse than none, because it is
+  trusted"* — and it has disagreed twice, under a shadow and at the instance
+  tier.
+
+Its config (`tests/heavy/config.authz.toml`) is deliberately inert in every
+respect but grants: every registry is `local` except Terraform, no rule gate is
+configured, and every namespace declares `visibility = "public"`. A refusal under
+it is the grant hierarchy's, and a test whose denial has three possible causes
+proves none of them.
+
+Two things it does **not** claim: `group:` subjects, which need an identity
+carrying groups and so belong to `crates/web/tests/dynamic_groups.rs`; and the
+expired half of shadow mode, which config load refuses to let anyone write
+(`crates/web/tests/grants_shadow.rs` holds it).
+
+**Terraform is the one ecosystem whose whole install is asserted against a
+closed registry.** It authenticates the two JSON documents of a provider install
+and then fetches the archive, its `SHA256SUMS` and the `.sig` with no
+`Authorization` header, so `signed_downloads = true` and `[server.signed_urls]`
+are what let `authz-tf` grant anonymous nothing and still serve a complete
+`terraform init` — RFC 0012's entire claim, and covered by no heavy suite before
+this one. The phase asserts the install completes, that the artifact requests
+carried `bh_sig`, that the **same URL with the signature stripped is `403`** (or
+the install was served by an open registry and every signed-URL assertion is
+vacuous), and that the minted document is `no-store` — it is a bearer
+capability, and a shared cache would replay one caller's signature to the next.
+
+**The `signing` target covers the three properties a single `terraform init`
+cannot show**, each needing a clock or a key change:
+
+- **Binding.** A capability minted for `shasums` presented on the `shasums.sig`
+  route must be `403`. The payload names `art`; this is where that name earns
+  its place, and without it one minted URL opens every artifact of the version.
+- **Expiry — both edges.** A token is *not* dead at `exp`: `verify_at` refuses at
+  `exp + CLOCK_SKEW_SECS`, a deliberate backward-clock allowance so a runner a
+  minute behind the minter does not fail every install. The phase asserts it is
+  still good just past `exp` and refused past the allowance, which is what makes
+  the second assertion mean "expiry is enforced" rather than "something refused
+  eventually". The skew is read out of `signed_url.rs` at run time rather than
+  copied, so it cannot drift into a sleep.
+- **Rotation, in both directions.** Mint under secret A; rotate to B with
+  `previous_secrets = [A]` and the old URL must still work — an operator who
+  rotates and breaks every in-flight install has caused a worse outage than the
+  one they were avoiding — and the new mint must differ, or B is not signing.
+  Then retire A and the old URL must be refused, or retiring a key does not
+  retire the capabilities it signed.
+
+It drives the key changes through `POST /config/from-content` + `pending/apply`
+against a **scratch** config, never the file the server watches: that watcher
+polls every two seconds and only *stages* a pending, so editing the watched file
+races `load_pending_from_content`'s byte-identical dedup — whichever load wins
+marks the content seen, the other returns `pending_created: false`, and the apply
+answers "no pending reload". One write also fires the watcher up to five times,
+which is its rate limit, so it disables itself mid-run. The phase asserts
+`pending_created` rather than trusting the `2xx`, because the dedup path is a
+success that changed nothing.
+
+**Two clients cannot carry an identity on a read, and the phases say so rather
+than pretending otherwise.** `ovsx get` sends no credential at all — not a
+header, not the `?token=` it uses on publish. And `dotnet restore` attaches
+`packageSourceCredentials` to `HttpClientHandler.Credentials`, which .NET offers
+only in answer to a `401` carrying `WWW-Authenticate`; this server refuses an
+unauthenticated read with a bare `403`, so the credential is never sent and a
+caller holding every read verb is refused exactly like one holding none. For
+both, the phase drives the client through a **publish** into a sealed namespace
+— which does carry a credential, and which a seal refuses to everybody including
+the administrator — and asserts the read boundary over `curl` beside it. The
+NuGet phase pins the missing challenge, so if the `403` ever grows a
+`WWW-Authenticate` the run says which arms to restore.
 
 ---
 
@@ -385,6 +490,12 @@ to start under a restricted `ptrace_scope`, not a finding — re-run with
     `tests/heavy/<suite>.sh`. A matrix rather than seven jobs because only the
     toolchain setup differs; `fail-fast: false`, because one unhappy client says
     nothing about the other six.
+  - `heavy-authz` (matrix): one job per target of `tests/heavy/authz.sh` —
+    `matrix`, then `npm`, `pypi`, `openvsx`, `conda`, `nuget`, `composer`,
+    `rubygems`, `terraform`. Its own job rather than more rows in `heavy-client`
+    because every row runs the *same* script with an argument, and the `matrix`
+    row — the one that matters most and costs least — needs no client toolchain
+    at all, so it must not queue behind seven installs.
 
   Every heavy job runs the server under `cargo llvm-cov`, so what the *client*
   exercised counts toward the merged coverage table — the compact-index paths,

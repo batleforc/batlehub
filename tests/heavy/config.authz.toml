@@ -1,0 +1,496 @@
+# Server configuration for the heavy authorization test (tests/heavy/authz.sh).
+#
+# `${DATABASE_URL}`, `${HEAVY_RUN}` and `${HEAVY_SHADOW_UNTIL}` are interpolated
+# from the environment before TOML parsing (crates/config); the port and the
+# storage path go through `PROXY_CACHE__SERVER__PORT` /
+# `PROXY_CACHE__STORAGE__PATH`, which lib.sh exports. See config.npm.toml for
+# why the split.
+#
+# ── What this file is for ────────────────────────────────────────────────────
+#
+# Every other heavy config exists to let a client succeed. This one exists to
+# let a client be **refused**, and to make the refusal attributable to exactly
+# one thing: RFC 0015's grants.
+#
+# So every registry here is `local` except the Terraform one, which has no local
+# publish model without a signing key. Nothing resolves upstream, no rule gate
+# is configured, and every namespace declares `visibility = "public"`. If a
+# request is refused under this config, the grant hierarchy refused it — not a
+# missing package, not a `cve_gate`, not a team-visibility check. A test whose
+# denial has three possible causes proves none of them.
+#
+# ── The subjects ─────────────────────────────────────────────────────────────
+#
+# Four of RFC 0015 §4.3's five subject forms are exercisable with the token
+# provider — `*`, `role:`, `user:` and `token:` (which never matches; see
+# below). `group:` needs an identity carrying groups, which only an OIDC
+# provider mints; it is covered by `crates/web/tests/dynamic_groups.rs` and by
+# the `group_matches` unit tests, and this suite does not claim it.
+#
+# The interesting property of the roster is that **every one of these tokens is
+# `role:user` except the administrator**. Two `role:user` callers, identical to
+# every legacy mechanism in this server, are separated only by a `user:` grant.
+# That is the thing `[registries.rbac]` could not express and the reason this
+# file can be written at all.
+
+[server]
+host = "127.0.0.1"
+port = 8089
+# The tap is the only peer, and the TLS one (the terraform target) sets
+# `X-Forwarded-Proto: https`. Naming it explicitly makes this suite's own
+# topology decide the advertised scheme rather than "anyone may claim https",
+# and silences the unconfigured-trust warning on every other target.
+trusted_proxies = ["127.0.0.1/32"]
+
+# ── Signed download URLs (RFC 0012) ──────────────────────────────────────────
+#
+# The instance secret, and the reason the Terraform registry below can be closed
+# to anonymous at all. Terraform authenticates the two JSON documents of a
+# provider install and then fetches the archive, its `SHA256SUMS` and the `.sig`
+# **with no `Authorization` header** — measured against 1.8.5, not read. Without
+# signing, such a registry needs `anonymous = ["releases:read", "source:read"]`,
+# which opens every read on it rather than the one step that needs opening.
+#
+# So this block is what makes the Terraform target's positive control a *whole*
+# `terraform init` against a registry that grants anonymous nothing, rather than
+# a half-install that fails at the archive. A suite that could not assert that
+# would be leaving RFC 0012's entire point untested — which is what it was doing
+# before this block existed.
+#
+# The secret is interpolated from the environment (`authz.sh` exports it): a
+# signing key does not belong in a committed file, and the loader refuses one
+# under 32 bytes.
+[server.signed_urls]
+secret = "${HEAVY_SIGNING_SECRET}"
+
+[database]
+type = "postgresql"
+url = "${DATABASE_URL}"
+max_connections = 8
+
+[storage]
+type = "filesystem"
+# Overridden per run by PROXY_CACHE__STORAGE__PATH (lib.sh); this value is the
+# fallback for someone running the server against this file by hand.
+path = "./tmp/heavy-authz-storage"
+
+[[auth]]
+type = "token"
+
+# The positive control for the whole control plane. `role:admin` holds every
+# verb in the vocabulary except `gates:exempt` (RFC 0015 §4.5 — it "goes to
+# nobody"), which is itself one of the cases the suite asserts.
+#
+# Named `heavy-admin-token` to match lib.sh's `ADMIN_TOKEN` default, like every
+# other suite.
+[[auth.tokens]]
+value = "heavy-admin-token"
+role = "admin"
+user_id = "authz-admin"
+
+# May pull. Holds the three read verbs on every registry below, by `user:`
+# grant and by nothing else.
+[[auth.tokens]]
+value = "authz-reader-token"
+role = "user"
+user_id = "authz-reader"
+
+# **May not pull.** This token is the subject of the whole suite: it is named in
+# no grant anywhere in this file. Everything it is refused, it is refused for
+# the absence of a grant rather than for the presence of a rule.
+[[auth.tokens]]
+value = "authz-denied-token"
+role = "user"
+user_id = "authz-denied"
+
+# Holds `releases:list` and not `releases:read` — RFC 0015 §4.2's split, which
+# exists so "build agents resolve everything, people browse nothing" is
+# expressible. Whole-registry documents must *filter* for this caller (§4.4),
+# and artifact bytes must be refused.
+[[auth.tokens]]
+value = "authz-lister-token"
+role = "user"
+user_id = "authz-lister"
+
+# Holds `catalogue:browse` and no read verb: the console's explore surface is a
+# different exposure from a package manager resolving a version (§4.2).
+[[auth.tokens]]
+value = "authz-browser-token"
+role = "user"
+user_id = "authz-browser"
+
+# The delegations. Each holds one half of a split control verb, and the suite
+# asserts the other half is refused — which is the whole reason each pair was
+# split rather than left as one verb.
+[[auth.tokens]]
+value = "authz-sre-token"
+role = "user"
+user_id = "authz-sre"
+
+[[auth.tokens]]
+value = "authz-auditor-token"
+role = "user"
+user_id = "authz-auditor"
+
+[[auth.tokens]]
+value = "authz-support-token"
+role = "user"
+user_id = "authz-support"
+
+# Holds `gates:exempt`, which `role:admin` does not. The only token in this file
+# that can do something the administrator cannot.
+[[auth.tokens]]
+value = "authz-gatekeeper-token"
+role = "user"
+user_id = "authz-gatekeeper"
+
+# ── Instance tier (RFC 0015 §4.1) ────────────────────────────────────────────
+#
+# The tier above every registry, and the only one that can reach an endpoint
+# naming no registry. `role:admin` already holds all of these from §10 rule 5;
+# these three lines are the delegation half — one verb each, so the suite can
+# assert that holding `system:read` does not confer `system:write`, that
+# `audit:read` does not confer `audit:purge`, and that `quota:read` does not
+# confer `quota:write`.
+#
+# `cache:evict` is here rather than on a registry deliberately: it proves the
+# instance/registry composition. The endpoint names a registry, resolves the
+# path [instance, registry], and a grant at either tier passes.
+
+[grants]
+"user:authz-sre" = ["system:read", "cache:evict"]
+"user:authz-auditor" = ["audit:read"]
+"user:authz-support" = ["quota:read"]
+
+# ── npm — the pull boundary, the namespace tiers, and the seal ───────────────
+
+[[registries]]
+type = "npm"
+name = "authz-npm-${HEAVY_RUN}"
+mode = "local"
+
+[registries.rbac]
+# `anonymous` and `user` empty, so a `role:user` caller holds no read at all and
+# every read this suite observes is attributable to one named grant.
+#
+# `admin = ["*"]` is the idiom `config.example.toml` writes eight times, and it
+# is here rather than an explicit list because §10 rule 3 is a case worth
+# exercising: the legacy wildcard expands to **today's reachable read set** —
+# `releases:read`, `releases:list`, `source:read` — and deliberately not to
+# `catalogue:browse`, which rule 3 as originally written did include and which
+# would have handed the console to every `admin = ["*"]` estate.
+anonymous = []
+user = []
+admin = ["*"]
+
+[registries.grants]
+"user:authz-reader" = ["releases:read", "releases:list", "source:read"]
+"user:authz-lister" = ["releases:list"]
+"user:authz-browser" = ["catalogue:browse"]
+"user:authz-gatekeeper" = ["gates:exempt"]
+# **Inert, and asserted to be inert.** `SubjectMatcher::Token` answers `false`
+# for every subject today (`entities/grant.rs`) because no principal is a machine
+# token yet — `Subject` has one variant. A config that writes this gets no error
+# and no effect, which is the shape RFC 0015's opening paragraph is about, so the
+# suite pins it: a `token:` grant grants nothing, and the day it starts to, this
+# assertion fails and somebody reads this comment.
+"token:authz-release-bot" = ["releases:read", "releases:list", "source:read"]
+
+# A namespace that WIDENS. `authz-denied` holds nothing at registry tier and
+# everything a pull needs here — so the same token, on the same registry, is
+# refused one package and served another, which is the sentence
+# `[registries.rbac]` could not say.
+#
+# `match = "@team"` covers `@team/anything` and, on npm's `/` separator, must
+# never cover `@teamx/anything`. RFC 0011-bis §4.2 records that bug; the suite
+# publishes into both scopes and asserts the boundary.
+[[registries.namespaces]]
+match = "@team"
+visibility = "public"
+
+[registries.namespaces.grants]
+"user:authz-denied" = ["releases:read", "releases:list", "source:read"]
+
+# A namespace that grants the metadata verbs and **not** `source:read`, which on
+# npm is the trap it looks like. An npm tarball is a source archive and the
+# download route asks for `source:read` (`handlers/proxy/npm/read.rs`), so this
+# is a namespace where a caller resolves the package, sees every version, and
+# cannot install any of them. That is a defensible configuration — it is exactly
+# "may see what exists, may not take it" — and it is also the mistake an operator
+# makes when they write `releases:read` expecting it to mean "may download".
+# Either way it should be observable, so the suite observes it.
+[[registries.namespaces]]
+match = "@metaonly"
+visibility = "public"
+
+[registries.namespaces.grants]
+"user:authz-denied" = ["releases:read", "releases:list"]
+
+# A namespace that SEALS. An empty grant map is not an absent one: it grants
+# nothing and stops inheritance, including of the administrative grants above it
+# (§4.3). It is the only construct in the model that takes access away, and the
+# only reason a `role:user` cannot publish here — grants are additive, so
+# withholding `releases:publish` from a user on a local registry is not
+# otherwise expressible (§10 rule 5 hands it to every `role:user`).
+#
+# The administrative floor survives it: `owners:read`, `owners:write` and
+# `audit:read` still resolve for a subject holding them above, and nothing else
+# does. A subtree nobody can reopen is a denial of service that looks like a
+# configuration.
+[[registries.namespaces]]
+match = "@sealed"
+visibility = "public"
+
+[registries.namespaces.grants]
+
+# ── npm again — the same registry shape with its grants in SHADOW ────────────
+#
+# §4.7. The grants resolve, the would-have-been denial is recorded, and nothing
+# is refused because of them: `authz-denied` is served here and refused on the
+# registry above, from identical grant blocks. `until` is required — a shadow
+# that cannot be forgotten is the entire point — and config load refuses a date
+# already past, which is why this one is computed by the script rather than
+# committed.
+#
+# The consequence is that the *expired* half of §4.7 is unwritable in TOML and
+# so is not this suite's to prove; `crates/web/tests/grants_shadow.rs` holds it.
+
+[[registries]]
+type = "npm"
+name = "authz-shadow-${HEAVY_RUN}"
+mode = "local"
+
+[registries.rbac]
+anonymous = []
+user = []
+admin = ["*"]
+
+[registries.grants]
+"user:authz-reader" = ["releases:read", "releases:list", "source:read"]
+
+# **The shadow is on a namespace, not on the registry, and that is deliberate.**
+#
+# A registry-tier `grants_shadow` makes `authorize_grants_public` answer `Ok`
+# for every subject on that registry — including for the registry-wide control
+# verbs, which name no package. `/api/v1/admin/stats` builds its visible set by
+# asking exactly that question per registry and returns `403` only when the set
+# comes out empty, so one shadowed registry anywhere in the config puts that
+# registry into **every** caller's set and the endpoint stops refusing anyone:
+# an anonymous caller reads its statistics on a surface that was `require_admin`
+# before RFC 0015. Verified against this config; see the suite's §7.
+#
+# Confining the shadow to a namespace keeps §4.7 exercised — a shadow anywhere
+# on the path covers the coordinate, which is what the suite asserts — while
+# leaving the registry-tier control verbs alone, so `stats:read` still has a
+# negative arm to test. It also means this file does not ship a configuration
+# whose side effect is an anonymous disclosure.
+[[registries.namespaces]]
+match = "@shadowed"
+visibility = "public"
+
+[registries.namespaces.grants]
+"user:authz-reader" = ["releases:read", "releases:list", "source:read"]
+
+[registries.namespaces.grants_shadow]
+until = "${HEAVY_SHADOW_UNTIL}"
+
+# ── pypi ─────────────────────────────────────────────────────────────────────
+
+[[registries]]
+type = "pypi"
+name = "authz-pypi-${HEAVY_RUN}"
+mode = "local"
+
+[registries.rbac]
+anonymous = []
+user = []
+admin = ["*"]
+
+[registries.grants]
+"user:authz-reader" = ["releases:read", "releases:list", "source:read"]
+"user:authz-lister" = ["releases:list"]
+
+# ── NuGet ────────────────────────────────────────────────────────────────────
+#
+# The separator here is `.`, not `/` (`namespace_separator`), so `HeavyAuthz`
+# covers `HeavyAuthz.Probe` and must not cover `HeavyAuthzOther`.
+
+[[registries]]
+type = "nuget"
+name = "authz-nuget-${HEAVY_RUN}"
+mode = "local"
+
+[registries.rbac]
+anonymous = []
+user = []
+admin = ["*"]
+
+[registries.grants]
+"user:authz-reader" = ["releases:read", "releases:list", "source:read"]
+"user:authz-lister" = ["releases:list"]
+
+# A sealed id prefix. NuGet's separator is `.`, so this covers
+# `heavysealed.probe` and never `heavysealedish.probe`.
+#
+# It is here for the same reason the Open VSX registry has one: `dotnet restore`
+# cannot authenticate to this server (see the suite's nuget phase — the server
+# answers `403` with no `WWW-Authenticate`, and NuGet only sends
+# `packageSourceCredentials` in response to a `401` challenge), so a **push** —
+# which carries `--api-key` explicitly — is the only thing the real client can
+# be refused in a way attributable to grants.
+[[registries.namespaces]]
+match = "heavysealed"
+visibility = "public"
+
+[registries.namespaces.grants]
+
+# ── Composer — the whole-registry document, which filters rather than refuses ─
+#
+# `available-packages` is the one §4.4 document with no per-package fallback, so
+# it is where a namespace seal leaking into a listing is visible. The lister
+# holds `releases:list` and must receive a document containing what they may see
+# and nothing else — `200` with fewer entries, never `403`.
+
+[[registries]]
+type = "composer"
+name = "authz-composer-${HEAVY_RUN}"
+mode = "local"
+
+[registries.rbac]
+anonymous = []
+user = []
+admin = ["*"]
+
+[registries.grants]
+"user:authz-reader" = ["releases:read", "releases:list", "source:read"]
+"user:authz-lister" = ["releases:list"]
+
+[[registries.namespaces]]
+match = "sealedvendor"
+visibility = "public"
+
+[registries.namespaces.grants]
+
+# ── conda ────────────────────────────────────────────────────────────────────
+#
+# `repodata.json` is fetched on every `conda install` and was built with no
+# visibility check at all until RFC 0015 phase 3 — a team-visible package was
+# named to every caller who fetched the channel. It is a §4.4 document now.
+
+[[registries]]
+type = "conda"
+name = "authz-conda-${HEAVY_RUN}"
+mode = "local"
+
+[registries.rbac]
+anonymous = []
+user = []
+admin = ["*"]
+
+[registries.grants]
+"user:authz-reader" = ["releases:read", "releases:list", "source:read"]
+"user:authz-lister" = ["releases:list"]
+
+# ── Open VSX — `source:read`, and the namespace claim ─────────────────────────
+#
+# The VSIX download route asks for `source:read` rather than `releases:read`,
+# which is why a reader granted only `releases:read` still cannot fetch an
+# extension. `openvsx:namespace:claim` is administrative here rather than
+# self-service (§4.3): a namespace is a tier grants are written on, so upstream's
+# first-come model would let a user mint the scope their own permissions are
+# read from.
+
+[[registries]]
+type = "openvsx"
+name = "authz-vsx-${HEAVY_RUN}"
+mode = "local"
+
+[registries.rbac]
+anonymous = []
+user = []
+admin = ["*"]
+
+[registries.grants]
+"user:authz-reader" = ["releases:read", "releases:list", "source:read"]
+"user:authz-lister" = ["releases:list"]
+
+# A sealed publisher namespace. Open VSX's separator is `.`, not `/`, so this
+# covers `sealed.anything` and never `sealedish.anything`.
+#
+# It is here because `ovsx get` carries no credential (see the suite's openvsx
+# phase), so a *publish* is the only thing this ecosystem's real client can be
+# refused in a way that is attributable to grants. A seal refuses it for
+# everybody including the administrator, which makes the pair assertable: the
+# same client, the same command, one namespace apart.
+[[registries.namespaces]]
+match = "sealed"
+visibility = "public"
+
+[registries.namespaces.grants]
+
+# ── RubyGems — Bundler's compact index ───────────────────────────────────────
+
+[[registries]]
+type = "rubygems"
+name = "authz-gems-${HEAVY_RUN}"
+mode = "local"
+
+[registries.rbac]
+anonymous = []
+user = []
+admin = ["*"]
+
+[registries.grants]
+"user:authz-reader" = ["releases:read", "releases:list", "source:read"]
+"user:authz-lister" = ["releases:list"]
+
+# ── Terraform — the one registry that cannot be local ─────────────────────────
+#
+# A locally published provider needs a registered signing key, and registering
+# one is itself a verb this suite asserts. So this registry proxies upstream:
+# what it proves is that `terraform init` cannot cross the boundary, which does
+# not depend on where the bytes come from.
+
+[[registries]]
+type = "terraform"
+name = "authz-tf-${HEAVY_RUN}"
+upstreams = ["https://registry.terraform.io"]
+# `/.well-known/terraform.json` is rooted at a host rather than under
+# `/proxy/{registry}/`, so the registry protocol only answers on a host bound to
+# exactly one registry (RFC 0009 §7.2). Matched with the port stripped, so this
+# covers `localhost:8444`, where the terraform target's TLS tap listens.
+#
+# Every other target reaches this server as `127.0.0.1`, which is bound to
+# nothing and therefore routes normally — a binding on `localhost` would
+# otherwise send `/healthz` and the whole admin API to this registry.
+hosts = ["localhost"]
+# RFC 0012. Mints a signature into `download_url`, `shasums_url` and
+# `shasums_signature_url` of the download document — for URLs on this origin
+# only — and accepts it on the artifact routes Terraform fetches without a
+# credential. Requires `[server.signed_urls].secret`; setting it without one is
+# a startup error, because a registry that believes it is closed and is not is
+# the failure the feature exists to prevent.
+signed_downloads = true
+
+[registries.rbac]
+anonymous = []
+user = []
+admin = ["*"]
+
+[registries.grants]
+"user:authz-reader" = ["releases:read", "releases:list", "source:read"]
+
+# ── JetBrains Marketplace — `jetbrains:channel:assign` ────────────────────────
+
+[[registries]]
+type = "jetbrains-marketplace"
+name = "authz-jb-${HEAVY_RUN}"
+mode = "local"
+
+[registries.rbac]
+anonymous = []
+user = []
+admin = ["*"]
+
+[registries.grants]
+"user:authz-reader" = ["releases:read", "releases:list", "source:read"]
