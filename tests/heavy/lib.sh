@@ -240,17 +240,25 @@ heavy_wire_not() {
   return 0
 }
 
+# heavy_wire_seen_after <mark> <fixed-string> — the predicate
+# `heavy_wire_after` is built on: true when the line appears after a
+# `heavy_mark`. Call it directly when the failure needs more than a message —
+# dumping the client's own log alongside it, say.
+heavy_wire_seen_after() {
+  local label="$1" needle="$2"
+  awk -v mark="### $label" -v needle="$needle" '
+    index($0, mark) == 1 { seen = 1; next }
+    seen && index($0, needle) { found = 1 }
+    END { exit found ? 0 : 1 }' "$HEAVY_LOG"
+}
+
 # heavy_wire_after <mark> <fixed-string> [explanation] — the line must appear
 # after a `heavy_mark`. The transcript accumulates across the whole run, so an
 # unscoped assertion can be satisfied by an earlier phase's request; that is the
 # "green for the wrong reason" failure this suite exists to avoid.
 heavy_wire_after() {
   local label="$1" needle="$2" explanation="${3:-}"
-  local mark="### $label"
-  awk -v mark="$mark" -v needle="$needle" '
-    index($0, mark) == 1 { seen = 1; next }
-    seen && index($0, needle) { found = 1 }
-    END { exit found ? 0 : 1 }' "$HEAVY_LOG" \
+  heavy_wire_seen_after "$label" "$needle" \
     || heavy_fail "${explanation:-no request matching \"$needle\" after mark \"$label\"}"
 }
 

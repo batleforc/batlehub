@@ -250,9 +250,35 @@ function setRow(text, label, value) {
   });
 }
 
+/**
+ * The `git` to run, as an absolute path, or `null` when none of the standard
+ * locations has one.
+ *
+ * Resolved from a fixed list rather than from `PATH`, because a `PATH` entry is
+ * writable by whoever owns it and this file runs `git` on a developer's machine
+ * with that developer's privileges — the shadowing that `javascript:S4036`
+ * (CWE-426) is about. The list is ordered so a distro-managed `/usr/bin/git`
+ * wins over a Homebrew prefix, which on macOS is chowned to the user.
+ *
+ * Resolved once: `task rfc:new` asks for two keys and the answer cannot change
+ * between them.
+ */
+const GIT =
+  ["/usr/bin/git", "/usr/local/bin/git", "/opt/homebrew/bin/git"].find(existsSync) ?? null;
+
+/**
+ * A value from `git config`, or `fallback` when git is absent, the key is unset
+ * or the value is blank.
+ *
+ * Only the RFC template's Author line reads this, and only `task rfc:new`
+ * writes that line, so an unusual git location costs one hand-edit of a
+ * freshly-scaffolded file — the same cost as not having git configured at all,
+ * which this already had to handle.
+ */
 function gitConfig(key, fallback) {
+  if (!GIT) return fallback;
   try {
-    return execFileSync("git", ["config", "--get", key], { encoding: "utf8" }).trim() || fallback;
+    return execFileSync(GIT, ["config", "--get", key], { encoding: "utf8" }).trim() || fallback;
   } catch {
     return fallback;
   }

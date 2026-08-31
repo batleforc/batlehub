@@ -98,10 +98,9 @@ impl NuspecState {
 }
 
 fn decode_nuspec_text(e: &quick_xml::events::BytesText) -> Result<String, AppError> {
-    let raw = e
-        .decode()
-        .map_err(|e| AppError::unprocessable(format!("nuspec parse: {e}")))?;
-    Ok(quick_xml::escape::unescape(&raw)
+    // quick-xml 0.42 validates UTF-8 in the reader, so the charset decode is
+    // gone; only entity unescaping is left.
+    Ok(quick_xml::escape::unescape(e)
         .map_err(|e| AppError::unprocessable(format!("nuspec parse: {e}")))?
         .into_owned())
 }
@@ -116,7 +115,7 @@ pub(super) fn parse_nuspec(bytes: &[u8]) -> Result<NuspecMetadata, AppError> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(XmlEvent::Start(e)) => {
-                let local = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+                let local = e.local_name().as_ref().to_owned();
                 state.on_start(local);
             }
             Ok(XmlEvent::Text(e)) if state.in_metadata && state.depth == 3 => {

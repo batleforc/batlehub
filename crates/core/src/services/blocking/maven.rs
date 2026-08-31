@@ -77,14 +77,12 @@ fn versions_in(xml: &str) -> Vec<String> {
     let mut in_version = false;
     loop {
         match reader.read_event() {
-            Ok(Event::Start(e)) if e.name().as_ref() == b"version" => in_version = true,
-            Ok(Event::End(e)) if e.name().as_ref() == b"version" => in_version = false,
+            Ok(Event::Start(e)) if e.name().as_ref() == "version" => in_version = true,
+            Ok(Event::End(e)) if e.name().as_ref() == "version" => in_version = false,
             Ok(Event::Text(t)) if in_version => {
-                if let Ok(s) = t.decode() {
-                    let s = s.trim();
-                    if !s.is_empty() {
-                        out.push(s.to_owned());
-                    }
+                let s = t.trim();
+                if !s.is_empty() {
+                    out.push(s.to_owned());
                 }
             }
             Ok(Event::Eof) | Err(_) => break,
@@ -154,9 +152,9 @@ impl<'a> Rewriter<'a> {
         release: Option<&str>,
     ) -> Option<()> {
         match e.name().as_ref() {
-            b"version" => self.pending_version = Some(vec![Event::Start(e.to_owned())]),
-            b"latest" | b"release" => {
-                let replacement = if e.name().as_ref() == b"latest" {
+            "version" => self.pending_version = Some(vec![Event::Start(e.to_owned())]),
+            "latest" | "release" => {
+                let replacement = if e.name().as_ref() == "latest" {
                     latest
                 } else {
                     release
@@ -171,13 +169,13 @@ impl<'a> Rewriter<'a> {
 
     fn end(&mut self, e: &BytesEnd<'a>, blocked: &BlockedVersions) -> Option<()> {
         match e.name().as_ref() {
-            b"version" => {
+            "version" => {
                 let mut buffered = self.pending_version.take().unwrap_or_default();
                 buffered.push(Event::End(e.to_owned()));
                 let text = buffered
                     .iter()
                     .find_map(|ev| match ev {
-                        Event::Text(t) => t.decode().ok().map(|s| s.trim().to_owned()),
+                        Event::Text(t) => Some(t.trim().to_owned()),
                         _ => None,
                     })
                     .unwrap_or_default();
@@ -191,7 +189,7 @@ impl<'a> Rewriter<'a> {
                 // element is written normally. Emitting it would leave a blank
                 // line where the entry used to be.
             }
-            b"latest" | b"release" => {
+            "latest" | "release" => {
                 self.substituting = None;
                 self.writer.write_event(Event::End(e.to_owned())).ok()?;
             }

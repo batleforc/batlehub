@@ -352,6 +352,24 @@ fn a_document_with_no_svg_root_is_refused_rather_than_emptied() {
     ));
 }
 
+/// Invalid UTF-8 refuses the whole document rather than being sanitised around.
+///
+/// This is quick-xml 0.42's behaviour and the reason to want it: 0.41 handed the
+/// undecodable bytes through, and this module dropped the affected text node and
+/// emitted the rest — a document whose text this module and the browser had
+/// decoded differently, which is the mXSS shape the refusals above exist to
+/// avoid. `0xff` is not a valid UTF-8 lead byte in any position.
+#[test]
+fn invalid_utf8_is_refused_rather_than_sanitised_around() {
+    let mut bytes = b"<svg><title>badge".to_vec();
+    bytes.push(0xff);
+    bytes.extend_from_slice(b"</title></svg>");
+    assert!(matches!(
+        sanitize_svg(&bytes),
+        Err(SvgRejected::Malformed(_))
+    ));
+}
+
 /// PNG bytes are not an SVG, and the endpoint must not be able to reach this
 /// with them anyway — but if it did, the answer is a refusal, not a panic.
 #[test]

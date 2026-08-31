@@ -38,8 +38,10 @@ pub async fn download_cli(
         .ok_or_else(|| AppError::not_found("No CLI binary has been configured on this server"))?;
 
     // Offload the blocking open() syscall to the thread pool so the tokio worker
-    // is not stalled. NamedFile::open_async does NOT use spawn_blocking internally
-    // in actix-files 0.6 (without the experimental-io-uring feature).
+    // is not stalled. This was always the right shape — `NamedFile::open_async`
+    // did not use spawn_blocking internally — and actix-files 0.7 removed that
+    // method along with the `experimental-io-uring` feature, so `open()` behind
+    // `web::block` is now the only way to open one.
     let path_buf = path.0.clone();
     let file = actix_web::web::block(move || NamedFile::open(&path_buf))
         .await

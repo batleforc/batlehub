@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use argon2::password_hash::{rand_core::OsRng, SaltString};
-use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use argon2::password_hash::phc::PasswordHash;
+use argon2::{Argon2, PasswordHasher, PasswordVerifier};
 use async_trait::async_trait;
 use base64::Engine as _;
 use tokio::task::spawn_blocking;
@@ -44,9 +44,11 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// Hash a plain-text token with Argon2id. Use the output as the `value` in
 /// `[[auth.tokens]]` to avoid storing credentials in plain text.
 pub fn hash_static_token(plain: &str) -> String {
-    let salt = SaltString::generate(&mut OsRng);
+    // argon2 0.6 draws the salt itself from the system RNG (the `getrandom`
+    // feature); 0.5 took a caller-supplied `SaltString::generate(&mut OsRng)`.
+    // Same source of randomness, one fewer thing for a caller to get wrong.
     Argon2::default()
-        .hash_password(plain.as_bytes(), &salt)
+        .hash_password(plain.as_bytes())
         .expect("argon2 hash")
         .to_string()
 }

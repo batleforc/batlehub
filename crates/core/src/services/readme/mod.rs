@@ -553,7 +553,12 @@ fn image_cache_key(url: &str) -> String {
 }
 
 /// Bump when [`svg::sanitize_svg`] or the content-type allow-list changes.
-pub const IMAGE_PIPELINE_VERSION: u32 = 1;
+///
+/// `2`: quick-xml 0.42 validates the encoding, so a document with invalid UTF-8
+/// is now refused whole ([`svg::SvgRejected::Malformed`]) where `1` dropped the
+/// affected text node and served the rest. Entries stored under `1` were
+/// sanitised by the looser rule and must not be served under the stricter one.
+pub const IMAGE_PIPELINE_VERSION: u32 = 2;
 
 /// Everything an image has to survive before it is stored or served.
 ///

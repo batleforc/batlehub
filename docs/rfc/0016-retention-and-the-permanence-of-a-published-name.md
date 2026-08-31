@@ -6,7 +6,7 @@ reference: true
 
 | Field       | Value                                                        |
 | ----------- | ------------------------------------------------------------ |
-| Status      | **Implemented** — all five phases landed. A deleted coordinate is permanently spent, tombstone compaction and the retention run both default to `dry_run`, and the version-tier pin, the download-signal veto and its floor date all ship. **Two things this document describes are not built and are not deferred by oversight**: retention's *namespace and package tiers* need [RFC 0015](/rfc/0015-grants-on-the-resource-hierarchy)'s namespace blocks and `policy` table, so retention is registry tier plus the version pin; and §12's phase-5 UI panel hangs off an authorization page 0015 has not built. §13 records those and the seven readings implementation argued with |
+| Status      | **Implemented** — all five phases landed, and §13.1–§13.12 record what building them changed about the document. A deleted coordinate is permanently spent, tombstone compaction and the retention run both default to `dry_run`, and the version-tier pin, the download-signal veto and its floor date all ship. §11 carries no open question. **One thing this document describes is still not built**: retention's namespace and package tiers (§4.1). Both things they were waiting on have since shipped in [RFC 0015](/rfc/0015-grants-on-the-resource-hierarchy) — the namespace blocks and the `policy` table — so those tiers are unblocked rather than blocked, and `NamespaceConfig` refuses a `retention` key outright rather than ignoring one. §13.12 is the record |
 | Short       | Retention and tombstones                                      |
 | Settles     | What happens to a locally published version over time: reclaiming what nobody is using, and a coordinate that can never be occupied twice |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                       |
@@ -376,10 +376,13 @@ Phases 1 and 2 depend on RFC 0015 only for the `releases:delete` verb and can la
 
 ---
 
-## 13. Implementation notes (phases 1–2)
+## 13. Implementation notes
 
-Phases 1 and 2 landed together, as §12 said they should. What follows is what
-building them changed about the document.
+Phases 1 and 2 landed together, as §12 said they should, and 3 through 5
+followed. What follows is what building them changed about the document —
+§13.1–§13.7 came out of the tombstone half, §13.8–§13.11 out of retention, and
+§13.12 is the standing list of what this document describes and nobody has
+built.
 
 ### 13.1 The listing sweep was one predicate, not eight
 
@@ -592,15 +595,37 @@ database is whether the claim is about SQL.
 
 ### 13.12 What is not built
 
+One item, and it is no longer waiting on anything. Two of the three this
+section carried have since been closed by [RFC
+0015](/rfc/0015-grants-on-the-resource-hierarchy) landing, and they are kept
+below rather than deleted because *what unblocked them* is the part worth
+reading.
+
 - **Retention's namespace and package tiers** (§4.1). Registry tier ships in
-  TOML; the version-tier pin ships as a column (§13.8). The middle two need RFC
-  0015's `[registries.namespaces.*]` blocks and its `policy` table, and there is
-  no second store standing in for them — §3 rules that out, and inventing one
-  would be the thing this document says not to do.
-- **The retention panel** (§12, phase 5). It hangs off "the authorization page
-  (RFC 0015 §4.8)", which does not exist. The CLI and the API do, and
-  `batlehub admin retention` prints the report the panel would have shown.
-- **`releases:delete`.** Delete and retention are still admin-gated at the
-  handler, as §12 allowed for the interim. The verb arrives with RFC 0015, and
-  §13.6 is the note about what happened when this document's own instinct was to
-  gate it harder in the meantime.
+  TOML; the version-tier pin ships as a column (§13.8). The middle two were
+  waiting on RFC 0015's `[[registries.namespaces]]` blocks and its `policy`
+  table, because there is no second store standing in for them — §3 rules that
+  out, and inventing one would be the thing this document says not to do.
+  **Both have since shipped**, so these tiers are unbuilt rather than blocked:
+  what is left is wiring `RetentionConfig` into the tier resolution that already
+  composes `visibility`, `versioning`, `quota` and `rules`.
+
+  Until that lands, `NamespaceConfig` carries no `retention` field and keeps
+  `deny_unknown_fields`, so a namespace-tier retention block is **refused at
+  config load** rather than accepted and ignored. That is the deliberate half:
+  an operator who writes a policy and gets no error concludes it is in force,
+  and a retention policy silently not in force is the direction that destroys
+  bytes.
+
+Closed since this section was written:
+
+- ~~**The retention panel**~~ (§12, phase 5). It hung off "the authorization
+  page (RFC 0015 §4.8)", which now exists at `/admin/security/authorization` and
+  carries Retention as its fifth panel. It is a **pointer** rather than a second
+  copy of the report — the run already renders on the packages page, and the
+  thing §4.8 wants on the authorization page is that the destructive direction is
+  not out of sight.
+- ~~**`releases:delete`**~~. The verb arrived with RFC 0015 and is resolved on
+  the request path at the delete and bulk handlers, replacing the interim role
+  check §12 allowed for. §13.6 remains the note about what happened when this
+  document's own instinct was to gate it harder in the meantime.

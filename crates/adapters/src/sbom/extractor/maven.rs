@@ -39,12 +39,12 @@ pub(super) fn extract_maven_manifest(data: &Bytes) -> ExtractedManifest {
 }
 
 fn decode_xml_text(e: &quick_xml::events::BytesText) -> String {
-    match e.decode() {
-        Ok(raw) => quick_xml::escape::unescape(&raw)
-            .map(|s| s.into_owned())
-            .unwrap_or_else(|_| raw.into_owned()),
-        Err(_) => String::new(),
-    }
+    // quick-xml 0.42 validates UTF-8 in the reader and stores event content as
+    // `str`, so the charset decode step is gone; only entity unescaping is left.
+    let raw: &str = e;
+    quick_xml::escape::unescape(raw)
+        .map(|s| s.into_owned())
+        .unwrap_or_else(|_| raw.to_owned())
 }
 
 fn finalize_maven_dependency(group: &str, artifact: &str, version: &str) -> Option<SbomDependency> {
@@ -115,7 +115,7 @@ struct PomParser {
 impl PomParser {
     fn start(&mut self, e: &quick_xml::events::BytesStart<'_>) {
         let ln = e.local_name();
-        let local = std::str::from_utf8(ln.as_ref()).unwrap_or("");
+        let local = ln.as_ref();
         apply_maven_start(local, &mut self.in_dependency, &mut self.capture_field);
         if local == "licenses" {
             self.in_licenses += 1;
@@ -148,7 +148,7 @@ impl PomParser {
 
     fn end(&mut self, e: &quick_xml::events::BytesEnd<'_>) {
         let ln = e.local_name();
-        let local = std::str::from_utf8(ln.as_ref()).unwrap_or("");
+        let local = ln.as_ref();
         if local == "licenses" && self.in_licenses > 0 {
             self.in_licenses -= 1;
         }

@@ -48,7 +48,7 @@ WORKDIR /ui
 # Corepack is no longer distributed with Node (removed in Node 25), so pnpm is
 # installed explicitly. Keep this version in sync with the `packageManager`
 # field in ui/package.json.
-RUN npm install -g pnpm@11.20.0
+RUN npm install -g pnpm@11.25.0
 COPY ui/package.json ui/pnpm-lock.yaml ui/pnpm-workspace.yaml ./
 # --frozen-lockfile is the `npm ci` equivalent: it fails rather than silently
 # resolving something the committed lockfile does not describe.

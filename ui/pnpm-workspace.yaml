@@ -3,6 +3,17 @@
 # NOTE: as of pnpm 10/11 the `pnpm` field in package.json is no longer read —
 # overrides and settings live here. Putting them back in package.json makes pnpm
 # ignore them with only a warning, which would silently drop the pins below.
+#
+# ── typescript is held on the 6 line on purpose ───────────────────────────────
+#
+# TypeScript 7 (the native port) is the `latest` dist-tag, and `pnpm update
+# --latest` will offer it. It is not taken here because `typescript-eslint`
+# declares `typescript: ">=4.8.4 <6.1.0"` as a peer, and 8.68.0 is its newest
+# stable release — there is no 9.x. Taking TS 7 therefore breaks `pnpm run
+# lint:eslint`, which is the type-aware half of the lint gate and the job that
+# feeds SARIF to Code Scanning (oxlint, the fast half, does not type-check).
+# `^6.0.3` is the newest release of the 6 line. Revisit when typescript-eslint
+# ships a major that widens the peer range.
 
 # Transitive-dependency pins. js-yaml is covered by two advisories and needs
 # the higher floor of the two; it reaches us through @hey-api/openapi-ts and

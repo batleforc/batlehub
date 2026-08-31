@@ -12,27 +12,6 @@ use batlehub_core::{
 
 use crate::{error::AppError, extractors::AuthIdentity, handlers::schemas::OkResponse};
 
-#[cfg(test)]
-mod tests {
-    use super::QuotaUsageDto;
-    use batlehub_core::ports::QuotaUsage;
-
-    #[test]
-    fn quota_usage_dto_conversion() {
-        let usage = QuotaUsage {
-            user_id: "alice".into(),
-            registry: "cargo".into(),
-            bytes_published: 1024,
-            packages_count: 3,
-        };
-        let dto = QuotaUsageDto::from(usage);
-        assert_eq!(dto.user_id, "alice");
-        assert_eq!(dto.registry, "cargo");
-        assert_eq!(dto.bytes_published, 1024);
-        assert_eq!(dto.packages_count, 3);
-    }
-}
-
 #[derive(Serialize, ToSchema)]
 pub struct QuotaUsageDto {
     pub user_id: String,
@@ -199,4 +178,25 @@ pub async fn reset_quota_for_user(
         .await;
 
     Ok(HttpResponse::Ok().json(OkResponse::new()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::QuotaUsageDto;
+    use batlehub_core::ports::QuotaUsage;
+
+    #[test]
+    fn quota_usage_dto_conversion() {
+        let usage = QuotaUsage {
+            user_id: "alice".into(),
+            registry: "cargo".into(),
+            bytes_published: 1024,
+            packages_count: 3,
+        };
+        let dto = QuotaUsageDto::from(usage);
+        assert_eq!(dto.user_id, "alice");
+        assert_eq!(dto.registry, "cargo");
+        assert_eq!(dto.bytes_published, 1024);
+        assert_eq!(dto.packages_count, 3);
+    }
 }

@@ -185,14 +185,13 @@ pub fn parse_pom(bytes: &[u8]) -> Result<PomMetadata, AppError> {
             Ok(XE::Start(e)) => {
                 depth += 1;
                 if depth == 2 {
-                    current_tag = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+                    current_tag = e.local_name().as_ref().to_owned();
                 }
             }
             Ok(XE::Text(e)) if depth == 2 => {
-                let raw = e
-                    .decode()
-                    .map_err(|e| AppError::unprocessable(format!("pom parse: {e}")))?;
-                let text = quick_xml::escape::unescape(&raw)
+                // quick-xml 0.42 validates UTF-8 in the reader, so the charset
+                // decode is gone; only entity unescaping is left.
+                let text = quick_xml::escape::unescape(&e)
                     .map_err(|e| AppError::unprocessable(format!("pom parse: {e}")))?
                     .into_owned();
                 match current_tag.as_str() {

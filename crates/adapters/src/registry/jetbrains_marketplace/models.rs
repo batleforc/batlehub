@@ -77,8 +77,10 @@ pub fn parse_plugin_list(xml: &[u8]) -> Result<Vec<PluginListEntry>, CoreError> 
         match reader.read_event_into(&mut buf) {
             Ok(XmlEvent::Start(e)) => state.start(&e),
             Ok(XmlEvent::Empty(e)) => state.empty(&e),
-            Ok(XmlEvent::Text(e)) => state.push_text(&e.decode().map_err(parse_err)?),
-            Ok(XmlEvent::CData(e)) => state.push_text(&String::from_utf8_lossy(&e)),
+            // quick-xml 0.42 validates UTF-8 in the reader, so event content is
+            // already `str` and neither of these can fail on encoding any more.
+            Ok(XmlEvent::Text(e)) => state.push_text(&e),
+            Ok(XmlEvent::CData(e)) => state.push_text(&e),
             Ok(XmlEvent::GeneralRef(e)) => state.push_entity(&e)?,
             Ok(XmlEvent::End(e)) => state.end(&e),
             Ok(XmlEvent::Eof) => break,
@@ -113,7 +115,7 @@ impl PluginListParser {
     }
 
     fn start(&mut self, e: &quick_xml::events::BytesStart<'_>) {
-        let local = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+        let local = e.local_name().as_ref().to_owned();
         if local == "idea-plugin" {
             self.current = Some(PluginListEntry {
                 date_ms: attr_value(e, "date").and_then(|v| v.parse().ok()),
@@ -134,7 +136,7 @@ impl PluginListParser {
     /// `<idea-version …/>` carries its bounds on attributes, so the self-closing
     /// form is the one that actually appears.
     fn empty(&mut self, e: &quick_xml::events::BytesStart<'_>) {
-        if String::from_utf8_lossy(e.local_name().as_ref()) != "idea-version" {
+        if e.local_name().as_ref() != "idea-version" {
             return;
         }
         if let Some(entry) = self.current.as_mut() {
@@ -157,7 +159,7 @@ impl PluginListParser {
             self.text_buf.push(ch);
             return Ok(());
         }
-        match e.decode().map_err(parse_err)?.as_ref() {
+        match &**e {
             "amp" => self.text_buf.push('&'),
             "lt" => self.text_buf.push('<'),
             "gt" => self.text_buf.push('>'),
@@ -174,7 +176,7 @@ impl PluginListParser {
     }
 
     fn end(&mut self, e: &quick_xml::events::BytesEnd<'_>) {
-        let local = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+        let local = e.local_name().as_ref().to_owned();
         if local == "idea-plugin" {
             if let Some(entry) = self.current.take() {
                 self.entries.push(entry);

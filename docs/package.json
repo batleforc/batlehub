@@ -3,7 +3,7 @@
   "version": "1.1.0",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@11.20.0",
+  "packageManager": "pnpm@11.25.0",
   "scripts": {
     "docs:dev": "vitepress dev",
     "docs:build": "node build/build.mjs",
@@ -13,8 +13,8 @@
   "devDependencies": {
     "axe-core": "4.13.0",
     "jsdom": "^30.0.1",
-    "mermaid": "^11.17.0",
-    "puppeteer-core": "25.7.0",
+    "mermaid": "^11.17.2",
+    "puppeteer-core": "25.9.0",
     "vitepress": "^1.6.4",
     "vitepress-plugin-mermaid": "^2.0.17"
   },

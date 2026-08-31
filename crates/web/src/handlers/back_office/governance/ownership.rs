@@ -53,44 +53,6 @@ fn default_role() -> String {
     "maintainer".to_owned()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{default_role, OwnerEntryDto};
-    use batlehub_core::ports::OwnerEntry;
-
-    #[test]
-    fn default_role_is_maintainer() {
-        assert_eq!(default_role(), "maintainer");
-    }
-
-    #[test]
-    fn owner_entry_dto_conversion() {
-        let entry = OwnerEntry {
-            principal_type: "user".into(),
-            principal_id: "alice".into(),
-            role: "admin".into(),
-            granted_by: Some("bob".into()),
-        };
-        let dto = OwnerEntryDto::from(entry);
-        assert_eq!(dto.principal_type, "user");
-        assert_eq!(dto.principal_id, "alice");
-        assert_eq!(dto.role, "admin");
-        assert_eq!(dto.granted_by.as_deref(), Some("bob"));
-    }
-
-    #[test]
-    fn owner_entry_dto_none_granted_by() {
-        let entry = OwnerEntry {
-            principal_type: "group".into(),
-            principal_id: "devs".into(),
-            role: "maintainer".into(),
-            granted_by: None,
-        };
-        let dto = OwnerEntryDto::from(entry);
-        assert!(dto.granted_by.is_none());
-    }
-}
-
 /// List owners of a package.
 #[utoipa::path(
     get,
@@ -252,4 +214,42 @@ pub async fn remove_package_owner(
         .await;
 
     Ok(HttpResponse::NoContent().finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{default_role, OwnerEntryDto};
+    use batlehub_core::ports::OwnerEntry;
+
+    #[test]
+    fn default_role_is_maintainer() {
+        assert_eq!(default_role(), "maintainer");
+    }
+
+    #[test]
+    fn owner_entry_dto_conversion() {
+        let entry = OwnerEntry {
+            principal_type: "user".into(),
+            principal_id: "alice".into(),
+            role: "admin".into(),
+            granted_by: Some("bob".into()),
+        };
+        let dto = OwnerEntryDto::from(entry);
+        assert_eq!(dto.principal_type, "user");
+        assert_eq!(dto.principal_id, "alice");
+        assert_eq!(dto.role, "admin");
+        assert_eq!(dto.granted_by.as_deref(), Some("bob"));
+    }
+
+    #[test]
+    fn owner_entry_dto_none_granted_by() {
+        let entry = OwnerEntry {
+            principal_type: "group".into(),
+            principal_id: "devs".into(),
+            role: "maintainer".into(),
+            granted_by: None,
+        };
+        let dto = OwnerEntryDto::from(entry);
+        assert!(dto.granted_by.is_none());
+    }
 }

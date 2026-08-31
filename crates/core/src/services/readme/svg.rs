@@ -163,6 +163,13 @@ pub enum SvgRejected {
     /// is not something to guess at: a parser that recovers is a parser whose
     /// idea of the document may differ from the browser's, which is the whole
     /// mXSS family.
+    ///
+    /// Since quick-xml 0.42 this also covers **invalid UTF-8**: the reader
+    /// validates the encoding and fails the document, where 0.41 handed the bad
+    /// bytes through and this module dropped the affected text node while
+    /// keeping the rest. Rejecting is the behaviour that belongs here — the
+    /// alternative is emitting a document whose text this module and the
+    /// browser decoded differently.
     Malformed(String),
     /// No `<svg>` root. Whatever it is, it is not the image it claimed to be.
     NotSvg,
@@ -233,7 +240,7 @@ struct SvgWalk {
     /// Elements written, so their ends can be matched. A disallowed element's
     /// end must not be emitted even when it arrives after the skip has unwound —
     /// a malformed document can do that.
-    open: Vec<Vec<u8>>,
+    open: Vec<String>,
     saw_root: bool,
 }
 
@@ -262,28 +269,30 @@ impl SvgWalk {
     }
 
     fn start(&mut self, element: &BytesStart<'_>) -> Result<(), SvgRejected> {
-        let name = local_name(element.name().as_ref());
-        if self.skipping > 0 || !is_allowed_element(&name) {
+        let qname = element.name();
+        let name = local_name(qname.as_ref());
+        if self.skipping > 0 || !is_allowed_element(name) {
             self.skipping += 1;
             return Ok(());
         }
-        if name == b"svg" {
+        if name == "svg" {
             self.saw_root = true;
         }
-        let cleaned = clean_element(element, &name);
-        self.open.push(name);
+        let cleaned = clean_element(element, name);
+        self.open.push(name.to_owned());
         self.write(Event::Start(cleaned))
     }
 
     fn empty(&mut self, element: &BytesStart<'_>) -> Result<(), SvgRejected> {
-        let name = local_name(element.name().as_ref());
-        if self.skipping > 0 || !is_allowed_element(&name) {
+        let qname = element.name();
+        let name = local_name(qname.as_ref());
+        if self.skipping > 0 || !is_allowed_element(name) {
             return Ok(());
         }
-        if name == b"svg" {
+        if name == "svg" {
             self.saw_root = true;
         }
-        let cleaned = clean_element(element, &name);
+        let cleaned = clean_element(element, name);
         self.write(Event::Empty(cleaned))
     }
 
@@ -292,13 +301,14 @@ impl SvgWalk {
             self.skipping -= 1;
             return Ok(());
         }
-        let name = local_name(element.name().as_ref());
-        if self.open.last() != Some(&name) {
+        let qname = element.name();
+        let name = local_name(qname.as_ref());
+        if self.open.last().map(String::as_str) != Some(name) {
             return Ok(());
         }
         self.open.pop();
         self.write(Event::End(quick_xml::events::BytesEnd::new(
-            String::from_utf8_lossy(&name).into_owned(),
+            name.to_owned(),
         )))
     }
 
@@ -310,7 +320,10 @@ impl SvgWalk {
         if !self.holds_text_now() {
             return Ok(());
         }
-        let decoded = strip_forbidden_chars(&text.decode().unwrap_or_default());
+        // quick-xml 0.42 stores event content as `str` and validates UTF-8 at
+        // the reader, so this derefs straight to the text rather than going
+        // through the old fallible `decode()`.
+        let decoded = strip_forbidden_chars(text);
         self.write(Event::Text(quick_xml::events::BytesText::new(&decoded)))
     }
 
@@ -388,8 +401,8 @@ fn strip_forbidden_chars(text: &str) -> String {
 /// back is written through `BytesText`, which escapes it again, so resolving
 /// `&#60;` cannot put a `<` in the output.
 fn resolve_reference(reference: &quick_xml::events::BytesRef<'_>) -> Option<String> {
-    let name = reference.decode().ok()?;
-    match name.as_ref() {
+    let name: &str = reference;
+    match name {
         "lt" => return Some("<".to_owned()),
         "gt" => return Some(">".to_owned()),
         "amp" => return Some("&".to_owned()),
@@ -414,21 +427,19 @@ fn resolve_reference(reference: &quick_xml::events::BytesRef<'_>) -> Option<Stri
 ///
 /// `<svg:script>` is a `script`. Matching on the qualified name would let a
 /// prefix declaration rename the whole attack out of the allow-list's sight.
-fn local_name(qname: &[u8]) -> Vec<u8> {
-    match qname.iter().rposition(|b| *b == b':') {
-        Some(i) => qname[i + 1..].to_vec(),
-        None => qname.to_vec(),
+fn local_name(qname: &str) -> &str {
+    match qname.rfind(':') {
+        Some(i) => &qname[i + 1..],
+        None => qname,
     }
 }
 
-fn is_allowed_element(name: &[u8]) -> bool {
-    ALLOWED_ELEMENTS
-        .iter()
-        .any(|allowed| allowed.as_bytes() == name)
+fn is_allowed_element(name: &str) -> bool {
+    ALLOWED_ELEMENTS.contains(&name)
 }
 
-fn holds_text(name: &[u8]) -> bool {
-    matches!(name, b"text" | b"tspan" | b"title" | b"desc")
+fn holds_text(name: &str) -> bool {
+    matches!(name, "text" | "tspan" | "title" | "desc")
 }
 
 /// Rebuild `element` with only its allow-listed attributes.
@@ -446,16 +457,13 @@ fn holds_text(name: &[u8]) -> bool {
 /// The un-prefixed spelling wins when both are present: `version` is the SVG
 /// attribute and `inkscape:version` is an editor's note that happens to share a
 /// local name.
-fn clean_element<'a>(element: &BytesStart<'a>, name: &[u8]) -> BytesStart<'a> {
+fn clean_element(element: &BytesStart<'_>, name: &str) -> BytesStart<'static> {
     // `(local name, value, was prefixed)`, in source order.
-    let mut kept: Vec<(Vec<u8>, String, bool)> = Vec::new();
+    let mut kept: Vec<(String, String, bool)> = Vec::new();
     for attribute in element.attributes().with_checks(false).flatten() {
-        let qname = attribute.key.as_ref().to_vec();
-        let key = local_name(&qname);
-        if !ALLOWED_ATTRIBUTES
-            .iter()
-            .any(|allowed| allowed.as_bytes() == key)
-        {
+        let qname = attribute.key.as_ref();
+        let key = local_name(qname);
+        if !ALLOWED_ATTRIBUTES.contains(&key) {
             continue;
         }
         // Normalise **before** deciding, not after. Found by the fuzz target,
@@ -472,23 +480,20 @@ fn clean_element<'a>(element: &BytesStart<'a>, name: &[u8]) -> BytesStart<'a> {
         if !safe_value(&value) {
             continue;
         }
-        let prefixed = qname.contains(&b':');
-        match kept.iter().position(|(seen, _, _)| *seen == key) {
+        let prefixed = qname.contains(':');
+        match kept.iter().position(|(seen, _, _)| seen == key) {
             Some(index) => {
                 if kept[index].2 && !prefixed {
-                    kept[index] = (key, value, prefixed);
+                    kept[index] = (key.to_owned(), value, prefixed);
                 }
             }
-            None => kept.push((key, value, prefixed)),
+            None => kept.push((key.to_owned(), value, prefixed)),
         }
     }
 
-    let mut out = BytesStart::new(String::from_utf8_lossy(name).into_owned());
+    let mut out = BytesStart::new(name.to_owned());
     for (key, value, _) in &kept {
-        out.push_attribute((
-            String::from_utf8_lossy(key).into_owned().as_str(),
-            value.as_str(),
-        ));
+        out.push_attribute((key.as_str(), value.as_str()));
     }
     out
 }

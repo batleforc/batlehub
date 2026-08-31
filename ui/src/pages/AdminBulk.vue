@@ -250,21 +250,34 @@ function reset() {
         <!--
           A scroll container must be reachable by keyboard: a mouse user can
           drag it sideways, and without `tabindex` a keyboard user cannot read
-          the part that is off-screen at all. `<pre>` holds no focusable
-          content of its own, so it takes the focus itself and is announced as
-          a group. Only visible at 390px, which is why it appeared the moment
-          the gate started measuring narrow.
+          the part that is off-screen at all — axe calls it
+          `scrollable-region-focusable`. Only visible at 390px, which is why it
+          appeared the moment the gate started measuring narrow.
+
+          The container is a **named `<section>`**, which is the same construct
+          `ui/components/ui/table/Table.vue` uses for the same job, so the
+          console has one answer for "wide content inside a narrow column"
+          rather than two. It was a `<pre role="group">`: `group` is for a set of
+          related form controls and there are none here, which is what Sonar's
+          Web:S6819 caught — and the fix is not a different `role` but no `role`
+          at all, because a `<section>` with an accessible name carries `region`
+          natively and a native element is the one assistive technology has the
+          fewest ways to get wrong.
+
+          The box styling moves with the scrolling, so the `<pre>` is now just
+          the text.
         -->
-        <pre
+        <section
           tabindex="0"
-          role="group"
           :aria-label="t('adminBulk.csvFormat')"
-          class="text-xs font-mono bg-muted rounded-sm p-3 overflow-x-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          class="bg-muted rounded-sm p-3 overflow-x-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
+          <pre class="text-xs font-mono">
 registry,name,version,artifact,reason
 npm,lodash,4.17.21,,CVE-2021-23337
 cargo,serde,1.0.0,,License issue
 github,org/repo,v2.0.0,binary.tar.gz,Supply chain risk</pre>
+        </section>
         <p class="text-xs text-muted-foreground mt-2">
           <i18n-t keypath="adminBulk.csvNotes" tag="span">
             <template #artifact><code class="font-mono">artifact</code></template>

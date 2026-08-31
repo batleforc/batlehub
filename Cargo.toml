@@ -91,7 +91,7 @@ actix-web = { version = "4", default-features = false, features = [
     "compat",
     "ws",
 ] }
-actix-files = "0.6"
+actix-files = "0.7"
 actix-cors = "0.7"
 
 # HTTP client
@@ -164,7 +164,7 @@ form_urlencoded = "1"
 # the HTTP stack; declared here so config/web can depend on it directly).
 ipnet = "2"
 zip = "8"
-quick-xml = "0.41"
+quick-xml = "0.42"
 # README rendering and sanitisation (RFC 0007 §7.1). `pulldown-cmark` is a
 # CommonMark pull parser with no HTML sanitisation of its own — it passes raw
 # HTML straight through, which is why nothing reaches a reader without going
@@ -175,7 +175,13 @@ quick-xml = "0.41"
 # CLI/`getopts` path, which is not something a server needs in its tree.
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 ammonia = "4"
-argon2 = { version = "0.5", features = ["std"] }
+# 0.6 dropped the `std` feature and made `password-hash` (the PHC string types
+# and the `PasswordHasher`/`PasswordVerifier` traits) an opt-in feature of its
+# own; `getrandom` is what lets `hash_password` draw its own salt from the
+# system RNG, which is how the 0.6 API replaces the caller-supplied
+# `SaltString::generate(&mut OsRng)` of 0.5. Taking 0.6 also retires the last
+# holders of `rand_core 0.6` and `cpufeatures 0.2` in the tree — see `deny.toml`.
+argon2 = { version = "0.6", features = ["password-hash", "getrandom"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }

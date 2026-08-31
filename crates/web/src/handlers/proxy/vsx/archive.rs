@@ -205,7 +205,7 @@ fn pre_release_from_vsix_manifest<R: Read + Seek>(zip: &mut zip::ZipArchive<R>) 
             }
         };
 
-        if e.local_name().as_ref() == b"Property"
+        if e.local_name().as_ref() == "Property"
             && attr(&e, "Id").as_deref() == Some(PRE_RELEASE_PROPERTY)
             && attr(&e, "Value").is_some_and(|v| v.eq_ignore_ascii_case("true"))
         {

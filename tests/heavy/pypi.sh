@@ -129,11 +129,29 @@ PPY="$HEAVY_WORK/proxied/bin/python"
   >"$HEAVY_WORK/pip-proxy.log" 2>&1 \
   || { tail -30 "$HEAVY_WORK/pip-proxy.log" >&2; heavy_fail "pip install through the proxy failed"; }
 
-# The §12.7 signature, in pip's own words.
-grep -q "\.metadata" "$HEAVY_WORK/pip-proxy.log" && grep -qi "404" "$HEAVY_WORK/pip-proxy.log" \
-  && { cat "$HEAVY_WORK/pip-proxy.log" >&2; heavy_fail "pip reported a 404 on a .metadata sibling"; }
+# The §12.7 signature — asked of the wire, which is the only place the request
+# and its status are on the same line.
+#
+# This was two independent greps over pip's log, `.metadata` **and** `404`,
+# matching anywhere in the file and never against each other. `HEAVY_RUN` is
+# `date +%H%M%S` and it is in every URL pip prints, so the run that started at
+# 22:14:04 matched `404` inside its own run id `221404` and failed a suite whose
+# sibling had answered `200` on the transcript directly above the failure. Even
+# per-line the pip log cannot carry this assertion: the run id sits in the same
+# URL as `.metadata`, so any regex relating the two matches it.
+#
+# A status assertion has to be anchored to the request it is about. On the
+# transcript that anchor is the `pep658` mark, so every check in this phase is
+# scoped to it: an earlier phase's `.metadata` request is not this phase's
+# result, and a section inserted above must not be able to fail — or satisfy —
+# the assertions below.
+if heavy_wire_seen_after "pep658" ".metadata -> 404"; then
+  cat "$HEAVY_WORK/pip-proxy.log" >&2
+  heavy_fail "a .metadata sibling answered 404 — pip does not fall back to the wheel when the \
+page advertised one, so this is §12.7's signature: core metadata advertised and not served"
+fi
 
-if ! grep -q "\.metadata -> 200" "$HEAVY_LOG"; then
+if ! heavy_wire_seen_after "pep658" ".metadata -> 200"; then
   # Either the sibling is broken again, or upstream stopped advertising the
   # attribute for this distribution — which is a real change in the premise and
   # must be looked at, not skipped past. Say which by asking the page.
@@ -144,8 +162,6 @@ if ! grep -q "\.metadata -> 200" "$HEAVY_LOG"; then
   fi
   heavy_fail "upstream no longer advertises core metadata for $PROBE — set HEAVY_PYPI_PROBE to a distribution that does, rather than dropping the assertion"
 fi
-heavy_wire_after "pep658" ".metadata -> 200" \
-  "the PEP 658 sibling did not answer 200 for this install"
 heavy_log "PYPI-PEP658-OK (pip fetched the metadata sibling and got it)"
 
 heavy_done PYPI-HEAVY-OK

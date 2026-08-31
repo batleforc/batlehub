@@ -44,17 +44,16 @@ pub(super) fn extract_nuget_manifest(data: &Bytes) -> ExtractedManifest {
     manifest
 }
 
-fn parse_nuget_dep_from_empty<'a>(
-    e: &quick_xml::events::BytesStart<'a>,
-    decoder: quick_xml::Decoder,
-) -> Option<SbomDependency> {
+fn parse_nuget_dep_from_empty(e: &quick_xml::events::BytesStart<'_>) -> Option<SbomDependency> {
     let mut id = String::new();
     let mut version = String::new();
     for attr in e.attributes().flatten() {
         let kn = attr.key.local_name();
-        let key = std::str::from_utf8(kn.as_ref()).unwrap_or("");
+        let key = kn.as_ref();
+        // quick-xml 0.42 decodes in the reader, so there is no `Decoder` to
+        // thread through here any more — normalisation is all that is left.
         let val = attr
-            .decoded_and_normalized_value(quick_xml::XmlVersion::Implicit1_0, decoder)
+            .normalized_value(quick_xml::XmlVersion::Implicit1_0)
             .map(|v| v.into_owned())
             .unwrap_or_default();
         match key {
@@ -94,53 +93,47 @@ fn parse_nuspec(content: &str) -> ExtractedManifest {
     // <dependency> elements in .nuspec are always self-closing:
     //   <dependency id="Newtonsoft.Json" version="[13.0,)" />
     /// A self-closing `<dependency …/>` yields one dependency, or nothing.
-    fn on_empty(
-        e: &quick_xml::events::BytesStart<'_>,
-        decoder: quick_xml::Decoder,
-        deps: &mut Vec<SbomDependency>,
-    ) {
-        if e.local_name().as_ref() != b"dependency" {
+    fn on_empty(e: &quick_xml::events::BytesStart<'_>, deps: &mut Vec<SbomDependency>) {
+        if e.local_name().as_ref() != "dependency" {
             return;
         }
-        if let Some(dep) = parse_nuget_dep_from_empty(e, decoder) {
+        if let Some(dep) = parse_nuget_dep_from_empty(e) {
             deps.push(dep);
         }
+    }
+
+    /// The text of a `<license>` element, when there is something to assign.
+    ///
+    /// `None` for a blank one, so the caller's `or` leaves an earlier value
+    /// alone rather than clearing it.
+    fn license_text(e: &quick_xml::events::BytesText<'_>) -> Option<String> {
+        Some(e.trim().to_owned()).filter(|text| !text.is_empty())
     }
 
     /// `type="file"` points at a file inside the package, same problem as
     /// `licenseUrl`; only an expression is read.
     fn opens_license_expression(e: &quick_xml::events::BytesStart<'_>) -> bool {
-        if e.local_name().as_ref() != b"license" {
+        if e.local_name().as_ref() != "license" {
             return false;
         }
         !e.attributes()
             .flatten()
-            .any(|attr| attr.key.local_name().as_ref() == b"type" && attr.value.as_ref() == b"file")
+            .any(|attr| attr.key.local_name().as_ref() == "type" && attr.value.as_ref() == "file")
     }
 
     loop {
         match reader.read_event() {
-            Ok(Event::Empty(ref e)) => on_empty(e, reader.decoder(), &mut deps),
-            Ok(Event::Start(ref e)) => {
-                if e.local_name().as_ref() == b"license" {
-                    capture_license = opens_license_expression(e);
-                }
+            Ok(Event::Empty(ref e)) => on_empty(e, &mut deps),
+            Ok(Event::Start(ref e)) if e.local_name().as_ref() == "license" => {
+                capture_license = opens_license_expression(e);
             }
             Ok(Event::Text(ref e)) if capture_license => {
                 capture_license = false;
-                // Assigned only when there is something to assign: an
-                // undecodable or blank `<license>` leaves an earlier value alone
-                // rather than clearing it.
-                if let Some(text) = e
-                    .decode()
-                    .ok()
-                    .map(|raw| raw.trim().to_owned())
-                    .filter(|text| !text.is_empty())
-                {
-                    license = Some(text);
-                }
+                // `or`, not an assignment: a blank or undecodable `<license>`
+                // keeps whatever an earlier one set rather than clearing it.
+                license = license_text(e).or(license);
             }
-            Ok(Event::End(ref e)) if e.local_name().as_ref() == b"license" => {
+            Ok(Event::End(ref e)) if e.local_name().as_ref() == "license" => {
                 capture_license = false;
             }
             Ok(Event::Eof) | Err(_) => break,
@@ -169,11 +162,10 @@ fn nuspec_readme_path(content: &str) -> Option<String> {
     loop {
         match reader.read_event() {
             Ok(Event::Start(ref e)) => {
-                capture = e.local_name().as_ref() == b"readme";
+                capture = e.local_name().as_ref() == "readme";
             }
             Ok(Event::Text(ref e)) if capture => {
-                let text = e.decode().ok()?;
-                let text = text.trim();
+                let text = e.trim();
                 return (!text.is_empty()).then(|| text.to_owned());
             }
             Ok(Event::Eof) | Err(_) => return None,

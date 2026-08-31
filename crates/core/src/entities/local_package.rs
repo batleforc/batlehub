@@ -93,84 +93,6 @@ impl std::str::FromStr for Visibility {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::str::FromStr;
-
-    #[test]
-    fn from_str_all_variants() {
-        assert_eq!(Visibility::from_str("public").unwrap(), Visibility::Public);
-        assert_eq!(
-            Visibility::from_str("internal").unwrap(),
-            Visibility::Internal
-        );
-        assert_eq!(Visibility::from_str("team").unwrap(), Visibility::Team);
-    }
-
-    /// `private` is RFC 0015 §4.5's fourth value, and it round-trips like the
-    /// other three. It used to be the example of an unknown one — see the test
-    /// below, which kept the assertion and changed the string.
-    #[test]
-    fn private_round_trips() {
-        assert_eq!(
-            Visibility::from_str("private").unwrap(),
-            Visibility::Private
-        );
-        assert_eq!(Visibility::Private.to_string(), "private");
-    }
-
-    /// The variants are ordered widest to narrowest, which `narrower_of` relies
-    /// on. Pinned because reordering the enum for readability would silently
-    /// invert it.
-    #[test]
-    fn visibility_is_ordered_widest_to_narrowest() {
-        assert!(Visibility::Public < Visibility::Internal);
-        assert!(Visibility::Internal < Visibility::Team);
-        assert!(Visibility::Team < Visibility::Private);
-        assert_eq!(
-            Visibility::Public.narrower_of(Visibility::Team),
-            Visibility::Team
-        );
-    }
-
-    /// §4.9: `private` is a package- and version-tier value. Higher up it either
-    /// says nothing or duplicates a seal.
-    #[test]
-    fn private_is_only_valid_at_the_two_deepest_tiers() {
-        use crate::entities::Tier;
-        assert!(!Visibility::Private.is_valid_at(Tier::Registry));
-        assert!(!Visibility::Private.is_valid_at(Tier::Namespace));
-        assert!(Visibility::Private.is_valid_at(Tier::Package));
-        assert!(Visibility::Private.is_valid_at(Tier::Version));
-        // The other three are valid everywhere.
-        for v in [Visibility::Public, Visibility::Internal, Visibility::Team] {
-            assert!(v.is_valid_at(Tier::Registry), "{v}");
-        }
-    }
-
-    #[test]
-    fn from_str_unknown_is_err() {
-        assert!(Visibility::from_str("secret").is_err());
-        assert!(Visibility::from_str("").is_err());
-        assert!(Visibility::from_str("Public").is_err());
-    }
-
-    #[test]
-    fn display_roundtrip() {
-        for v in [Visibility::Public, Visibility::Internal, Visibility::Team] {
-            let s = v.to_string();
-            let back = Visibility::from_str(&s).unwrap();
-            assert_eq!(back, v);
-        }
-    }
-
-    #[test]
-    fn default_is_public() {
-        assert_eq!(Visibility::default(), Visibility::Public);
-    }
-}
-
 /// A package published directly to this BatleHub instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublishedPackage {
@@ -341,4 +263,82 @@ pub struct CargoDep {
     pub registry: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub explicit_name_in_toml: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn from_str_all_variants() {
+        assert_eq!(Visibility::from_str("public").unwrap(), Visibility::Public);
+        assert_eq!(
+            Visibility::from_str("internal").unwrap(),
+            Visibility::Internal
+        );
+        assert_eq!(Visibility::from_str("team").unwrap(), Visibility::Team);
+    }
+
+    /// `private` is RFC 0015 §4.5's fourth value, and it round-trips like the
+    /// other three. It used to be the example of an unknown one — see the test
+    /// below, which kept the assertion and changed the string.
+    #[test]
+    fn private_round_trips() {
+        assert_eq!(
+            Visibility::from_str("private").unwrap(),
+            Visibility::Private
+        );
+        assert_eq!(Visibility::Private.to_string(), "private");
+    }
+
+    /// The variants are ordered widest to narrowest, which `narrower_of` relies
+    /// on. Pinned because reordering the enum for readability would silently
+    /// invert it.
+    #[test]
+    fn visibility_is_ordered_widest_to_narrowest() {
+        assert!(Visibility::Public < Visibility::Internal);
+        assert!(Visibility::Internal < Visibility::Team);
+        assert!(Visibility::Team < Visibility::Private);
+        assert_eq!(
+            Visibility::Public.narrower_of(Visibility::Team),
+            Visibility::Team
+        );
+    }
+
+    /// §4.9: `private` is a package- and version-tier value. Higher up it either
+    /// says nothing or duplicates a seal.
+    #[test]
+    fn private_is_only_valid_at_the_two_deepest_tiers() {
+        use crate::entities::Tier;
+        assert!(!Visibility::Private.is_valid_at(Tier::Registry));
+        assert!(!Visibility::Private.is_valid_at(Tier::Namespace));
+        assert!(Visibility::Private.is_valid_at(Tier::Package));
+        assert!(Visibility::Private.is_valid_at(Tier::Version));
+        // The other three are valid everywhere.
+        for v in [Visibility::Public, Visibility::Internal, Visibility::Team] {
+            assert!(v.is_valid_at(Tier::Registry), "{v}");
+        }
+    }
+
+    #[test]
+    fn from_str_unknown_is_err() {
+        assert!(Visibility::from_str("secret").is_err());
+        assert!(Visibility::from_str("").is_err());
+        assert!(Visibility::from_str("Public").is_err());
+    }
+
+    #[test]
+    fn display_roundtrip() {
+        for v in [Visibility::Public, Visibility::Internal, Visibility::Team] {
+            let s = v.to_string();
+            let back = Visibility::from_str(&s).unwrap();
+            assert_eq!(back, v);
+        }
+    }
+
+    #[test]
+    fn default_is_public() {
+        assert_eq!(Visibility::default(), Visibility::Public);
+    }
 }
