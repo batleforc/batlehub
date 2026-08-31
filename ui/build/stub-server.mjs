@@ -25,7 +25,7 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { extname, join, resolve, dirname, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const arg = (name, fallback) => {
@@ -65,7 +65,34 @@ function lookup(pathname) {
   return undefined;
 }
 
-createServer(async (req, res) => {
+/**
+ * The file a request path is allowed to name, or the SPA shell.
+ *
+ * The path is canonicalised and then checked to still be *under* `dist` before
+ * it can name a file. `new URL` already collapses `..`, so no request the
+ * server can receive today is known to escape — but that is a property of the
+ * parser, not of this function, and a caller that ever hands over a less
+ * normalised string should not be the moment the containment starts mattering.
+ * So the test sits directly on the canonicalised path, in the one expression
+ * that lets caller-derived data become the return value: not stored off in a
+ * boolean and re-combined with unrelated terms further down, where neither a
+ * reader nor a taint analyser can tie it to the read it guards.
+ *
+ * Anything outside falls through to the shell, which is what an unknown route
+ * gets anyway. `resolved === dist` needs no case of its own — that is the `/`
+ * request, and `dist + sep` already excludes it.
+ *
+ * Exported for `src/test/stub-server.test.ts`: this is the security-relevant
+ * line in the file, and it is only honestly testable apart from the parser.
+ */
+export function staticFileFor(dist, pathname) {
+  const shell = join(dist, "index.html");
+  const resolved = resolve(dist, `.${pathname}`);
+  if (!resolved.startsWith(dist + sep)) return shell;
+  return extname(resolved) && existsSync(resolved) ? resolved : shell;
+}
+
+const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
   if (url.pathname.startsWith("/api/")) {
@@ -84,19 +111,7 @@ createServer(async (req, res) => {
   }
 
   // Static files, with the SPA fallback every client-side route needs.
-  //
-  // The request path is resolved and then checked to still be *under* `DIST`
-  // before it is allowed to name a file. `new URL` already collapses `..`, so
-  // nothing here is known to escape today — but that is a property of the
-  // parser rather than of this handler, and it is the containment check, not
-  // the parser, that the next person reading this can verify. Anything outside
-  // falls through to the SPA shell, which is what an unknown route gets anyway.
-  const requested = resolve(DIST, `.${url.pathname}`);
-  const inDist = requested === DIST || requested.startsWith(DIST + sep);
-  const file =
-    inDist && url.pathname !== "/" && extname(requested) && existsSync(requested)
-      ? requested
-      : join(DIST, "index.html");
+  const file = staticFileFor(DIST, url.pathname);
   try {
     const data = await readFile(file);
     res.writeHead(200, { "content-type": TYPES[extname(file)] ?? "application/octet-stream" });
@@ -104,6 +119,12 @@ createServer(async (req, res) => {
   } catch {
     res.writeHead(404).end("not found");
   }
-}).listen(PORT, () => {
-  console.log(`stub server: ${DIST} + ${Object.keys(FIXTURES).length} API fixtures on :${PORT}`);
 });
+
+// Only when run as the entry point: importing this module (the test does, for
+// `staticFileFor`) must not bind a port.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  server.listen(PORT, () => {
+    console.log(`stub server: ${DIST} + ${Object.keys(FIXTURES).length} API fixtures on :${PORT}`);
+  });
+}
