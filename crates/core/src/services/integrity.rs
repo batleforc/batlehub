@@ -117,11 +117,17 @@ pub fn sha256_hex(data: &[u8]) -> String {
 /// Bare SHA-1 hex digest of `data`.
 ///
 /// Not for integrity — [`sha256_hex`] is the stored checksum and SHA-1 is not a
-/// defence against anyone. This exists because two package protocols *define*
-/// their published digest as SHA-1 and their clients verify against it: npm's
-/// `dist.shasum` and Composer's `dist.shasum`. Publishing a SHA-256 in a field
-/// the client hashes with SHA-1 does not degrade to "unverified", it fails
-/// every download (RFC 0009 §12.16).
+/// defence against anyone. This exists because Composer *defines* `dist.shasum`
+/// as a SHA-1 and hashes the downloaded zip with SHA-1 to compare: publishing a
+/// SHA-256 there does not degrade to "unverified", it fails every download
+/// (RFC 0009 §12.16). A `sha256` dist field is an open request upstream
+/// (composer#5940), not something Composer accepts today.
+///
+/// Composer publishing is the only caller. npm's `dist.shasum` is the same shape
+/// and used to be named here, but nothing in the npm path reaches this function:
+/// the proxy prefers `dist.integrity` (SSRI, usually SHA-512) and falls back to
+/// the upstream's own `shasum`, and the local packument passes through whatever
+/// `dist` the publishing client sent. See docs/operations/weak-hashes.md.
 pub fn sha1_hex(data: &[u8]) -> String {
     use sha1::Digest as _;
     hex::encode(Sha1::digest(data))

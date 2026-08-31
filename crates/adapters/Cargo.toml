@@ -28,7 +28,6 @@ zstd = { version = "0.13", optional = true }
 # Deb/RPM repository hosting (all pure-Rust; none pull the banned `rsa` crate).
 ar = { version = "0.9", optional = true }
 lzma-rs = { version = "0.3", optional = true }
-md-5 = { version = "0.11", optional = true }
 sha1 = { version = "0.11", optional = true }
 ed25519-dalek = { version = "3", optional = true }
 rpm = { version = "0.27", default-features = false, features = [
@@ -143,7 +142,6 @@ registry-deb = [
   "dep:tar",
   "dep:lzma-rs",
   "dep:zstd",
-  "dep:md-5",
   "dep:sha1",
   "dep:ed25519-dalek",
 ]
@@ -159,7 +157,6 @@ registry-pacman = [
   "dep:tar",
   "dep:flate2",
   "dep:lzma-rs",
-  "dep:md-5",
   "dep:sha1",
   "dep:ed25519-dalek",
 ]

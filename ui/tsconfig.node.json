@@ -30,6 +30,7 @@
     "build/**/*.ts",
     "src/design/tokens.test.ts",
     "src/test/fixtures.test.ts",
+    "src/test/stub-server.test.ts",
     "src/config/registryTypes.docs.test.ts",
     "src/design/composed-contrast.test.ts",
     "src/design/system-rules.test.ts"

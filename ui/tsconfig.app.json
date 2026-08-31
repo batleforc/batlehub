@@ -36,6 +36,7 @@
     "src/design/system-rules.test.ts",
     "src/design/tokens.test.ts",
     "src/test/fixtures.test.ts",
-    "src/test/link-targets.test.ts"
+    "src/test/link-targets.test.ts",
+    "src/test/stub-server.test.ts"
   ]
 }

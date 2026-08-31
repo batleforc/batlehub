@@ -400,6 +400,7 @@ const config = withMermaid(defineConfig({
           items: [
             { text: "Change management", link: "/operations/change-management" },
             { text: "SOC 2 checklist", link: "/operations/soc2-checklist" },
+            { text: "MD5 and SHA-1", link: "/operations/weak-hashes" },
           ],
         },
       ],

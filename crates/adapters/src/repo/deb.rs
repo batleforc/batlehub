@@ -9,8 +9,6 @@
 
 use std::io::Read;
 
-use md5::Md5;
-use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
 use batlehub_core::error::CoreError;
@@ -21,8 +19,6 @@ pub struct DebPackage {
     /// Ordered control fields as they appeared in `./control`.
     pub control: Vec<(String, String)>,
     pub size: u64,
-    pub md5: String,
-    pub sha1: String,
     pub sha256: String,
 }
 
@@ -53,8 +49,6 @@ pub fn parse_deb(bytes: &[u8]) -> Result<DebPackage, CoreError> {
     Ok(DebPackage {
         control,
         size: bytes.len() as u64,
-        md5: hex::encode(Md5::digest(bytes)),
-        sha1: hex::encode(Sha1::digest(bytes)),
         sha256: hex::encode(Sha256::digest(bytes)),
     })
 }
@@ -190,7 +184,10 @@ pub fn pool_path(component: &str, pkg: &DebPackage) -> Result<String, CoreError>
 pub fn packages_stanza(pkg: &DebPackage, filename: &str) -> String {
     let mut out = String::new();
     for (k, v) in &pkg.control {
-        // These are repository-level fields we emit ourselves.
+        // Repository-level fields, not the uploader's to set: `filename`, `size`
+        // and `sha256` we emit ourselves below, and `md5sum`/`sha1` are dropped
+        // outright — the format makes them optional and forbids a client from
+        // trusting them, so an upload does not get to reintroduce one.
         if matches!(
             k.to_ascii_lowercase().as_str(),
             "filename" | "size" | "md5sum" | "sha1" | "sha256"
@@ -201,8 +198,6 @@ pub fn packages_stanza(pkg: &DebPackage, filename: &str) -> String {
     }
     out.push_str(&format!("Filename: {filename}\n"));
     out.push_str(&format!("Size: {}\n", pkg.size));
-    out.push_str(&format!("MD5sum: {}\n", pkg.md5));
-    out.push_str(&format!("SHA1: {}\n", pkg.sha1));
     out.push_str(&format!("SHA256: {}\n", pkg.sha256));
     out
 }
@@ -217,7 +212,6 @@ pub struct ReleaseFile {
     /// Path relative to `dists/{suite}/`, e.g. `main/binary-amd64/Packages`.
     pub path: String,
     pub size: u64,
-    pub md5: String,
     pub sha256: String,
 }
 
@@ -226,7 +220,6 @@ impl ReleaseFile {
         Self {
             path: path.into(),
             size: content.len() as u64,
-            md5: hex::encode(Md5::digest(content)),
             sha256: hex::encode(Sha256::digest(content)),
         }
     }
@@ -259,10 +252,6 @@ pub fn generate_release(meta: &ReleaseMeta, files: &[ReleaseFile]) -> String {
     out.push_str(&format!("Components: {}\n", meta.components.join(" ")));
     out.push_str("Acquire-By-Hash: no\n");
 
-    out.push_str("MD5Sum:\n");
-    for f in files {
-        out.push_str(&format!(" {} {} {}\n", f.md5, f.size, f.path));
-    }
     out.push_str("SHA256:\n");
     for f in files {
         out.push_str(&format!(" {} {} {}\n", f.sha256, f.size, f.path));

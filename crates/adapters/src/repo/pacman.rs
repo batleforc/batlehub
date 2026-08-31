@@ -9,7 +9,6 @@
 
 use std::io::{Cursor, Read};
 
-use md5::Md5;
 use sha2::{Digest, Sha256};
 
 use batlehub_core::error::CoreError;
@@ -24,7 +23,6 @@ pub struct PacmanPackage {
     pub filename: String,
     /// Compressed (download) size in bytes.
     pub csize: u64,
-    pub md5: String,
     pub sha256: String,
     /// Base64-encoded detached OpenPGP signature over the package bytes, set when
     /// the registry is signed. Embedded into the `%PGPSIG%` desc field.
@@ -74,7 +72,6 @@ pub fn parse_pacman(bytes: &[u8], filename: &str) -> Result<PacmanPackage, CoreE
         fields,
         filename: filename.to_owned(),
         csize: bytes.len() as u64,
-        md5: hex::encode(Md5::digest(bytes)),
         sha256: hex::encode(Sha256::digest(bytes)),
         pgpsig: None,
     })
@@ -245,7 +242,6 @@ pub fn desc_entry(pkg: &PacmanPackage) -> String {
     push_multi(&mut out, "GROUPS", pkg.all("group"));
     push_single(&mut out, "CSIZE", Some(&pkg.csize.to_string()));
     push_single(&mut out, "ISIZE", pkg.first("size"));
-    push_single(&mut out, "MD5SUM", Some(&pkg.md5));
     push_single(&mut out, "SHA256SUM", Some(&pkg.sha256));
     push_single(&mut out, "PGPSIG", pkg.pgpsig.as_deref());
     push_single(&mut out, "URL", pkg.first("url"));

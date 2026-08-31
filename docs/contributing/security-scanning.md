@@ -176,6 +176,20 @@ than rediscover — the reasoning lives next to the declaration in `Cargo.toml`,
 `deny.toml`'s `[bans].deny`, so re-enabling the feature fails CI instead of silently restoring the
 advisory. Check whether a feature can be dropped before concluding an advisory is unfixable.
 
+### Scanner rule ignores are a different thing
+
+The stance above is about **dependency advisories** — a CVE in something we pull in, where the fix
+is an upgrade. It does not govern a static-analysis rule that is simply wrong about this codebase.
+Those are handled in `sonar-project.properties` as `sonar.issue.ignore.multicriteria` entries, each
+pinned to one file and carrying its reasoning inline, so the justification is version-controlled
+rather than clicked away in a dashboard.
+
+The largest group is the MD5/SHA-1 uses (`rust:S4790`), which are wire-format requirements of the
+package protocols BatleHub speaks. That group started at thirteen and is now nine: rechecking each
+against its specification found four that no protocol required, and those were deleted rather than
+ignored. [MD5 and SHA-1](/operations/weak-hashes) is the register, with the specification for each
+— and it is the model for an entry here: check the spec, do not repeat the last comment.
+
 ### Duplicate versions
 
 `[bans].multiple-versions` is `deny`, with every known duplicate enumerated in `skip`. The list is

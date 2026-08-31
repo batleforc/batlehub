@@ -1014,7 +1014,6 @@ dependencies = [
  "hex",
  "jsonwebtoken",
  "lzma-rs",
- "md-5",
  "metrics",
  "mockito",
  "quick-xml",

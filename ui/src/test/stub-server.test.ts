@@ -19,6 +19,8 @@ import { staticFileFor } from "../../build/stub-server.mjs";
  * not the security assertion.
  */
 
+// The `fetch` calls below carry a `nosemgrep` for react-insecure-request: the
+// server is spawned on loopback by this file and there is no TLS to speak.
 const SERVER = resolve(process.cwd(), "build/stub-server.mjs");
 const PORT = 47_312;
 const base = `http://127.0.0.1:${PORT}`;
@@ -41,6 +43,7 @@ beforeAll(async () => {
   });
   for (let i = 0; i < 100; i++) {
     try {
+      // nosemgrep: typescript.react.security.react-insecure-request.react-insecure-request
       await fetch(base + "/");
       return;
     } catch {
@@ -84,6 +87,7 @@ describe("stub server over HTTP", () => {
   const body = async (path: string) => (await fetch(base + path)).text();
 
   it("serves files from the dist", async () => {
+    // nosemgrep: typescript.react.security.react-insecure-request.react-insecure-request
     const res = await fetch(base + "/assets/app.js");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/javascript");
@@ -96,6 +100,7 @@ describe("stub server over HTTP", () => {
   });
 
   it("answers API paths from the fixtures", async () => {
+    // nosemgrep: typescript.react.security.react-insecure-request.react-insecure-request
     const res = await fetch(base + "/api/v1/registries");
     expect(res.status).toBe(200);
     expect(Array.isArray(await res.json())).toBe(true);

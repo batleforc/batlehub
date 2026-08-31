@@ -38,6 +38,8 @@ and to what your organisation has actually agreed with its own users.
   production, and what is recorded about it.
 - **[SOC 2 checklist](/operations/soc2-checklist)** — the controls an auditor
   asks about, mapped onto what BatleHub actually does.
+- **[MD5 and SHA-1](/operations/weak-hashes)** — every weak digest a scanner
+  finds, what each one is for, and whether the protocol allows better.
 
 Related reading in the guide: [High Availability](/guide/high-availability),
 [SBOM](/guide/sbom) and [Security scanning](/contributing/security-scanning).
