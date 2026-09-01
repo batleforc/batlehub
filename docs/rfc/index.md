@@ -87,6 +87,16 @@ that one invisible. It is also the rest of the estate 0008 described: `mise`
 covers some toolchains, SDKMAN and nvm cover the others, and an air gap has to
 hold for all of them.
 
+0017 makes the same move against 0015, and it is the sharpest case of it here
+because 0015 is marked Implemented. It built the package and version tiers of the
+grant hierarchy and left both without a writer: `chain::stored_nodes` reads a
+version tier on every `authorize` that nothing in the tree can populate, and
+`filter_listing`/`package_visibility` were written for its own §4.4 rule 2 and
+have never been called. Neither is a bug today — with no version row every
+version answers the same, so the package-tier decision is the whole answer. Both
+become one the moment a version row can be written, which is why 0017 refuses to
+ship its writer and its filter in separate releases.
+
 They read in order: each one argues with the state the previous one left.
 
 ## What is next
@@ -106,21 +116,52 @@ project's own documentation told them to configure it that way. Ordering by
 that turns out to group the remaining work more sharply than ordering by size
 or by theme would.
 
-It also puts something at the top that is not an RFC at all. The list below was
-last rewritten when 0012, 0015 and 0016 were still proposals; all three have
-landed, and the first item is what landing 0015 left behind.
+The list below was last rewritten when 0012, 0015 and 0016 were still proposals;
+all three have landed, and what they left behind was two items rather than one.
 
-1. **Groups on a PAT.** The one third of
-   [0011-bis](/rfc/0011-bis-namespace-scoped-visibility) that 0015 absorbed by
-   requirement and did not build. `UserToken` carries no groups and
-   `UserTokenAuthProvider` resolves every token to `groups: vec![]`, so a `group:`
-   subject in the shipped grant hierarchy never matches a personal access token
-   and every piece of token-driven automation reads as an authenticated user
-   with no groups. 0015 states the rule as settled and wrote
-   `pat_is_within_owner` to enforce it, so the invariant check is already there,
-   comparing against an empty set. Half a day, and it is a hole in something
-   already deployed rather than a proposal — which is the criterion above,
-   applied to the one item nobody scheduled because no open RFC owns it.
+**One of the two is now closed.** Groups on a PAT — the one third of
+[0011-bis](/rfc/0011-bis-namespace-scoped-visibility) that 0015 absorbed by
+requirement and did not build — has shipped. It headed this list because it was
+a hole in something already deployed rather than a proposal, and because no open
+RFC owned it: `UserToken` carried no groups, `UserTokenAuthProvider` resolved
+every token to `groups: vec![]`, so a `group:` subject in the shipped grant
+hierarchy matched no personal access token and every piece of token-driven
+automation read as an authenticated user with no groups, while
+`pat_is_within_owner` — the invariant check 0015 wrote for it — compared against
+a set that could only be empty. `user_tokens.groups` (migration 046) now holds a
+snapshot taken at creation and capped to the creator's own; the console picks it
+and lists what each token carries, and the CLI takes `--groups`/`--all-groups`.
+It is recorded here rather than deleted because the shape of it is the argument
+for the criterion: it was the smallest item on the list and the one most worth
+doing first.
+
+1. **[0017](/rfc/0017-writing-grants-at-the-package-and-version-tiers) — the
+   grants editor.** The other half of what 0015 left, and the half that has a
+   document. Migration 041 constrains `node_kind` to `package` or `version`,
+   `GrantRepository` can write either, and `chain::stored_nodes` reads both on
+   every `authorize` — but the only `put_grant` caller in the tree is the
+   ownership projection, which writes package rows carrying exactly three verbs
+   and has never written a version row. So there is no way to grant
+   `releases:read` on one package to one group, which is 0015 §4.4's own opening
+   example, and the version tier is walked on the hot path for a capability
+   nothing can populate. It sits this high on the criterion above rather than on
+   its size: `filter_listing` and `package_visibility` have no caller, which is
+   correct only while no version row exists, so the first one ever written turns
+   two idle functions into two bypassed ones with no other code change and no
+   error. Its phase 1 refuses `node_kind = version` until phase 2 lands, which
+   puts that interlock in the build rather than in a changelog. Three open
+   questions, each with a recommendation.
+
+   It also carries something 0015 left that is easy to miss, because the value
+   involved is already shipped: `Visibility::Private` resolves through a
+   package-tier `releases:read` grant, and the ownership projection — the only
+   writer — projects `releases:publish`, `owners:read` and `owners:write`, not
+   read. So `private` today means admin-only, which is why the console offers
+   three visibility values and not four: on
+   [0011-bis](/rfc/0011-bis-namespace-scoped-visibility) §4.6's own worked
+   example it would hide `ops.incident-runbook` from the `ops` developers the
+   table requires it stay visible to. A writer for the package tier is what
+   turns that value into the per-package override it was built to be.
 2. **[0010](/rfc/0010-toolchain-managers) — the toolchain layer.** Accepted,
    no open questions, and top of the roadmap's own list. `nodejs.org/dist` has
    been mirrored as a `generic` registry all along, and `generic_get` addresses
@@ -162,7 +203,7 @@ landed, and the first item is what landing 0015 left behind.
 
 ### The roadmap's remaining entries, against that list
 
-`ROADMAP.md` carries nineteen unchecked entries against these six documents.
+`ROADMAP.md` carries twenty-one unchecked entries against these six items.
 They are not a second plan. Six of them *are* the list above under a different
 name, and belong to whichever item owns them:
 
@@ -170,7 +211,7 @@ name, and belong to whichever item owns them:
 | --- | --- |
 | Node distributions (`nodedist`) · JVM toolchains (SDKMAN) | Item 2. They are RFC 0010, split into its two halves |
 | Third-party vulnerability flags · Vulnerability exposure reporting | Item 4. They are RFC 0002's two capabilities, and it is one RFC because they are one model |
-| Groups on a personal access token | Item 1 |
+| Writing grants at the package and version tiers | Item 1. It is RFC 0017, and the entry carries both halves — the writer and the listing filter — for the reason the RFC refuses to separate them |
 | Instance-to-instance transfer for air-gapped estates | Item 5, one layer up. RFC 0008 phase 4 builds a signed bundle with an import path and a defined interaction with dedup; this is the same format carrying approved artifacts rather than a toolchain plan, and it should reuse it rather than invent a second one |
 
 One entry reads as remaining and is not. **Web console redesign** names three
@@ -180,7 +221,7 @@ English". RFC 0003 landed all nine of its phases: `/explore` is a redirect to
 `/packages` in `ui/src/router/index.ts`, and `ui/src/locales/` holds `en.json`
 and `fr.json`. The entry is stale, not open.
 
-The remaining twelve have no RFC, and most should not need one — they are the
+The remaining fourteen have no RFC, and most should not need one — they are the
 shapes this codebase already has, one more time:
 
 - **Two adapters** — the generic mirror in `local`/`hybrid` mode, and Helm
@@ -194,20 +235,30 @@ shapes this codebase already has, one more time:
   merged into local policy, with the signature checked before it applies. That
   one is worth an RFC covering all three, because three ad-hoc fetchers each
   deciding what to trust is the defect RFC 0015 opens by describing.
-- **Three of RFC 0004-bis's own §13** — storage-backend migration (§13.3),
-  seeding from an incumbent (§13.4), and the bundle above (§13.2). They have
-  argued homes already; they are waiting on scheduling.
+- **Two of RFC 0004-bis's own §13** — storage-backend migration (§13.3) and
+  seeding from an incumbent (§13.4); the third, the bundle (§13.2), is the table
+  row above. They have argued homes already; they are waiting on scheduling.
 - **Per-host TLS** and **broader fuzz targets** — the first needs a reason
   before it needs a design, the second is standing hygiene.
+- **Clearing the upstream-detail absence cache on reload** — one call on the
+  reload path, and a test that a reload forgets an absence.
 
-**One of the twelve meets the criterion this page opens with**, and it is not
-obvious from the list: **storage-backend migration**. An operator who edits
-`[storage]` from filesystem to S3 strands every artifact already written — the
-bytes stay reachable only while the old backend is still configured, and
-nothing says so. The full resumable, dedup-aware migrate operation is the fix
-and is not small. A config warning is, and the machinery is already there:
-`AppConfig::warnings()` with a stable code, the same mechanism that raises
-`license-gate.sbom-disabled`. Worth taking ahead of its own entry.
+**Two of the fourteen meet the criterion this page opens with**, and neither is
+obvious from the list. The first is **storage-backend migration**. An operator
+who edits `[storage]` from filesystem to S3 strands every artifact already
+written — the bytes stay reachable only while the old backend is still
+configured, and nothing says so. The full resumable, dedup-aware migrate
+operation is the fix and is not small. A config warning is, and the machinery is
+already there: `AppConfig::warnings()` with a stable code, the same mechanism
+that raises `license-gate.sbom-disabled`. Worth taking ahead of its own entry.
+
+The second is the **absence cache**. `UpstreamDetailCoordinator` remembers which
+coordinates an upstream answered `404` for, and `clear_absent` exists to forget
+them; no reload path has ever called it. So a reload that adds an upstream, fixes
+its base URL or repairs its credentials leaves every coordinate that failed under
+the old configuration still remembered as missing, and the operator's fix appears
+not to work until the process restarts — a hole whose whole symptom is that hot
+reload, the feature, looks broken.
 
 Three things do not follow from that list and are worth stating separately.
 

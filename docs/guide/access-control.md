@@ -132,6 +132,24 @@ Five subject forms:
 Repeating a subject is a **union**, not a second opinion: two blocks granting
 `role:user` different verbs give `role:user` both.
 
+**A personal access token matches a `group:` subject only for the groups it was
+created with.** A token carries a snapshot of its creator's groups, capped to a
+subset of them and chosen at creation — never more than its owner holds, and
+never re-resolved afterwards, because a token has no session to re-resolve from.
+Two things follow for a grant you write:
+
+- A token created with no groups matches no `group:` subject at all, whatever
+  its owner belongs to. That is the default, and it is what every token minted
+  before the snapshot existed carries. If a pipeline cannot see something its
+  owner can, this is the first thing to check: `batlehub auth token list` shows
+  what each token carries.
+- A token keeps its groups when its owner loses them. Revoking the token is what
+  ends that, not the change at the IDP — so offboarding revokes tokens, and a
+  token's expiry (mandatory, 90 days at most) is the outer bound.
+
+`user:<id>` matches a token the same as a session: a token resolves to its
+creator's id.
+
 ### Where you write them {#tiers}
 
 Five tiers, outermost first:

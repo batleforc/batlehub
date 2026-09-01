@@ -411,6 +411,13 @@ role_claim = "groups"                  # default: "role"
 
 **Token creation is scoped to these providers.** `POST /api/v1/auth/tokens` accepts a session from any provider declared here, whatever its `name` and whether or not it has a `redirect_uri`. No other credential can mint a personal access token: a static token, a Kubernetes service account, an Actions OIDC job or another PAT all get `403`, so a machine credential can never issue a longer-lived one. With no `type = "oidc"` provider configured, nobody can create a PAT.
 
+**A personal access token carries a snapshot of its creator's groups.** The groups are chosen at creation, capped to the ones the creator holds — asking for one they do not is `403` — and never re-resolved afterwards, because a token has no session to re-resolve from. Two consequences for an operator:
+
+- **A token's expiry is an access-control lifetime, not hygiene.** Group membership on a token does not follow the IDP, so a departed member keeps whatever the token carries until it expires or is revoked. Expiry is mandatory and capped at 90 days, and **offboarding should revoke tokens** rather than rely on the IDP change reaching them. For interactive users, an OIDC session re-resolves groups on every refresh and stays the recommended posture; tokens are for automation.
+- **A token names the group the provider actually emits.** That is the prefixed form for anything not renamed by `role_mappings` above — `k8s:system:serviceaccounts:digital` from a provider named `k8s`, not `system:serviceaccounts:digital`. `batlehub auth whoami` prints them as resolved, which is the reliable way to spell one; the console offers them as buttons for the same reason.
+
+Tokens minted before this existed carry no groups and are unchanged by it: they see `public` and `internal` and nothing granted to a team, exactly as they did. A user who needs a token to reach team packages creates a new one.
+
 #### 3.3.3 Kubernetes auth (`type = "kubernetes"`)
 
 Validates Kubernetes service account tokens via the Kubernetes TokenReview API. All fields default to the standard in-cluster mounted secrets and environment variables, so minimal configuration is needed when running inside a cluster.

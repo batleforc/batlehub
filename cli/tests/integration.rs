@@ -879,6 +879,36 @@ fn auth_token_create_requires_oidc_fails() {
     );
 }
 
+/// RFC 0011-bis §4.4 — the two ways of naming a token's groups are exclusive.
+///
+/// `--all-groups` is sugar that resolves the list from `auth whoami` and sends
+/// it; combining it with an explicit `--groups` would make the resulting
+/// snapshot depend on which one the code happened to read, so clap refuses the
+/// combination instead of picking.
+#[test]
+fn auth_token_create_refuses_groups_and_all_groups_together() {
+    let srv = TestServer::start();
+    let (ok, _stdout, stderr) = cli_cmd(
+        &[
+            "auth",
+            "token",
+            "create",
+            "--name",
+            "ci-token",
+            "--groups",
+            "eng",
+            "--all-groups",
+        ],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(!ok, "the two flags must not be usable together");
+    assert!(
+        stderr.contains("--all-groups") && stderr.contains("--groups"),
+        "stderr should name both flags, got: {stderr}"
+    );
+}
+
 #[test]
 fn auth_token_revoke_requires_oidc_fails() {
     let srv = TestServer::start();

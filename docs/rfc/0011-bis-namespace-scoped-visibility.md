@@ -2,7 +2,7 @@
 
 | Field      | Value                                                                  |
 | ---------- | ---------------------------------------------------------------------- |
-| Status     | **Superseded by 0015** — [RFC 0015](/rfc/0015-grants-on-the-resource-hierarchy) §9.1 proposed absorbing this document on acceptance; it is Implemented, so the absorption is done. Two of the three gaps landed with it: the per-ecosystem separator (§4.2) was carried over unchanged and is `namespace_separator` in `crates/core/src/entities/grant.rs`, and reader groups (§4.3) were taken by requirement rather than by spelling — the set became grant subjects and the empty-override case became `Visibility::Private`. **The third did not.** Groups on a PAT (§4.4, phase 1) is still unbuilt: `UserToken` carries no groups and `UserTokenAuthProvider` resolves every token to `groups: vec![]`, so 0015's `group:` subjects never match a PAT and `pat_is_within_owner` — the invariant check 0015 built for it — can only ever compare against an empty set. It is not a proposal awaiting review; it is a gap in a shipped feature, tracked on the roadmap under Authentication providers. §8's two open questions go with it: the PAT TTL policy is now live, group nesting stays flat |
+| Status     | **Superseded by 0015** — [RFC 0015](/rfc/0015-grants-on-the-resource-hierarchy) §9.1 proposed absorbing this document on acceptance; it is Implemented, so the absorption is done. **G1 and G2 are built; G3 is built apart from one state that waits on [RFC 0017](/rfc/0017-writing-grants-at-the-package-and-version-tiers)** (see phase 3). Two gaps landed with 0015 itself: the per-ecosystem separator (§4.2) was carried over unchanged and is `namespace_separator` in `crates/core/src/entities/grant.rs`, and reader groups (§4.3) were taken by requirement rather than by spelling — the set became grant subjects and the empty-override case became `Visibility::Private`. **The third landed separately**, because 0015 absorbed it by requirement and did not build it: groups on a PAT (§4.4, phase 1) is now `user_tokens.groups` (migration 046), `snapshot_pat_groups` capping the snapshot to the creator's own at `POST /api/v1/auth/tokens`, and `UserTokenAuthProvider::to_identity` returning it — so 0015's `group:` subjects match a PAT and `pat_is_within_owner` compares against a set that can be non-empty. The console picks the groups on `TokensPage.vue` and the CLI takes `--groups` / `--all-groups`. §8's two open questions closed with it: the PAT TTL policy is live (mandatory expiry, 1–90 days, which is tighter than the recommendation), group nesting stays flat |
 | Short      | Namespace-scoped visibility |
 | Settles    | Making a team's packages visible to that team and to the groups it grants read to: a namespace separator per ecosystem, reader groups with a per-package override, and groups on a PAT |
 | Author     | batleforc                                                              |
@@ -266,8 +266,10 @@ Warnings (logged and surfaced to the admin):
 
 ### Still open
 
-1. PAT policy: maximum TTL and whether expiry is mandatory. Now an access-control question, not hygiene (§4.4): the TTL bounds how long a stale group snapshot grants read. Recommendation: default 90 days, hard cap 1 year, no non-expiring PATs.
-2. Group nesting/transitivity: grants match flat group ids as the IDP emits them. If the IDP nests groups, expansion is the IDP's job. Recommendation: leave flat, revisit only if a deployment needs it.
+Both closed with phase 1; kept here because the reasoning is what the answers rest on.
+
+1. ~~PAT policy: maximum TTL and whether expiry is mandatory.~~ **Closed: expiry is mandatory, 1–90 days**, enforced by `create_token` — tighter than this document's own recommendation of a one-year cap, and already the shipped behaviour when the snapshot landed on top of it. This is what makes the staleness of §4.4 bounded: a departed member's grant dies with the token at ninety days at the latest, and sooner if offboarding revokes it.
+2. ~~Group nesting/transitivity.~~ **Closed: flat.** Grants match group ids as the IDP emits them, and a snapshot stores exactly those strings, so nesting is the IDP's to expand. Revisit only if a deployment needs it.
 
 ---
 
@@ -299,7 +301,7 @@ Warnings (logged and surfaced to the admin):
 - **Unit** (`crates/adapters`): `find_namespace` matches `digital.pipeline-tools` for a `digital` claim in a VSX registry and does **not** match it in a slash-separator registry; longest prefix still wins; `%` and `_` in a prefix stay literal.
 - **Equivalence** (`crates/adapters`, Postgres): the SQL predicate and the Rust gate agree on a fixture covering every row of §4.6 for every caller — the listing must never be more permissive than the download gate. This is the test that fails if only one of the two is edited.
 - **Unit** (`crates/core`): a reader list containing `*` grants read to a group literally named `*` and to nobody else — the no-wildcard rule of §4.3, asserted rather than assumed, in the Rust gate and in the SQL predicate alike.
-- **Unit** (`crates/adapters`): PAT groups round-trip through creation; a PAT cannot be created with a group its creator lacks; a groups-less PAT sees `public`/`internal` only.
+- **Unit** (`crates/adapters`): PAT groups round-trip through creation; a PAT cannot be created with a group its creator lacks; a groups-less PAT sees `public`/`internal` only. **Landed with phase 1**, across four files rather than one, because the three halves fail independently: `snapshot_pat_groups`'s own table in `crates/core/src/entities/grant.rs` (including that a snapshot always satisfies `pat_is_within_owner` — the two functions asserted as one rule from both sides); `crates/adapters/tests/pg_user_tokens.rs` against real Postgres, for migration 046, the `TEXT[]` binding and the four `SELECT` column lists that a missing `groups` would leave disagreeing with each other; the provider's own test that a token resolves to what it was minted with; and `crates/web/tests/tokens_and_pagination.rs`, where an OIDC session mints a token and the token is then presented as a credential, so `create → store → authenticate → identity` is one path rather than three separately-mocked halves.
 - **Integration** (`crates/web`, new `local_openvsx_visibility.rs`): the §4.6 estate published once, then queried as `digital`, `sales`, `ops`, an authenticated no-group user, and anonymously — through `extensionquery`, `/api/-/search`, `/api/{namespace}` and the direct download route. Asserts the exact visible sets, that a hidden package is **absent rather than 403** in every listing, that `/api/digital` is `404` for `sales`, and that direct download is `403`.
 - **Integration** (`crates/web`): a reader-group member cannot yank, delete, set visibility, or edit grants on the package they can read — the read/write split of §4.3.
 - **Real client** (per the project's standing practice that route tests are not client tests): `ovsx get ops.k8s-helper` succeeds as `digital` and fails as a contractor, and `ovsx search` returns exactly the expected set for each of the three developers. No editor is required to prove this RFC.
@@ -309,9 +311,30 @@ Warnings (logged and surfaced to the admin):
 
 ## 12. Implementation phases
 
-| Phase | Content |
-| ----- | ------- |
-| 1 | PAT group snapshot (G1): `UserToken.groups`, `create_token` capping, `UserTokenAuthProvider` returning them, CLI flags. Independently useful — it is what makes any automation see its owner's packages. |
-| 2 | Namespace separator per `RegistryKind` (G2): matcher and SQL predicate **in one commit**, with the equivalence test. |
-| 3 | Reader groups (G3): migration, resolution function, readers API, audit events. |
-| 4 | `ui/`: readers multi-select on `AdminTeamNamespaces.vue`, per-package override control with the inherited/override/owner-only states, owner-facing control on `MyNamespace.vue`, PAT groups on `TokensPage.vue`. |
+| Phase | Content | State |
+| ----- | ------- | ----- |
+| 1 | PAT group snapshot (G1): `UserToken.groups`, `create_token` capping, `UserTokenAuthProvider` returning them, CLI flags. Independently useful — it is what makes any automation see its owner's packages. | **Built.** Migration 046 adds `user_tokens.groups text[] NOT NULL DEFAULT '{}'`; `snapshot_pat_groups` (`crates/core/src/entities/grant.rs`, beside the `pat_is_within_owner` it satisfies) caps the request to what the creator holds and refuses the rest with `403`; `POST /api/v1/auth/tokens` takes `groups` and echoes back what was stored; the listing carries it; `TokensPage.vue` picks from the caller's own groups and `batlehub auth token create` takes `--groups` / `--all-groups` |
+| 2 | Namespace separator per `RegistryKind` (G2): matcher and SQL predicate **in one commit**, with the equivalence test. | **Built by RFC 0015** — `namespace_separator`, and stored per claim by migration 045 |
+| 3 | Reader groups (G3): migration, resolution function, readers API, audit events. | **Mostly taken by RFC 0015 by requirement**, not by spelling: the namespace default became `group:` subjects under `[registries.namespaces.grants]`, which names a set rather than the single `group_id` this gap was about, and the empty per-package override became `Visibility::Private`. **The override is not reachable end to end yet.** `private` admits a caller only through a package-tier `releases:read` grant (`subject_holds_local_read_grant`), and the only `put_grant` caller in the tree is the ownership projection, which writes `releases:publish`/`owners:read`/`owners:write` and not `releases:read` — so `private` currently resolves to admin-only. Applied to §4.6's `ops.incident-runbook` it would hide the package from the `ops` developers the table requires it stay visible to, which is why `VISIBILITY_OPTIONS` in `ui/src/config/visibility.ts` still offers three values and not four: the missing option is a dependency, not an oversight. It unblocks when [RFC 0017](/rfc/0017-writing-grants-at-the-package-and-version-tiers) lands a writer for the package tier |
+| 4 | `ui/`: readers multi-select on `AdminTeamNamespaces.vue`, per-package override control with the inherited/override/owner-only states, owner-facing control on `MyNamespace.vue`, PAT groups on `TokensPage.vue`. | Grant editing is RFC 0015's `AdminAuthorization.vue` and [RFC 0017](/rfc/0017-writing-grants-at-the-package-and-version-tiers); the PAT half shipped with phase 1 |
+
+### What phase 1 decided that this document left open
+
+Two choices the design did not pin, settled by building it:
+
+- **Omitting `groups` means no groups**, not "all of mine". Every token minted
+  before the column carried none, so the default is the behaviour that does not
+  change on upgrade, and it is the narrow direction to be wrong in.
+  `--all-groups` is sugar in the CLI — it reads `auth whoami` and sends the
+  resolved list — so the server keeps one spelling of what a token carries, per
+  §8 decision 7's argument against a second invisible rule.
+- **A group the creator does not hold is `403`, not a silent drop.** Narrowing
+  quietly mints a token weaker than the one that was asked for, and the first
+  report of it is a pipeline that cannot see a package with nothing on screen
+  connecting the two. The refusal names the groups it refused.
+- **What is stored is the owner's string, not the requested one.** The
+  comparison is space-stripped on both sides (§4.4), so `platformteam` matches a
+  held `platform team` — and then `platform team` is what the row carries, which
+  keeps a PAT's group ids literally a subset of what the provider emitted and
+  makes every later comparison, SQL predicate included, behave for the token
+  exactly as it does for the session that minted it.

@@ -34,7 +34,11 @@ use uuid::Uuid;
 // ── InMemoryTokenRepository ───────────────────────────────────────────────────
 
 struct InMemoryTokenRepository {
-    tokens: Mutex<Vec<UserToken>>,
+    /// `(token_hash, token)`. The hash is kept beside the row rather than on
+    /// `UserToken` — as in Postgres, where it is a column no `SELECT` in the
+    /// repository reads back — so `find_by_hash` works and a token this suite
+    /// mints can actually be presented as a credential.
+    tokens: Mutex<Vec<(String, UserToken)>>,
 }
 
 impl InMemoryTokenRepository {
@@ -52,16 +56,17 @@ impl UserTokenRepository for InMemoryTokenRepository {
         id: Uuid,
         owner: &TokenOwner,
         name: &str,
-        _token_hash: &str,
+        token_hash: &str,
         role: Role,
         expires_at: chrono::DateTime<Utc>,
+        groups: &[String],
     ) -> Result<UserToken, CoreError> {
         // Names are unique per *principal*, and a principal is (provider,
         // user_id) — matching the `uq_user_token_name` index in Postgres.
         let mut tokens = self.tokens.lock().unwrap();
         if tokens
             .iter()
-            .any(|t| owns(t, owner) && t.name == name && t.revoked_at.is_none())
+            .any(|(_, t)| owns(t, owner) && t.name == name && t.revoked_at.is_none())
         {
             return Err(CoreError::Conflict(format!(
                 "a token named '{}' already exists",
@@ -78,21 +83,26 @@ impl UserTokenRepository for InMemoryTokenRepository {
             created_at: Utc::now(),
             revoked_at: None,
             last_used_at: None,
+            groups: groups.to_vec(),
         };
-        tokens.push(tok);
-        Ok(tokens.last().unwrap().clone_token())
+        tokens.push((token_hash.to_owned(), tok));
+        Ok(tokens.last().unwrap().1.clone_token())
     }
 
-    async fn find_by_hash(&self, _token_hash: &str) -> Result<Option<UserToken>, CoreError> {
-        Ok(None)
+    async fn find_by_hash(&self, token_hash: &str) -> Result<Option<UserToken>, CoreError> {
+        let tokens = self.tokens.lock().unwrap();
+        Ok(tokens
+            .iter()
+            .find(|(h, t)| h == token_hash && t.revoked_at.is_none() && t.expires_at > Utc::now())
+            .map(|(_, t)| t.clone_token()))
     }
 
     async fn list_for_user(&self, owner: &TokenOwner) -> Result<Vec<UserToken>, CoreError> {
         let tokens = self.tokens.lock().unwrap();
         Ok(tokens
             .iter()
-            .filter(|t| owns(t, owner) && t.revoked_at.is_none())
-            .map(|t| t.clone_token())
+            .filter(|(_, t)| owns(t, owner) && t.revoked_at.is_none())
+            .map(|(_, t)| t.clone_token())
             .collect())
     }
 
@@ -102,7 +112,7 @@ impl UserTokenRepository for InMemoryTokenRepository {
 
     async fn revoke(&self, id: Uuid, owner: &TokenOwner) -> Result<bool, CoreError> {
         let mut tokens = self.tokens.lock().unwrap();
-        for t in tokens.iter_mut() {
+        for (_, t) in tokens.iter_mut() {
             if t.id == id && owns(t, owner) && t.revoked_at.is_none() {
                 t.revoked_at = Some(Utc::now());
                 return Ok(true);
@@ -136,6 +146,7 @@ impl CloneToken for UserToken {
             created_at: self.created_at,
             revoked_at: self.revoked_at,
             last_used_at: self.last_used_at,
+            groups: self.groups.clone(),
         }
     }
 }
@@ -175,17 +186,24 @@ impl AuthProvider for OidcStyleAuthProvider {
             .or_else(|| req.headers.get("Authorization"))
             .and_then(|v| v.strip_prefix("Bearer "));
         match auth {
+            // The groups are the point of the PAT-snapshot tests below: a
+            // creator with none can only ever mint a token with none, which is
+            // the state this whole feature exists to move off.
             Some(OIDC_USER_TOKEN) => Ok(Some(Identity {
                 user_id: Some("oidc-user".to_owned()),
                 role: Role::User,
                 auth_provider: Some(self.0.to_owned()),
-                groups: vec![],
+                groups: vec![
+                    "authentik:eng".to_owned(),
+                    "authentik:qa".to_owned(),
+                    "platform team".to_owned(),
+                ],
             })),
             Some(OIDC_ADMIN_TOKEN) => Ok(Some(Identity {
                 user_id: Some("oidc-admin".to_owned()),
                 role: Role::Admin,
                 auth_provider: Some(self.0.to_owned()),
-                groups: vec![],
+                groups: vec!["authentik:admins".to_owned()],
             })),
             _ => Ok(None),
         }
@@ -272,6 +290,13 @@ async fn make_app_with_oidc_provider(
             (USER_TOKEN.to_owned(), Some("user-1".to_owned()), Role::User),
         ])),
         Arc::new(OidcStyleAuthProvider(provider_name)),
+        // Last in the chain: the providers above answer for their own
+        // credentials, and a minted PAT matches none of them. Wired to the same
+        // repository the endpoint writes to, so `create → present → identity`
+        // is one path here rather than three separately-mocked halves.
+        Arc::new(batlehub_adapters::auth::UserTokenAuthProvider::new(
+            tok_repo.clone(),
+        )),
     ];
 
     finish_test_app(
@@ -687,6 +712,182 @@ async fn duplicate_token_name_returns_conflict() {
         .to_request();
     let resp = call_service(&app, req).await;
     assert_eq!(resp.status(), 409);
+}
+
+// ── PAT group snapshot (RFC 0011-bis §4.4, G1) ────────────────────────────────
+// Before this, `UserTokenAuthProvider::to_identity` returned `groups: vec![]`
+// for every token, so a `group:` subject in RFC 0015's grant hierarchy could
+// never match a PAT and every automation read as an authenticated user
+// belonging to no team — including the team that created it.
+
+/// The whole chain in one test: an OIDC session mints a token naming groups it
+/// holds, and the token, presented as a credential, resolves to them. The three
+/// halves — endpoint, column, provider — are only correct together.
+#[actix_web::test]
+async fn a_pat_carries_the_groups_it_was_minted_with() {
+    let app = make_app_with_tokens(InMemoryRepo::new(), InMemoryTokenRepository::new()).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .set_json(serde_json::json!({
+            "name": "ci", "expires_in_days": 30, "role": "user",
+            "groups": ["authentik:eng"],
+        }))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 201);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["groups"], serde_json::json!(["authentik:eng"]));
+    let raw = body["token"].as_str().expect("raw token").to_owned();
+
+    let req = TestRequest::get()
+        .uri("/api/v1/me")
+        .insert_header(("Authorization", bearer(&raw)))
+        .to_request();
+    let me: Value = read_body_json(call_service(&app, req).await).await;
+    assert_eq!(me["user_id"], "oidc-user");
+    assert_eq!(
+        me["groups"],
+        serde_json::json!(["authentik:eng"]),
+        "the snapshot is what the token resolves to"
+    );
+    assert_eq!(
+        me["auth_provider"], "user-token",
+        "still a PAT session, so it cannot mint or revoke tokens of its own"
+    );
+}
+
+/// The subset invariant RFC 0015 §4.3 states and `pat_is_within_owner` checks.
+/// A token that can exceed its owner is a privilege-escalation primitive.
+#[actix_web::test]
+async fn a_pat_cannot_be_minted_with_a_group_its_creator_lacks() {
+    let app = make_app_with_tokens(InMemoryRepo::new(), InMemoryTokenRepository::new()).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .set_json(serde_json::json!({
+            "name": "escalate", "expires_in_days": 7, "role": "user",
+            "groups": ["authentik:eng", "authentik:admins"],
+        }))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(
+        resp.status(),
+        403,
+        "refused, not silently narrowed — a quietly weaker token is a pipeline \
+         that cannot see a package with nothing to explain why"
+    );
+
+    let req = TestRequest::get()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .to_request();
+    let list: Value = read_body_json(call_service(&app, req).await).await;
+    assert_eq!(
+        list.as_array().map(Vec::len),
+        Some(0),
+        "a refused request mints nothing"
+    );
+}
+
+/// Omitting the field is what every token minted before this feature carried,
+/// and what it must keep carrying (§10: existing PATs lose no access).
+#[actix_web::test]
+async fn a_pat_with_no_groups_requested_carries_none() {
+    let app = make_app_with_tokens(InMemoryRepo::new(), InMemoryTokenRepository::new()).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .set_json(serde_json::json!({"name": "quiet", "expires_in_days": 7, "role": "user"}))
+        .to_request();
+    let body: Value = read_body_json(call_service(&app, req).await).await;
+    assert_eq!(body["groups"], serde_json::json!([]));
+    let raw = body["token"].as_str().expect("raw token").to_owned();
+
+    let req = TestRequest::get()
+        .uri("/api/v1/me")
+        .insert_header(("Authorization", bearer(&raw)))
+        .to_request();
+    let me: Value = read_body_json(call_service(&app, req).await).await;
+    assert_eq!(me["groups"], serde_json::json!([]));
+}
+
+/// Space-stripped on both sides (§4.4), and stored as the *owner* holds it — so
+/// every later comparison sees the same bytes the OIDC session would have
+/// carried, including the SQL listing predicate.
+#[actix_web::test]
+async fn a_requested_group_matches_space_stripped_and_is_stored_as_held() {
+    let app = make_app_with_tokens(InMemoryRepo::new(), InMemoryTokenRepository::new()).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .set_json(serde_json::json!({
+            "name": "spaced", "expires_in_days": 7, "role": "user",
+            "groups": ["platformteam"],
+        }))
+        .to_request();
+    let resp = call_service(&app, req).await;
+    assert_eq!(resp.status(), 201);
+    let body: Value = read_body_json(resp).await;
+    assert_eq!(body["groups"], serde_json::json!(["platform team"]));
+}
+
+/// The listing shows the snapshot, because a snapshot goes stale silently:
+/// nothing tells an owner their token still carries a team they left.
+#[actix_web::test]
+async fn the_token_listing_shows_the_snapshot() {
+    let app = make_app_with_tokens(InMemoryRepo::new(), InMemoryTokenRepository::new()).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .set_json(serde_json::json!({
+            "name": "listed", "expires_in_days": 7, "role": "user",
+            "groups": ["authentik:qa"],
+        }))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 201);
+
+    let req = TestRequest::get()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .to_request();
+    let list: Value = read_body_json(call_service(&app, req).await).await;
+    assert_eq!(list[0]["groups"], serde_json::json!(["authentik:qa"]));
+}
+
+/// A PAT is a credential, not a session: it cannot mint another one, so it
+/// cannot mint one with groups either. The check that stops it is the same
+/// `oidc_session_owner` gate, asserted here against the group path specifically
+/// — a PAT that could re-mint itself would launder a snapshot past its TTL.
+#[actix_web::test]
+async fn a_pat_cannot_mint_a_second_pat_from_its_own_snapshot() {
+    let app = make_app_with_tokens(InMemoryRepo::new(), InMemoryTokenRepository::new()).await;
+
+    let req = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(OIDC_USER_TOKEN)))
+        .set_json(serde_json::json!({
+            "name": "first", "expires_in_days": 7, "role": "user",
+            "groups": ["authentik:eng"],
+        }))
+        .to_request();
+    let body: Value = read_body_json(call_service(&app, req).await).await;
+    let raw = body["token"].as_str().expect("raw token").to_owned();
+
+    let req = TestRequest::post()
+        .uri("/api/v1/auth/tokens")
+        .insert_header(("Authorization", bearer(&raw)))
+        .set_json(serde_json::json!({
+            "name": "second", "expires_in_days": 90, "role": "user",
+            "groups": ["authentik:eng"],
+        }))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 403);
 }
 
 // ── Pagination / Filtering tests ──────────────────────────────────────────────

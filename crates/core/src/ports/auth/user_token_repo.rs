@@ -44,10 +44,30 @@ pub struct UserToken {
     /// recorded. Not the same as "never used" for a token that predates the
     /// column.
     pub last_used_at: Option<DateTime<Utc>>,
+    /// The creator's groups, snapshotted at creation and capped to a subset of
+    /// what they held (RFC 0011-bis §4.4).
+    ///
+    /// A snapshot rather than a live lookup because there is nothing to look up
+    /// *from*: a PAT has no session and no refresh token, so re-resolving from
+    /// the IDP is not an option that exists. The cost is staleness — a developer
+    /// who leaves a team keeps reading that team's packages until the token
+    /// expires or is revoked — which is why the TTL is capped and mandatory and
+    /// why offboarding means revoking tokens.
+    ///
+    /// Empty for every token minted before this column, which is exactly what
+    /// those tokens already resolved to.
+    pub groups: Vec<String>,
 }
 
 #[async_trait]
 pub trait UserTokenRepository: Send + Sync {
+    /// `groups` must already have been capped to the creator's own — see
+    /// [`snapshot_pat_groups`]. A repository stores what it is handed; the
+    /// subset invariant is decided where the creator's `Identity` is in scope,
+    /// which is not here.
+    ///
+    /// [`snapshot_pat_groups`]: crate::entities::snapshot_pat_groups
+    #[allow(clippy::too_many_arguments)]
     async fn create_token(
         &self,
         id: Uuid,
@@ -56,6 +76,7 @@ pub trait UserTokenRepository: Send + Sync {
         token_hash: &str,
         role: Role,
         expires_at: DateTime<Utc>,
+        groups: &[String],
     ) -> Result<UserToken, CoreError>;
 
     /// Look up an active (non-expired, non-revoked) token by its SHA-256 hash.

@@ -35,6 +35,7 @@ fn token_from_row(r: &sqlx::postgres::PgRow) -> Result<UserToken, CoreError> {
         created_at: r.get("created_at"),
         revoked_at: r.get("revoked_at"),
         last_used_at: r.get("last_used_at"),
+        groups: r.get("groups"),
     })
 }
 
@@ -48,13 +49,14 @@ impl UserTokenRepository for PgPackageRepository {
         token_hash: &str,
         role: Role,
         expires_at: DateTime<Utc>,
+        groups: &[String],
     ) -> Result<UserToken, CoreError> {
         let row = sqlx::query(
             r#"
             INSERT INTO user_tokens
-                (id, user_id, provider, name, token_hash, role, expires_at, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-            RETURNING id, user_id, provider, name, role, expires_at, created_at, revoked_at, last_used_at
+                (id, user_id, provider, name, token_hash, role, expires_at, created_at, groups)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8)
+            RETURNING id, user_id, provider, name, role, expires_at, created_at, revoked_at, last_used_at, groups
             "#,
         )
         .bind(id)
@@ -64,6 +66,7 @@ impl UserTokenRepository for PgPackageRepository {
         .bind(token_hash)
         .bind(role_to_str(&role))
         .bind(expires_at)
+        .bind(groups)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| {
@@ -81,7 +84,7 @@ impl UserTokenRepository for PgPackageRepository {
     async fn find_by_hash(&self, token_hash: &str) -> Result<Option<UserToken>, CoreError> {
         let row = sqlx::query(
             r#"
-            SELECT id, user_id, provider, name, role, expires_at, created_at, revoked_at, last_used_at
+            SELECT id, user_id, provider, name, role, expires_at, created_at, revoked_at, last_used_at, groups
             FROM user_tokens
             WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > NOW()
             "#,
@@ -99,7 +102,7 @@ impl UserTokenRepository for PgPackageRepository {
     async fn list_for_user(&self, owner: &TokenOwner) -> Result<Vec<UserToken>, CoreError> {
         let rows = sqlx::query(
             r#"
-            SELECT id, user_id, provider, name, role, expires_at, created_at, revoked_at, last_used_at
+            SELECT id, user_id, provider, name, role, expires_at, created_at, revoked_at, last_used_at, groups
             FROM user_tokens
             WHERE user_id = $1 AND provider = $2
               AND revoked_at IS NULL AND expires_at > NOW()

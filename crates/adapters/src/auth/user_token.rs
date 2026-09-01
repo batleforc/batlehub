@@ -126,12 +126,17 @@ impl AuthProvider for UserTokenAuthProvider {
 /// That is what the token endpoints key on to refuse a PAT session: reporting
 /// the minting provider here would let a PAT mint another PAT and revoke its
 /// siblings.
+///
+/// `groups` is the snapshot taken at creation (RFC 0011-bis §4.4), never a live
+/// lookup: a PAT has no session to re-resolve from. The subset invariant was
+/// decided by `snapshot_pat_groups` when the row was written, so nothing here
+/// can widen it — this reads the column and stops.
 fn to_identity(tok: UserToken) -> Identity {
     Identity {
         user_id: Some(tok.user_id),
         role: tok.role,
         auth_provider: Some("user-token".to_owned()),
-        groups: vec![],
+        groups: tok.groups,
     }
 }
 
@@ -175,6 +180,7 @@ mod tests {
             expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
             revoked_at: None,
             last_used_at: None,
+            groups: vec!["oidc1:eng".to_owned()],
         }
     }
 
@@ -188,6 +194,7 @@ mod tests {
             _: &str,
             _: Role,
             _: DateTime<chrono::Utc>,
+            _: &[String],
         ) -> Result<UserToken, CoreError> {
             Ok(stub_token())
         }
@@ -202,6 +209,7 @@ mod tests {
                 expires_at: t.expires_at,
                 revoked_at: t.revoked_at,
                 last_used_at: t.last_used_at,
+                groups: t.groups.clone(),
             }))
         }
         async fn list_for_user(&self, _: &TokenOwner) -> Result<Vec<UserToken>, CoreError> {
@@ -271,6 +279,22 @@ mod tests {
             .unwrap();
         assert_eq!(id.user_id.as_deref(), Some("carol"));
         assert_eq!(id.role, Role::User);
+    }
+
+    /// RFC 0011-bis §4.4 / G1. This returned `groups: vec![]` for every token,
+    /// so RFC 0015's `group:` subjects could never match a PAT and automation
+    /// read as an authenticated user belonging to no team.
+    #[tokio::test]
+    async fn a_token_resolves_to_the_groups_it_was_minted_with() {
+        let p = UserTokenAuthProvider::new(Arc::new(StubRepo(Some(stub_token()))));
+        let id = p
+            .authenticate(&req(
+                "Bearer abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(id.groups, vec!["oidc1:eng".to_owned()]);
     }
 
     #[tokio::test]
@@ -379,6 +403,7 @@ mod prefix_and_usage_tests {
             _: &str,
             _: Role,
             _: chrono::DateTime<chrono::Utc>,
+            _: &[String],
         ) -> Result<UserToken, CoreError> {
             unreachable!()
         }
@@ -393,6 +418,7 @@ mod prefix_and_usage_tests {
                 expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
                 revoked_at: None,
                 last_used_at: None,
+                groups: vec![],
             }))
         }
         async fn list_for_user(&self, _: &TokenOwner) -> Result<Vec<UserToken>, CoreError> {
@@ -453,6 +479,7 @@ mod prefix_and_usage_tests {
                 _: &str,
                 _: Role,
                 _: chrono::DateTime<chrono::Utc>,
+                _: &[String],
             ) -> Result<UserToken, CoreError> {
                 unreachable!()
             }

@@ -25,9 +25,9 @@ pub use explore::{
     ReleaseAgeGateParams, ResolutionPolicy, ResolutionState,
 };
 pub use grant::{
-    namespace_matches, namespace_separator, pat_is_within_owner, resolve, DryRun, GrantMap,
-    GrantSet, GroupProvider, Node, Provenance, RegistryGrants, SubjectMatcher, SubjectParseError,
-    ADMINISTRATIVE_FLOOR, RESERVED_GRANT_KEYS,
+    namespace_matches, namespace_separator, pat_is_within_owner, resolve, snapshot_pat_groups,
+    DryRun, GrantMap, GrantSet, GroupProvider, Node, Provenance, RegistryGrants, SubjectMatcher,
+    SubjectParseError, ADMINISTRATIVE_FLOOR, RESERVED_GRANT_KEYS,
 };
 pub use identity::{Identity, Role};
 pub use links::{normalize_url, MetadataLinks};

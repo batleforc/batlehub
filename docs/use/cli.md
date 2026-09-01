@@ -434,6 +434,7 @@ batlehub-cli publish numpy-1.26.0-py311h0.conda --registry internal --platform l
 batlehub-cli auth whoami
 batlehub-cli auth token list
 batlehub-cli auth token create --name <n> [--days <d>] [--role user|admin]
+                               [--groups <g1,g2> | --all-groups]
 batlehub-cli auth token revoke <uuid>
 ```
 
@@ -458,9 +459,56 @@ Create a long-lived API token (requires an active OIDC session). The raw token i
 ```
 $ batlehub-cli auth token create --name ci-pipeline --days 90
 Created token 'ci-pipeline' (role: user, expires: 2026-09-02)
+Groups: none — this token sees only public and internal packages
 
 Token (store this — it will not be shown again):
-  bhub_XXXXXXXXXXXXXXXXXXXX
+  bh_pat_XXXXXXXXXXXXXXXXXXXX
+```
+
+#### Groups on a token
+
+A token carries **no groups by default**, so it sees `public` and `internal`
+packages and nothing granted to a team. Name the groups it should carry:
+
+```
+$ batlehub-cli auth token create --name ci-pipeline --groups platform,release
+Created token 'ci-pipeline' (role: user, expires: 2026-10-01)
+Groups: platform, release
+```
+
+`--all-groups` is shorthand for every group you hold right now — it reads
+`auth whoami` and sends that list:
+
+```
+$ batlehub-cli auth token create --name laptop --all-groups
+```
+
+Three things worth knowing before you use them:
+
+- **You can only give a token groups you hold.** Naming one you do not is
+  refused with a `403` that names it, not silently dropped — a token that is
+  quietly narrower than asked for shows up later as a pipeline that cannot see a
+  package, with nothing connecting the two.
+- **Spell the group as the server resolves it.** `auth whoami` prints the
+  resolved ids, and they are not always the ones the operator has in mind: a
+  Kubernetes group reaches this model prefixed with its provider name
+  (`k8s:system:serviceaccounts:digital`, not
+  `system:serviceaccounts:digital`) unless a `role_mappings` entry renames it.
+- **It is a snapshot, not a subscription.** The groups are taken once, at
+  creation, and never re-resolved — a token has no session to re-resolve from.
+  Leaving a team does not narrow a token that already carries it; the token's
+  expiry (90 days at most) and revoking it are what bound that, which is why
+  offboarding should revoke tokens. `auth token list` shows what each one
+  carries.
+
+```
+$ batlehub-cli auth token list
++--------------------------------------+-------------+------+------------+---------------------+
+| ID                                   | Name        | Role | Expires    | Groups              |
++--------------------------------------+-------------+------+------------+---------------------+
+| 0c0f…                                | ci-pipeline | user | 2026-10-01 | platform, release   |
+| 7a31…                                | laptop      | user | 2026-09-20 | -                   |
++--------------------------------------+-------------+------+------------+---------------------+
 ```
 
 Use the resulting token as `BATLEHUB_TOKEN` in CI:

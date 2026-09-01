@@ -4559,7 +4559,7 @@
             "description": "Invalid request (bad lifetime or role)"
           },
           "403": {
-            "description": "Not an OIDC session or insufficient role"
+            "description": "Not an OIDC session, insufficient role, or a requested group the caller does not hold"
           }
         },
         "security": [
@@ -16149,6 +16149,13 @@
             "description": "Lifetime in days (1–90).",
             "minimum": 0
           },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Groups to snapshot onto the token. Each must be one the caller holds;\nasking for one they do not is `403`, not a silent drop.\n\nOmitted or empty means no groups, which is what every token minted\nbefore this field carried. \"All of mine\" is a client-side convenience\n(`batlehub auth token create --all-groups`) that sends the resolved list\nhere, not a second server-side spelling of the same thing."
+          },
           "name": {
             "type": "string",
             "description": "Display name for the token."
@@ -16167,7 +16174,8 @@
           "token",
           "role",
           "expires_at",
-          "created_at"
+          "created_at",
+          "groups"
         ],
         "properties": {
           "created_at": {
@@ -16177,6 +16185,13 @@
           "expires_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The group snapshot this token carries. Shown at creation because it is\nthe only moment it can be changed — a snapshot is fixed for the life of\nthe token, so a wrong one is re-created, never edited."
           },
           "id": {
             "type": "string",
@@ -19458,7 +19473,8 @@
           "name",
           "role",
           "expires_at",
-          "created_at"
+          "created_at",
+          "groups"
         ],
         "properties": {
           "created_at": {
@@ -19468,6 +19484,13 @@
           "expires_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The groups this token resolves to. Listed because a snapshot goes stale\nsilently: nothing tells its owner that the token still carries a team\nthey left, and this column is where they can see it."
           },
           "id": {
             "type": "string",

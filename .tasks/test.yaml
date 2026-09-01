@@ -173,6 +173,15 @@ tasks:
           CONTAINER: batlehub-test-pg-retention
           PORT: "15439"
 
+  test:pg-user-tokens:
+    desc: Run PAT group-snapshot integration tests (starts a temporary Postgres container via Podman)
+    cmds:
+      - task: pg
+        vars:
+          TEST: pg_user_tokens
+          CONTAINER: batlehub-test-pg-tokens
+          PORT: "15440"
+
   test:pg-storage-router:
     desc: Run storage_router integration tests (starts a temporary Postgres container via Podman)
     cmds:

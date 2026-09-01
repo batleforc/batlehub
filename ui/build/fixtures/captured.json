@@ -747,14 +747,19 @@
       "name": "ci-publisher",
       "role": "user",
       "expires_at": "2026-12-31T23:59:59Z",
-      "created_at": "2026-06-01T08:00:00Z"
+      "created_at": "2026-06-01T08:00:00Z",
+      "groups": [
+        "oidc1:platform",
+        "oidc1:release"
+      ]
     },
     {
       "id": "c9e1a3b5-2f74-4d8a-9c60-1b7e4f2a8d93",
       "name": "laptop",
       "role": "admin",
       "expires_at": "2026-09-30T23:59:59Z",
-      "created_at": "2026-08-05T12:20:00Z"
+      "created_at": "2026-08-05T12:20:00Z",
+      "groups": []
     }
   ],
   "/api/v1/banner": null,
