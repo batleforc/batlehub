@@ -241,6 +241,17 @@ pub struct ResolvedPolicy {
     /// Which node supplied each answer, for `explain` (§4.8) and for the
     /// narrowing warnings. Empty entries mean "the default", not "the registry".
     pub sources: PolicySources,
+    /// §4.1's compensating warnings: deeper tiers that **dropped** a constraint
+    /// their parent declared.
+    ///
+    /// Carried on the result rather than left to the caller to recompute,
+    /// because the [`PolicyPath`] is consumed by [`PolicyPath::resolve`] and
+    /// nothing outside this module ever holds one — which is precisely how
+    /// [`PolicyPath::narrowing_warnings`] came to have no caller at all between
+    /// the day it was written and 2026-09-01.
+    ///
+    /// `(node_key, what_was_dropped)` pairs, in path order.
+    pub narrowing: Vec<(String, String)>,
 }
 
 /// Which tier each answer came from.
@@ -267,7 +278,10 @@ impl PolicyPath {
 
     /// Compose the path into one answer, by §4.1's per-policy rules.
     pub fn resolve(&self) -> ResolvedPolicy {
-        let mut out = ResolvedPolicy::default();
+        let mut out = ResolvedPolicy {
+            narrowing: self.narrowing_warnings(),
+            ..Default::default()
+        };
         let mut prerelease_declared = false;
 
         for node in &self.nodes {
@@ -786,6 +800,32 @@ mod tests {
         assert!(warnings.iter().all(|(k, _)| k == "namespace:@acme"));
     }
 
+    /// **The warnings have to survive `resolve`.**
+    ///
+    /// `narrowing_warnings` walks a [`PolicyPath`], and nothing outside this
+    /// module ever holds one — `resolve_policy` builds the path, resolves it and
+    /// drops it. So a warning that is only reachable from the path is a warning
+    /// no operator can ever be shown, which is what this one was until
+    /// 2026-09-01. Carrying it on the result is what makes it reportable, and
+    /// this is the test that keeps it there.
+    #[test]
+    fn resolving_carries_the_narrowing_warnings_onto_the_result() {
+        let mut registry = PolicyNode::new(Tier::Registry, "registry:npm1");
+        registry.versioning = Some(versioning(true, true, Immutable::Always));
+        let mut ns = PolicyNode::new(Tier::Namespace, "namespace:@acme");
+        ns.versioning = Some(versioning(false, false, Immutable::Never));
+
+        let resolved = path(vec![registry, ns]).resolve();
+        assert!(
+            !resolved.narrowing.is_empty(),
+            "a resolved policy that dropped a parent's constraint must say so"
+        );
+        assert!(resolved
+            .narrowing
+            .iter()
+            .all(|(k, _)| k == "namespace:@acme"));
+    }
+
     /// A deeper block that keeps every constraint is silent — otherwise the test
     /// above would pass on a warning that fires on every override.
     #[test]
@@ -795,9 +835,14 @@ mod tests {
         let mut ns = PolicyNode::new(Tier::Namespace, "namespace:@acme");
         ns.versioning = Some(versioning(true, true, Immutable::Always));
 
+        let path = path(vec![registry, ns]);
         assert!(
-            path(vec![registry, ns]).narrowing_warnings().is_empty(),
+            path.narrowing_warnings().is_empty(),
             "tightening is not narrowing"
+        );
+        assert!(
+            path.resolve().narrowing.is_empty(),
+            "and the result agrees with the path"
         );
     }
 

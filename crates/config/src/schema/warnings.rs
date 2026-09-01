@@ -285,3 +285,19 @@ pub const GRANTS_IN_SHADOW: &str = "grants.shadow-active";
 /// leaks. It still warns, because the operator who set it during an import is
 /// the operator who forgets to unset it afterwards.
 pub const VERSIONING_IN_DRY_RUN: &str = "versioning.dry-run-active";
+
+/// `[cache_coherence] interval_secs` short enough to narrow the grace window
+/// the sweep's safety rests on.
+///
+/// The sweep deletes a blob only if the *previous* run also saw it orphaned, and
+/// the gap between the two runs is the interval. That gap is the margin a cache
+/// write in flight gets: the bytes are stored, then the row is recorded, and a
+/// blob caught between them looks exactly like an orphan. Milliseconds against a
+/// daily sweep is not a race; milliseconds against a sweep every few seconds,
+/// on a slow storage backend under load, is one.
+///
+/// Not an error, because a small estate with fast storage can reasonably want a
+/// tighter loop — and because the fresh point-lookup before each delete is a
+/// second guard. But it is the one setting here that trades away the margin on
+/// data this must never delete, so it says so.
+pub const COHERENCE_INTERVAL_TOO_SHORT: &str = "cache-coherence.interval-too-short";

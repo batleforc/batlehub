@@ -7,10 +7,7 @@ use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use batlehub_core::{
-    entities::{
-        AccessAction, AccessResult, ArtifactVulnerability, EventFilter, PackageFilter,
-        PackageStatus,
-    },
+    entities::{AccessResult, ArtifactVulnerability, EventFilter, PackageFilter, PackageStatus},
     ports::StorageAdminRepository,
     services::{AdminService, ProxyService, SbomService},
 };
@@ -206,38 +203,6 @@ async fn version_detail(
     }
 }
 
-/// The wire name of an audited action.
-fn action_name(action: AccessAction) -> &'static str {
-    match action {
-        AccessAction::Download => "download",
-        AccessAction::ViewMetadata => "view_metadata",
-        AccessAction::Block => "block",
-        AccessAction::Unblock => "unblock",
-        AccessAction::Delete => "delete",
-        AccessAction::AddOwner => "add_owner",
-        AccessAction::RemoveOwner => "remove_owner",
-        AccessAction::SetVisibility => "set_visibility",
-        AccessAction::BlockUser => "block_user",
-        AccessAction::UnblockUser => "unblock_user",
-        AccessAction::BlockIp => "block_ip",
-        AccessAction::UnblockIp => "unblock_ip",
-        AccessAction::AuditPurge => "audit_purge",
-        AccessAction::Yank => "yank",
-        AccessAction::Unyank => "unyank",
-        AccessAction::Deprecate => "deprecate",
-        AccessAction::Undeprecate => "undeprecate",
-        AccessAction::Unlist => "unlist",
-        AccessAction::Relist => "relist",
-        AccessAction::AddBetaMember => "add_beta_member",
-        AccessAction::RemoveBetaMember => "remove_beta_member",
-        AccessAction::ClaimNamespace => "claim_namespace",
-        AccessAction::ReleaseNamespace => "release_namespace",
-        AccessAction::ResetQuota => "reset_quota",
-        AccessAction::TombstoneCompact => "tombstone_compact",
-        AccessAction::SetRetentionPin => "set_retention_pin",
-    }
-}
-
 /// An event's outcome word, and the reason when there is one.
 fn event_outcome(result: AccessResult) -> (String, Option<String>) {
     match result {
@@ -325,6 +290,7 @@ pub async fn package_detail(
         registry: Some(query.registry.clone()),
         package_name: Some(query.name.clone()),
         user_id: None,
+        actions: vec![],
         from: None,
         to: None,
         denied_only: false,
@@ -340,7 +306,7 @@ pub async fn package_detail(
         .into_iter()
         .map(|e| {
             let (outcome, deny_reason) = event_outcome(e.result);
-            let action = action_name(e.action);
+            let action = e.action.as_str();
             // `event_filter` above always sets `registry`/`package_name`, so any
             // event matching it has a package coordinate; the fallback only
             // matters if that invariant ever changes.

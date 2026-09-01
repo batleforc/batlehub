@@ -1015,6 +1015,26 @@ anonymous = ["releases:read"]
 # osv_api_url   = "https://api.osv.dev"  # optional; defaults to the public OSV API
 # batch_size    = 100                    # SBOMs processed per page
 
+# ── Cache coherence (orphaned-blob collection) ────────────────────────────────
+#
+# An artifact is cached in two steps: the bytes are stored, then the row that
+# points at them is recorded. A process killed between the two leaves a blob no
+# request can reach and no eviction strategy will ever consider — every strategy
+# reads the table the row is missing from. This sweep collects those.
+#
+# Off unless you ask for it: it deletes on a timer with nobody watching. A blob
+# only goes if the *previous* sweep saw it orphaned too, so the interval is also
+# the margin a cache write in flight gets — keep it comfortably above the time a
+# large upload takes to finish recording itself. Below 300s the server warns.
+#
+# On demand, without the schedule:
+#   POST /api/v1/admin/registries/{registry}/coherence?dry_run=true
+#   batlehub admin cache coherence <registry> --dry-run
+#
+# [cache_coherence]
+# enabled       = true
+# interval_secs = 86400                  # sweep cadence in seconds (default: daily)
+
 # ── Self-hosted / private registry auth + TLS ────────────────────────────────
 #
 # Any registry block may include an [upstream_auth] table and/or a [tls] table.

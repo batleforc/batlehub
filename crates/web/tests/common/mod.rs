@@ -1962,7 +1962,25 @@ pub async fn make_app_with_eviction(
     >,
     Arc<dyn StorageBackend>,
 ) {
-    let repo_dyn: Arc<dyn PackageRepository> = InMemoryRepo::new();
+    make_app_with_eviction_and_repo(eviction_map, InMemoryRepo::new()).await
+}
+
+/// [`make_app_with_eviction`] against a caller-supplied repository.
+///
+/// The repository is where the cache-eviction audit events land, and the
+/// default factory builds one it never hands back — so a test about the trail
+/// has to own it.
+pub async fn make_app_with_eviction_and_repo(
+    eviction_map: EvictionServiceMap,
+    repo_dyn: Arc<dyn PackageRepository>,
+) -> (
+    impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+    Arc<dyn StorageBackend>,
+) {
     let storage: Arc<dyn StorageBackend> = InMemoryStorage::new();
     let cache: Arc<dyn CacheStore> = Arc::new(InMemoryCacheStore::new());
     let hot = new_hot_lock(HotConfig {

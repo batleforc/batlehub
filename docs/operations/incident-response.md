@@ -40,10 +40,13 @@ Query the audit log for anomalies:
 
 ```bash
 # All denied events in the last hour
-batlehub admin audit-log --filter denied --from "$(date -u -d '1 hour ago' +%FT%TZ)"
+batlehub admin audit-log --denied-only --from "$(date -u -d '1 hour ago' +%FT%TZ)"
 
 # Access events from a specific IP
 batlehub admin audit-log | jq '[.[] | select(.ip_address == "1.2.3.4")]'
+
+# What disappeared, and whether a person or a policy took it
+batlehub admin audit-log --action delete,retention_reclaim --from <start>
 
 # Export a full 24-hour window for offline analysis
 batlehub admin export-audit-log --from <start> --to <end> --format csv --output incident-$(date +%Y%m%d).csv

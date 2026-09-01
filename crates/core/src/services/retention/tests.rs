@@ -194,6 +194,66 @@ fn local_svc(backend: Arc<dyn LocalRegistryBackend>) -> Arc<LocalRegistryService
     })
 }
 
+/// Tombstones the first version it is asked about and then refuses.
+///
+/// At module scope because two tests need it: the one that asserts a fault
+/// leaves a *report* of what already went, and the one that asserts it leaves
+/// the matching *trail*.
+struct FlakyBackend {
+    inner: Backend,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl LocalRegistryBackend for FlakyBackend {
+    async fn publish(&self, pkg: PublishedPackage) -> Result<(), CoreError> {
+        self.inner.publish(pkg).await
+    }
+    async fn yank(&self, r: &str, n: &str, v: &str) -> Result<(), CoreError> {
+        self.inner.yank(r, n, v).await
+    }
+    async fn unyank(&self, r: &str, n: &str, v: &str) -> Result<(), CoreError> {
+        self.inner.unyank(r, n, v).await
+    }
+    async fn deprecate(&self, r: &str, n: &str, v: &str, m: Option<&str>) -> Result<(), CoreError> {
+        self.inner.deprecate(r, n, v, m).await
+    }
+    async fn undeprecate(&self, r: &str, n: &str, v: &str) -> Result<(), CoreError> {
+        self.inner.undeprecate(r, n, v).await
+    }
+    async fn set_channel(&self, _: &str, _: &str, _: &str, _: &str) -> Result<bool, CoreError> {
+        Ok(false)
+    }
+
+    async fn unlist(&self, r: &str, n: &str, v: &str) -> Result<(), CoreError> {
+        self.inner.unlist(r, n, v).await
+    }
+    async fn relist(&self, r: &str, n: &str, v: &str) -> Result<(), CoreError> {
+        self.inner.relist(r, n, v).await
+    }
+    async fn get_versions(&self, r: &str, n: &str) -> Result<Vec<PublishedPackage>, CoreError> {
+        self.inner.get_versions(r, n).await
+    }
+    async fn exists(&self, r: &str, n: &str) -> Result<bool, CoreError> {
+        self.inner.exists(r, n).await
+    }
+    async fn list_package_names(&self, r: &str) -> Result<Vec<String>, CoreError> {
+        self.inner.list_package_names(r).await
+    }
+    async fn tombstone_version(
+        &self,
+        r: &str,
+        n: &str,
+        v: &str,
+        by: Option<&str>,
+    ) -> Result<bool, CoreError> {
+        if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 1 {
+            return Err(CoreError::Database("disk on fire".into()));
+        }
+        self.inner.tombstone_version(r, n, v, by).await
+    }
+}
+
 /// A published version, `age_days` old.
 fn pkg(name: &str, version: &str, age_days: i64) -> PublishedPackage {
     PublishedPackage {
@@ -386,6 +446,45 @@ async fn seeded(versions: Vec<PublishedPackage>) -> Arc<LocalRegistryService> {
         backend.seed(v).await;
     }
     local_svc(backend)
+}
+
+/// The same, with the audit sink wired up.
+///
+/// `local_svc` leaves `package_repo: None`, which makes every audit write a
+/// silent no-op — fine for the decision tests, useless for the trail ones.
+async fn seeded_audited(
+    versions: Vec<PublishedPackage>,
+    repo: Arc<EventRepo>,
+) -> Arc<LocalRegistryService> {
+    let backend = Arc::new(Backend::default());
+    for v in versions {
+        backend.seed(v).await;
+    }
+    Arc::new(LocalRegistryService {
+        backend,
+        storage: Arc::new(NoopStorage),
+        hot: new_hot_lock(HotConfig::default()),
+        quota: None,
+        ownership: None,
+        team_namespace: None,
+        sbom: None,
+        explore_cache: None,
+        package_repo: Some(repo),
+        readme: None,
+    })
+}
+
+impl EventRepo {
+    /// Every event of one action, in the order they were recorded.
+    async fn of(&self, action: AccessAction) -> Vec<AccessEvent> {
+        self.events
+            .read()
+            .await
+            .iter()
+            .filter(|e| e.action == action)
+            .cloned()
+            .collect()
+    }
 }
 
 // ── The decision ──────────────────────────────────────────────────────────────
@@ -855,68 +954,6 @@ async fn adding_a_keep_condition_never_reclaims_more() {
 /// fault into a very long one.
 #[tokio::test]
 async fn a_failing_reclamation_stops_the_run_and_reports_what_went() {
-    /// Tombstones the first version it is asked about and then refuses.
-    struct FlakyBackend {
-        inner: Backend,
-        calls: std::sync::atomic::AtomicUsize,
-    }
-
-    #[async_trait]
-    impl LocalRegistryBackend for FlakyBackend {
-        async fn publish(&self, pkg: PublishedPackage) -> Result<(), CoreError> {
-            self.inner.publish(pkg).await
-        }
-        async fn yank(&self, r: &str, n: &str, v: &str) -> Result<(), CoreError> {
-            self.inner.yank(r, n, v).await
-        }
-        async fn unyank(&self, r: &str, n: &str, v: &str) -> Result<(), CoreError> {
-            self.inner.unyank(r, n, v).await
-        }
-        async fn deprecate(
-            &self,
-            r: &str,
-            n: &str,
-            v: &str,
-            m: Option<&str>,
-        ) -> Result<(), CoreError> {
-            self.inner.deprecate(r, n, v, m).await
-        }
-        async fn undeprecate(&self, r: &str, n: &str, v: &str) -> Result<(), CoreError> {
-            self.inner.undeprecate(r, n, v).await
-        }
-        async fn set_channel(&self, _: &str, _: &str, _: &str, _: &str) -> Result<bool, CoreError> {
-            Ok(false)
-        }
-
-        async fn unlist(&self, r: &str, n: &str, v: &str) -> Result<(), CoreError> {
-            self.inner.unlist(r, n, v).await
-        }
-        async fn relist(&self, r: &str, n: &str, v: &str) -> Result<(), CoreError> {
-            self.inner.relist(r, n, v).await
-        }
-        async fn get_versions(&self, r: &str, n: &str) -> Result<Vec<PublishedPackage>, CoreError> {
-            self.inner.get_versions(r, n).await
-        }
-        async fn exists(&self, r: &str, n: &str) -> Result<bool, CoreError> {
-            self.inner.exists(r, n).await
-        }
-        async fn list_package_names(&self, r: &str) -> Result<Vec<String>, CoreError> {
-            self.inner.list_package_names(r).await
-        }
-        async fn tombstone_version(
-            &self,
-            r: &str,
-            n: &str,
-            v: &str,
-            by: Option<&str>,
-        ) -> Result<bool, CoreError> {
-            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 1 {
-                return Err(CoreError::Database("disk on fire".into()));
-            }
-            self.inner.tombstone_version(r, n, v, by).await
-        }
-    }
-
     let inner = Backend::default();
     for v in ["1.0.0", "2.0.0", "3.0.0"] {
         inner.seed(pkg("p", v, 900)).await;
@@ -942,4 +979,157 @@ async fn a_failing_reclamation_stops_the_run_and_reports_what_went() {
         .expect("the report must say it stopped");
     assert!(reason.contains("p@2.0.0"), "and where: {reason}");
     assert!(reason.contains("disk on fire"), "and why: {reason}");
+}
+
+// ── The trail ─────────────────────────────────────────────────────────────────
+
+/// RFC 0016 §3: "an operator reading the audit trail must be able to tell a
+/// policy reclamation from a human deletion".
+///
+/// The run carries the operator's *own* identity — it is their token that
+/// triggered it — so the subject cannot be what distinguishes them. The action
+/// has to.
+#[tokio::test]
+async fn a_reclamation_is_audited_as_retention_reclaim_not_delete() {
+    let repo = Arc::new(EventRepo::default());
+    let svc = seeded_audited(
+        vec![pkg("p", "1.0.0", 900), pkg("p", "2.0.0", 800)],
+        repo.clone(),
+    )
+    .await;
+    let mut p = policy();
+    p.keep_versions = Some(1);
+    p.dry_run = false;
+
+    let r = RetentionService::new(svc, None)
+        .run("reg", &p, &admin())
+        .await
+        .unwrap();
+    assert_eq!(r.reclaimed_coordinates, vec!["p@1.0.0".to_owned()]);
+
+    assert!(
+        repo.of(AccessAction::Delete).await.is_empty(),
+        "a policy reclamation must not be indistinguishable from a hand deletion"
+    );
+    let reclaims = repo.of(AccessAction::RetentionReclaim).await;
+    assert_eq!(reclaims.len(), 1);
+    let coord = reclaims[0].package_id.as_ref().unwrap();
+    assert_eq!(
+        (
+            coord.registry.as_str(),
+            coord.name.as_str(),
+            coord.version.as_str()
+        ),
+        ("reg", "p", "1.0.0")
+    );
+    assert_eq!(reclaims[0].user_id.as_deref(), Some("admin-1"));
+}
+
+/// One run event per run, registry-scoped, whether or not anything was
+/// reclaimed — "who ran the policy against prod" must not be answerable only
+/// when it deleted something.
+#[tokio::test]
+async fn a_live_run_that_reclaims_nothing_still_records_the_run() {
+    let repo = Arc::new(EventRepo::default());
+    let svc = seeded_audited(vec![pkg("p", "1.0.0", 2)], repo.clone()).await;
+    let mut p = policy();
+    p.keep_for = Some(days(30)); // the only version is recent: nothing is doomed
+    p.dry_run = false;
+
+    let r = RetentionService::new(svc, None)
+        .run("reg", &p, &admin())
+        .await
+        .unwrap();
+    assert_eq!(r.reclaimed, 0);
+
+    let runs = repo.of(AccessAction::RetentionRun).await;
+    assert_eq!(runs.len(), 1);
+    let coord = runs[0].package_id.as_ref().unwrap();
+    assert_eq!(coord.registry, "reg");
+    assert!(
+        coord.name.is_empty() && coord.version.is_empty(),
+        "a run is about a registry, not about a package that was not involved"
+    );
+    assert!(repo.of(AccessAction::RetentionDryRun).await.is_empty());
+}
+
+/// A dry run leaves the run event and **nothing else**. No `retention_reclaim`
+/// row for a version that is still there: an auditor has to be able to read
+/// that action as "this version is gone".
+#[tokio::test]
+async fn a_dry_run_records_the_run_and_no_reclamations() {
+    let repo = Arc::new(EventRepo::default());
+    let svc = seeded_audited(
+        vec![pkg("p", "1.0.0", 900), pkg("p", "2.0.0", 800)],
+        repo.clone(),
+    )
+    .await;
+    let mut p = policy();
+    p.keep_versions = Some(1);
+    p.dry_run = true;
+
+    let r = RetentionService::new(svc, None)
+        .run("reg", &p, &admin())
+        .await
+        .unwrap();
+    assert_eq!(
+        r.reclaimed_coordinates,
+        vec!["p@1.0.0".to_owned()],
+        "the report still says what would go"
+    );
+
+    assert!(repo.of(AccessAction::RetentionReclaim).await.is_empty());
+    assert!(repo.of(AccessAction::Delete).await.is_empty());
+    let dry = repo.of(AccessAction::RetentionDryRun).await;
+    assert_eq!(dry.len(), 1, "the preview itself is on the record");
+    assert!(
+        repo.of(AccessAction::RetentionRun).await.is_empty(),
+        "a dry run must never look like a run that could have written"
+    );
+}
+
+/// A run that stops on a fault still records the run, and records exactly the
+/// reclamations that happened before it.
+#[tokio::test]
+async fn an_incomplete_run_is_still_audited() {
+    let inner = Backend::default();
+    for v in ["1.0.0", "2.0.0", "3.0.0"] {
+        inner.seed(pkg("p", v, 900)).await;
+    }
+    let repo = Arc::new(EventRepo::default());
+    let svc = Arc::new(LocalRegistryService {
+        backend: Arc::new(FlakyBackend {
+            inner,
+            calls: Default::default(),
+        }),
+        storage: Arc::new(NoopStorage),
+        hot: new_hot_lock(HotConfig::default()),
+        quota: None,
+        ownership: None,
+        team_namespace: None,
+        sbom: None,
+        explore_cache: None,
+        package_repo: Some(repo.clone()),
+        readme: None,
+    });
+
+    let mut p = policy();
+    p.keep_for = Some(days(30));
+    p.dry_run = false;
+
+    RetentionService::new(svc, None)
+        .run("reg", &p, &admin())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repo.of(AccessAction::RetentionReclaim).await.len(),
+        1,
+        "only the version that actually went"
+    );
+    assert_eq!(
+        repo.of(AccessAction::RetentionRun).await.len(),
+        1,
+        "a run that faulted is still a run somebody started"
+    );
 }

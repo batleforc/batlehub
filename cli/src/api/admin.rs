@@ -99,6 +99,12 @@ pub struct AuditQuery {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub registry: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_name: Option<String>,
+    /// Comma-separated action names; the server rejects an unknown one rather
+    /// than returning an empty page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub user_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
@@ -113,6 +119,42 @@ pub struct AuditQuery {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PurgeAuditLogResponse {
     pub deleted: u64,
+}
+
+/// The server's `CoherenceResponse`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CoherenceReportDto {
+    pub storage_keys: usize,
+    pub meta_rows: usize,
+    pub orphaned_deleted: usize,
+    #[serde(default)]
+    pub deleted_keys: Vec<String>,
+    #[serde(default)]
+    pub first_seen_orphaned: usize,
+    #[serde(default)]
+    pub first_seen_keys: Vec<String>,
+    #[serde(default)]
+    pub keys_truncated: u64,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// The server's `EvictResponse`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EvictionReportDto {
+    pub total: usize,
+    pub evicted_ttl: usize,
+    pub evicted_idle: usize,
+    pub evicted_old_versions: usize,
+    pub evicted_lru: usize,
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub evicted_keys: Vec<String>,
+    #[serde(default)]
+    pub keys_truncated: u64,
+    #[serde(default)]
+    pub incomplete_because: Option<String>,
 }
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
@@ -385,6 +427,28 @@ impl BatleHubClient {
     pub async fn cache_clear(&self, registry: &str) -> Result<()> {
         self.post_no_body(&format!("/api/v1/admin/registries/{registry}/clear-cache"))
             .await
+    }
+
+    /// Sweep a registry's storage for blobs the artifact-meta table has no row
+    /// for.
+    pub async fn coherence_sweep(
+        &self,
+        registry: &str,
+        dry_run: bool,
+    ) -> Result<CoherenceReportDto> {
+        self.post_no_body_json(&format!(
+            "/api/v1/admin/registries/{registry}/coherence?dry_run={dry_run}"
+        ))
+        .await
+    }
+
+    /// Run a registry's configured eviction strategies (RFC 0016's trail, cache
+    /// side).
+    pub async fn evict_registry(&self, registry: &str, dry_run: bool) -> Result<EvictionReportDto> {
+        self.post_no_body_json(&format!(
+            "/api/v1/admin/registries/{registry}/evict?dry_run={dry_run}"
+        ))
+        .await
     }
 
     // ── Banner ─────────────────────────────────────────────────────────────────
@@ -736,6 +800,7 @@ impl BatleHubClient {
         registry: Option<&str>,
         from: Option<&str>,
         to: Option<&str>,
+        action: Option<&str>,
         format: &str,
     ) -> Result<String> {
         use anyhow::bail;
@@ -748,6 +813,8 @@ impl BatleHubClient {
             from: Option<&'a str>,
             #[serde(skip_serializing_if = "Option::is_none")]
             to: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            action: Option<&'a str>,
             format: &'a str,
         }
         let req = self
@@ -756,6 +823,7 @@ impl BatleHubClient {
                 registry,
                 from,
                 to,
+                action,
                 format,
             });
         let resp = self.send(req).await?;

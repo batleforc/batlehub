@@ -28,6 +28,43 @@
 //!    an identity-blind key.** [`GrantSet::cache_key`] is the key it must be
 //!    cached under instead.
 //!
+//! # What of this is live, and what is waiting for a writer
+//!
+//! Audited 2026-09-01, because the answer is not uniform across the module and a
+//! reader who assumes either way gets it wrong.
+//!
+//! **Live.** [`Readable`] and its builders — [`Readable::from_registry`],
+//! [`Readable::needs_package_grants`], [`Readable::with_package_grants`] — are
+//! how `LocalRegistryService` scopes every whole-registry document
+//! (`local_registry/read.rs`). Package-tier grants are real and written at
+//! runtime: the ownership API puts them (`services/ownership_grants.rs`), and
+//! migration 042 seeded them from the ownership rows that predate the model. So
+//! rule 2's first half — *no grant on the package → answer as though it does not
+//! exist* — is enforced, and so is the filtering of documents that span many
+//! packages.
+//!
+//! **Waiting for a writer.** [`filter_listing`] and [`package_visibility`] have
+//! no caller. They are rule 2's *second* half — *a grant on the package but not
+//! on every version → return the filtered list* — and that state cannot be
+//! reached today for one narrow reason: **nothing writes a version-tier grant.**
+//! Everything else on that path exists and is live — the `grants` table's
+//! `node_kind = 'version'` (migration 041), [`version_node_key`](crate::ports::version_node_key), the
+//! `grants_for(registry, package, version)` read on the hot path in
+//! `chain::stored_nodes` — but every `put_grant` call site in the tree writes
+//! `NodeKind::Package`. With no version row to differ from the package answer,
+//! a caller's `releases:read` verdict is uniform across every version, so the
+//! package-tier decision *is* the whole answer and a per-version filter would
+//! remove nothing.
+//!
+//! **The day a version-tier grant becomes writable, these two become
+//! load-bearing** — and the failure would be silent: version indexes would keep
+//! listing versions the caller may not read, the download gate would keep
+//! refusing them one at a time, and what leaks is the existence and the numbers
+//! rather than the bytes. Rule 3 arrives in the same commit: a listing that
+//! filters is identity-dependent, and every cache in front of one needs
+//! [`GrantSet::cache_key`](crate::entities::GrantSet::cache_key) from that point
+//! on.
+//!
 //! # Why filtering only bites when the broad tier is narrow
 //!
 //! Grants only widen (§4.3), so a caller who holds `releases:read` at the

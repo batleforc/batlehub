@@ -559,7 +559,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
                 update_subscription,
             },
             ops::{
-                eviction::{delete_cached_artifact, evict_registry},
+                eviction::{coherence_sweep, delete_cached_artifact, evict_registry},
                 ip_blocks::{block_ip, list_blocked_ips, unblock_ip},
                 quota::{
                     get_quota_for_user, list_quota, list_quota_for_registry, reset_quota_for_user,
@@ -992,6 +992,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(get_warming_status);
     cfg.service(warm_registry);
     cfg.service(evict_registry);
+    cfg.service(coherence_sweep);
     cfg.service(delete_cached_artifact);
     // More specific first: `/stats/history` before `/stats`.
     cfg.service(admin_stats_history);

@@ -86,6 +86,13 @@ impl BatleHubClient {
         expect_no_content(resp).await
     }
 
+    /// POST with no body, expecting a JSON document back — the shape of the
+    /// endpoints that *act* and then report what they did.
+    pub async fn post_no_body_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+        let resp = self.send(self.request(Method::POST, path)).await?;
+        expect_ok(resp).await
+    }
+
     pub async fn post_void<B: Serialize>(&self, path: &str, body: &B) -> Result<()> {
         let req = self.request(Method::POST, path).json(body);
         let resp = self.send(req).await?;

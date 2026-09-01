@@ -147,9 +147,17 @@ export function readRfcs(rfcDir) {
     // section at a following `##`, and would have counted nothing in an RFC whose
     // final section was "Still open". Latent today; every such section is
     // currently followed by another heading.
+    //
+    // A struck-through item is not counted. `~~…~~` is how these documents
+    // record a question that was answered while the RFC was being built —
+    // 0007-bis question 2 is `~~Should `text_config` be validated…~~ **Answered
+    // in the building: yes, and it had to be.**` — and reporting a decision that
+    // has already been taken as one still owed is the single thing this report
+    // exists to be right about. The lookahead sits after the list marker so it
+    // tests the item's own first characters, not the indentation before them.
     const afterHeading = raw.split(/^### Still open[ \t]*\r?\n/m)[1] ?? "";
     const open = afterHeading.split(/^##/m)[0];
-    const openQuestions = (open.match(/^[ \t]*(?:\d+\.|[-*])[ \t]+\S/gm) ?? []).length;
+    const openQuestions = (open.match(/^[ \t]*(?:\d+\.|[-*])[ \t]+(?!~~)\S/gm) ?? []).length;
 
     rfcs.push({
       ...parsed,

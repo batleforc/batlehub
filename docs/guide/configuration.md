@@ -2008,6 +2008,54 @@ its retention is an operational choice rather than a privacy one.
 
 ---
 
+### 3.8b `[cache_coherence]` (optional)
+
+Periodic collection of storage blobs nothing references.
+
+An artifact is cached in two steps — the bytes are stored, then the row that
+points at them is recorded. A process killed between the two leaves a blob that
+no request can reach and that **no eviction strategy will ever consider**,
+because every strategy reads the table the row is missing from. Deleting a row
+by hand leaves the same thing. This is the sweep that collects them.
+
+```toml
+[cache_coherence]
+enabled       = true
+interval_secs = 86400   # default: daily
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | bool | `false` | Run the sweep on a timer. Absent block means the same as `false` |
+| `interval_secs` | u64 | `86400` | Seconds between sweeps, across every registry |
+
+**Off by default**, like every other policy here that deletes: it runs with
+nobody watching. A deployment that would rather look first has the same sweep on
+demand, and a preview of it —
+[see the admin guide](/guide/admin-policies#cache-coherence).
+
+**The interval is also the grace window.** A blob is deleted only if the
+*previous* sweep saw it orphaned too, because a cache write in flight — bytes
+stored, row not yet recorded — looks exactly like an orphan. The gap between two
+sweeps is the whole margin that write gets, so a short interval trades the one
+safety property this sweep has for faster collection of bytes nobody can reach.
+Below 300s the server emits a config warning (`cache-coherence.interval-too-short`)
+rather than refusing: a small estate on fast storage can reasonably want a tighter
+loop.
+
+Each run also lists **every cached object of every registry** — a paginated
+`ListObjectsV2` against S3, or a full directory walk on a filesystem backend.
+That is a second reason the default is daily rather than hourly.
+
+The first sweep of a process runs one interval after startup, not at second
+zero: a restart is exactly when half-finished cache writes exist, and a fresh
+process has an empty grace set.
+
+Scheduled sweeps are audited as `cache_coherence_run` with `user_id = "system"`
+— the field that separates them from an operator who ran one by hand.
+
+---
+
 ### 3.9 `[subdomain_routing]` (optional)
 
 Every registry is always reachable at `/proxy/{name}/…`. This section adds a

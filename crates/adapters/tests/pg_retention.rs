@@ -43,7 +43,7 @@ use batlehub_adapters::db::PgPackageRepository;
 use batlehub_adapters::local_registry::PostgresLocalRegistry;
 use batlehub_adapters::storage::FilesystemStorageBackend;
 use batlehub_core::entities::{
-    AccessEvent, Identity, PackageId, PublishedPackage, Role, Visibility,
+    AccessAction, AccessEvent, EventFilter, Identity, PackageId, PublishedPackage, Role, Visibility,
 };
 use batlehub_core::ports::{PackageRepository, StorageBackend, StorageMeta};
 use batlehub_core::services::{
@@ -155,9 +155,9 @@ async fn make_estate(url: &str) -> TestEstate {
         team_namespace: None,
         sbom: None,
         explore_cache: None,
-        // Wired, so a reclamation records its `Delete` event exactly as the
-        // server does. That is also a quiet assertion in its own right: a
-        // `Delete` row lands in the same table `last_downloads` reads, and a
+        // Wired, so a reclamation records its `retention_reclaim` event
+        // exactly as the server does. That is also a quiet assertion in its own
+        // right: the row lands in the same table `last_downloads` reads, and a
         // query that filtered on the wrong column would start counting it.
         package_repo: Some(repo.clone()),
         readme: None,
@@ -674,4 +674,126 @@ async fn a_run_does_not_reach_another_registrys_rows() {
         "the neighbouring registry is untouched"
     );
     assert!(other.stored("p", "1.0.0").await);
+}
+
+// ── The trail the run leaves, read back through the SQL that filters it ───────
+
+/// The claim a double cannot make: `action = ANY($n)` is real SQL over a real
+/// column, and the names it matches are what `action_to_str` *writes*. A new
+/// action that round-trips in Rust and not through the column would leave the
+/// audit filter answering "nothing was deleted" about a registry that was
+/// emptied.
+#[tokio::test]
+async fn a_run_is_readable_back_through_the_action_filter() {
+    let e = estate!();
+    e.publish("p", "1.0.0", 900).await;
+    e.publish("p", "2.0.0", 1).await;
+
+    let mut p = policy();
+    p.keep_versions = Some(1);
+    p.dry_run = false;
+    assert_eq!(e.run(&p).await.reclaimed_coordinates, vec!["p@1.0.0"]);
+
+    let by_action = |action| EventFilter {
+        registry: Some(e.registry.clone()),
+        actions: vec![action],
+        limit: 100,
+        ..Default::default()
+    };
+
+    let reclaims = e
+        .repo
+        .list_events(by_action(AccessAction::RetentionReclaim))
+        .await
+        .unwrap();
+    assert_eq!(reclaims.len(), 1, "one reclamation, one row");
+    let coord = reclaims[0].package_id.as_ref().unwrap();
+    assert_eq!(
+        (coord.name.as_str(), coord.version.as_str()),
+        ("p", "1.0.0")
+    );
+    assert_eq!(
+        e.repo
+            .count_events(by_action(AccessAction::RetentionReclaim))
+            .await
+            .unwrap(),
+        1,
+        "the count has to describe the same set the rows do"
+    );
+
+    assert!(
+        e.repo
+            .list_events(by_action(AccessAction::Delete))
+            .await
+            .unwrap()
+            .is_empty(),
+        "a policy reclamation must not be filed as a hand deletion"
+    );
+    assert_eq!(
+        e.repo
+            .list_events(by_action(AccessAction::RetentionRun))
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "and the run itself is one registry-scoped row"
+    );
+}
+
+/// A dry run against a real database writes exactly one row and touches
+/// nothing: the preview is on the record, the versions are not.
+#[tokio::test]
+async fn a_dry_run_records_only_itself() {
+    let e = estate!();
+    e.publish("p", "1.0.0", 900).await;
+    e.publish("p", "2.0.0", 1).await;
+
+    let mut p = policy();
+    p.keep_versions = Some(1);
+    p.dry_run = true;
+    assert_eq!(e.run(&p).await.reclaimed_coordinates, vec!["p@1.0.0"]);
+
+    async fn count_of(e: &TestEstate, action: AccessAction) -> usize {
+        e.repo
+            .list_events(EventFilter {
+                registry: Some(e.registry.clone()),
+                actions: vec![action],
+                limit: 100,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len()
+    }
+    assert_eq!(count_of(&e, AccessAction::RetentionDryRun).await, 1);
+    assert_eq!(count_of(&e, AccessAction::RetentionRun).await, 0);
+    assert_eq!(count_of(&e, AccessAction::RetentionReclaim).await, 0);
+    assert_eq!(e.live_versions("p").await, vec!["1.0.0", "2.0.0"]);
+}
+
+/// An empty action set means *every* action, not none.
+///
+/// `action = ANY('{}')` is false for every row, so the obvious binding turns a
+/// filter nobody asked for into an audit log that reads as empty. This is the
+/// test for the `NULL` that avoids it.
+#[tokio::test]
+async fn an_empty_action_filter_returns_every_action() {
+    let e = estate!();
+    e.publish("p", "1.0.0", 900).await;
+    e.record_read("p", "1.0.0", None, 1).await;
+    e.record_read("p", "1.0.0", Some("p-1.0.0.jar.sha1"), 1)
+        .await;
+
+    let all = e
+        .repo
+        .list_events(EventFilter {
+            registry: Some(e.registry.clone()),
+            limit: 100,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 2, "a download and a metadata view");
+    assert!(all.iter().any(|ev| ev.action == AccessAction::Download));
+    assert!(all.iter().any(|ev| ev.action == AccessAction::ViewMetadata));
 }

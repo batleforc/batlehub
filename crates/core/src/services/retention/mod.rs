@@ -31,7 +31,21 @@
 //! again. Freeing disk must not free the *namespace*, or retention becomes a
 //! supply-chain mechanism by accident — which is why this calls the same
 //! `LocalRegistryService::delete_version` a human deletion goes through rather
-//! than reaching into the backend itself.
+//! than reaching into the backend itself. It asks for one thing to be different:
+//! the reclamation is audited as `retention_reclaim`, not `delete`, so the trail
+//! can tell a policy apart from a person (RFC 0016 §3).
+//!
+//! # What a run leaves behind
+//!
+//! | | Live run | Dry run |
+//! | --- | --- | --- |
+//! | Registry-scoped run event | `retention_run` | `retention_dry_run` |
+//! | Per-version event | `retention_reclaim` | none |
+//! | Tombstone | one per version | none |
+//!
+//! A `retention_reclaim` event therefore always means a version is gone, and the
+//! report is the only place a dry run's *coordinates* exist — deliberately, since
+//! rows saying a version was reclaimed when it was not are worse than no rows.
 
 mod report;
 pub use report::{KeepReason, RetentionDecision, RetentionReport};
@@ -42,7 +56,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-use crate::entities::{Identity, PublishedPackage};
+use crate::entities::{AccessAction, Identity, PublishedPackage};
 use crate::error::CoreError;
 use crate::ports::PackageRepository;
 use crate::services::LocalRegistryService;
@@ -173,7 +187,64 @@ impl RetentionService {
         }
 
         report.reclaimed_coordinates.sort();
+        self.record_run(registry, policy, &report, identity).await;
         Ok(report)
+    }
+
+    /// Record the run itself, registry-scoped, one event.
+    ///
+    /// # Why a dry run is audited here and nowhere else
+    ///
+    /// `compact_tombstone_detail` declines to audit its own preview, on the
+    /// grounds that "an audit trail that records reads is a trail nobody
+    /// finishes reading". That reasoning holds for the *versions*: this writes
+    /// no `retention_reclaim` event for a version it merely considered, and an
+    /// auditor can trust that every one of those means a version is actually
+    /// gone.
+    ///
+    /// It does not hold for the run. Pointing a reclamation policy at a
+    /// production registry is an operator's action against that registry — the
+    /// probe whose answer decides whether `dry_run` comes off next — not a read
+    /// of package data, and it costs one row. The alternative is that the only
+    /// runs with any trace are the ones that happened to delete something,
+    /// which makes "has anyone been testing this policy against prod" a
+    /// question the trail cannot answer.
+    ///
+    /// The mode is carried by the *action*
+    /// ([`AccessAction::RetentionRun`] vs [`AccessAction::RetentionDryRun`])
+    /// rather than by a flag, because `AccessEvent` has nowhere to put a flag
+    /// and because an auditor filtering `?action=retention_run` must get
+    /// exactly the runs that were allowed to write.
+    ///
+    /// The counts are deliberately not in the event — there is no field for
+    /// them, and inventing one to hold a summary would put a number in the
+    /// audit trail that nothing else can check. They go to the log line beside
+    /// it, and the reclaimed coordinates are in the trail one row each.
+    async fn record_run(
+        &self,
+        registry: &str,
+        policy: &RetentionPolicy,
+        report: &RetentionReport,
+        identity: &Identity,
+    ) {
+        let action = if policy.dry_run {
+            AccessAction::RetentionDryRun
+        } else {
+            AccessAction::RetentionRun
+        };
+        tracing::info!(
+            registry,
+            dry_run = policy.dry_run,
+            examined = report.examined,
+            kept = report.kept,
+            reclaimed = report.reclaimed,
+            incomplete = report.incomplete_because.is_some(),
+            user_id = identity.user_id.as_deref().unwrap_or(""),
+            "retention run finished"
+        );
+        self.local
+            .record_registry_action(registry, action, identity)
+            .await;
     }
 
     /// Score every version of one package: record a decision against each, and
@@ -251,12 +322,19 @@ impl RetentionService {
                 continue;
             }
             // The same call a human deletion goes through, so a reclaimed
-            // version leaves the same tombstone, drops the same bytes and
-            // records the same audit event — with the run's identity as the
-            // subject, which is what tells the two apart in the trail.
+            // version leaves the same tombstone and drops the same bytes — and
+            // is audited as `retention_reclaim` rather than `delete`, which is
+            // what tells the two apart in the trail. The run carries the
+            // operator's own identity, so the subject alone never could.
             match self
                 .local
-                .delete_version(registry, &pkg.name, &pkg.version, identity)
+                .delete_version_audited(
+                    registry,
+                    &pkg.name,
+                    &pkg.version,
+                    identity,
+                    AccessAction::RetentionReclaim,
+                )
                 .await
             {
                 Ok(_) => {

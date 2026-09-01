@@ -283,6 +283,7 @@ pub(super) fn build_eviction_map(
     config: &batlehub_config::schema::AppConfig,
     storage: Arc<dyn StorageBackend>,
     pool: sqlx::PgPool,
+    packages: Arc<dyn batlehub_core::ports::PackageRepository>,
 ) -> batlehub_web::handlers::back_office::ops::eviction::EvictionServiceMap {
     use batlehub_adapters::db::PgArtifactMetaRepository;
     use batlehub_core::services::{EvictionConfig, EvictionService};
@@ -290,27 +291,32 @@ pub(super) fn build_eviction_map(
 
     let mut eviction_map: batlehub_web::handlers::back_office::ops::eviction::EvictionServiceMap =
         HM::new();
+    // **Every registry, configured or not.** The map used to hold only the
+    // registries with an eviction strategy, which is the right rule for the
+    // strategies and the wrong one for the coherence sweep that lives on the
+    // same service: an orphaned blob does not wait for a policy to be
+    // configured. `evict_registry` asks `evicts_anything()` for its 404 instead
+    // of reading absence from this map.
     for reg in &config.registries {
         let cache = &reg.cache;
-        let configured = cache.artifact_ttl_secs.is_some()
-            || cache.idle_days.is_some()
-            || cache.max_size_bytes.is_some()
-            || cache.keep_latest_n.is_some();
-        if !configured {
-            continue;
-        }
-        let eviction_svc = Arc::new(EvictionService::new(
-            Arc::new(PgArtifactMetaRepository::new(pool.clone()))
-                as Arc<dyn batlehub_core::ports::ArtifactMetaRepository>,
-            storage.clone(),
-            EvictionConfig {
-                artifact_ttl_secs: cache.artifact_ttl_secs,
-                idle_days: cache.idle_days,
-                max_size_bytes: cache.max_size_bytes,
-                keep_latest_n: cache.keep_latest_n,
-                registry: reg.name.clone(),
-            },
-        ));
+        let eviction_svc = Arc::new(
+            EvictionService::new(
+                Arc::new(PgArtifactMetaRepository::new(pool.clone()))
+                    as Arc<dyn batlehub_core::ports::ArtifactMetaRepository>,
+                storage.clone(),
+                EvictionConfig {
+                    artifact_ttl_secs: cache.artifact_ttl_secs,
+                    idle_days: cache.idle_days,
+                    max_size_bytes: cache.max_size_bytes,
+                    keep_latest_n: cache.keep_latest_n,
+                    registry: reg.name.clone(),
+                },
+            )
+            // Without this the sweep runs and records nothing — the state every
+            // one of these services was in before RFC 0016's trail was extended
+            // to the cache.
+            .with_audit(packages.clone()),
+        );
         eviction_map.insert(reg.name.clone(), eviction_svc);
     }
     eviction_map

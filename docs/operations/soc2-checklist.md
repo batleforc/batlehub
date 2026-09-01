@@ -45,7 +45,7 @@ a result.
 |-----------|---------|--------|---------|
 | CC7.1 – Detect configuration changes | Config change log stored in `config_changes` table | ✅ Implemented | `GET /api/v1/admin/config/changes` |
 | CC7.2 – Monitor for anomalies | Rate limiting per IP and per user; anomaly counters in Prometheus | ✅ Implemented | [`[otel]` configuration](/guide/configuration#_3-7-otel-optional), `deploy/prometheus-alerts.yaml` |
-| CC7.3 – Evaluate security events | Audit log captures every download, block, unblock, delete with user, timestamp, IP | ✅ Implemented | `GET /api/v1/admin/audit-log` |
+| CC7.3 – Evaluate security events | Audit log captures every download, block, unblock, delete (by hand and by retention policy) with user, timestamp, IP; filterable by action | ✅ Implemented | `GET /api/v1/admin/audit-log?action=…` |
 | CC7.3 – IP/UA in audit log | ip_address and user_agent columns in access_events (migration 029) | ✅ Implemented | `crates/adapters/migrations/029_audit_ip_ua.sql` |
 | CC7.4 – Respond to security incidents | See `docs/operations/incident-response.md` | Manual process | Documented |
 | CC7.5 – Disclose security incidents | Incident response playbook includes notification steps | Manual process | `docs/operations/incident-response.md` |

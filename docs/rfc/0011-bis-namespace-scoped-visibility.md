@@ -2,7 +2,7 @@
 
 | Field      | Value                                                                  |
 | ---------- | ---------------------------------------------------------------------- |
-| Status     | Draft                                                                  |
+| Status     | **Superseded by 0015** — [RFC 0015](/rfc/0015-grants-on-the-resource-hierarchy) §9.1 proposed absorbing this document on acceptance; it is Implemented, so the absorption is done. Two of the three gaps landed with it: the per-ecosystem separator (§4.2) was carried over unchanged and is `namespace_separator` in `crates/core/src/entities/grant.rs`, and reader groups (§4.3) were taken by requirement rather than by spelling — the set became grant subjects and the empty-override case became `Visibility::Private`. **The third did not.** Groups on a PAT (§4.4, phase 1) is still unbuilt: `UserToken` carries no groups and `UserTokenAuthProvider` resolves every token to `groups: vec![]`, so 0015's `group:` subjects never match a PAT and `pat_is_within_owner` — the invariant check 0015 built for it — can only ever compare against an empty set. It is not a proposal awaiting review; it is a gap in a shipped feature, tracked on the roadmap under Authentication providers. §8's two open questions go with it: the PAT TTL policy is now live, group nesting stays flat |
 | Short      | Namespace-scoped visibility |
 | Settles    | Making a team's packages visible to that team and to the groups it grants read to: a namespace separator per ecosystem, reader groups with a per-package override, and groups on a PAT |
 | Author     | batleforc                                                              |

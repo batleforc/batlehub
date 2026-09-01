@@ -268,13 +268,17 @@ pub(super) async fn resolve_readme(input: ResolveInput<'_>) -> Result<Resolved, 
     // Gate: the catalogue's own registry list, checked first because it is the
     // widest of the three and the cheapest — one read lock, no I/O.
     //
-    // `explore_accessible_registries_for` is the set `list.rs` filters its rows
-    // by and `stats.rs` counts over, so a registry it refuses to admit has no
-    // rows, no counts and no page. Serving its README anyway made this endpoint
-    // the way round that refusal: the text names the package, and usually its
-    // homepage, its dependencies and its build. That is the same side channel
-    // `check_visibility` closes one level down, one level up — a registry an
-    // operator took out of `rbac.explore` is not browsable *by any door*.
+    // `browsable_registries` is the set `list.rs` filters its rows by and
+    // `stats.rs` counts over, so a registry it refuses to admit has no rows, no
+    // counts and no page. (It resolves `catalogue:browse`, which RFC 0015 §10
+    // rule 2 translated from the older `proxy access ∩ rbac.explore`
+    // intersection — same answer, different owner. The `AccessConfig` method
+    // that used to compute it has no caller left.) Serving its README anyway
+    // made this endpoint the way round that refusal: the text names the
+    // package, and usually its homepage, its dependencies and its build. That
+    // is the same side channel `check_visibility` closes one level down, one
+    // level up — a registry an operator took out of `rbac.explore` is not
+    // browsable *by any door*.
     //
     // The proxy path is untouched and is meant to be: `rbac.explore.user =
     // false` is "this registry is for package managers, not for reading", and a

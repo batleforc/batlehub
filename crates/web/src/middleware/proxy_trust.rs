@@ -108,6 +108,17 @@ impl ProxyTrust {
     }
 
     /// True when an explicit list is configured (as opposed to legacy permissive).
+    ///
+    /// **Public for a reason that is not this module's.** [`Self::policy`] is
+    /// private, so this is the only way to ask the question from outside — and
+    /// `services::reload` asks it, to assert that a reload hands the app's
+    /// *live* handle over rather than a detached copy. That test is the whole
+    /// argument for the struct-literal shape `ConfigReloadParams` documents; a
+    /// never-wired policy and a legitimately unconfigured one look identical
+    /// here, which is exactly why the wiring has to be a compile error rather
+    /// than a runtime check.
+    ///
+    /// Audited 2026-09-01: no production caller, and that is not a defect.
     pub fn is_configured(&self) -> bool {
         self.policy().is_some()
     }

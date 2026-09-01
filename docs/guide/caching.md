@@ -174,6 +174,14 @@ If an artifact was stored before the `artifact_cache_meta` migration was applied
 
 Omitting all four fields disables eviction — artifacts are kept indefinitely.
 
+To run a sweep on demand, preview one before turning a new size cap loose, or
+read what a sweep took out of the audit trail, see
+[Running it, and previewing it](/guide/admin-policies#cache-eviction-run).
+
+No eviction strategy considers a blob whose meta row is missing — every strategy
+reads that table. Collecting those is
+[a separate sweep](/guide/admin-policies#cache-coherence).
+
 ---
 
 ## Cache warming {#cache-warming}

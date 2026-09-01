@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 use batlehub_core::{
-    entities::{AccessEvent, EventFilter},
+    entities::{AccessAction, AccessEvent, EventFilter},
     error::CoreError,
     services::AdminService,
 };
@@ -17,7 +17,17 @@ use crate::{error::AppError, extractors::AuthIdentity, handlers::schemas::Protoc
 #[derive(Deserialize, IntoParams)]
 pub struct AuditQuery {
     pub registry: Option<String>,
+    /// Narrow to one package name, as the registry filter narrows to one
+    /// registry.
+    pub package_name: Option<String>,
     pub user_id: Option<String>,
+    /// Keep only these actions: one wire name, or several comma-separated
+    /// (`delete,retention_reclaim`). Absent means every action.
+    ///
+    /// Both spellings the API emits are accepted — `view_metadata` as the
+    /// package-detail timeline and the CSV export write it, `viewmetadata` as
+    /// this endpoint's own JSON serialises it.
+    pub action: Option<String>,
     pub from: Option<DateTime<Utc>>,
     pub to: Option<DateTime<Utc>>,
     pub denied_only: Option<bool>,
@@ -29,6 +39,31 @@ pub struct AuditQuery {
 
 fn default_per_page() -> u64 {
     100
+}
+
+/// Parse the `?action=` parameter into a filter set.
+///
+/// An unknown name is a `400` rather than an empty result, because the two are
+/// indistinguishable to the caller and one of them is a typo in an audit query
+/// — the worst place for "no rows" to be ambiguous. The error names every
+/// action, since there is no other endpoint that lists them.
+fn parse_actions(raw: Option<&str>) -> Result<Vec<AccessAction>, AppError> {
+    let Some(raw) = raw else {
+        return Ok(vec![]);
+    };
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|name| {
+            AccessAction::from_wire(name).ok_or_else(|| {
+                let known: Vec<&str> = AccessAction::ALL.iter().map(|a| a.as_str()).collect();
+                AppError::bad_request(format!(
+                    "unknown audit action '{name}'. Known actions: {}",
+                    known.join(", ")
+                ))
+            })
+        })
+        .collect()
 }
 
 /// Paginated envelope for `GET /api/v1/admin/audit-log`, matching the shape of
@@ -70,25 +105,24 @@ pub async fn audit_log(
     .await?;
 
     let (page, per_page) = crate::handlers::clamp_pagination(query.page, query.per_page);
+    let actions = parse_actions(query.action.as_deref())?;
     let filter = EventFilter {
         registry: query.registry.clone(),
-        package_name: None,
+        package_name: query.package_name.clone(),
         user_id: query.user_id.clone(),
+        actions: actions.clone(),
         from: query.from,
         to: query.to,
         denied_only: query.denied_only.unwrap_or(false),
         limit: per_page,
         offset: page * per_page,
     };
+    // The same predicate as the page above, or the total describes a different
+    // set than the rows do.
     let count_filter = EventFilter {
-        registry: query.registry.clone(),
-        package_name: None,
-        user_id: query.user_id.clone(),
-        from: query.from,
-        to: query.to,
-        denied_only: query.denied_only.unwrap_or(false),
         limit: 0,
         offset: 0,
+        ..filter.clone()
     };
 
     let (items, total) = tokio::try_join!(
@@ -121,6 +155,12 @@ pub struct ExportQuery {
     /// same set the table did.
     #[serde(default)]
     pub denied_only: bool,
+    /// Narrow to one package name.
+    pub package_name: Option<String>,
+    /// Keep only these actions, comma-separated. As the listing's `action`
+    /// filter — an export has to be able to describe the same set the table
+    /// did, which is the reasoning `denied_only` above already followed.
+    pub action: Option<String>,
     /// "json" (default) or "csv"
     #[serde(default)]
     pub format: String,
@@ -166,8 +206,9 @@ pub async fn export_audit_log(
 
     let filter = EventFilter {
         registry: query.registry.clone(),
-        package_name: None,
+        package_name: query.package_name.clone(),
         user_id: query.user_id.clone(),
+        actions: parse_actions(query.action.as_deref())?,
         from: query.from,
         to: query.to,
         denied_only: query.denied_only,
@@ -223,7 +264,10 @@ pub async fn export_audit_log(
                     .as_ref()
                     .and_then(|p| p.artifact.as_deref())
                     .unwrap_or(""),
-                format!("{:?}", e.action).to_lowercase(),
+                // `as_str`, not `{:?}`: the debug spelling squashes the words
+                // together (`viewmetadata`), and this column is the one an
+                // auditor pastes back into `?action=`.
+                e.action.as_str(),
                 outcome,
                 deny_reason,
                 e.ip_address.as_deref().unwrap_or(""),

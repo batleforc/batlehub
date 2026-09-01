@@ -150,21 +150,6 @@ pub enum ChainMode {
     Listing,
 }
 
-impl ChainMode {
-    /// The mode a resource's tier implies, absent a caller who knows better.
-    ///
-    /// A version-tier resource still needs the caller to say whether the row is
-    /// held — that is a fact about this instance's storage, not about the
-    /// coordinate — so this answers [`ChainMode::Unheld`] for it, the
-    /// conservative reading that judges everything it can.
-    pub fn for_tier(tier: Tier) -> Self {
-        match tier {
-            Tier::Version => ChainMode::Unheld,
-            Tier::Instance | Tier::Registry | Tier::Namespace | Tier::Package => ChainMode::Listing,
-        }
-    }
-}
-
 /// What `authorize` is being asked, beyond the §5.1 triple.
 ///
 /// Separate from [`Resource`] because it is not a property of the resource: the
@@ -433,6 +418,14 @@ impl Authorizer {
 
 /// [`Authorizer::authorize`] for a concrete version whose row this instance does
 /// not hold — the shape most read paths are in.
+///
+/// **Nothing calls this.** Audited 2026-09-01: the read paths go through
+/// [`chain::authorize_read`](super::authz::authorize_read) and
+/// [`chain::authorize_unheld_read`](super::authz::authorize_unheld_read), which
+/// answer a `Result` rather than a [`Decision`] and run the rule chain the
+/// handlers expect. [`filter`](super::authz::filter)'s header audits which parts
+/// of that module are live and which are waiting for a writer; this function is
+/// on the waiting side, superseded in practice by `chain.rs`.
 pub async fn authorize_version(
     authorizer: &Authorizer,
     subject: &Subject,
@@ -506,7 +499,7 @@ mod tests {
             &id,
         )
         .await;
-        assert!(!decision.is_allowed(), "{decision:?}");
+        assert!(matches!(decision, Decision::Deny { .. }), "{decision:?}");
     }
 
     /// …and admits the role the operator named.
@@ -520,7 +513,7 @@ mod tests {
         let authorizer = Authorizer::new(hot, None);
         let id = PackageId::new("reg", "pkg", "1.2.3");
         let decision = authorize_version(&authorizer, &admin(), Action::ReleasesRead, &id).await;
-        assert!(decision.is_allowed(), "{decision:?}");
+        assert!(matches!(decision, Decision::Allow), "{decision:?}");
     }
 
     /// A `Full` request with no metadata is refused rather than allowed.
@@ -541,7 +534,7 @@ mod tests {
                 metadata: None,
             })
             .await;
-        assert!(!decision.is_allowed(), "{decision:?}");
+        assert!(matches!(decision, Decision::Deny { .. }), "{decision:?}");
     }
 
     /// A tier that names no package does not consult per-package visibility.
@@ -562,14 +555,7 @@ mod tests {
                 metadata: None,
             })
             .await;
-        assert!(decision.is_allowed(), "{decision:?}");
-    }
-
-    #[test]
-    fn a_tier_implies_a_conservative_chain_mode() {
-        assert_eq!(ChainMode::for_tier(Tier::Version), ChainMode::Unheld);
-        assert_eq!(ChainMode::for_tier(Tier::Package), ChainMode::Listing);
-        assert_eq!(ChainMode::for_tier(Tier::Registry), ChainMode::Listing);
+        assert!(matches!(decision, Decision::Allow), "{decision:?}");
     }
 }
 

@@ -42,10 +42,38 @@ pub struct Identity {
 }
 
 impl Identity {
+    /// The `user_id` a scheduled task acts under.
+    ///
+    /// A reserved name rather than a `None`: an audit row with no subject reads
+    /// as "we do not know who did this", which is the wrong thing to say about
+    /// an action the server took on its own schedule. `"system"` is the name the
+    /// banner already uses for the same idea.
+    pub const SYSTEM_USER_ID: &'static str = "system";
+
     pub fn anonymous() -> Self {
         Self {
             user_id: None,
             role: Role::Anonymous,
+            auth_provider: None,
+            groups: vec![],
+        }
+    }
+
+    /// The identity a scheduled background task runs as.
+    ///
+    /// `Role::Admin` because a periodic sweep answers to the operator who
+    /// enabled it in the config, not to a request — there is no principal to
+    /// narrow it to and nothing to ask. It is deliberately **not reachable from
+    /// a request**: nothing parses `"system"` out of a token, so this is only
+    /// ever constructed by the process itself.
+    ///
+    /// Its whole purpose is the trail: `user_id = "system"` is what separates
+    /// "the schedule collected this" from "an operator did", which no other
+    /// field of an `AccessEvent` could say.
+    pub fn system() -> Self {
+        Self {
+            user_id: Some(Self::SYSTEM_USER_ID.to_owned()),
+            role: Role::Admin,
             auth_provider: None,
             groups: vec![],
         }
@@ -63,6 +91,25 @@ impl Identity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_identity_is_named_and_admin() {
+        let sys = Identity::system();
+        assert_eq!(sys.user_id.as_deref(), Some("system"));
+        assert!(sys.is_admin());
+        assert!(
+            sys.groups.is_empty(),
+            "a scheduled task belongs to no team, and a group grant must not \
+             widen what it can reach"
+        );
+    }
+
+    /// An anonymous caller and the scheduler must not be the same subject in the
+    /// audit trail.
+    #[test]
+    fn system_is_not_anonymous() {
+        assert_ne!(Identity::system().user_id, Identity::anonymous().user_id);
+    }
 
     #[test]
     fn role_from_str_round_trips_every_variant() {

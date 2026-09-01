@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::entities::{PackageId, Role};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum AccessAction {
     Download,
@@ -68,6 +68,196 @@ pub enum AccessAction {
     /// answer by scanning for the newest of two event kinds rather than the
     /// newest of one.
     SetRetentionPin,
+    /// A version was reclaimed by a retention *policy* rather than by a person
+    /// (RFC 0016 §4.2).
+    ///
+    /// Not a flavour of [`Self::Delete`]: RFC 0016's goals require that "an
+    /// operator reading the audit trail must be able to tell a policy
+    /// reclamation from a human deletion", and until this variant existed they
+    /// could not — a run is triggered by an admin's own token, so the event it
+    /// left was byte-for-byte what that admin deleting the version by hand
+    /// leaves. The authorization is unchanged and still `releases:delete`; only
+    /// the trail distinguishes them.
+    RetentionReclaim,
+    /// A retention run that was allowed to write (RFC 0016 §4.2).
+    ///
+    /// Registry-scoped, one per run, recorded whether or not it reclaimed
+    /// anything — "who ran the policy, and when" is a question the per-version
+    /// [`Self::RetentionReclaim`] events cannot answer for a run that reclaimed
+    /// nothing.
+    RetentionRun,
+    /// A retention run under `dry_run`, which wrote nothing.
+    ///
+    /// A separate action rather than a flag on [`Self::RetentionRun`], because
+    /// the `AccessEvent` shape has nowhere to carry a flag and because the
+    /// distinction is the first thing an auditor asks of a retention event: an
+    /// operator filtering `?action=retention_run` must see exactly the runs
+    /// that *could* have deleted something. A dry run is still recorded — it is
+    /// an operator's action against a registry, not a read of package data,
+    /// which is the line `compact_tombstone_detail` draws when it declines to
+    /// audit its own preview.
+    RetentionDryRun,
+    /// One proxy-cached artifact was dropped by hand.
+    ///
+    /// A *cache* eviction, never a [`Self::Delete`]: what goes is a copy of
+    /// something the upstream still has, and the next request re-fetches it.
+    /// Conflating the two would make "was this package deleted" answerable only
+    /// by reading the registry's mode out of a config file.
+    CacheEvict,
+    /// A whole registry's cached artifacts were dropped by hand.
+    ///
+    /// Registry-scoped, one event: `clear-cache` is a `delete_by_prefix` that
+    /// reports a count and never knew the coordinates, so there is nothing
+    /// per-artifact to record even in principle. It is also the bluntest of the
+    /// four `cache:evict` surfaces, which is why it gets its own action rather
+    /// than looking like a single-artifact drop in the trail.
+    CacheClear,
+    /// A configured eviction sweep ran and was allowed to write.
+    ///
+    /// Registry-scoped, one per run. Deliberately **not** one event per evicted
+    /// artifact, unlike [`Self::RetentionReclaim`]: an LRU sweep on a large
+    /// estate evicts by the thousand, the copy it drops is recoverable by a
+    /// re-fetch, and a trail nobody finishes reading protects nobody. What went
+    /// is in the run's report and its log line; that it ran, and who ran it, is
+    /// here.
+    CacheEvictRun,
+    /// An eviction sweep under `dry_run`, which dropped nothing.
+    CacheEvictDryRun,
+    /// A cache-coherence sweep ran and was allowed to write.
+    ///
+    /// Not a flavour of [`Self::CacheEvictRun`], for the reason
+    /// [`Self::TombstoneCompact`] is not a flavour of [`Self::Delete`]: eviction
+    /// discards blobs a policy decided it no longer wants, coherence deletes
+    /// blobs **nothing references at all** — a leak being collected, not a cache
+    /// being trimmed. An operator reading the trail has to be able to separate
+    /// "the policy took it" from "it was already unreachable".
+    CacheCoherenceRun,
+    /// A cache-coherence sweep under `dry_run`, which deleted nothing and — the
+    /// part that matters — did not advance any blob toward deletion either.
+    CacheCoherenceDryRun,
+}
+
+impl AccessAction {
+    /// Every action, in declaration order.
+    ///
+    /// The parsing table: [`Self::from_wire`] searches it, so a variant missing
+    /// here is a variant the audit-log `?action=` filter cannot name.
+    pub const ALL: &[AccessAction] = &[
+        Self::Download,
+        Self::ViewMetadata,
+        Self::Block,
+        Self::Unblock,
+        Self::Delete,
+        Self::AddOwner,
+        Self::RemoveOwner,
+        Self::SetVisibility,
+        Self::BlockUser,
+        Self::UnblockUser,
+        Self::BlockIp,
+        Self::UnblockIp,
+        Self::AuditPurge,
+        Self::Yank,
+        Self::Unyank,
+        Self::Deprecate,
+        Self::Undeprecate,
+        Self::Unlist,
+        Self::Relist,
+        Self::AddBetaMember,
+        Self::RemoveBetaMember,
+        Self::ClaimNamespace,
+        Self::ReleaseNamespace,
+        Self::ResetQuota,
+        Self::TombstoneCompact,
+        Self::SetRetentionPin,
+        Self::RetentionReclaim,
+        Self::RetentionRun,
+        Self::RetentionDryRun,
+        Self::CacheEvict,
+        Self::CacheClear,
+        Self::CacheEvictRun,
+        Self::CacheEvictDryRun,
+        Self::CacheCoherenceRun,
+        Self::CacheCoherenceDryRun,
+    ];
+
+    /// The canonical wire name, snake_case.
+    ///
+    /// What the `access_events.action` column has always stored, and what the
+    /// package-detail timeline renders. Defined here rather than in the
+    /// Postgres adapter because the audit-log filter has to parse the same
+    /// vocabulary the adapter writes, and two tables in two crates is how the
+    /// two spellings diverge.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Download => "download",
+            Self::ViewMetadata => "view_metadata",
+            Self::Block => "block",
+            Self::Unblock => "unblock",
+            Self::Delete => "delete",
+            Self::AddOwner => "add_owner",
+            Self::RemoveOwner => "remove_owner",
+            Self::SetVisibility => "set_visibility",
+            Self::BlockUser => "block_user",
+            Self::UnblockUser => "unblock_user",
+            Self::BlockIp => "block_ip",
+            Self::UnblockIp => "unblock_ip",
+            Self::AuditPurge => "audit_purge",
+            Self::Yank => "yank",
+            Self::Unyank => "unyank",
+            Self::Deprecate => "deprecate",
+            Self::Undeprecate => "undeprecate",
+            Self::Unlist => "unlist",
+            Self::Relist => "relist",
+            Self::AddBetaMember => "add_beta_member",
+            Self::RemoveBetaMember => "remove_beta_member",
+            Self::ClaimNamespace => "claim_namespace",
+            Self::ReleaseNamespace => "release_namespace",
+            Self::ResetQuota => "reset_quota",
+            Self::TombstoneCompact => "tombstone_compact",
+            Self::SetRetentionPin => "set_retention_pin",
+            Self::RetentionReclaim => "retention_reclaim",
+            Self::RetentionRun => "retention_run",
+            Self::RetentionDryRun => "retention_dry_run",
+            Self::CacheEvict => "cache_evict",
+            Self::CacheClear => "cache_clear",
+            Self::CacheEvictRun => "cache_evict_run",
+            Self::CacheEvictDryRun => "cache_evict_dry_run",
+            Self::CacheCoherenceRun => "cache_coherence_run",
+            Self::CacheCoherenceDryRun => "cache_coherence_dry_run",
+        }
+    }
+
+    /// Parse a wire name, tolerating **both** spellings this API emits.
+    ///
+    /// The same action is on the wire twice: `access_events.action` and the
+    /// package-detail timeline spell it snake_case (`view_metadata`), while the
+    /// audit-log JSON serialises this enum through serde's
+    /// `rename_all = "lowercase"` and spells it `viewmetadata`. An operator
+    /// filtering by an action they just read out of a response would otherwise
+    /// be right half the time, so separators and case are normalised away
+    /// before matching rather than one spelling being declared the winner.
+    ///
+    /// (Unifying the two is a breaking change to the generated TypeScript
+    /// client's enum, so it is not made here.)
+    pub fn from_wire(s: &str) -> Option<Self> {
+        fn normalise(s: &str) -> String {
+            s.chars()
+                .filter(|c| *c != '_' && *c != '-')
+                .flat_map(char::to_lowercase)
+                .collect()
+        }
+        let want = normalise(s);
+        Self::ALL
+            .iter()
+            .find(|a| normalise(a.as_str()) == want)
+            .copied()
+    }
+}
+
+impl std::fmt::Display for AccessAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -254,6 +444,15 @@ pub struct EventFilter {
     pub registry: Option<String>,
     pub package_name: Option<String>,
     pub user_id: Option<String>,
+    /// Keep only these actions. Empty means every action, so the default filter
+    /// is unchanged.
+    ///
+    /// A set rather than one action: the questions an operator asks are about a
+    /// *kind* of activity — "every deletion" is `delete` and
+    /// [`AccessAction::RetentionReclaim`] both, and being unable to ask for the
+    /// two together is what made the retention split unusable when it was
+    /// proposed.
+    pub actions: Vec<AccessAction>,
     pub from: Option<DateTime<Utc>>,
     pub to: Option<DateTime<Utc>>,
     pub denied_only: bool,
@@ -332,5 +531,90 @@ mod tests {
         assert_eq!(f.offset, 0);
         assert!(!f.denied_only);
         assert!(f.registry.is_none());
+    }
+
+    /// The default filter must keep every action, or adding the field silently
+    /// empties every existing caller's result.
+    #[test]
+    fn event_filter_new_selects_every_action() {
+        assert!(EventFilter::new().actions.is_empty());
+    }
+
+    #[test]
+    fn from_wire_round_trips_every_variant() {
+        for action in AccessAction::ALL {
+            assert_eq!(AccessAction::from_wire(action.as_str()), Some(*action));
+        }
+    }
+
+    /// `as_str` is an exhaustive match, so a new variant cannot compile without
+    /// a name — but it *can* compile without being in `ALL`, which would leave
+    /// it unparseable by the audit-log filter. This is the gate for that.
+    #[test]
+    fn all_lists_every_variant() {
+        assert_eq!(
+            AccessAction::ALL.len(),
+            35,
+            "a new AccessAction variant must be added to ALL (and this count bumped), \
+             or ?action= cannot name it"
+        );
+        let mut names: Vec<&str> = AccessAction::ALL.iter().map(|a| a.as_str()).collect();
+        names.sort_unstable();
+        let before = names.len();
+        names.dedup();
+        assert_eq!(before, names.len(), "two actions share a wire name");
+    }
+
+    /// Both spellings the API emits parse: the snake_case one the database and
+    /// the package-detail timeline use, and the squashed lowercase one serde
+    /// puts in the audit-log JSON.
+    #[test]
+    fn from_wire_accepts_both_spellings_on_the_wire() {
+        let squashed = serde_json::to_string(&AccessAction::ViewMetadata).unwrap();
+        assert_eq!(squashed, "\"viewmetadata\"");
+        assert_eq!(
+            AccessAction::from_wire("viewmetadata"),
+            Some(AccessAction::ViewMetadata)
+        );
+        assert_eq!(
+            AccessAction::from_wire("view_metadata"),
+            Some(AccessAction::ViewMetadata)
+        );
+        assert_eq!(
+            AccessAction::from_wire("View-Metadata"),
+            Some(AccessAction::ViewMetadata)
+        );
+    }
+
+    #[test]
+    fn from_wire_rejects_unknown() {
+        assert_eq!(AccessAction::from_wire("not_an_action"), None);
+        assert_eq!(AccessAction::from_wire(""), None);
+    }
+
+    /// A retention reclamation and a hand deletion must not be the same event
+    /// (RFC 0016 §3).
+    #[test]
+    fn retention_reclaim_is_not_delete() {
+        assert_ne!(AccessAction::RetentionReclaim, AccessAction::Delete);
+        assert_ne!(
+            AccessAction::RetentionReclaim.as_str(),
+            AccessAction::Delete.as_str()
+        );
+    }
+
+    /// Dropping a cached copy is not deleting a package, and an auditor must
+    /// not have to read a registry's mode out of a config file to tell them
+    /// apart.
+    #[test]
+    fn a_cache_eviction_is_not_a_deletion() {
+        for evict in [
+            AccessAction::CacheEvict,
+            AccessAction::CacheClear,
+            AccessAction::CacheEvictRun,
+        ] {
+            assert_ne!(evict, AccessAction::Delete);
+            assert_ne!(evict, AccessAction::RetentionReclaim);
+        }
     }
 }

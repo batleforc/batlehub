@@ -216,7 +216,7 @@ impl TestServer {
                 )),
                 ..Default::default()
             }),
-            storage,
+            storage: storage.clone(),
             cache,
             repo: repo.clone(),
             artifact_meta: NoopArtifactMetaRepository::arc(),
@@ -302,7 +302,28 @@ impl TestServer {
             batlehub_web::OidcProviderNames::default(),
             batlehub_adapters::in_memory::InMemoryLoginStateStore::arc(),
             HashMap::new(), // warming_map
-            HashMap::new(), // eviction_map
+            // One eviction service, so `admin cache evict` and `admin cache
+            // coherence` have something to reach. `keep_latest_n` is set
+            // because `/evict` answers `404` for a registry with no strategy
+            // configured — the coherence sweep deliberately does not, which is
+            // why it needs no strategy of its own here.
+            [(
+                REGISTRY.to_owned(),
+                Arc::new(
+                    batlehub_core::services::EvictionService::new(
+                        batlehub_adapters::in_memory::NoopArtifactMetaRepository::arc(),
+                        storage.clone(),
+                        batlehub_core::services::EvictionConfig {
+                            registry: REGISTRY.to_owned(),
+                            keep_latest_n: Some(1),
+                            ..Default::default()
+                        },
+                    )
+                    .with_audit(repo.clone()),
+                ),
+            )]
+            .into_iter()
+            .collect(), // eviction_map
             Arc::new(ProxyMetrics::new(&[])),
             None,
             None,
@@ -1545,6 +1566,117 @@ fn admin_audit_log_table_shows_seeded_event() {
     let (ok, stdout, stderr) = cli_cmd(&["admin", "audit-log"], &base, AUTH_TOKEN);
     assert!(ok, "audit-log should succeed; stderr: {stderr}");
     assert!(stdout.contains("1 entry/entries"), "stdout: {stdout}");
+}
+
+/// `--action` is what makes "what was deleted here" a question the CLI can ask:
+/// without it the answer is buried under every download in the trail.
+#[test]
+fn admin_audit_log_filters_by_action() {
+    let srv = TestServer::start();
+    let base = srv.base_url();
+    // A download (via seed_package) and an account-wide block: two actions.
+    srv.seed_package("left-alone", "1.0.0");
+    cli_cmd(&["admin", "users", "block", "someone"], &base, AUTH_TOKEN);
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "audit-log", "--action", "block_user"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "audit-log --action should succeed; stderr: {stderr}");
+    assert!(stdout.contains("1 entry/entries"), "stdout: {stdout}");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "audit-log", "--action", "block_user,download"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "a comma-separated set should succeed; stderr: {stderr}");
+    assert!(stdout.contains("2 entry/entries"), "stdout: {stdout}");
+}
+
+/// A typo is a `400` with the alternatives, not an empty table that reads as
+/// "nothing happened".
+#[test]
+fn admin_audit_log_rejects_an_unknown_action() {
+    let srv = TestServer::start();
+    let (ok, _stdout, stderr) = cli_cmd(
+        &["admin", "audit-log", "--action", "deleted"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(!ok, "an unknown action must fail");
+    assert!(stderr.contains("unknown audit action"), "stderr: {stderr}");
+}
+
+/// The preview an operator runs before turning a size cap loose. The test
+/// server configures no eviction strategies, so this asserts the command, its
+/// flag and the report's shape — 404 would mean the route or the query never
+/// reached the service.
+#[test]
+fn admin_cache_evict_dry_run_reports() {
+    let srv = TestServer::start();
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "cache", "evict", REGISTRY, "--dry-run"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "cache evict --dry-run should succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("dry run — nothing was evicted"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
+fn admin_cache_evict_runs_live_without_the_flag() {
+    let srv = TestServer::start();
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "cache", "evict", REGISTRY],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "cache evict should succeed; stderr: {stderr}");
+    assert!(stdout.contains("evicted"), "stdout: {stdout}");
+    assert!(
+        !stdout.contains("dry run"),
+        "a cached copy comes back on the next request, so live is the default: {stdout}"
+    );
+}
+
+/// The first sweep of a fresh estate deletes nothing and says why — the
+/// two-pass grace, which an operator reading "0 deleted" would otherwise take
+/// for "this command does nothing".
+#[test]
+fn admin_cache_coherence_reports() {
+    let srv = TestServer::start();
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "cache", "coherence", REGISTRY],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "cache coherence should succeed; stderr: {stderr}");
+    assert!(stdout.contains("Cache coherence on"), "stdout: {stdout}");
+    assert!(stdout.contains("deleted 0"), "stdout: {stdout}");
+}
+
+#[test]
+fn admin_cache_coherence_dry_run_says_it_armed_nothing() {
+    let srv = TestServer::start();
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "cache", "coherence", REGISTRY, "--dry-run"],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(
+        ok,
+        "cache coherence --dry-run should succeed; stderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("nothing was deleted, nothing was armed"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("would delete 0"), "stdout: {stdout}");
 }
 
 #[test]

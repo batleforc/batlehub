@@ -6,8 +6,19 @@ use bytes::Bytes;
 use chrono::{DateTime, Duration, Utc};
 
 use super::*;
+use crate::entities::Role;
 use crate::error::CoreError;
 use crate::ports::ByteStream;
+
+/// The operator every run in this file is attributed to.
+fn admin() -> Identity {
+    Identity {
+        user_id: Some("admin-1".to_owned()),
+        role: Role::Admin,
+        auth_provider: None,
+        groups: vec![],
+    }
+}
 use crate::ports::{
     ArtifactCacheMeta, ArtifactInventory, ArtifactMeta, ArtifactMetaRecord, StorageBackend,
     StorageMeta, StoredArtifact,
@@ -310,7 +321,7 @@ async fn run_ttl_evicts_expired_artifacts() {
         ..Default::default()
     };
     let count = svc(meta.clone(), storage.clone(), config)
-        .run_ttl()
+        .run_ttl(&mut EvictionReport::live())
         .await
         .unwrap();
 
@@ -356,7 +367,7 @@ async fn run_ttl_noop_when_not_configured() {
             ..Default::default()
         },
     )
-    .run_ttl()
+    .run_ttl(&mut EvictionReport::live())
     .await
     .unwrap();
 
@@ -403,7 +414,7 @@ async fn run_idle_evicts_unaccessed_artifacts() {
             ..Default::default()
         },
     )
-    .run_idle()
+    .run_idle(&mut EvictionReport::live())
     .await
     .unwrap();
 
@@ -436,7 +447,7 @@ async fn run_idle_noop_when_not_configured() {
             ..Default::default()
         },
     )
-    .run_idle()
+    .run_idle(&mut EvictionReport::live())
     .await
     .unwrap();
 
@@ -475,7 +486,7 @@ async fn run_keep_latest_n_removes_oldest_versions() {
             ..Default::default()
         },
     )
-    .run_keep_latest_n()
+    .run_keep_latest_n(&mut EvictionReport::live())
     .await
     .unwrap();
 
@@ -525,7 +536,7 @@ async fn run_keep_latest_n_respects_package_boundaries() {
             ..Default::default()
         },
     )
-    .run_keep_latest_n()
+    .run_keep_latest_n(&mut EvictionReport::live())
     .await
     .unwrap();
 
@@ -561,7 +572,7 @@ async fn run_keep_latest_n_noop_when_not_configured() {
             ..Default::default()
         },
     )
-    .run_keep_latest_n()
+    .run_keep_latest_n(&mut EvictionReport::live())
     .await
     .unwrap();
 
@@ -607,7 +618,7 @@ async fn run_lru_size_cap_evicts_until_under_cap() {
             ..Default::default()
         },
     )
-    .run_lru_size_cap()
+    .run_lru_size_cap(&mut EvictionReport::live())
     .await
     .unwrap();
 
@@ -659,7 +670,7 @@ async fn run_lru_size_cap_evicts_across_multiple_batches() {
             ..Default::default()
         },
     )
-    .run_lru_size_cap()
+    .run_lru_size_cap(&mut EvictionReport::live())
     .await
     .unwrap();
 
@@ -698,7 +709,7 @@ async fn run_lru_size_cap_noop_when_under_cap() {
             ..Default::default()
         },
     )
-    .run_lru_size_cap()
+    .run_lru_size_cap(&mut EvictionReport::live())
     .await
     .unwrap();
 
@@ -730,7 +741,7 @@ async fn run_lru_size_cap_noop_when_not_configured() {
             ..Default::default()
         },
     )
-    .run_lru_size_cap()
+    .run_lru_size_cap(&mut EvictionReport::live())
     .await
     .unwrap();
 
@@ -764,7 +775,10 @@ async fn run_all_applies_all_enabled_strategies() {
         max_size_bytes: Some(10_000_000), // high enough not to evict anything extra
         registry: "npm".to_owned(),
     };
-    let report = svc(meta, storage.clone(), config).run_all().await.unwrap();
+    let report = svc(meta, storage.clone(), config)
+        .run_all(false, &admin())
+        .await
+        .unwrap();
 
     assert!(report.total >= 1);
     assert!(!storage.contains(&old.artifact_key));
@@ -793,7 +807,7 @@ async fn run_all_noop_when_all_strategies_disabled() {
             ..Default::default()
         },
     )
-    .run_all()
+    .run_all(false, &admin())
     .await
     .unwrap();
 
@@ -843,7 +857,7 @@ async fn coherence_check_deletes_orphaned_storage_objects() {
 
     // First pass defers deletion (two-pass grace closes the write/delete race):
     // the orphan is only recorded as pending, not yet deleted.
-    let report1 = service.run_coherence_check().await.unwrap();
+    let report1 = service.run_coherence_check(false, &admin()).await.unwrap();
     assert_eq!(
         report1.orphaned_deleted, 0,
         "first pass must defer deletion"
@@ -854,7 +868,7 @@ async fn coherence_check_deletes_orphaned_storage_objects() {
     );
 
     // Second pass: still orphaned → deleted.
-    let report = service.run_coherence_check().await.unwrap();
+    let report = service.run_coherence_check(false, &admin()).await.unwrap();
     assert_eq!(report.orphaned_deleted, 1);
     assert_eq!(report.storage_keys, 3);
     assert_eq!(report.meta_rows, 2);
@@ -896,7 +910,7 @@ async fn coherence_check_clean_when_no_orphans() {
             ..Default::default()
         },
     )
-    .run_coherence_check()
+    .run_coherence_check(false, &admin())
     .await
     .unwrap();
 
@@ -931,9 +945,9 @@ async fn coherence_check_empty_registry_spans_all_namespaces() {
     );
 
     // Two-pass grace: first run defers, second run deletes the still-orphaned blob.
-    let report1 = service.run_coherence_check().await.unwrap();
+    let report1 = service.run_coherence_check(false, &admin()).await.unwrap();
     assert_eq!(report1.orphaned_deleted, 0, "first pass defers deletion");
-    let report = service.run_coherence_check().await.unwrap();
+    let report = service.run_coherence_check(false, &admin()).await.unwrap();
 
     assert_eq!(
         report.orphaned_deleted, 1,
@@ -998,7 +1012,7 @@ async fn run_ttl_storage_error_skips_artifact_but_continues() {
             ..Default::default()
         },
     )
-    .run_ttl()
+    .run_ttl(&mut EvictionReport::live())
     .await
     .unwrap();
 
@@ -1033,7 +1047,7 @@ async fn run_idle_storage_error_skips_artifact_but_continues() {
             ..Default::default()
         },
     )
-    .run_idle()
+    .run_idle(&mut EvictionReport::live())
     .await
     .unwrap();
 
@@ -1067,9 +1081,390 @@ async fn run_keep_latest_n_storage_error_skips_artifact() {
             ..Default::default()
         },
     )
-    .run_keep_latest_n()
+    .run_keep_latest_n(&mut EvictionReport::live())
     .await
     .unwrap();
 
     assert_eq!(count, 0);
+}
+
+// ── Dry run, and the trail ────────────────────────────────────────────────
+
+/// A `PackageRepository` that only remembers what was recorded through it.
+#[derive(Default)]
+struct AuditSink {
+    events: Mutex<Vec<AccessEvent>>,
+}
+
+impl AuditSink {
+    fn arc() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    fn of(&self, action: AccessAction) -> Vec<AccessEvent> {
+        self.events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.action == action)
+            .cloned()
+            .collect()
+    }
+
+    fn len(&self) -> usize {
+        self.events.lock().unwrap().len()
+    }
+}
+
+#[async_trait]
+impl crate::ports::PackageRepository for AuditSink {
+    async fn record_access(&self, event: AccessEvent) -> Result<(), CoreError> {
+        self.events.lock().unwrap().push(event);
+        Ok(())
+    }
+    async fn get_status(&self, _: &PackageId) -> Result<crate::entities::PackageStatus, CoreError> {
+        Ok(crate::entities::PackageStatus::Available)
+    }
+    async fn set_status(
+        &self,
+        _: &PackageId,
+        _: crate::entities::PackageStatus,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
+    async fn delete_package(&self, _: &PackageId) -> Result<bool, CoreError> {
+        Ok(false)
+    }
+    async fn list_packages(
+        &self,
+        _: crate::entities::PackageFilter,
+    ) -> Result<Vec<crate::entities::PackageSummary>, CoreError> {
+        Ok(vec![])
+    }
+    async fn count_packages(&self, _: crate::entities::PackageFilter) -> Result<u64, CoreError> {
+        Ok(0)
+    }
+    async fn list_events(
+        &self,
+        _: crate::entities::EventFilter,
+    ) -> Result<Vec<AccessEvent>, CoreError> {
+        Ok(vec![])
+    }
+    async fn count_events(&self, _: crate::entities::EventFilter) -> Result<u64, CoreError> {
+        Ok(0)
+    }
+}
+
+/// Four artifacts, all stale enough for the TTL to take them.
+fn stale_estate() -> (Arc<InMemArtifactMeta>, Arc<InMemStorage>, Vec<String>) {
+    let meta = InMemArtifactMeta::arc();
+    let storage = InMemStorage::arc();
+    let mut keys = Vec::new();
+    for i in 0..4 {
+        let m = make_meta(
+            &format!("artifact:npm/p{i}:1.0"),
+            "npm",
+            &format!("p{i}"),
+            "1.0",
+            100,
+            Duration::hours(2),
+            Duration::hours(2),
+        );
+        meta.seed(m.clone());
+        storage.seed(&m.artifact_key, b"data");
+        keys.push(m.artifact_key);
+    }
+    keys.sort();
+    (meta, storage, keys)
+}
+
+fn ttl_config() -> EvictionConfig {
+    EvictionConfig {
+        artifact_ttl_secs: Some(3600),
+        registry: "npm".to_owned(),
+        ..Default::default()
+    }
+}
+
+/// **The point of the preview.** It answers "what would go" with the
+/// coordinates, and leaves every one of them exactly where it was.
+#[tokio::test]
+async fn a_dry_run_reports_the_keys_and_deletes_nothing() {
+    let (meta, storage, keys) = stale_estate();
+    let report = svc(meta.clone(), storage.clone(), ttl_config())
+        .run_all(true, &admin())
+        .await
+        .unwrap();
+
+    assert!(report.dry_run);
+    assert_eq!(report.total, 4);
+    assert_eq!(report.evicted_ttl, 4);
+    let mut reported = report.evicted_keys.clone();
+    reported.sort();
+    assert_eq!(reported, keys, "the preview names what it would take");
+
+    for key in &keys {
+        assert!(storage.contains(key), "a preview must not delete: {key}");
+    }
+    assert_eq!(meta.all().len(), 4, "nor drop the meta rows");
+}
+
+/// The same estate, live: same count, and now actually gone. The two reports
+/// have the same shape on purpose — an operator compares them.
+#[tokio::test]
+async fn a_live_run_reports_the_same_keys_it_deleted() {
+    let (meta, storage, keys) = stale_estate();
+    let report = svc(meta.clone(), storage.clone(), ttl_config())
+        .run_all(false, &admin())
+        .await
+        .unwrap();
+
+    assert!(!report.dry_run);
+    assert_eq!(report.total, 4);
+    let mut reported = report.evicted_keys.clone();
+    reported.sort();
+    assert_eq!(reported, keys);
+    for key in &keys {
+        assert!(!storage.contains(key));
+    }
+    assert!(meta.all().is_empty());
+}
+
+/// One event per run, registry-scoped — and **no** per-artifact events, which
+/// is the deliberate difference from retention: an LRU sweep evicts by the
+/// thousand and the copy it drops comes back on the next request.
+#[tokio::test]
+async fn a_live_run_records_one_registry_scoped_event() {
+    let (meta, storage, _) = stale_estate();
+    let sink = AuditSink::arc();
+    let report = svc(meta, storage, ttl_config())
+        .with_audit(sink.clone())
+        .run_all(false, &admin())
+        .await
+        .unwrap();
+    assert_eq!(report.total, 4, "four artifacts went");
+
+    assert_eq!(sink.len(), 1, "four evictions, one event");
+    let runs = sink.of(AccessAction::CacheEvictRun);
+    assert_eq!(runs.len(), 1);
+    let coord = runs[0].package_id.as_ref().unwrap();
+    assert_eq!(coord.registry, "npm");
+    assert!(
+        coord.name.is_empty() && coord.version.is_empty(),
+        "a sweep is about a registry, not about a package"
+    );
+    assert_eq!(runs[0].user_id.as_deref(), Some("admin-1"));
+    assert!(sink.of(AccessAction::CacheEvict).is_empty());
+}
+
+/// A preview is on the record, and never as a run that could have written.
+#[tokio::test]
+async fn a_dry_run_records_itself_as_a_dry_run() {
+    let (meta, storage, _) = stale_estate();
+    let sink = AuditSink::arc();
+    svc(meta, storage, ttl_config())
+        .with_audit(sink.clone())
+        .run_all(true, &admin())
+        .await
+        .unwrap();
+
+    assert_eq!(sink.of(AccessAction::CacheEvictDryRun).len(), 1);
+    assert!(sink.of(AccessAction::CacheEvictRun).is_empty());
+}
+
+/// A run that evicts nothing is still a run somebody started.
+#[tokio::test]
+async fn a_run_that_evicts_nothing_is_still_recorded() {
+    let sink = AuditSink::arc();
+    let report = svc(InMemArtifactMeta::arc(), InMemStorage::arc(), ttl_config())
+        .with_audit(sink.clone())
+        .run_all(false, &admin())
+        .await
+        .unwrap();
+
+    assert_eq!(report.total, 0);
+    assert_eq!(sink.of(AccessAction::CacheEvictRun).len(), 1);
+}
+
+/// **The size-cap preview must not count an artifact twice.**
+///
+/// The live loop re-queries `list_lru` after each batch, which is only correct
+/// because the batch it evicted is gone. A preview deletes nothing, so the same
+/// rows come back — walked the same way, it would report evicting far more
+/// artifacts than exist, and an operator sizing a cap would read a number that
+/// cannot happen.
+#[tokio::test]
+async fn a_size_cap_preview_counts_each_artifact_once() {
+    let meta = InMemArtifactMeta::arc();
+    let storage = InMemStorage::arc();
+    // 300 artifacts of 1 KiB: more than the live loop's 256-row batch, so the
+    // live walk needs two passes and the preview must not imitate it.
+    for i in 0..300 {
+        let m = make_meta(
+            &format!("artifact:npm/p{i}:1.0"),
+            "npm",
+            &format!("p{i}"),
+            "1.0",
+            1024,
+            Duration::hours(1),
+            Duration::minutes(i as i64 + 1),
+        );
+        meta.seed(m.clone());
+        storage.seed(&m.artifact_key, b"data");
+    }
+
+    let config = EvictionConfig {
+        // Keep 100 KiB of the 300 KiB cached: 200 artifacts have to go.
+        max_size_bytes: Some(100 * 1024),
+        registry: "npm".to_owned(),
+        ..Default::default()
+    };
+    let report = svc(meta.clone(), storage.clone(), config)
+        .run_all(true, &admin())
+        .await
+        .unwrap();
+
+    assert_eq!(report.evicted_lru, 200, "300 KiB down to a 100 KiB cap");
+    let unique: std::collections::HashSet<&String> = report.evicted_keys.iter().collect();
+    assert_eq!(
+        unique.len(),
+        report.evicted_keys.len(),
+        "a preview that lists the same key twice is counting a deletion that cannot happen twice"
+    );
+    assert_eq!(unique.len(), 200);
+    assert!(report.incomplete_because.is_none(), "one page was enough");
+    assert_eq!(
+        storage.keys().len(),
+        300,
+        "and nothing was actually dropped"
+    );
+}
+
+// ── The coherence sweep: preview, and the trail ───────────────────────────
+
+/// Two tracked artifacts and one orphan, in a registry.
+fn orphan_estate() -> (Arc<InMemArtifactMeta>, Arc<InMemStorage>) {
+    let meta = InMemArtifactMeta::arc();
+    let storage = InMemStorage::arc();
+    storage.seed("artifact:npm/a:1.0", b"data");
+    storage.seed("artifact:npm/orphan:1.0", b"orphan");
+    meta.seed(make_meta(
+        "artifact:npm/a:1.0",
+        "npm",
+        "a",
+        "1.0",
+        10,
+        Duration::hours(1),
+        Duration::hours(1),
+    ));
+    (meta, storage)
+}
+
+fn npm_config() -> EvictionConfig {
+    EvictionConfig {
+        registry: "npm".to_owned(),
+        ..Default::default()
+    }
+}
+
+/// **The one thing a coherence preview must not do.**
+///
+/// The two-pass grace is the whole safety property: a blob goes only if it
+/// looked orphaned on the *previous* run too. A dry run that carried its
+/// findings forward would arm the deletions it was asked to describe — preview
+/// twice, and the second one deletes. So a preview leaves the pending set
+/// exactly as it found it, and a live run after two previews still defers.
+#[tokio::test]
+async fn a_coherence_preview_does_not_advance_a_blob_toward_deletion() {
+    let (meta, storage) = orphan_estate();
+    let service = svc(meta, storage.clone(), npm_config());
+
+    for _ in 0..2 {
+        let report = service.run_coherence_check(true, &admin()).await.unwrap();
+        assert!(report.dry_run);
+        assert_eq!(report.orphaned_deleted, 0, "nothing is deletable yet");
+        assert_eq!(report.first_seen_orphaned, 1);
+        assert_eq!(report.first_seen_keys, vec!["artifact:npm/orphan:1.0"]);
+    }
+
+    // A live run now behaves as if the previews never happened: still a first
+    // sighting, still deferred.
+    let live = service.run_coherence_check(false, &admin()).await.unwrap();
+    assert_eq!(
+        live.orphaned_deleted, 0,
+        "two previews must not have armed the deletion"
+    );
+    assert!(storage.contains("artifact:npm/orphan:1.0"));
+}
+
+/// Once a live run has seen the orphan, the preview says what the *next* run
+/// would take — with the key, which is the only record of a blob whose meta row
+/// is precisely what is missing.
+#[tokio::test]
+async fn a_coherence_preview_names_what_the_next_run_would_delete() {
+    let (meta, storage) = orphan_estate();
+    let service = svc(meta, storage.clone(), npm_config());
+
+    service.run_coherence_check(false, &admin()).await.unwrap();
+
+    let preview = service.run_coherence_check(true, &admin()).await.unwrap();
+    assert_eq!(preview.orphaned_deleted, 1, "second strike, so it would go");
+    assert_eq!(preview.deleted_keys, vec!["artifact:npm/orphan:1.0"]);
+    assert_eq!(preview.first_seen_orphaned, 0);
+    assert!(
+        storage.contains("artifact:npm/orphan:1.0"),
+        "and it is still there"
+    );
+
+    // The preview did not consume the pending state either: the live run that
+    // follows still deletes.
+    let live = service.run_coherence_check(false, &admin()).await.unwrap();
+    assert_eq!(live.orphaned_deleted, 1);
+    assert_eq!(live.deleted_keys, vec!["artifact:npm/orphan:1.0"]);
+    assert!(!storage.contains("artifact:npm/orphan:1.0"));
+}
+
+/// A sweep is its own action: collecting a leak is not a policy trimming a
+/// cache, and neither is a package deletion.
+#[tokio::test]
+async fn a_coherence_sweep_is_audited_as_its_own_action() {
+    let (meta, storage) = orphan_estate();
+    let sink = AuditSink::arc();
+    let service = svc(meta, storage, npm_config()).with_audit(sink.clone());
+
+    service.run_coherence_check(false, &admin()).await.unwrap();
+    assert_eq!(sink.of(AccessAction::CacheCoherenceRun).len(), 1);
+    let coord = sink.of(AccessAction::CacheCoherenceRun)[0]
+        .package_id
+        .clone()
+        .unwrap();
+    assert_eq!(coord.registry, "npm");
+
+    service.run_coherence_check(true, &admin()).await.unwrap();
+    assert_eq!(sink.of(AccessAction::CacheCoherenceDryRun).len(), 1);
+    assert_eq!(
+        sink.of(AccessAction::CacheCoherenceRun).len(),
+        1,
+        "the preview is not filed as a run that could have written"
+    );
+
+    for other in [
+        AccessAction::CacheEvictRun,
+        AccessAction::CacheEvict,
+        AccessAction::Delete,
+    ] {
+        assert!(sink.of(other).is_empty(), "{other} is a different fact");
+    }
+}
+
+#[test]
+fn a_config_with_no_strategy_evicts_nothing() {
+    assert!(!EvictionConfig::default().evicts_anything());
+    assert!(!npm_config().evicts_anything());
+    assert!(ttl_config().evicts_anything());
+    assert!(EvictionConfig {
+        keep_latest_n: Some(1),
+        ..Default::default()
+    }
+    .evicts_anything());
 }

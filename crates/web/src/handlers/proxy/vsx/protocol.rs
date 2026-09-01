@@ -219,11 +219,6 @@ impl GalleryQuery {
         q
     }
 
-    /// Whether this query names one specific extension rather than searching.
-    pub fn is_lookup(&self) -> bool {
-        !self.extension_names.is_empty() || !self.extension_ids.is_empty()
-    }
-
     /// A query this server can only answer with nothing.
     ///
     /// `Target` naming something other than VS Code, or `Featured` — this
@@ -281,7 +276,6 @@ mod tests {
         }));
 
         assert_eq!(q.extension_names, ["ms-python.python"]);
-        assert!(q.is_lookup());
         assert!(!q.is_unanswerable(), "the VS Code target is answerable");
         assert_eq!(q.page(), (0, 1));
     }
@@ -294,7 +288,9 @@ mod tests {
         }));
 
         assert_eq!(q.search_text.as_deref(), Some("python"), "trimmed");
-        assert!(!q.is_lookup());
+        // What `source.rs` and `render.rs` actually branch on: a search names
+        // no extension.
+        assert!(q.extension_names.is_empty() && q.extension_ids.is_empty());
     }
 
     /// A body with almost nothing in it must still produce a usable query —
@@ -305,7 +301,7 @@ mod tests {
         assert_eq!(q.page_number, 1);
         assert_eq!(q.page_size, 50);
         assert_eq!(q.page(), (0, 50));
-        assert!(!q.is_lookup());
+        assert!(q.extension_names.is_empty() && q.extension_ids.is_empty());
         assert!(!q.is_unanswerable());
     }
 

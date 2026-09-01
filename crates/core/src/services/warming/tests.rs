@@ -515,10 +515,12 @@ async fn warm_package_returns_error_when_list_versions_fails() {
 }
 
 #[tokio::test]
-async fn warm_path_stores_under_the_proxy_cache_key() {
+async fn warming_a_path_stores_under_the_proxy_cache_key() {
     let storage = StubStorage::new();
     let svc = active_svc(StubClient::with_versions(vec!["unused"]), storage.clone());
-    let report = svc.warm_path("idea/idea-2026.1.3.tar.gz").await;
+    let report = svc
+        .warm_all_paths(&["idea/idea-2026.1.3.tar.gz".to_owned()])
+        .await;
     assert_eq!(report.warmed, 1);
     assert_eq!(report.errors, 0);
     // Must be the exact key the proxy read path reads: artifact:{reg}/repo/_/{path}.

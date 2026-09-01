@@ -8,7 +8,22 @@ use common::*;
 use actix_web::test::{call_service, read_body_json, TestRequest};
 use serde_json::Value;
 
+use std::sync::Arc;
+
 use batlehub_adapters::in_memory::InMemoryPackageRepository as InMemoryRepo;
+use batlehub_core::entities::{AccessAction, AccessEvent, EventFilter};
+use batlehub_core::ports::PackageRepository;
+
+/// Every event of one action in a repository.
+async fn recorded(repo: &Arc<InMemoryRepo>, action: AccessAction) -> Vec<AccessEvent> {
+    repo.list_events(EventFilter {
+        actions: vec![action],
+        limit: 100,
+        ..Default::default()
+    })
+    .await
+    .unwrap()
+}
 
 // ── /api/v1/admin/health ──────────────────────────────────────────────────────
 
@@ -108,6 +123,60 @@ async fn clear_cache_known_registry_returns_200() {
     assert_eq!(resp.status(), 200);
     let body: Value = read_body_json(resp).await;
     assert!(body["cleared"].is_number());
+}
+
+/// **The bluntest of the four `cache:evict` surfaces**, and until now the only
+/// destructive endpoint in the server that left nothing behind at all.
+///
+/// Registry-scoped, and recorded even when it cleared nothing: "who emptied the
+/// cache" has to survive the answer being "there was nothing in it".
+#[actix_web::test]
+async fn clear_cache_records_a_registry_scoped_event() {
+    let repo = InMemoryRepo::new();
+    let app = make_app(repo.clone()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/registries/npm/clear-cache")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    let events = recorded(&repo, AccessAction::CacheClear).await;
+    assert_eq!(events.len(), 1);
+    let coord = events[0].package_id.as_ref().unwrap();
+    assert_eq!(coord.registry, "npm");
+    assert!(
+        coord.name.is_empty() && coord.version.is_empty(),
+        "a prefix delete never knew the coordinates"
+    );
+    assert!(
+        recorded(&repo, AccessAction::CacheEvict).await.is_empty(),
+        "and it is not a pile of single-artifact drops"
+    );
+}
+
+/// `POST /packages/invalidate` is the older spelling of
+/// `DELETE /registries/{r}/cache`; two surfaces for one operation must not
+/// produce two different trails.
+#[actix_web::test]
+async fn invalidate_records_the_same_event_the_cache_delete_does() {
+    let repo = InMemoryRepo::new();
+    let app = make_app(repo.clone()).await;
+    let req = TestRequest::post()
+        .uri("/api/v1/admin/packages/invalidate")
+        .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+        .set_json(serde_json::json!({
+            "registry": "npm", "name": "lodash", "version": "4.17.21", "artifact": null
+        }))
+        .to_request();
+    assert_eq!(call_service(&app, req).await.status(), 200);
+
+    let events = recorded(&repo, AccessAction::CacheEvict).await;
+    assert_eq!(events.len(), 1);
+    let coord = events[0].package_id.as_ref().unwrap();
+    assert_eq!(
+        (coord.name.as_str(), coord.version.as_str()),
+        ("lodash", "4.17.21")
+    );
 }
 
 // ── /api/v1/admin/packages/bulk-block ────────────────────────────────────────

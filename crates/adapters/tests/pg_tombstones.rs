@@ -673,13 +673,16 @@ async fn list_tombstones_returns_both_compacted_and_intact_rows() {
         .iter()
         .find(|ts| ts.version == "1.0.0")
         .expect("the compacted row is still listed");
-    assert!(compacted.is_compacted());
+    assert!(compacted.detail_compacted_at.is_some());
     assert!(compacted.checksum.is_none());
 
     let intact = mixed
         .iter()
         .find(|ts| ts.version == "2.0.0")
         .expect("the intact row");
-    assert!(!intact.is_compacted());
+    assert!(
+        intact.detail_compacted_at.is_none(),
+        "a tombstone that never had detail is not a compacted one"
+    );
     assert!(intact.checksum.is_some());
 }

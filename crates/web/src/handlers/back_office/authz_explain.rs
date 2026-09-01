@@ -124,6 +124,28 @@ pub struct ExplainResponse {
     /// says both: the grants refuse, and the shadow serves it anyway.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shadowed_by: Option<ShadowNote>,
+    /// §4.1's compensating warnings: deeper tiers on this path that **dropped**
+    /// a constraint their parent declared.
+    ///
+    /// Composition is wholesale, which is what makes a narrower policy on a
+    /// deeper tier expressible — and what makes dropping one silent. A namespace
+    /// that omits `enforce_semver` does not inherit it; it turns it off, and
+    /// nothing about the resolved answer says so. This is the edit most likely
+    /// to be a mistake in the direction that matters, so the endpoint whose job
+    /// is *why* is where it surfaces.
+    ///
+    /// Empty for almost every coordinate.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub narrowing: Vec<NarrowingNote>,
+}
+
+/// One tier that dropped a constraint its parent declared (§4.1).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct NarrowingNote {
+    /// The node that dropped it, e.g. `namespace:@acme/billing`.
+    pub node: String,
+    /// What it dropped, in the words §4.1 uses for it.
+    pub dropped: String,
 }
 
 /// A node whose shadow is currently serving what its grants refuse.
@@ -343,6 +365,14 @@ pub async fn admin_authz_explain(
             .collect(),
         tiers_walked,
         not_covered: NOT_COVERED.iter().map(|s| (*s).to_owned()).collect(),
+        narrowing: policy
+            .narrowing
+            .iter()
+            .map(|(node, dropped)| NarrowingNote {
+                node: node.clone(),
+                dropped: dropped.clone(),
+            })
+            .collect(),
     }))
 }
 

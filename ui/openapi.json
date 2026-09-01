@@ -97,8 +97,32 @@
             }
           },
           {
+            "name": "package_name",
+            "in": "query",
+            "description": "Narrow to one package name, as the registry filter narrows to one\nregistry.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
             "name": "user_id",
             "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "Keep only these actions: one wire name, or several comma-separated\n(`delete,retention_reclaim`). Absent means every action.\n\nBoth spellings the API emits are accepted — `view_metadata` as the\npackage-detail timeline and the CSV export write it, `viewmetadata` as\nthis endpoint's own JSON serialises it.",
             "required": false,
             "schema": {
               "type": [
@@ -284,6 +308,30 @@
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "package_name",
+            "in": "query",
+            "description": "Narrow to one package name.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "Keep only these actions, comma-separated. As the listing's `action`\nfilter — an export has to be able to describe the same set the table\ndid, which is the reasoning `denied_only` above already followed.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           {
@@ -2328,6 +2376,59 @@
         ]
       }
     },
+    "/api/v1/admin/registries/{registry}/coherence": {
+      "post": {
+        "tags": [
+          "back-office"
+        ],
+        "summary": "Delete storage blobs this registry's artifact-meta table has no row for\n(admin).",
+        "description": "**Two passes before anything goes.** A blob is deleted only if it looked\norphaned on the previous sweep too, which is what makes this safe next to a\ncache write in flight: `fetch_and_cache` stores the blob and records its meta\nrow in two steps, and a blob caught in that window has its row by the next\nsweep. So the first run on a fresh estate deletes nothing and reports\n`first_seen_orphaned` — run it again to collect them.\n\n`dry_run` reports without deleting **and without advancing anything toward\ndeletion**: previewing twice is not the same as running twice.",
+        "operationId": "coherence_sweep",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dry_run",
+            "in": "query",
+            "description": "Report what the configured strategies would evict, without evicting it.\n\nUnlike retention's, this has no configured counterpart to override: an\nevicted artifact comes back on the next request, so the two-key interlock\nthat protects a locally published version would be ceremony here.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sweep completed, or previewed under `dry_run`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoherenceResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`cache:evict` required"
+          },
+          "404": {
+            "description": "Registry not found"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
     "/api/v1/admin/registries/{registry}/deprecate": {
       "post": {
         "tags": [
@@ -2394,11 +2495,20 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "dry_run",
+            "in": "query",
+            "description": "Report what the configured strategies would evict, without evicting it.\n\nUnlike retention's, this has no configured counterpart to override: an\nevicted artifact comes back on the next request, so the two-key interlock\nthat protects a locally published version would be ceremony here.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "Eviction completed",
+            "description": "Eviction completed, or previewed under `dry_run`",
             "content": {
               "application/json": {
                 "schema": {
@@ -14717,7 +14827,16 @@
           "releasenamespace",
           "resetquota",
           "tombstonecompact",
-          "setretentionpin"
+          "setretentionpin",
+          "retentionreclaim",
+          "retentionrun",
+          "retentiondryrun",
+          "cacheevict",
+          "cacheclear",
+          "cacheevictrun",
+          "cacheevictdryrun",
+          "cachecoherencerun",
+          "cachecoherencedryrun"
         ]
       },
       "AccessCheckRequest": {
@@ -15692,6 +15811,65 @@
           }
         }
       },
+      "CoherenceResponse": {
+        "type": "object",
+        "required": [
+          "storage_keys",
+          "meta_rows",
+          "orphaned_deleted",
+          "deleted_keys",
+          "first_seen_orphaned",
+          "first_seen_keys",
+          "keys_truncated",
+          "dry_run"
+        ],
+        "properties": {
+          "deleted_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The keys deleted, or that would be."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "True when nothing was deleted and nothing was advanced toward deletion."
+          },
+          "first_seen_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Those keys — what a second run would take."
+          },
+          "first_seen_orphaned": {
+            "type": "integer",
+            "description": "Blobs seen orphaned for the *first* time: carried forward, deletable by\nthe next run if they are still orphaned then.",
+            "minimum": 0
+          },
+          "keys_truncated": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many keys were dropped from the two lists. Non-zero means they are a\nsample, not the answer.",
+            "minimum": 0
+          },
+          "meta_rows": {
+            "type": "integer",
+            "description": "Rows the artifact-meta table holds for it.",
+            "minimum": 0
+          },
+          "orphaned_deleted": {
+            "type": "integer",
+            "description": "Orphans deleted, or that would be under `dry_run`.",
+            "minimum": 0
+          },
+          "storage_keys": {
+            "type": "integer",
+            "description": "Artifact blobs found in storage for this registry.",
+            "minimum": 0
+          }
+        }
+      },
       "CompactionResponse": {
         "type": "object",
         "required": [
@@ -16114,12 +16292,26 @@
           "evicted_ttl",
           "evicted_idle",
           "evicted_old_versions",
-          "evicted_lru"
+          "evicted_lru",
+          "dry_run",
+          "evicted_keys",
+          "keys_truncated"
         ],
         "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "description": "True when nothing was dropped."
+          },
           "evicted_idle": {
             "type": "integer",
             "minimum": 0
+          },
+          "evicted_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The storage keys evicted, or that would be under `dry_run`."
           },
           "evicted_lru": {
             "type": "integer",
@@ -16131,6 +16323,19 @@
           },
           "evicted_ttl": {
             "type": "integer",
+            "minimum": 0
+          },
+          "incomplete_because": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set when the run stopped before answering the whole question — a\n`dry_run` size-cap preview that ran out of page while the registry was\nstill over the cap."
+          },
+          "keys_truncated": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many keys were dropped from `evicted_keys`. Non-zero means the list\nis a sample, not the answer.",
             "minimum": 0
           },
           "total": {
@@ -16233,6 +16438,13 @@
           "decision": {
             "type": "string",
             "description": "`\"allow\"` or `\"deny\"`."
+          },
+          "narrowing": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NarrowingNote"
+            },
+            "description": "§4.1's compensating warnings: deeper tiers on this path that **dropped**\na constraint their parent declared.\n\nComposition is wholesale, which is what makes a narrower policy on a\ndeeper tier expressible — and what makes dropping one silent. A namespace\nthat omits `enforce_semver` does not inherit it; it turns it off, and\nnothing about the resolved answer says so. This is the edit most likely\nto be a mistake in the direction that matters, so the endpoint whose job\nis *why* is where it surfaces.\n\nEmpty for almost every coordinate."
           },
           "not_covered": {
             "type": "array",
@@ -17215,6 +17427,24 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "NarrowingNote": {
+        "type": "object",
+        "description": "One tier that dropped a constraint its parent declared (§4.1).",
+        "required": [
+          "node",
+          "dropped"
+        ],
+        "properties": {
+          "dropped": {
+            "type": "string",
+            "description": "What it dropped, in the words §4.1 uses for it."
+          },
+          "node": {
+            "type": "string",
+            "description": "The node that dropped it, e.g. `namespace:@acme/billing`."
           }
         }
       },
@@ -19587,7 +19817,7 @@
       },
       "Visibility": {
         "type": "string",
-        "description": "How wide the audience for a resource is — RFC 0015 §4.5's one *narrowing*\ndimension.\n\nGrants and visibility answer the same question from opposite directions, and\nthe model ships both deliberately: a grant says *this subject may* and\ncomposes by union, so it can only ever widen; visibility says *the audience\nis this wide*, is a single scalar, and composes deepest-wins, so it can only\never narrow. **A caller needs both** — a grant for the verb and membership of\nthe audience — which is an AND, not a fallback. A `releases:read` grant does\nnot make a `team` package public, and a `public` namespace does not serve a\ncaller no grant matches.\n\nThe variants are ordered widest to narrowest, and [`Self::narrower_of`]\ndepends on that order.",
+        "description": "How wide the audience for a resource is — RFC 0015 §4.5's one *narrowing*\ndimension.\n\nGrants and visibility answer the same question from opposite directions, and\nthe model ships both deliberately: a grant says *this subject may* and\ncomposes by union, so it can only ever widen; visibility says *the audience\nis this wide*, is a single scalar, and composes deepest-wins, so it can only\never narrow. **A caller needs both** — a grant for the verb and membership of\nthe audience — which is an AND, not a fallback. A `releases:read` grant does\nnot make a `team` package public, and a `public` namespace does not serve a\ncaller no grant matches.\n\nThe variants are declared widest to narrowest. Nothing in production compares\ntwo of them today — visibility composes deepest-wins, which picks a value\nrather than ordering two — but the derived `Ord` is part of the type's public\nshape, and an enum whose order reads as arbitrary is one somebody reorders for\nreadability. `visibility_is_ordered_widest_to_narrowest` pins it.",
         "enum": [
           "public",
           "internal",

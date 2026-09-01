@@ -7,6 +7,25 @@ use super::{
     ExploreEntry, ExploreFilter, ExploreViewer, PackageId, PgPool, RegistryStat, Row,
 };
 
+/// The `action = ANY($n)` parameter, or `None` for "every action".
+///
+/// `NULL` rather than an empty array on purpose: `action = ANY('{}')` is false
+/// for every row, so an empty [`EventFilter::actions`] would return nothing
+/// instead of everything — the one way this filter could silently hide the
+/// trail from an operator who did not ask it to.
+fn action_param(filter: &EventFilter) -> Option<Vec<String>> {
+    if filter.actions.is_empty() {
+        return None;
+    }
+    Some(
+        filter
+            .actions
+            .iter()
+            .map(|a| a.as_str().to_owned())
+            .collect(),
+    )
+}
+
 pub(super) async fn list_events_impl(
     pool: &PgPool,
     filter: EventFilter,
@@ -24,6 +43,7 @@ pub(super) async fn list_events_impl(
           AND ($4::timestamptz IS NULL OR created_at <= $4)
           AND ($5::boolean = false OR outcome = 'denied')
           AND ($8::text IS NULL OR package_name = $8)
+          AND ($9::text[] IS NULL OR action = ANY($9))
         ORDER BY created_at DESC
         LIMIT $6 OFFSET $7
         "#,
@@ -36,6 +56,7 @@ pub(super) async fn list_events_impl(
     .bind(filter.limit as i64)
     .bind(filter.offset as i64)
     .bind(&filter.package_name)
+    .bind(action_param(&filter))
     .fetch_all(pool)
     .await
     .db_err()?;
@@ -148,6 +169,7 @@ pub(super) async fn count_events_impl(
           AND ($4::timestamptz IS NULL OR created_at <= $4)
           AND ($5::boolean = false OR outcome = 'denied')
           AND ($6::text IS NULL OR package_name = $6)
+          AND ($7::text[] IS NULL OR action = ANY($7))
         "#,
     )
     .bind(&filter.registry)
@@ -156,6 +178,7 @@ pub(super) async fn count_events_impl(
     .bind(filter.to)
     .bind(filter.denied_only)
     .bind(&filter.package_name)
+    .bind(action_param(&filter))
     .fetch_one(pool)
     .await
     .db_err()?;

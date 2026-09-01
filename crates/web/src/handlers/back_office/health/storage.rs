@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use actix_web::{post, web, Responder};
 
+use batlehub_core::entities::AccessAction;
 use batlehub_core::ports::StorageAdminRepository;
-use batlehub_core::services::ProxyService;
+use batlehub_core::services::{AdminService, ProxyService};
 
 use crate::{error::AppError, extractors::AuthIdentity, RegistryMap};
 
@@ -31,6 +32,7 @@ pub async fn clear_registry_cache(
     registry_map: web::Data<RegistryMap>,
     storage_admin_repo: Option<web::Data<Arc<dyn StorageAdminRepository>>>,
     proxy_svc: web::Data<Arc<ProxyService>>,
+    admin_svc: web::Data<Arc<AdminService>>,
     hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
     let registry = path.into_inner();
@@ -66,6 +68,20 @@ pub async fn clear_registry_cache(
             |e| tracing::warn!(error = %e, prefix = %prefix, "failed to purge artifact_storage records"),
         );
     }
+
+    // Registry-scoped, and recorded even when it cleared nothing: this is the
+    // bluntest of the four `cache:evict` surfaces, and "who emptied the cache"
+    // is a question that has to survive the answer being "there was nothing in
+    // it". `delete_by_prefix` never knew the coordinates, so there is nothing
+    // per-artifact to record even in principle — hence `CacheClear` rather than
+    // a pile of `CacheEvict`s.
+    admin_svc
+        .record_cache_eviction(
+            Some(batlehub_core::entities::PackageId::new(&registry, "", "")),
+            AccessAction::CacheClear,
+            &identity.0,
+        )
+        .await;
 
     Ok(web::Json(ClearCacheResponse { cleared }))
 }

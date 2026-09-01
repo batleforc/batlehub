@@ -283,6 +283,10 @@ impl PackageRepository for InMemoryPackageRepository {
                         .user_id
                         .as_ref()
                         .is_none_or(|u| e.user_id.as_deref() == Some(u.as_str()))
+                    // Empty means every action, matching the SQL adapter's
+                    // `NULL` parameter rather than its `ANY('{}')`, which
+                    // would match nothing.
+                    && (filter.actions.is_empty() || filter.actions.contains(&e.action))
                     && (!filter.denied_only || e.result.is_denied())
                     && filter.from.is_none_or(|from| e.timestamp >= from)
                     && filter.to.is_none_or(|to| e.timestamp <= to)
@@ -666,6 +670,55 @@ mod tests {
         assert!(events
             .iter()
             .all(|e| e.package_id.as_ref().is_some_and(|p| p.name == "foo")));
+    }
+
+    /// The filter an operator asking "what was deleted" uses: two deletion
+    /// kinds at once, and none of the downloads they are buried under.
+    #[tokio::test]
+    async fn list_events_filters_by_action_set() {
+        let repo = InMemoryPackageRepository::new();
+        for _ in 0..3 {
+            repo.record_access(allow_event("reg", "foo")).await.unwrap();
+        }
+        for action in [AccessAction::Delete, AccessAction::RetentionReclaim] {
+            let mut ev = allow_event("reg", "foo");
+            ev.action = action;
+            repo.record_access(ev).await.unwrap();
+        }
+
+        let events = repo
+            .list_events(EventFilter {
+                actions: vec![AccessAction::Delete, AccessAction::RetentionReclaim],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(!events.iter().any(|e| e.action == AccessAction::Download));
+
+        let only_policy = repo
+            .list_events(EventFilter {
+                actions: vec![AccessAction::RetentionReclaim],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(only_policy.len(), 1);
+    }
+
+    /// An empty action set must not mean "no actions" — the SQL adapter binds
+    /// `NULL` for it, and the two have to agree or the same filter reads
+    /// differently against Postgres and in tests.
+    #[tokio::test]
+    async fn list_events_with_no_action_filter_returns_every_action() {
+        let repo = InMemoryPackageRepository::new();
+        repo.record_access(allow_event("reg", "foo")).await.unwrap();
+        let mut deleted = allow_event("reg", "foo");
+        deleted.action = AccessAction::Delete;
+        repo.record_access(deleted).await.unwrap();
+
+        let events = repo.list_events(EventFilter::new()).await.unwrap();
+        assert_eq!(events.len(), 2);
     }
 
     #[tokio::test]

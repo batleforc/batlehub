@@ -168,6 +168,27 @@ impl AdminService {
         Ok(out)
     }
 
+    /// Record a cached artifact dropped by hand.
+    ///
+    /// Public because the three surfaces that do it are handlers with no other
+    /// business in `AdminService` — `DELETE /registries/{r}/cache`,
+    /// `POST /packages/invalidate`, and `POST /registries/{r}/clear-cache` —
+    /// and until this existed all three deleted cached bytes and left nothing
+    /// behind at all.
+    ///
+    /// `pkg` is `None` for the whole-registry clear, which is a
+    /// `delete_by_prefix` that never knew the coordinates. Pass
+    /// [`AccessAction::CacheClear`] with it; [`AccessAction::CacheEvict`]
+    /// always carries one.
+    pub async fn record_cache_eviction(
+        &self,
+        pkg: Option<PackageId>,
+        action: AccessAction,
+        by_identity: &Identity,
+    ) {
+        self.record_admin_action(pkg, action, by_identity).await;
+    }
+
     /// Shared audit-write path for admin actions that don't otherwise touch
     /// `PackageRepository` (ownership/visibility edits go through their own
     /// ports, account/network-wide actions have no package at all). Mirrors

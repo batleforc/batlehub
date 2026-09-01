@@ -51,17 +51,64 @@ Package names containing slashes must be percent-encoded in the URL (`/` → `%2
 
 ## Audit log {#audit-log}
 
-Every access-control decision (allow or deny) is recorded in PostgreSQL.
+Every access-control decision (allow or deny) is recorded in PostgreSQL, and so
+is every administrative action — blocks, ownership changes, deletions,
+retention runs.
 
 ```sh
 # Last 50 decisions across all registries
 curl -H "Authorization: Bearer <admin-token>" \
-  "http://localhost:8080/api/v1/admin/audit-log?limit=50"
+  "http://localhost:8080/api/v1/admin/audit-log?per_page=50"
 
 # Filter by registry and outcome
 curl -H "Authorization: Bearer <admin-token>" \
-  "http://localhost:8080/api/v1/admin/audit-log?registry=npm&outcome=deny&limit=100"
+  "http://localhost:8080/api/v1/admin/audit-log?registry=npm&denied_only=true&per_page=100"
 ```
+
+### Asking what happened to a package {#audit-actions}
+
+Downloads outnumber everything else by orders of magnitude, so the question
+"what was deleted here" is only answerable with `action`. It takes one action or
+a comma-separated set, and an unknown name is a `400` listing the alternatives —
+never an empty page, which reads as "nothing happened".
+
+```sh
+# Every deletion in a registry: by hand and by policy
+batlehub admin audit-log --registry acme-npm --action delete,retention_reclaim
+
+# Un-caching is a different question — the bytes come back on the next request
+batlehub admin audit-log --registry acme-npm --action cache_evict,cache_clear
+
+# One package's whole history
+batlehub admin audit-log --registry acme-npm --package internal-tool
+
+# The same set, exported for an auditor
+batlehub admin export-audit-log --action delete,retention_reclaim --format csv
+```
+
+`--action` and `--package` are query parameters on the endpoint too
+(`?action=delete,retention_reclaim&package_name=internal-tool`), on both the
+listing and the export.
+
+| Action | Recorded when |
+| --- | --- |
+| `delete` | a person deleted a version |
+| `retention_reclaim` | a retention policy reclaimed one — [see below](/guide/admin-policies#retention-trail) |
+| `retention_run` / `retention_dry_run` | a retention run finished, live or preview |
+| `cache_evict` | one proxy-cached artifact was dropped by hand — a copy, not the package |
+| `cache_clear` | a whole registry's cache was dropped by hand |
+| `cache_evict_run` / `cache_evict_dry_run` | an eviction sweep finished, live or preview — [see below](/guide/admin-policies#cache-eviction-trail) |
+| `cache_coherence_run` / `cache_coherence_dry_run` | a sweep collected blobs nothing references — [see below](/guide/admin-policies#cache-coherence) |
+| `tombstone_compact` | a registry's aged-out tombstone detail was stripped |
+| `audit_purge` | this trail itself was purged to a cutoff |
+| `block` / `unblock`, `block_user` / `unblock_user`, `block_ip` / `unblock_ip` | the corresponding admin action |
+| `yank` / `unyank`, `deprecate` / `undeprecate`, `unlist` / `relist` | a lifecycle change on one version |
+| `add_owner` / `remove_owner`, `set_visibility`, `claim_namespace` / `release_namespace` | ownership and visibility |
+| `download` / `view_metadata` | a read, allowed or denied |
+
+The response JSON spells these without the underscores (`retentionreclaim`);
+the filter accepts either spelling, so an action pasted out of any response
+works.
 
 Example entry:
 

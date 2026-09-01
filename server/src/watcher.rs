@@ -112,6 +112,74 @@ pub(super) fn spawn_periodic_vuln_scan(
     });
 }
 
+// ── Periodic cache-coherence sweep ──────────────────────────────────────────────
+
+/// Spawn a background task that collects storage blobs no artifact-meta row
+/// points at: once `interval_secs` after startup, then every `interval_secs`.
+///
+/// # Why the first tick is skipped
+///
+/// `tokio::time::interval` fires immediately, which is right for the vulnerability
+/// scan above — a scan that reports is a read. This one deletes, and a sweep at
+/// second zero of a process start is the worst possible moment for it: a restart
+/// is exactly when half-finished cache writes exist, and the pending set that
+/// makes the two-pass grace safe is empty in a fresh process. So the first tick
+/// is consumed before the loop, and the first sweep an instance runs is one
+/// interval in — by which time anything that was mid-write has its row.
+///
+/// The grace itself still holds regardless: the sweep carries a blob forward on
+/// its first sighting and deletes it on the second, so nothing this task
+/// collects has been orphaned for less than one interval.
+///
+/// # It shares the services the endpoint uses
+///
+/// The same `Arc<EvictionService>` values as `POST /registries/{r}/coherence`,
+/// deliberately: `coherence_pending` is the state the grace is built on, and a
+/// scheduler with services of its own would keep a second, private set — a
+/// manual sweep and a scheduled one would each be permanently on their own
+/// first pass, and neither would ever delete anything.
+pub(super) fn spawn_periodic_coherence_sweep(
+    interval_secs: u64,
+    eviction_map: batlehub_web::handlers::back_office::ops::eviction::EvictionServiceMap,
+) {
+    let period = Duration::from_secs(interval_secs.max(1));
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(period);
+        // See above: never at second zero.
+        ticker.tick().await;
+        // A sweep that overran its interval must not start again the instant it
+        // finishes — `Delay` skips the missed ticks instead of bursting.
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            for (registry, svc) in &eviction_map {
+                // `Identity::system()` is what puts `user_id = "system"` on the
+                // audit row, and it is the only thing that separates a
+                // scheduled sweep from an operator who ran one.
+                match svc
+                    .run_coherence_check(false, &batlehub_core::entities::Identity::system())
+                    .await
+                {
+                    Ok(report) => tracing::info!(
+                        registry,
+                        storage_keys = report.storage_keys,
+                        meta_rows = report.meta_rows,
+                        deleted = report.orphaned_deleted,
+                        first_seen = report.first_seen_orphaned,
+                        "coherence: periodic sweep complete"
+                    ),
+                    // One registry's storage being unreachable must not stop the
+                    // others, and must not kill the task: the next tick tries
+                    // again.
+                    Err(e) => {
+                        tracing::warn!(registry, error = %e, "coherence: periodic sweep failed")
+                    }
+                }
+            }
+        }
+    });
+}
+
 /// Spawn the cache-statistics rollup (RFC 0004 §6.4, R9).
 ///
 /// The stored **resolution** is fixed at one hour rather than configured: it is

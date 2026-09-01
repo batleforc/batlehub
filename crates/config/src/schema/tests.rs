@@ -2671,3 +2671,71 @@ fn versioning_dry_run_defaults_to_false() {
         .iter()
         .any(|w| w.code == warnings::VERSIONING_IN_DRY_RUN));
 }
+
+// ── [cache_coherence] ─────────────────────────────────────────────────────────
+
+/// Absent means no sweep. The orphan collector deletes data on a timer with
+/// nobody watching, so it is opt-in like every other destructive policy here.
+#[test]
+fn cache_coherence_is_absent_by_default() {
+    let cfg = parse_config("");
+    assert!(cfg.cache_coherence.is_none());
+}
+
+/// Present but `enabled = false` is still no sweep — an operator who turned it
+/// off must not have it run because they left the interval behind.
+#[test]
+fn cache_coherence_disabled_keeps_its_interval_inert() {
+    let cfg = parse_config(
+        r#"
+        [cache_coherence]
+        enabled       = false
+        interval_secs = 60"#,
+    );
+    let coh = cfg.cache_coherence.as_ref().unwrap();
+    assert!(!coh.enabled);
+    assert_eq!(coh.interval_secs, 60);
+    assert!(
+        !cfg.warnings()
+            .iter()
+            .any(|w| w.code == warnings::COHERENCE_INTERVAL_TOO_SHORT),
+        "a sweep that never runs has no grace window to narrow"
+    );
+}
+
+#[test]
+fn cache_coherence_interval_defaults_to_daily() {
+    let cfg = parse_config(
+        r#"
+        [cache_coherence]
+        enabled = true"#,
+    );
+    let coh = cfg.cache_coherence.as_ref().unwrap();
+    assert!(coh.enabled);
+    assert_eq!(coh.interval_secs, 86_400);
+    cfg.validate().expect("legal");
+    assert!(!cfg
+        .warnings()
+        .iter()
+        .any(|w| w.code == warnings::COHERENCE_INTERVAL_TOO_SHORT));
+}
+
+/// The interval is the grace window a cache write in flight gets. Legal, and
+/// worth saying out loud.
+#[test]
+fn a_short_coherence_interval_warns() {
+    let cfg = parse_config(
+        r#"
+        [cache_coherence]
+        enabled       = true
+        interval_secs = 30"#,
+    );
+    cfg.validate().expect("legal, not an error");
+    let w = cfg
+        .warnings()
+        .into_iter()
+        .find(|w| w.code == warnings::COHERENCE_INTERVAL_TOO_SHORT)
+        .expect("a 30s sweep must warn");
+    assert_eq!(w.path, "cache_coherence.interval_secs");
+    assert!(w.message.contains("30s"), "{}", w.message);
+}

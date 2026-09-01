@@ -45,7 +45,7 @@ async fn record_bulk_lifecycle_audit(
             continue;
         }
         local_svc
-            .record_lifecycle_action(registry, name, version, action.clone(), identity)
+            .record_lifecycle_action(registry, name, version, action, identity)
             .await;
     }
 }

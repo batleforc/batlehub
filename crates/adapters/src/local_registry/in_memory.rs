@@ -1058,7 +1058,10 @@ mod tests {
             .await
             .unwrap()
             .expect("the row survives — that is the whole design");
-        assert!(ts.is_compacted());
+        assert!(
+            ts.detail_compacted_at.is_some(),
+            "compaction stamps the row it stripped"
+        );
         assert!(ts.checksum.is_none());
         assert!(ts.published_by.is_none());
         assert_eq!(ts.deleted_by.as_deref(), Some("alice"));

@@ -296,69 +296,18 @@ pub(super) fn str_to_role(s: &str) -> Result<Role, CoreError> {
         .map_err(|e| CoreError::Database(format!("invalid role in db: {e}")))
 }
 
+/// The `access_events.action` column value for an action.
+///
+/// The table itself lives on [`AccessAction`] in `core`, because the audit-log
+/// `?action=` filter has to parse the same vocabulary this writes and a second
+/// copy here is how the two spellings would drift apart.
 pub(super) fn action_to_str(action: &AccessAction) -> &'static str {
-    match action {
-        AccessAction::Download => "download",
-        AccessAction::ViewMetadata => "view_metadata",
-        AccessAction::Block => "block",
-        AccessAction::Unblock => "unblock",
-        AccessAction::Delete => "delete",
-        AccessAction::AddOwner => "add_owner",
-        AccessAction::RemoveOwner => "remove_owner",
-        AccessAction::SetVisibility => "set_visibility",
-        AccessAction::BlockUser => "block_user",
-        AccessAction::UnblockUser => "unblock_user",
-        AccessAction::BlockIp => "block_ip",
-        AccessAction::UnblockIp => "unblock_ip",
-        AccessAction::AuditPurge => "audit_purge",
-        AccessAction::Yank => "yank",
-        AccessAction::Unyank => "unyank",
-        AccessAction::Deprecate => "deprecate",
-        AccessAction::Undeprecate => "undeprecate",
-        AccessAction::Unlist => "unlist",
-        AccessAction::Relist => "relist",
-        AccessAction::AddBetaMember => "add_beta_member",
-        AccessAction::RemoveBetaMember => "remove_beta_member",
-        AccessAction::ClaimNamespace => "claim_namespace",
-        AccessAction::ReleaseNamespace => "release_namespace",
-        AccessAction::ResetQuota => "reset_quota",
-        AccessAction::TombstoneCompact => "tombstone_compact",
-        AccessAction::SetRetentionPin => "set_retention_pin",
-    }
+    action.as_str()
 }
 
 pub(super) fn str_to_action(s: &str) -> Result<AccessAction, CoreError> {
-    match s {
-        "download" => Ok(AccessAction::Download),
-        "view_metadata" => Ok(AccessAction::ViewMetadata),
-        "block" => Ok(AccessAction::Block),
-        "unblock" => Ok(AccessAction::Unblock),
-        "delete" => Ok(AccessAction::Delete),
-        "add_owner" => Ok(AccessAction::AddOwner),
-        "remove_owner" => Ok(AccessAction::RemoveOwner),
-        "set_visibility" => Ok(AccessAction::SetVisibility),
-        "block_user" => Ok(AccessAction::BlockUser),
-        "unblock_user" => Ok(AccessAction::UnblockUser),
-        "block_ip" => Ok(AccessAction::BlockIp),
-        "unblock_ip" => Ok(AccessAction::UnblockIp),
-        "audit_purge" => Ok(AccessAction::AuditPurge),
-        "yank" => Ok(AccessAction::Yank),
-        "unyank" => Ok(AccessAction::Unyank),
-        "deprecate" => Ok(AccessAction::Deprecate),
-        "undeprecate" => Ok(AccessAction::Undeprecate),
-        "unlist" => Ok(AccessAction::Unlist),
-        "relist" => Ok(AccessAction::Relist),
-        "add_beta_member" => Ok(AccessAction::AddBetaMember),
-        "remove_beta_member" => Ok(AccessAction::RemoveBetaMember),
-        "claim_namespace" => Ok(AccessAction::ClaimNamespace),
-        "release_namespace" => Ok(AccessAction::ReleaseNamespace),
-        "reset_quota" => Ok(AccessAction::ResetQuota),
-        "tombstone_compact" => Ok(AccessAction::TombstoneCompact),
-        "set_retention_pin" => Ok(AccessAction::SetRetentionPin),
-        other => Err(CoreError::Database(format!(
-            "invalid access action in db: '{other}'"
-        ))),
-    }
+    AccessAction::from_wire(s)
+        .ok_or_else(|| CoreError::Database(format!("invalid access action in db: '{s}'")))
 }
 
 pub struct PgPackageRepository {

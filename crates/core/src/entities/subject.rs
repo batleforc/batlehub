@@ -157,23 +157,11 @@ pub enum Decision {
 }
 
 impl Decision {
-    pub fn is_allowed(&self) -> bool {
-        matches!(self, Decision::Allow)
-    }
-
     /// The reason, when there is one.
     pub fn reason(&self) -> Option<&str> {
         match self {
             Decision::Allow => None,
             Decision::Deny { reason } => Some(reason),
-        }
-    }
-
-    /// Fold into the `Result` the read paths already speak.
-    pub fn into_result(self) -> Result<(), crate::error::CoreError> {
-        match self {
-            Decision::Allow => Ok(()),
-            Decision::Deny { reason } => Err(crate::error::CoreError::AccessDenied(reason)),
         }
     }
 }
@@ -211,13 +199,11 @@ mod tests {
     }
 
     #[test]
-    fn a_denial_carries_its_reason_into_the_error() {
-        let err = Decision::Deny {
+    fn a_denial_carries_its_reason() {
+        let denial = Decision::Deny {
             reason: "nope".to_owned(),
-        }
-        .into_result()
-        .expect_err("a denial is an error");
-        assert!(matches!(err, crate::error::CoreError::AccessDenied(r) if r == "nope"));
-        assert!(Decision::Allow.into_result().is_ok());
+        };
+        assert_eq!(denial.reason(), Some("nope"));
+        assert_eq!(Decision::Allow.reason(), None);
     }
 }

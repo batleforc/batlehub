@@ -3,6 +3,8 @@ use super::{
     Deserialize, IntoParams, PackageFilter, PackageId, ProxyService, Responder, ToSchema,
 };
 
+use batlehub_core::entities::AccessAction;
+
 // ── List all packages ─────────────────────────────────────────────────────────
 
 #[derive(Deserialize, IntoParams)]
@@ -332,6 +334,7 @@ pub async fn invalidate_package(
     identity: AuthIdentity,
     body: web::Json<InvalidateRequest>,
     proxy_svc: web::Data<Arc<ProxyService>>,
+    admin_svc: web::Data<Arc<AdminService>>,
     hot: web::Data<batlehub_core::services::hot_config::HotConfigLock>,
 ) -> Result<impl Responder, AppError> {
     // The registry is named in the body rather than the path, so the
@@ -365,6 +368,13 @@ pub async fn invalidate_package(
         .invalidate(&meta_key)
         .await
         .map_err(AppError::from)?;
+
+    // The same event `DELETE /registries/{r}/cache` writes: this endpoint is
+    // the older spelling of the same operation, and two surfaces for one action
+    // must not produce two different trails.
+    admin_svc
+        .record_cache_eviction(Some(pkg.clone()), AccessAction::CacheEvict, &identity.0)
+        .await;
 
     Ok(web::Json(ActionResponse {
         success: true,

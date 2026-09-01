@@ -341,7 +341,12 @@ async fn main() -> Result<()> {
         warm_coordinator,
         Arc::clone(&proxy_metrics),
     );
-    let eviction_map = setup::build_eviction_map(&config, storage.clone(), repo.pool());
+    let eviction_map = setup::build_eviction_map(
+        &config,
+        storage.clone(),
+        repo.pool(),
+        repo.clone() as Arc<dyn batlehub_core::ports::PackageRepository>,
+    );
     let access_config = new_access_lock(init_access);
     // Prose search, shared between the app and the reload path so an operator
     // can turn it off without a restart (RFC 0007-bis §4.1). The **index** is
@@ -452,6 +457,18 @@ async fn main() -> Result<()> {
         tracing::info!(
             interval_secs = vuln_cfg.interval_secs,
             "vuln-scan: periodic SBOM re-check enabled"
+        );
+    }
+
+    // Periodic collection of storage blobs nothing references. Off unless asked
+    // for: it deletes on a timer with nobody watching, and the on-demand
+    // endpoint covers the deployment that would rather look first.
+    if let Some(coh_cfg) = config.cache_coherence.as_ref().filter(|c| c.enabled) {
+        watcher::spawn_periodic_coherence_sweep(coh_cfg.interval_secs, eviction_map.clone());
+        tracing::info!(
+            interval_secs = coh_cfg.interval_secs,
+            registries = eviction_map.len(),
+            "coherence: periodic orphan sweep enabled"
         );
     }
 

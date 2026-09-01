@@ -263,18 +263,13 @@ impl WarmingService {
         total
     }
 
-    /// Warm a single artifact by its upstream **path**, for path-addressed
-    /// registries (`deb`/`rpm`/`jetbrains`) that have no per-package version model.
-    ///
-    /// The path is fetched through the same synthetic `repo` coordinate the proxy
-    /// read path uses (`{registry}/repo/_/{path}`), so the artifact lands in the
-    /// exact cache slot a later `GET /proxy/{registry}/…/{path}` will read.
-    pub async fn warm_path(&self, path: &str) -> WarmingReport {
-        self.warm_all_paths(std::slice::from_ref(&path.to_owned()))
-            .await
-    }
-
     /// Warm every upstream path in `paths` concurrently (bounded by `concurrency`).
+    ///
+    /// Each path is fetched through the same synthetic `repo` coordinate the
+    /// proxy read path uses (`{registry}/repo/_/{path}`), so the artifact lands
+    /// in the exact cache slot a later `GET /proxy/{registry}/…/{path}` will
+    /// read. This is what path-addressed registries (`deb`/`rpm`/`jetbrains`),
+    /// which have no per-package version model, warm through.
     pub async fn warm_all_paths(&self, paths: &[String]) -> WarmingReport {
         if self.concurrency == 0 {
             return WarmingReport::default();

@@ -1094,10 +1094,18 @@ fn paginate_versions(
 /// reachable one endpoint over, which is not a gate but a speed bump.
 ///
 /// Note it is *narrower* than the proxy access `gate.registry_accessible` used
-/// to report: `explore_accessible_registries_for` is proxy access intersected
-/// with the role's explore permission. Anyone who gets past here can necessarily
-/// proxy from the registry too, which is why the gate card has nothing left to
-/// say and the field is gone from the response.
+/// to report: the set is proxy access intersected with the role's explore
+/// permission. Anyone who gets past here can necessarily proxy from the registry
+/// too, which is why the gate card has nothing left to say and the field is gone
+/// from the response.
+///
+/// That intersection is no longer computed by `AccessConfig`. RFC 0015 §10 rule
+/// 2 translated it into the `catalogue:browse` grant —
+/// `(has_role || has_group) && rbac.explore.<role>` — and
+/// [`browsable_registries`](batlehub_core::services::authz::browsable_registries)
+/// resolves it, which is what this endpoint and its three siblings call.
+/// `AccessConfig::explore_accessible_registries_for` computed the same set
+/// before that translation and has had no caller since.
 ///
 /// **Per-package visibility.** The listing filters `internal`/`team` packages
 /// out entirely, so the detail view has to agree — otherwise the name is hidden

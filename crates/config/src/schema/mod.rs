@@ -109,6 +109,11 @@ pub struct AppConfig {
     /// database. When absent or `enabled = false`, no background scan runs.
     #[serde(default)]
     pub vulnerability_scan: Option<VulnerabilityScanConfig>,
+    /// Optional periodic sweep for storage blobs no artifact-meta row points at.
+    /// When absent or `enabled = false`, orphans are only collected when an
+    /// operator asks for it.
+    #[serde(default)]
+    pub cache_coherence: Option<CacheCoherenceConfig>,
     /// Optional wildcard host derivation for host-based registry routing.
     /// Absent or `enabled = false` derives no wildcard hosts; a registry can
     /// still declare explicit `hosts`.
@@ -284,6 +289,51 @@ pub struct VulnerabilityScanConfig {
     /// Number of SBOMs processed per page. Defaults to 100.
     #[serde(default = "default_vuln_batch_size")]
     pub batch_size: usize,
+}
+
+// ── Cache coherence ───────────────────────────────────────────────────────────
+
+fn default_coherence_interval_secs() -> u64 {
+    86_400
+}
+
+/// Periodic collection of storage blobs nothing references.
+///
+/// An artifact is cached in two steps — the bytes, then the row that points at
+/// them. A process killed between the two leaves a blob no request can reach and
+/// **no eviction strategy will ever consider**, because every strategy reads the
+/// table the row is missing from. This is the sweep that collects those.
+///
+/// ```toml
+/// [cache_coherence]
+/// enabled       = true
+/// interval_secs = 86400          # daily
+/// ```
+///
+/// # Off by default
+///
+/// It deletes data on a timer with nobody watching, so it is opt-in — the rule
+/// every other destructive policy in this file follows. A deployment that never
+/// enables it can still sweep on demand through
+/// `POST /api/v1/admin/registries/{registry}/coherence`.
+///
+/// # Why the interval is not short
+///
+/// Two costs and one safety property push the same way. Each run lists **every
+/// cached object** of every registry (a paginated `ListObjectsV2`, or a full
+/// directory walk) — that is not a query to run every minute. And a blob is only
+/// deleted if the *previous* run saw it orphaned too, so the interval is also
+/// the grace window a cache write in flight gets: shortening it buys faster
+/// collection of bytes nobody can reach, at the cost of narrowing the margin on
+/// the one thing this must never delete.
+#[derive(Debug, Deserialize)]
+pub struct CacheCoherenceConfig {
+    /// Enable the periodic background sweep.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Seconds between sweeps. Defaults to one day.
+    #[serde(default = "default_coherence_interval_secs")]
+    pub interval_secs: u64,
 }
 
 // ── Limits ────────────────────────────────────────────────────────────────────
@@ -505,7 +555,37 @@ impl AppConfig {
         self.require_signed_release_warnings(&mut out);
         self.tiered_policy_warnings(&mut out);
         self.dry_run_warnings(&mut out);
+        self.coherence_warnings(&mut out);
         out
+    }
+
+    /// The periodic orphan sweep's grace window is its interval — see
+    /// [`warnings::COHERENCE_INTERVAL_TOO_SHORT`].
+    fn coherence_warnings(&self, out: &mut Vec<ConfigWarning>) {
+        /// Below this, the gap between two sweeps stops being a comfortable
+        /// margin over a cache write's store-then-record window. Five minutes:
+        /// long enough that a slow multi-gigabyte upload finishing its second
+        /// step is never the thing being collected.
+        const MIN_COMFORTABLE_INTERVAL_SECS: u64 = 300;
+
+        let Some(coh) = self.cache_coherence.as_ref().filter(|c| c.enabled) else {
+            return;
+        };
+        if coh.interval_secs >= MIN_COMFORTABLE_INTERVAL_SECS {
+            return;
+        }
+        out.push(ConfigWarning::new(
+            warnings::COHERENCE_INTERVAL_TOO_SHORT,
+            "cache_coherence.interval_secs",
+            format!(
+                "the orphan sweep runs every {}s. A blob is deleted only if the previous sweep \
+                 also saw it orphaned, so that interval is the whole margin a cache write in \
+                 flight gets between storing its bytes and recording its row — and each run also \
+                 lists every cached object of every registry. Consider {MIN_COMFORTABLE_INTERVAL_SECS}s \
+                 or more; the on-demand endpoint covers a one-off sweep.",
+                coh.interval_secs,
+            ),
+        ));
     }
 
     /// RFC 0015 §4.7's shadow warnings, on **every** reload.

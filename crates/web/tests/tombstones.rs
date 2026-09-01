@@ -23,7 +23,7 @@ use actix_web::test::{call_service, read_body, read_body_json, TestRequest};
 use serde_json::{json, Value};
 
 use batlehub_config::schema::RegistryMode;
-use batlehub_core::entities::{Identity, Role};
+use batlehub_core::entities::{AccessAction, EventFilter, Identity, Role};
 use batlehub_core::ports::OwnershipPort as _;
 use batlehub_core::services::{artifact_storage_key, PublishRequest, RetentionPolicy};
 
@@ -982,10 +982,14 @@ async fn compaction_requires_admin() {
 
 /// A registry with a retention policy, plus the store the download signal is
 /// recorded into so a test can make a version look used.
+///
+/// The `AdminService` comes back too: it is the same `PackageRepository` the
+/// audit trail is written through, so a test can read back what a run recorded.
 async fn retention_app(
     policy: RetentionPolicy,
 ) -> (
     std::sync::Arc<batlehub_core::services::LocalRegistryService>,
+    std::sync::Arc<batlehub_core::services::AdminService>,
     impl actix_web::dev::Service<
         actix_http::Request,
         Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
@@ -994,6 +998,7 @@ async fn retention_app(
 ) {
     let parts = local_registry_app_parts("local-npm", "npm", RegistryMode::Local, None);
     let local_svc = parts.local_svc.clone();
+    let admin_svc = parts.admin_svc.clone();
     local_svc
         .hot
         .write()
@@ -1001,7 +1006,22 @@ async fn retention_app(
         .retention
         .insert("local-npm".to_owned(), policy);
     let app = build_local_registry_app(parts, Default::default(), None).await;
-    (local_svc, app)
+    (local_svc, admin_svc, app)
+}
+
+/// Every audited action a run left behind, newest first.
+async fn recorded_actions(
+    admin_svc: &batlehub_core::services::AdminService,
+    action: AccessAction,
+) -> Vec<batlehub_core::entities::AccessEvent> {
+    admin_svc
+        .list_events(EventFilter {
+            actions: vec![action],
+            limit: 100,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
 }
 
 fn retention_request(dry_run: Option<bool>) -> actix_http::Request {
@@ -1019,7 +1039,7 @@ fn retention_request(dry_run: Option<bool>) -> actix_http::Request {
 /// go, the listing loses the version, and the coordinate is spent.
 #[actix_web::test]
 async fn a_reclaimed_version_is_deleted_the_same_way_a_hand_deletion_is() {
-    let (local_svc, app) = retention_app(RetentionPolicy {
+    let (local_svc, admin_svc, app) = retention_app(RetentionPolicy {
         keep_versions: Some(1),
         dry_run: false,
         ..Default::default()
@@ -1051,13 +1071,81 @@ async fn a_reclaimed_version_is_deleted_the_same_way_a_hand_deletion_is() {
             .is_some(),
         "a reclamation spends the coordinate, exactly as a deletion does"
     );
+
+    // …and it is the one thing that must *not* look the same: the trail has to
+    // separate a policy from a person (RFC 0016 §3).
+    let reclaims = recorded_actions(&admin_svc, AccessAction::RetentionReclaim).await;
+    assert_eq!(reclaims.len(), 1);
+    let coord = reclaims[0].package_id.as_ref().unwrap();
+    assert_eq!(coord.name, "p");
+    assert_eq!(coord.version, "1.0.0");
+    assert!(
+        recorded_actions(&admin_svc, AccessAction::Delete)
+            .await
+            .is_empty(),
+        "a hand deletion is a different event"
+    );
+    assert_eq!(
+        recorded_actions(&admin_svc, AccessAction::RetentionRun)
+            .await
+            .len(),
+        1,
+        "and the run itself is on the record"
+    );
+}
+
+/// A dry run is a decision an operator made against a production registry, and
+/// the only record it used to leave was a response body nobody keeps.
+///
+/// It records the run and nothing else: no `retention_reclaim` for a version
+/// that is still there, or the action stops meaning "this version is gone".
+#[actix_web::test]
+async fn a_retention_dry_run_is_on_the_record_without_faking_a_deletion() {
+    let (local_svc, admin_svc, app) = retention_app(RetentionPolicy {
+        keep_versions: Some(1),
+        dry_run: true,
+        ..Default::default()
+    })
+    .await;
+    publish(&local_svc, "local-npm", "p", "1.0.0", json!({})).await;
+    publish(&local_svc, "local-npm", "p", "2.0.0", json!({})).await;
+
+    let body: Value = read_body_json(call_service(&app, retention_request(None)).await).await;
+    assert_eq!(body["dry_run"], true, "{body}");
+    assert_eq!(body["reclaimed_coordinates"][0], "p@1.0.0", "{body}");
+
+    assert_eq!(
+        recorded_actions(&admin_svc, AccessAction::RetentionDryRun)
+            .await
+            .len(),
+        1,
+        "who previewed the policy, and when"
+    );
+    assert!(
+        recorded_actions(&admin_svc, AccessAction::RetentionRun)
+            .await
+            .is_empty(),
+        "a preview must never be filed as a run that could have written"
+    );
+    assert!(
+        recorded_actions(&admin_svc, AccessAction::RetentionReclaim)
+            .await
+            .is_empty(),
+        "nothing was reclaimed, so nothing may say it was"
+    );
+    assert!(local_svc
+        .backend
+        .find_tombstone("local-npm", "p", "1.0.0")
+        .await
+        .unwrap()
+        .is_none());
 }
 
 /// A configured `dry_run = true` is an operator's safety catch, and a query
 /// string must not take it off — the same interlock compaction has.
 #[actix_web::test]
 async fn a_configured_retention_dry_run_cannot_be_overridden_by_the_request() {
-    let (local_svc, app) = retention_app(RetentionPolicy {
+    let (local_svc, _admin_svc, app) = retention_app(RetentionPolicy {
         keep_versions: Some(1),
         dry_run: true,
         ..Default::default()
@@ -1088,7 +1176,7 @@ async fn a_configured_retention_dry_run_cannot_be_overridden_by_the_request() {
 /// The version-tier pin, end to end through its own endpoint.
 #[actix_web::test]
 async fn a_pinned_version_survives_a_live_run() {
-    let (local_svc, app) = retention_app(RetentionPolicy {
+    let (local_svc, _admin_svc, app) = retention_app(RetentionPolicy {
         keep_versions: Some(1),
         dry_run: false,
         ..Default::default()
@@ -1121,7 +1209,7 @@ async fn a_pinned_version_survives_a_live_run() {
 /// Unpinning gives the policy back its say.
 #[actix_web::test]
 async fn unpinning_lets_the_policy_reclaim_again() {
-    let (local_svc, app) = retention_app(RetentionPolicy {
+    let (local_svc, _admin_svc, app) = retention_app(RetentionPolicy {
         keep_versions: Some(1),
         dry_run: false,
         ..Default::default()
@@ -1159,7 +1247,7 @@ async fn retention_is_a_conflict_when_no_keep_condition_is_configured() {
     );
 
     // …and the same for a block that only configures compaction.
-    let (_svc, app) = retention_app(RetentionPolicy {
+    let (_svc, _admin_svc, app) = retention_app(RetentionPolicy {
         tombstone_detail_for: Some(Duration::from_secs(0)),
         ..Default::default()
     })
@@ -1172,7 +1260,7 @@ async fn retention_is_a_conflict_when_no_keep_condition_is_configured() {
 
 #[actix_web::test]
 async fn retention_requires_admin() {
-    let (_svc, app) = retention_app(RetentionPolicy {
+    let (_svc, _admin_svc, app) = retention_app(RetentionPolicy {
         keep_versions: Some(1),
         ..Default::default()
     })

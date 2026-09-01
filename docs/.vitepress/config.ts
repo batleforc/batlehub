@@ -516,6 +516,10 @@ const config = withMermaid(defineConfig({
               text: "0016 — Retention and tombstones",
               link: "/rfc/0016-retention-and-the-permanence-of-a-published-name",
             },
+            {
+              text: "0017 — Grants editor",
+              link: "/rfc/0017-writing-grants-at-the-package-and-version-tiers",
+            },
             // END rfc-sidebar
           ],
         },

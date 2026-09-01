@@ -176,6 +176,34 @@ impl LocalRegistryService {
         version: &str,
         identity: &Identity,
     ) -> Result<bool, CoreError> {
+        self.delete_version_audited(registry, name, version, identity, AccessAction::Delete)
+            .await
+    }
+
+    /// [`Self::delete_version`], recorded in the trail as `audit_as`.
+    ///
+    /// The one caller that passes anything but [`AccessAction::Delete`] is
+    /// [`RetentionService`](crate::services::RetentionService), which passes
+    /// [`AccessAction::RetentionReclaim`]. Everything else about the deletion is
+    /// identical **by construction, not by resemblance** — same authorization,
+    /// same tombstone, same bytes dropped — because retention reclaiming a
+    /// version through a private path of its own is exactly how the tombstone
+    /// invariant would come to have two implementations and one of them a bug
+    /// (RFC 0016 §4.2).
+    ///
+    /// Only the audit action differs, and it has to: a run is triggered by an
+    /// operator's own token, so without this the event a policy reclamation
+    /// leaves is byte-for-byte what that operator deleting the version by hand
+    /// leaves, and RFC 0016 §3's "an operator reading the audit trail must be
+    /// able to tell a policy reclamation from a human deletion" is unmet.
+    pub async fn delete_version_audited(
+        &self,
+        registry: &str,
+        name: &str,
+        version: &str,
+        identity: &Identity,
+        audit_as: AccessAction,
+    ) -> Result<bool, CoreError> {
         // `releases:delete` is the whole of the authorization decision. RFC 0016
         // §3 hands the verb to RFC 0015 and this is where it is consumed; the
         // handler in front of this is still `require_admin`, so the grant narrows
@@ -212,7 +240,7 @@ impl LocalRegistryService {
         if let Some(ref cache) = self.explore_cache {
             cache.invalidate(Some(registry)).await;
         }
-        self.record_lifecycle_action(registry, name, version, AccessAction::Delete, identity)
+        self.record_lifecycle_action(registry, name, version, audit_as, identity)
             .await;
         Ok(true)
     }
@@ -460,7 +488,7 @@ impl LocalRegistryService {
     /// already does for an action with no coordinate at all, and it keeps the
     /// event joinable to a registry without inventing a package that was not
     /// involved.
-    async fn record_registry_action(
+    pub async fn record_registry_action(
         &self,
         registry: &str,
         action: AccessAction,

@@ -23,7 +23,8 @@ pub enum QuotaEnforcement {
     Warn,
 }
 
-/// Result of a quota check. Returned from `QuotaService::check_and_record_publish`.
+/// Result of a quota check. Returned from
+/// `QuotaService::check_and_record_publish_at_tier`.
 #[derive(Debug, Clone, Default)]
 pub struct QuotaCheck {
     pub bytes_used: u64,
@@ -74,17 +75,8 @@ impl QuotaService {
     /// Check whether a publish is allowed under the current quota, and if so,
     /// atomically record it. Returns `CoreError::QuotaExceeded` when
     /// `enforcement = Block` and a limit is exceeded.
-    pub async fn check_and_record_publish(
-        &self,
-        identity: &Identity,
-        registry: &str,
-        bytes: u64,
-    ) -> Result<QuotaCheck, CoreError> {
-        self.check_and_record_publish_at_tier(identity, registry, bytes, None)
-            .await
-    }
-
-    /// [`Self::check_and_record_publish`], with the quota a deeper tier declared.
+    ///
+    /// `tier_quota` is the quota a deeper tier declared.
     ///
     /// RFC 0015 §4.5 attaches `quota` to the resource hierarchy: a namespace or
     /// package may declare its own, and composition is **wholesale** — the
@@ -95,7 +87,7 @@ impl QuotaService {
     /// `None` means no tier below the registry declared a quota, which is every
     /// publish before phase 4 and most of them after it. The accounting is
     /// unchanged either way: §4.5 notes that per-subject limits resolved per tier
-    /// *"need no new accounting — the same counter `check_and_record_publish`
+    /// *"need no new accounting — the same counter this function
     /// already maintains, with the limit looked up at the deepest tier that
     /// declares one"*. This is that lookup, and nothing else moves.
     pub async fn check_and_record_publish_at_tier(
@@ -559,7 +551,7 @@ mod tests {
     async fn anonymous_rejected_when_limits_exist() {
         let svc = svc_with(block_config(1_000_000, 10), 0, 0);
         let result = svc
-            .check_and_record_publish(&Identity::anonymous(), "cargo", 100)
+            .check_and_record_publish_at_tier(&Identity::anonymous(), "cargo", 100, None)
             .await;
         assert!(matches!(result, Err(CoreError::QuotaExceeded(_))));
     }
@@ -568,7 +560,7 @@ mod tests {
     async fn byte_limit_blocks_when_enforcement_is_block() {
         let svc = svc_with(block_config(1000, 100), 900, 1);
         let result = svc
-            .check_and_record_publish(&user("alice"), "cargo", 200)
+            .check_and_record_publish_at_tier(&user("alice"), "cargo", 200, None)
             .await;
         assert!(matches!(result, Err(CoreError::QuotaExceeded(_))));
     }
@@ -577,7 +569,7 @@ mod tests {
     async fn no_quota_config_passes_through() {
         let svc = QuotaService::new(MockQuotaRepo::new(0, 0), HashMap::new());
         let check = svc
-            .check_and_record_publish(&user("alice"), "cargo", 100)
+            .check_and_record_publish_at_tier(&user("alice"), "cargo", 100, None)
             .await
             .unwrap();
         assert!(check.headers().is_empty());
@@ -596,7 +588,7 @@ mod tests {
             1,
         );
         let check = svc
-            .check_and_record_publish(&user("alice"), "cargo", 200)
+            .check_and_record_publish_at_tier(&user("alice"), "cargo", 200, None)
             .await
             .unwrap();
         assert!(check.warning);

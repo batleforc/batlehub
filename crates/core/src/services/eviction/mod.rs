@@ -1,12 +1,36 @@
+//! Discarding *cached copies* — never the only copy.
+//!
+//! # Why this shares no code with `services::retention`
+//!
+//! The asymmetry is set out in that module's header and it decides everything
+//! here too, in the other direction: what eviction drops is recoverable by a
+//! re-fetch, so the defaults are permissive where retention's are protective,
+//! and **the trail is per-run where retention's is per-version**. An LRU sweep
+//! evicts by the thousand; one audit row per evicted blob would bury the
+//! deletions that are not recoverable under the ones that are.
+//!
+//! # What a run leaves behind
+//!
+//! | | Live run | Dry run |
+//! | --- | --- | --- |
+//! | Registry-scoped run event | `cache_evict_run` | `cache_evict_dry_run` |
+//! | Per-artifact event | none — see above | none |
+//! | The keys | [`EvictionReport::evicted_keys`], bounded | same |
+//!
+//! A single artifact dropped **by hand** is `cache_evict` and does carry its
+//! coordinate: that one is an operator's decision about one package, and there
+//! is one of it.
+
 mod report;
-pub use report::{CoherenceReport, EvictionReport};
+pub use report::{CoherenceReport, EvictionReport, MAX_REPORTED_KEYS};
 
 use std::sync::Arc;
 
 use chrono::{Duration, Utc};
 
+use crate::entities::{AccessAction, AccessEvent, AccessResult, Identity, PackageId};
 use crate::error::CoreError;
-use crate::ports::{ArtifactMetaRepository, StorageBackend};
+use crate::ports::{ArtifactMeta, ArtifactMetaRepository, PackageRepository, StorageBackend};
 
 /// Configuration for the eviction service. All fields are optional; omitting a
 /// field disables that eviction strategy.
@@ -25,6 +49,22 @@ pub struct EvictionConfig {
     pub registry: String,
 }
 
+impl EvictionConfig {
+    /// Whether any eviction strategy is configured — i.e. whether a sweep would
+    /// do anything at all.
+    ///
+    /// The handler's `404 "eviction not configured"` and the wiring in
+    /// `server/src/setup.rs` ask the same question, and asked it twice in two
+    /// places until the coherence sweep needed a service for *every* registry:
+    /// orphaned blobs do not wait for an eviction policy to be configured.
+    pub fn evicts_anything(&self) -> bool {
+        self.artifact_ttl_secs.is_some()
+            || self.idle_days.is_some()
+            || self.max_size_bytes.is_some()
+            || self.keep_latest_n.is_some()
+    }
+}
+
 /// Drives artifact eviction across storage and artifact-meta.
 pub struct EvictionService {
     pub artifact_meta: Arc<dyn ArtifactMetaRepository>,
@@ -36,6 +76,11 @@ pub struct EvictionService {
     /// (whose `store` → `record_artifact` window is milliseconds, always far
     /// shorter than the coherence interval) without cross-service locking.
     coherence_pending: tokio::sync::Mutex<std::collections::HashSet<String>>,
+    /// Where the run event is recorded. `None` — the default — disables the
+    /// trail rather than failing the run: eviction discards recoverable copies,
+    /// and refusing to reclaim disk because the audit sink is absent would be
+    /// the wrong trade in the direction this service is not protecting.
+    packages: Option<Arc<dyn PackageRepository>>,
 }
 
 impl EvictionService {
@@ -49,27 +94,54 @@ impl EvictionService {
             storage,
             config,
             coherence_pending: tokio::sync::Mutex::new(std::collections::HashSet::new()),
+            packages: None,
         }
     }
 
-    /// Run all configured eviction strategies in sequence.
-    pub async fn run_all(&self) -> Result<EvictionReport, CoreError> {
-        let mut report = EvictionReport::default();
+    /// Wire the audit trail.
+    ///
+    /// A builder rather than a `new` parameter so the many call sites that do
+    /// not audit — every unit test — stay as they are, and so wiring it is a
+    /// visible line in `server/src/setup.rs` rather than a `None` nobody reads.
+    pub fn with_audit(mut self, packages: Arc<dyn PackageRepository>) -> Self {
+        self.packages = Some(packages);
+        self
+    }
 
+    /// Run all configured eviction strategies in sequence.
+    ///
+    /// Under `dry_run` nothing is deleted and the report says what would have
+    /// gone. Unlike retention's, this is a per-request choice with no config
+    /// safety catch behind it: what a live run drops comes back on the next
+    /// request, so the interlock retention needs would be ceremony here.
+    pub async fn run_all(
+        &self,
+        dry_run: bool,
+        identity: &Identity,
+    ) -> Result<EvictionReport, CoreError> {
+        let mut report = if dry_run {
+            EvictionReport::dry()
+        } else {
+            EvictionReport::live()
+        };
+
+        // `let n = …` then assign, rather than assigning the call directly:
+        // each strategy borrows the report to collect its keys, and the borrow
+        // has to end before the count lands in it.
         if self.config.artifact_ttl_secs.is_some() {
-            let n = self.run_ttl().await?;
+            let n = self.run_ttl(&mut report).await?;
             report.evicted_ttl = n;
         }
         if self.config.idle_days.is_some() {
-            let n = self.run_idle().await?;
+            let n = self.run_idle(&mut report).await?;
             report.evicted_idle = n;
         }
         if self.config.keep_latest_n.is_some() {
-            let n = self.run_keep_latest_n().await?;
+            let n = self.run_keep_latest_n(&mut report).await?;
             report.evicted_old_versions = n;
         }
         if self.config.max_size_bytes.is_some() {
-            let n = self.run_lru_size_cap().await?;
+            let n = self.run_lru_size_cap(&mut report).await?;
             report.evicted_lru = n;
         }
 
@@ -77,11 +149,103 @@ impl EvictionService {
             + report.evicted_idle
             + report.evicted_old_versions
             + report.evicted_lru;
+        self.record_run(&report, identity).await;
         Ok(report)
     }
 
+    /// Record the sweep itself, registry-scoped, one event.
+    ///
+    /// Recorded on every run, live or dry, for the reason retention's own
+    /// `record_run` gives: pointing a policy at a production cache is an
+    /// operator's action against that registry, and a trail that only holds the
+    /// runs which happened to delete something cannot answer "who has been
+    /// running this".
+    ///
+    /// The counts go to the log line rather than the event: `AccessEvent` has
+    /// nowhere to put them, and a summary number in the audit trail that
+    /// nothing else can check is worse than no number.
+    async fn record_run(&self, report: &EvictionReport, identity: &Identity) {
+        tracing::info!(
+            registry = %self.config.registry,
+            dry_run = report.dry_run,
+            total = report.total,
+            ttl = report.evicted_ttl,
+            idle = report.evicted_idle,
+            keep_latest_n = report.evicted_old_versions,
+            lru = report.evicted_lru,
+            truncated = report.keys_truncated,
+            user_id = identity.user_id.as_deref().unwrap_or(""),
+            "cache eviction run finished"
+        );
+        let Some(repo) = self.packages.as_ref() else {
+            return;
+        };
+        let action = if report.dry_run {
+            AccessAction::CacheEvictDryRun
+        } else {
+            AccessAction::CacheEvictRun
+        };
+        // The empty name and version are what a registry-scoped event looks
+        // like here, as they already do for `TombstoneCompact`: the run touched
+        // many coordinates and inventing one that was not involved would be
+        // worse than leaving them blank. An `EvictionConfig` with no registry
+        // sweeps *every* registry, so it has no scope to record either — that
+        // is `None`, the shape `AuditPurge` already uses for an action with no
+        // coordinate at all, rather than a row of three empty strings.
+        let package_id = (!self.config.registry.is_empty())
+            .then(|| PackageId::new(&self.config.registry, "", ""));
+        let event = AccessEvent {
+            id: uuid::Uuid::new_v4(),
+            user_id: identity.user_id.clone(),
+            user_role: identity.role.clone(),
+            package_id,
+            action,
+            result: AccessResult::Allowed,
+            timestamp: Utc::now(),
+            ip_address: None,
+            user_agent: None,
+        };
+        if let Err(e) = repo.record_access(event).await {
+            tracing::warn!(error = %e, "audit log write failed for cache eviction run");
+        }
+    }
+
+    /// Drop one cached artifact: the bytes, then its meta row.
+    ///
+    /// Returns whether it counts as evicted. A dry run returns `true` without
+    /// touching either store — the point of the preview is the count and the
+    /// key list, and both come from the same walk the live run does.
+    ///
+    /// The storage delete failing skips the meta delete, as every strategy did
+    /// before this was one function: a meta row without its blob is a cache
+    /// miss, a blob without its meta row is a leak the coherence sweep has to
+    /// find.
+    async fn drop_artifact(
+        &self,
+        meta: &ArtifactMeta,
+        report: &mut EvictionReport,
+        strategy: &'static str,
+    ) -> bool {
+        report.record(&meta.artifact_key);
+        if report.dry_run {
+            return true;
+        }
+        if let Err(e) = self.storage.delete(&meta.artifact_key).await {
+            tracing::warn!(key = %meta.artifact_key, error = %e, strategy, "eviction: storage delete failed");
+            return false;
+        }
+        if let Err(e) = self
+            .artifact_meta
+            .delete_artifact_meta(&meta.artifact_key)
+            .await
+        {
+            tracing::warn!(key = %meta.artifact_key, error = %e, strategy, "eviction: meta delete failed");
+        }
+        true
+    }
+
     /// Evict artifacts whose `cached_at` is older than `artifact_ttl_secs`.
-    pub async fn run_ttl(&self) -> Result<usize, CoreError> {
+    pub async fn run_ttl(&self, report: &mut EvictionReport) -> Result<usize, CoreError> {
         let ttl_secs = match self.config.artifact_ttl_secs {
             Some(s) => s,
             None => return Ok(0),
@@ -93,27 +257,18 @@ impl EvictionService {
             .await?;
         let mut count = 0;
         for meta in expired {
-            if let Err(e) = self.storage.delete(&meta.artifact_key).await {
-                tracing::warn!(key = %meta.artifact_key, error = %e, "eviction(ttl): storage delete failed");
-                continue;
+            if self.drop_artifact(&meta, report, "ttl").await {
+                count += 1;
             }
-            if let Err(e) = self
-                .artifact_meta
-                .delete_artifact_meta(&meta.artifact_key)
-                .await
-            {
-                tracing::warn!(key = %meta.artifact_key, error = %e, "eviction(ttl): meta delete failed");
-            }
-            count += 1;
         }
         if count > 0 {
-            tracing::info!(count, registry = %self.config.registry, "eviction(ttl): evicted artifacts");
+            tracing::info!(count, registry = %self.config.registry, dry_run = report.dry_run, "eviction(ttl): evicted artifacts");
         }
         Ok(count)
     }
 
     /// Evict artifacts not accessed for `idle_days` days.
-    pub async fn run_idle(&self) -> Result<usize, CoreError> {
+    pub async fn run_idle(&self, report: &mut EvictionReport) -> Result<usize, CoreError> {
         let days = match self.config.idle_days {
             Some(d) => d,
             None => return Ok(0),
@@ -125,28 +280,19 @@ impl EvictionService {
             .await?;
         let mut count = 0;
         for meta in idle {
-            if let Err(e) = self.storage.delete(&meta.artifact_key).await {
-                tracing::warn!(key = %meta.artifact_key, error = %e, "eviction(idle): storage delete failed");
-                continue;
+            if self.drop_artifact(&meta, report, "idle").await {
+                count += 1;
             }
-            if let Err(e) = self
-                .artifact_meta
-                .delete_artifact_meta(&meta.artifact_key)
-                .await
-            {
-                tracing::warn!(key = %meta.artifact_key, error = %e, "eviction(idle): meta delete failed");
-            }
-            count += 1;
         }
         if count > 0 {
-            tracing::info!(count, registry = %self.config.registry, "eviction(idle): evicted artifacts");
+            tracing::info!(count, registry = %self.config.registry, dry_run = report.dry_run, "eviction(idle): evicted artifacts");
         }
         Ok(count)
     }
 
     /// For each (registry, package), keep only the N most-recently-cached versions;
     /// evict the rest.
-    pub async fn run_keep_latest_n(&self) -> Result<usize, CoreError> {
+    pub async fn run_keep_latest_n(&self, report: &mut EvictionReport) -> Result<usize, CoreError> {
         let n = match self.config.keep_latest_n {
             Some(n) if n > 0 => n,
             _ => return Ok(0),
@@ -170,21 +316,12 @@ impl EvictionService {
             if group_pos <= n {
                 continue; // within keep window
             }
-            if let Err(e) = self.storage.delete(&meta.artifact_key).await {
-                tracing::warn!(key = %meta.artifact_key, error = %e, "eviction(keep_latest_n): storage delete failed");
-                continue;
+            if self.drop_artifact(&meta, report, "keep_latest_n").await {
+                count += 1;
             }
-            if let Err(e) = self
-                .artifact_meta
-                .delete_artifact_meta(&meta.artifact_key)
-                .await
-            {
-                tracing::warn!(key = %meta.artifact_key, error = %e, "eviction(keep_latest_n): meta delete failed");
-            }
-            count += 1;
         }
         if count > 0 {
-            tracing::info!(count, registry = %self.config.registry, "eviction(keep_latest_n): evicted old versions");
+            tracing::info!(count, registry = %self.config.registry, dry_run = report.dry_run, "eviction(keep_latest_n): evicted old versions");
         }
         Ok(count)
     }
@@ -192,9 +329,10 @@ impl EvictionService {
     /// Evict one batch of LRU candidates. Returns `(evicted_count, new_total)`.
     async fn evict_lru_batch(
         &self,
-        candidates: Vec<crate::ports::ArtifactMeta>,
+        candidates: Vec<ArtifactMeta>,
         mut total: u64,
         cap: u64,
+        report: &mut EvictionReport,
     ) -> (usize, u64) {
         let mut count = 0;
         for meta in candidates {
@@ -202,16 +340,8 @@ impl EvictionService {
                 break;
             }
             let size = meta.size_bytes.unwrap_or(0);
-            if let Err(e) = self.storage.delete(&meta.artifact_key).await {
-                tracing::warn!(key = %meta.artifact_key, error = %e, "eviction(lru): storage delete failed");
+            if !self.drop_artifact(&meta, report, "lru").await {
                 continue;
-            }
-            if let Err(e) = self
-                .artifact_meta
-                .delete_artifact_meta(&meta.artifact_key)
-                .await
-            {
-                tracing::warn!(key = %meta.artifact_key, error = %e, "eviction(lru): meta delete failed");
             }
             total = total.saturating_sub(size);
             count += 1;
@@ -220,7 +350,7 @@ impl EvictionService {
     }
 
     /// Evict the LRU artifacts until total storage for the registry is under `max_size_bytes`.
-    pub async fn run_lru_size_cap(&self) -> Result<usize, CoreError> {
+    pub async fn run_lru_size_cap(&self, report: &mut EvictionReport) -> Result<usize, CoreError> {
         let cap = match self.config.max_size_bytes {
             Some(c) => c,
             None => return Ok(0),
@@ -231,6 +361,29 @@ impl EvictionService {
             .await?;
         if total <= cap {
             return Ok(0);
+        }
+
+        // **A dry run takes one page and stops.** The loop below re-queries
+        // `list_lru` after each batch, which is correct only because the batch
+        // it just evicted is gone from the table. A preview deletes nothing, so
+        // the same rows come back every time and the walk would count the same
+        // artifacts over and over — a preview that over-reports what it would
+        // take is worse than one that admits it stopped early.
+        if report.dry_run {
+            let page = MAX_REPORTED_KEYS as i64;
+            let candidates = self
+                .artifact_meta
+                .list_lru(&self.config.registry, page)
+                .await?;
+            let full_page = candidates.len() as i64 >= page;
+            let (count, remaining) = self.evict_lru_batch(candidates, total, cap, report).await;
+            if remaining > cap && full_page {
+                report.incomplete_because = Some(format!(
+                    "the size-cap preview stopped after {count} artifacts, with the registry still                      {} bytes over the cap. A live run would keep going; re-read this after one.",
+                    remaining - cap
+                ));
+            }
+            return Ok(count);
         }
 
         let mut count = 0;
@@ -246,7 +399,7 @@ impl EvictionService {
             if candidates.is_empty() {
                 break;
             }
-            let (batch, new_total) = self.evict_lru_batch(candidates, total, cap).await;
+            let (batch, new_total) = self.evict_lru_batch(candidates, total, cap, report).await;
             count += batch;
             total = new_total;
             // A batch that evicted nothing (e.g. every delete failed) makes no
@@ -264,7 +417,26 @@ impl EvictionService {
     /// Compare artifact keys in storage against the artifact_meta table. Delete
     /// storage entries that have no corresponding meta row (orphaned blobs from
     /// crashed writes or manual deletions from the DB).
-    pub async fn run_coherence_check(&self) -> Result<CoherenceReport, CoreError> {
+    ///
+    /// # A dry run does not advance the state machine
+    ///
+    /// The two-pass grace below is the whole safety property: a blob is deleted
+    /// only if it looked orphaned on the *previous* run too. So a preview must
+    /// leave `coherence_pending` exactly as it found it. A dry run that carried
+    /// its findings forward would arm the deletions it was asked to merely
+    /// describe — run it twice to be careful, and the second run deletes
+    /// everything the first one "would have". That is the opposite of what an
+    /// operator reaching for `--dry-run` is asking for, so the pending set is
+    /// only written on a live run.
+    ///
+    /// The report separates the two strikes for the same reason: `deleted_keys`
+    /// is what went (or would go now), `first_seen_keys` is what a *second* run
+    /// would take.
+    pub async fn run_coherence_check(
+        &self,
+        dry_run: bool,
+        identity: &Identity,
+    ) -> Result<CoherenceReport, CoreError> {
         // Artifact keys are stored as "artifact:{registry}/{name}/{version}".
         // We need the prefix that matches all artifact keys for this registry.
         let key_prefix = if self.config.registry.is_empty() {
@@ -291,7 +463,12 @@ impl EvictionService {
         let mut prev_pending = self.coherence_pending.lock().await;
         let mut still_orphaned: std::collections::HashSet<String> =
             std::collections::HashSet::new();
-        let mut orphaned = 0usize;
+        let mut report = CoherenceReport {
+            storage_keys: storage_keys.len(),
+            meta_rows: meta_keys.len(),
+            dry_run,
+            ..Default::default()
+        };
         for key in &storage_keys {
             if meta_keys.contains(key) {
                 continue;
@@ -310,28 +487,78 @@ impl EvictionService {
             }
             if prev_pending.contains(key) {
                 // Orphaned on two consecutive runs → delete.
+                if dry_run {
+                    report.record_deleted(key);
+                    continue;
+                }
                 tracing::warn!(key, "coherence: orphaned storage object (2 runs), deleting");
                 if let Err(e) = self.storage.delete(key).await {
                     tracing::warn!(key, error = %e, "coherence: failed to delete orphaned object");
                     // Deletion failed — keep it pending so we retry next run.
                     still_orphaned.insert(key.clone());
                 } else {
-                    orphaned += 1;
+                    report.record_deleted(key);
                 }
             } else {
                 // First run we've seen this key orphaned — defer deletion, carry
                 // it forward so a concurrent in-flight cache write can complete.
+                report.record_first_seen(key);
                 still_orphaned.insert(key.clone());
             }
         }
-        *prev_pending = still_orphaned;
+        // **Only a live run writes the pending set.** See the note on this
+        // function: a preview that carried its findings forward would arm the
+        // very deletions it was asked to describe.
+        if !dry_run {
+            *prev_pending = still_orphaned;
+        }
         drop(prev_pending);
 
-        Ok(CoherenceReport {
-            storage_keys: storage_keys.len(),
-            meta_rows: meta_keys.len(),
-            orphaned_deleted: orphaned,
-        })
+        self.record_coherence_run(&report, identity).await;
+        Ok(report)
+    }
+
+    /// Record the coherence sweep, registry-scoped, one event.
+    ///
+    /// Its own action rather than [`AccessAction::CacheEvictRun`]: this deletes
+    /// blobs *nothing references*, which is a different fact about the system
+    /// than a policy trimming a cache, and an auditor has to be able to tell
+    /// "the policy took it" from "it was already unreachable".
+    async fn record_coherence_run(&self, report: &CoherenceReport, identity: &Identity) {
+        tracing::info!(
+            registry = %self.config.registry,
+            dry_run = report.dry_run,
+            storage_keys = report.storage_keys,
+            meta_rows = report.meta_rows,
+            deleted = report.orphaned_deleted,
+            first_seen = report.first_seen_orphaned,
+            user_id = identity.user_id.as_deref().unwrap_or(""),
+            "cache coherence sweep finished"
+        );
+        let Some(repo) = self.packages.as_ref() else {
+            return;
+        };
+        let action = if report.dry_run {
+            AccessAction::CacheCoherenceDryRun
+        } else {
+            AccessAction::CacheCoherenceRun
+        };
+        let package_id = (!self.config.registry.is_empty())
+            .then(|| PackageId::new(&self.config.registry, "", ""));
+        let event = AccessEvent {
+            id: uuid::Uuid::new_v4(),
+            user_id: identity.user_id.clone(),
+            user_role: identity.role.clone(),
+            package_id,
+            action,
+            result: AccessResult::Allowed,
+            timestamp: Utc::now(),
+            ip_address: None,
+            user_agent: None,
+        };
+        if let Err(e) = repo.record_access(event).await {
+            tracing::warn!(error = %e, "audit log write failed for cache coherence sweep");
+        }
     }
 }
 

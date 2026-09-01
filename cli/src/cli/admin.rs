@@ -5,8 +5,9 @@ use comfy_table::Table;
 use crate::api::{
     admin::{
         AccessSimulationResponse, AuditEntry, AuditQuery, BlockedUserEntry, BulkPackageResult,
-        NotificationChannelEntry, NotificationSubscriptionEntry, RegistryHealthEntry,
-        SimulateAccessRequest, StatsResponse, TeamNamespaceEntry,
+        CoherenceReportDto, EvictionReportDto, NotificationChannelEntry,
+        NotificationSubscriptionEntry, RegistryHealthEntry, SimulateAccessRequest, StatsResponse,
+        TeamNamespaceEntry,
     },
     version::RetentionReport,
     BatleHubClient,
@@ -67,6 +68,12 @@ pub enum AdminCommand {
     AuditLog {
         #[arg(long)]
         registry: Option<String>,
+        /// Only this package name
+        #[arg(long)]
+        package: Option<String>,
+        /// Only these actions, comma-separated (e.g. `delete,retention_reclaim`)
+        #[arg(long)]
+        action: Option<String>,
         #[arg(long)]
         user: Option<String>,
         #[arg(long)]
@@ -81,7 +88,7 @@ pub enum AdminCommand {
         #[arg(long, default_value = "50")]
         per_page: u64,
         /// Purge entries older than this ISO-8601 datetime (e.g. 2024-01-01T00:00:00Z)
-        #[arg(long, conflicts_with_all = &["registry","user","from","to","denied_only"])]
+        #[arg(long, conflicts_with_all = &["registry","package","action","user","from","to","denied_only"])]
         purge_before: Option<String>,
     },
     /// Show aggregate server statistics (cache hit rate, bytes served, …)
@@ -179,6 +186,9 @@ pub enum AdminCommand {
         /// Filter by registry
         #[arg(long)]
         registry: Option<String>,
+        /// Only these actions, comma-separated (e.g. `delete,retention_reclaim`)
+        #[arg(long)]
+        action: Option<String>,
         /// Output format: json (default) or csv
         #[arg(long, default_value = "json")]
         format: String,
@@ -249,6 +259,34 @@ pub enum CacheCommand {
     },
     /// Clear the metadata cache for a registry
     Clear { registry: String },
+    /// Run the registry's configured cache-eviction strategies
+    ///
+    /// Evicts by default, unlike `admin retention`: what goes here is a cached
+    /// copy the next request re-fetches, so there is no only-copy to protect
+    /// with a two-key interlock. `--dry-run` previews instead.
+    Evict {
+        /// Registry name
+        registry: String,
+        /// Report what would be evicted, and evict nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Delete storage blobs nothing references any more
+    ///
+    /// Orphans come from a crashed cache write or a row deleted from the
+    /// database by hand. **Two passes before anything goes**: a blob is deleted
+    /// only if the previous sweep saw it orphaned too, so the first run on a
+    /// fresh estate reports and deletes nothing — run it again to collect.
+    ///
+    /// `--dry-run` reports without deleting *and* without advancing anything
+    /// toward deletion, so previewing twice is not the same as running twice.
+    Coherence {
+        /// Registry name
+        registry: String,
+        /// Report only; delete nothing and arm nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -374,6 +412,8 @@ pub async fn run(cmd: AdminCommand, client: &BatleHubClient, json: bool) -> Resu
         } => handle_retention(&registry, reclaim, show_kept, client, json).await?,
         AdminCommand::AuditLog {
             registry,
+            package,
+            action,
             user,
             from,
             to,
@@ -387,6 +427,8 @@ pub async fn run(cmd: AdminCommand, client: &BatleHubClient, json: bool) -> Resu
                 json,
                 AuditLogArgs {
                     registry,
+                    package,
+                    action,
                     user,
                     from,
                     to,
@@ -483,11 +525,18 @@ pub async fn run(cmd: AdminCommand, client: &BatleHubClient, json: bool) -> Resu
             from,
             to,
             registry,
+            action,
             format,
             output,
         } => {
             let text = client
-                .export_audit_log(registry.as_deref(), from.as_deref(), to.as_deref(), &format)
+                .export_audit_log(
+                    registry.as_deref(),
+                    from.as_deref(),
+                    to.as_deref(),
+                    action.as_deref(),
+                    &format,
+                )
                 .await?;
             match output {
                 Some(path) => {
@@ -503,6 +552,8 @@ pub async fn run(cmd: AdminCommand, client: &BatleHubClient, json: bool) -> Resu
 
 struct AuditLogArgs {
     registry: Option<String>,
+    package: Option<String>,
+    action: Option<String>,
     user: Option<String>,
     from: Option<String>,
     to: Option<String>,
@@ -529,6 +580,8 @@ async fn handle_audit_log(client: &BatleHubClient, json: bool, args: AuditLogArg
     let resp = client
         .audit_log(AuditQuery {
             registry: args.registry,
+            package_name: args.package,
+            action: args.action,
             user_id: args.user,
             from: args.from,
             to: args.to,
@@ -711,8 +764,113 @@ async fn handle_cache(cmd: CacheCommand, client: &BatleHubClient) -> Result<()> 
             client.cache_clear(&registry).await?;
             println!("Cache cleared for {registry}");
         }
+        CacheCommand::Evict { registry, dry_run } => {
+            let report = client.evict_registry(&registry, dry_run).await?;
+            print_eviction_report(&registry, &report);
+        }
+        CacheCommand::Coherence { registry, dry_run } => {
+            let report = client.coherence_sweep(&registry, dry_run).await?;
+            print_coherence_report(&registry, &report);
+        }
     }
     Ok(())
+}
+
+/// The coherence report: what the two passes found, and what each list means.
+///
+/// The two lists are printed separately because they answer different
+/// questions — `deleted` is what went, `first seen` is what a *second* run
+/// would take — and collapsing them would make the two-pass grace invisible,
+/// which is how an operator concludes the sweep does nothing.
+fn print_coherence_report(registry: &str, report: &CoherenceReportDto) {
+    let mode = if report.dry_run {
+        "dry run — nothing was deleted, nothing was armed"
+    } else {
+        "swept"
+    };
+    println!("Cache coherence on {registry}: {mode}");
+    println!(
+        "  {} blobs in storage, {} meta rows",
+        report.storage_keys, report.meta_rows
+    );
+
+    let verb = if report.dry_run {
+        "would delete"
+    } else {
+        "deleted"
+    };
+    println!("  {verb} {}", report.orphaned_deleted);
+    for key in &report.deleted_keys {
+        println!("    {key}");
+    }
+
+    if report.first_seen_orphaned > 0 {
+        println!(
+            "  {} newly orphaned, deferred to the next sweep:",
+            report.first_seen_orphaned
+        );
+        for key in &report.first_seen_keys {
+            println!("    {key}");
+        }
+        println!();
+        println!(
+            "  Nothing is deleted the first time it looks orphaned — a cache write \n  \
+             in flight looks exactly like one. Re-run to collect them."
+        );
+    }
+    if report.keys_truncated > 0 {
+        println!();
+        println!(
+            "  … and {} more not listed — the lists above are a sample.",
+            report.keys_truncated
+        );
+    }
+}
+
+/// The eviction report: what went, per strategy, and the keys.
+///
+/// The key list is what an operator reads before running a new size cap live —
+/// a count alone cannot be checked against the policy that produced it.
+fn print_eviction_report(registry: &str, report: &EvictionReportDto) {
+    let mode = if report.dry_run {
+        "dry run — nothing was evicted"
+    } else {
+        "evicted"
+    };
+    println!("Cache eviction on {registry}: {mode}");
+    println!(
+        "  total {}   ttl {}   idle {}   keep_latest_n {}   lru {}",
+        report.total,
+        report.evicted_ttl,
+        report.evicted_idle,
+        report.evicted_old_versions,
+        report.evicted_lru
+    );
+    if !report.evicted_keys.is_empty() {
+        println!();
+        println!(
+            "{}:",
+            if report.dry_run {
+                "would evict"
+            } else {
+                "evicted"
+            }
+        );
+        for key in &report.evicted_keys {
+            println!("  {key}");
+        }
+    }
+    if report.keys_truncated > 0 {
+        println!();
+        println!(
+            "  … and {} more not listed — the list above is a sample, not the answer.",
+            report.keys_truncated
+        );
+    }
+    if let Some(reason) = &report.incomplete_because {
+        println!();
+        println!("  {reason}");
+    }
 }
 
 /// Run retention and print the report.

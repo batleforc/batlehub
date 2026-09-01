@@ -30,6 +30,94 @@ All eviction fields are optional. Omitting a field disables that eviction strate
 | `max_size_bytes` | — | Storage cap; LRU artifacts are removed when exceeded |
 | `keep_latest_n` | — | Keep only the N most recent versions per package |
 
+#### Running it, and previewing it {#cache-eviction-run}
+
+```sh
+batlehub admin cache evict acme-npm --dry-run   # what would go, and nothing goes
+batlehub admin cache evict acme-npm             # actually evict
+```
+
+Live is the default here, the opposite of [`admin retention`](#retention): what
+eviction drops is a copy the next request re-fetches, so the two-key interlock
+that protects a locally published version would be ceremony. The preview exists
+for the other question — *how much would this new size cap actually take?* — and
+answers it with the keys, not just a count.
+
+A size-cap preview is bounded: it reads one page of LRU candidates, and says so
+in `incomplete_because` if the registry is still over the cap when the page runs
+out. A live run keeps going.
+
+#### What a run leaves behind {#cache-eviction-trail}
+
+| | Live run | Dry run |
+| --- | --- | --- |
+| Run event, registry-scoped | `cache_evict_run` | `cache_evict_dry_run` |
+| Per-artifact event | none — see below | none |
+
+There is deliberately **no event per evicted artifact**, which is where this
+parts company with [retention's trail](#retention-trail): an LRU sweep evicts by
+the thousand, and burying the deletions that are *not* recoverable under the
+ones that are would make the whole trail unreadable. What went is in the run's
+report and its log line.
+
+Dropping a cached artifact **by hand** is the other case — one operator, one
+decision, one package — and it does carry the coordinate:
+
+| Surface | Action |
+| --- | --- |
+| `DELETE /api/v1/admin/registries/{r}/cache` | `cache_evict` |
+| `POST /api/v1/admin/packages/invalidate` | `cache_evict` |
+| `POST /api/v1/admin/registries/{r}/clear-cache` | `cache_clear`, registry-scoped |
+| `POST /api/v1/admin/registries/{r}/coherence` | `cache_coherence_run` / `cache_coherence_dry_run` |
+
+None of these is a `delete`. A cached copy is not the package, and an auditor
+must not have to read a registry's mode out of a config file to tell them apart:
+
+```sh
+# Everything that was actually deleted, by hand or by policy
+batlehub admin audit-log --action delete,retention_reclaim
+
+# Everything that was merely un-cached
+batlehub admin audit-log --action cache_evict,cache_clear,cache_evict_run
+```
+
+#### Collecting orphaned blobs {#cache-coherence}
+
+An artifact is cached in two steps — the bytes are stored, then the row that
+points at them is recorded. A process killed between the two leaves a blob
+nothing references: it occupies disk, no request can ever reach it, and no
+eviction strategy will ever consider it, because every strategy reads the table
+it is missing from. Deleting a row from the database by hand leaves the same
+thing.
+
+```sh
+batlehub admin cache coherence acme-npm --dry-run   # what is orphaned
+batlehub admin cache coherence acme-npm             # collect it
+```
+
+**Two passes before anything goes.** A blob is deleted only if the *previous*
+sweep saw it orphaned too — because a cache write in flight looks exactly like
+an orphan, and the window between its two steps is milliseconds. So the first
+sweep of a fresh estate reports `first_seen_orphaned` and deletes nothing; run it
+again to collect. The report keeps the two apart: `deleted_keys` is what went,
+`first_seen_keys` is what a second run would take.
+
+`--dry-run` reports without deleting **and without advancing anything toward
+deletion**. Previewing twice is not the same as running twice — a preview that
+armed what it described would be a trap rather than a preview.
+
+Unlike the eviction strategies, this needs no configuration: orphans do not wait
+for a TTL to be set, so the sweep is available on every registry.
+
+To run it on a schedule instead of by hand, enable
+[`[cache_coherence]`](/guide/configuration#38b-cache-coherence-optional). Scheduled
+sweeps carry `user_id = "system"` in the trail, which is what tells them apart
+from an operator's:
+
+```sh
+batlehub admin audit-log --action cache_coherence_run
+```
+
 ### Cache warming {#cache-warming}
 
 Cache warming pre-fetches artifact versions so they are available with zero latency on first request. Configure it alongside eviction:
@@ -463,6 +551,30 @@ A reclaimed version is deleted the same way a hand deletion is: the bytes go, a
 tombstone stays, and **the coordinate is spent**. Freeing disk must not free the
 namespace, or retention becomes a supply-chain mechanism by accident.
 
+#### What a run leaves behind {#retention-trail}
+
+| | Live run | Dry run |
+| --- | --- | --- |
+| Run event, registry-scoped | `retention_run` | `retention_dry_run` |
+| Per-version event | `retention_reclaim` | none |
+| Tombstone | one per version | none |
+
+A run is triggered with an operator's own token, so the *subject* of the event
+cannot tell a policy apart from a person — the action does. `retention_reclaim`
+is never `delete`, and it always means the version is gone:
+
+```sh
+# What the policy took, and what somebody took by hand
+batlehub admin audit-log --registry acme-npm --action retention_reclaim
+batlehub admin audit-log --registry acme-npm --action delete
+```
+
+A dry run records **itself and nothing else**. That is on purpose in both
+directions: the preview is an operator's decision against a production registry
+and belongs on the record, but a row saying a version was reclaimed when it is
+still there would make the trail unreadable. What a dry run *would* have taken
+is in the report it prints and nowhere else — so keep the output, or re-run it.
+
 #### Pinning a version against retention
 
 The escape every automatic policy needs — the release an LTS customer runs, which
@@ -507,6 +619,8 @@ govern opposite things.
 | Another copy exists | yes, upstream | frequently not |
 | Cost of a wrong reclaim | a re-fetch | the artifact |
 | Default | configured per registry | keep everything, forever |
+| Preview | `--dry-run`, opt in | on unless `dry_run = false` |
+| Audited | per run | per run **and** per version |
 
 A `[registries.retention]` block on a `proxy`-mode registry is a config error,
 not a silent no-op: that registry publishes nothing locally, so the block would

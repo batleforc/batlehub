@@ -14,8 +14,11 @@ use utoipa::ToSchema;
 /// not make a `team` package public, and a `public` namespace does not serve a
 /// caller no grant matches.
 ///
-/// The variants are ordered widest to narrowest, and [`Self::narrower_of`]
-/// depends on that order.
+/// The variants are declared widest to narrowest. Nothing in production compares
+/// two of them today — visibility composes deepest-wins, which picks a value
+/// rather than ordering two — but the derived `Ord` is part of the type's public
+/// shape, and an enum whose order reads as arbitrary is one somebody reorders for
+/// readability. `visibility_is_ordered_widest_to_narrowest` pins it.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize, ToSchema,
 )]
@@ -48,16 +51,6 @@ pub enum Visibility {
 }
 
 impl Visibility {
-    /// The narrower of two visibilities.
-    ///
-    /// Not a composition rule — visibility composes *deepest-wins*, not by
-    /// intersection (§4.1). This is for the places that must satisfy two
-    /// independent audience constraints at once, of which
-    /// `prerelease_visibility` beside `visibility` is the motivating one.
-    pub fn narrower_of(self, other: Self) -> Self {
-        self.max(other)
-    }
-
     /// Whether this value may be written at `tier` (§4.9).
     pub fn is_valid_at(self, tier: crate::entities::Tier) -> bool {
         use crate::entities::Tier;
@@ -182,15 +175,6 @@ pub struct Tombstone {
 }
 
 impl Tombstone {
-    /// Whether the detail columns have been stripped by a compaction run.
-    ///
-    /// Distinct from "the detail is absent": a tombstone written by a path that
-    /// never had a checksum is not compacted, and re-running compaction over it
-    /// must not claim it was.
-    pub fn is_compacted(&self) -> bool {
-        self.detail_compacted_at.is_some()
-    }
-
     /// The message a publish onto this coordinate is refused with.
     ///
     /// Shared by every backend so a caller sees the same refusal whichever store
@@ -292,18 +276,14 @@ mod tests {
         assert_eq!(Visibility::Private.to_string(), "private");
     }
 
-    /// The variants are ordered widest to narrowest, which `narrower_of` relies
-    /// on. Pinned because reordering the enum for readability would silently
-    /// invert it.
+    /// The variants are declared widest to narrowest. Pinned because the
+    /// derived `Ord` is public API and reordering the enum for readability
+    /// would silently invert it for whoever compares two next.
     #[test]
     fn visibility_is_ordered_widest_to_narrowest() {
         assert!(Visibility::Public < Visibility::Internal);
         assert!(Visibility::Internal < Visibility::Team);
         assert!(Visibility::Team < Visibility::Private);
-        assert_eq!(
-            Visibility::Public.narrower_of(Visibility::Team),
-            Visibility::Team
-        );
     }
 
     /// §4.9: `private` is a package- and version-tier value. Higher up it either

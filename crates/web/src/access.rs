@@ -85,6 +85,21 @@ impl AccessConfig {
 
     /// Returns the set of registries the caller can browse/search in the package explorer.
     /// Groups inherit their proxy access for explore (no separate group-level explore restriction).
+    ///
+    /// # Superseded, and kept only as the definition
+    ///
+    /// **Nothing calls this.** RFC 0015 §10 rule 2 translated this exact
+    /// intersection — `(has_role || has_group) && rbac.explore.<role>` — into
+    /// the `catalogue:browse` grant, and all four explore surfaces (`list.rs`,
+    /// `stats.rs`, `detail.rs`, `readme.rs`) now scope themselves with
+    /// [`browsable_registries`](batlehub_core::services::authz::browsable_registries)
+    /// instead. §13.5 records that the naive reading of the flag alone produced
+    /// 19 disagreements with this function on the §11.3 harness, which is why
+    /// the grant is built as the conjunction rather than the flag.
+    ///
+    /// It survives because the two computations are meant to agree and this is
+    /// the shorter statement of what they agree *on*. If they ever diverge, this
+    /// is the one that is right about the intent and wrong about production.
     pub fn explore_accessible_registries_for(&self, identity: &Identity) -> HashSet<String> {
         let proxy = self.accessible_registries_for(identity);
         let explore = self.explore_registries(&identity.role);
