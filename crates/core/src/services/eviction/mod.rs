@@ -470,39 +470,19 @@ impl EvictionService {
             ..Default::default()
         };
         for key in &storage_keys {
-            if meta_keys.contains(key) {
+            if !self.is_orphaned(key, &meta_keys).await {
                 continue;
             }
-            // Fresh point lookup: a meta row recorded after the snapshot above
-            // means the blob is live — never delete it.
-            match self.artifact_meta.get_artifact_checksum(key).await {
-                Ok(Some(_)) => continue,
-                Ok(None) => {}
-                Err(e) => {
-                    // On lookup error, do NOT delete and do NOT carry the key
-                    // forward: fail safe toward keeping data.
-                    tracing::warn!(key, error = %e, "coherence: meta re-check failed, skipping");
-                    continue;
-                }
-            }
-            if prev_pending.contains(key) {
+            let keep_pending = if prev_pending.contains(key) {
                 // Orphaned on two consecutive runs → delete.
-                if dry_run {
-                    report.record_deleted(key);
-                    continue;
-                }
-                tracing::warn!(key, "coherence: orphaned storage object (2 runs), deleting");
-                if let Err(e) = self.storage.delete(key).await {
-                    tracing::warn!(key, error = %e, "coherence: failed to delete orphaned object");
-                    // Deletion failed — keep it pending so we retry next run.
-                    still_orphaned.insert(key.clone());
-                } else {
-                    report.record_deleted(key);
-                }
+                self.delete_orphan(key, dry_run, &mut report).await
             } else {
                 // First run we've seen this key orphaned — defer deletion, carry
                 // it forward so a concurrent in-flight cache write can complete.
                 report.record_first_seen(key);
+                true
+            };
+            if keep_pending {
                 still_orphaned.insert(key.clone());
             }
         }
@@ -524,6 +504,46 @@ impl EvictionService {
     /// blobs *nothing references*, which is a different fact about the system
     /// than a policy trimming a cache, and an auditor has to be able to tell
     /// "the policy took it" from "it was already unreachable".
+    /// Does this storage key currently look orphaned?
+    ///
+    /// `false` means "leave it alone" — either a meta row exists, or the
+    /// re-check itself failed, in which case we fail safe toward keeping data
+    /// and do not carry the key forward either.
+    async fn is_orphaned(&self, key: &str, meta_keys: &std::collections::HashSet<String>) -> bool {
+        if meta_keys.contains(key) {
+            return false;
+        }
+        // Fresh point lookup: a meta row recorded after the snapshot taken by
+        // the caller means the blob is live — never delete it.
+        match self.artifact_meta.get_artifact_checksum(key).await {
+            Ok(Some(_)) => false,
+            Ok(None) => true,
+            Err(e) => {
+                tracing::warn!(key, error = %e, "coherence: meta re-check failed, skipping");
+                false
+            }
+        }
+    }
+
+    /// Second strike: `key` was orphaned on the previous run too. Deletes it
+    /// (or, on a dry run, records what a live run would delete) and returns
+    /// whether it must stay in the pending set for a retry next run.
+    async fn delete_orphan(&self, key: &str, dry_run: bool, report: &mut CoherenceReport) -> bool {
+        if dry_run {
+            report.record_deleted(key);
+            return false;
+        }
+        tracing::warn!(key, "coherence: orphaned storage object (2 runs), deleting");
+        if let Err(e) = self.storage.delete(key).await {
+            tracing::warn!(key, error = %e, "coherence: failed to delete orphaned object");
+            // Deletion failed — keep it pending so we retry next run.
+            true
+        } else {
+            report.record_deleted(key);
+            false
+        }
+    }
+
     async fn record_coherence_run(&self, report: &CoherenceReport, identity: &Identity) {
         tracing::info!(
             registry = %self.config.registry,

@@ -48,7 +48,7 @@ impl Identity {
     /// as "we do not know who did this", which is the wrong thing to say about
     /// an action the server took on its own schedule. `"system"` is the name the
     /// banner already uses for the same idea.
-    pub const SYSTEM_USER_ID: &'static str = "system";
+    pub const SYSTEM_USER_ID: &str = "system";
 
     pub fn anonymous() -> Self {
         Self {
