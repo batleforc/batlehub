@@ -449,6 +449,19 @@ mod tests {
         async fn package_grants_in_registry(&self, _: &str) -> Result<Vec<StoredGrant>, CoreError> {
             Ok(Vec::new())
         }
+        async fn version_grants_in_registry(&self, _: &str) -> Result<Vec<StoredGrant>, CoreError> {
+            Ok(Vec::new())
+        }
+        async fn version_grants_for_package(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<Vec<StoredGrant>, CoreError> {
+            // The projection writes package rows only, so this double never
+            // needs to answer with one — which is the property this file's own
+            // tests are about.
+            Ok(Vec::new())
+        }
         async fn grants_on_node(
             &self,
             registry: &str,

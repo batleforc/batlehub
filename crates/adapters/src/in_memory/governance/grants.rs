@@ -147,6 +147,47 @@ impl GrantRepository for InMemoryGrantRepository {
         Ok(out)
     }
 
+    async fn version_grants_in_registry(
+        &self,
+        registry: &str,
+    ) -> Result<Vec<StoredGrant>, CoreError> {
+        Ok(self
+            .rows
+            .read()
+            .await
+            .values()
+            .filter(|g| g.registry == registry && g.node_kind == NodeKind::Version)
+            .cloned()
+            .collect())
+    }
+
+    /// Matched by `package@…` for the same reason the delete below is: a bare
+    /// prefix would take `@acme/billing-internal`'s rows for `@acme/billing`'s,
+    /// which here would show a caller versions of a package they hold no grant
+    /// on rather than deleting the wrong rows.
+    async fn version_grants_for_package(
+        &self,
+        registry: &str,
+        package: &str,
+    ) -> Result<Vec<StoredGrant>, CoreError> {
+        if package.is_empty() {
+            return Ok(Vec::new());
+        }
+        let version_prefix = format!("{package}@");
+        Ok(self
+            .rows
+            .read()
+            .await
+            .values()
+            .filter(|g| {
+                g.registry == registry
+                    && g.node_kind == NodeKind::Version
+                    && g.node_key.starts_with(&version_prefix)
+            })
+            .cloned()
+            .collect())
+    }
+
     async fn delete_package_grants(&self, registry: &str, package: &str) -> Result<(), CoreError> {
         if package.is_empty() {
             return Ok(());

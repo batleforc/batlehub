@@ -21,6 +21,7 @@ import { useAuth } from "@/composables/useAuth";
 import PackageVersionsTable from "@/components/admin/PackageVersionsTable.vue";
 import PackageBetaChannel from "@/components/admin/PackageBetaChannel.vue";
 import PackageVisibility from "@/components/admin/PackageVisibility.vue";
+import PackageGrants from "@/components/admin/PackageGrants.vue";
 import PackageEventsTable from "@/components/admin/PackageEventsTable.vue";
 import ReadmePanel from "@/components/package/ReadmePanel.vue";
 import UpstreamNotice from "@/components/package/UpstreamNotice.vue";
@@ -1830,6 +1831,7 @@ const {
         />
         <PackageBetaChannel :registry="registry" />
         <PackageVisibility :registry="registry" :name="name" />
+        <PackageGrants :registry="registry" :name="name" />
         <PackageEventsTable :events="adminData.recent_events" />
       </template>
     </section>

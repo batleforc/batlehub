@@ -562,6 +562,44 @@ batlehub-cli admin banner set   "Maintenance at 22:00 UTC" [--level info|warning
 batlehub-cli admin banner clear
 ```
 
+### Grants
+
+The package and version tiers of the authorization hierarchy — the two a config
+file cannot enumerate. Registry- and namespace-tier grants stay in `config.toml`.
+
+```
+batlehub-cli admin grants list <registry> <name>[@<version>]
+batlehub-cli admin grants set  <registry> <name>[@<version>] --subject <s> --actions <a1,a2>
+batlehub-cli admin grants rm   <registry> <name>[@<version>] --subject <s>
+```
+
+```
+$ batlehub-cli admin grants set npm1 @acme/billing \
+      --subject group:oidc1:eng --actions releases:read,releases:list
+Granted releases:read, releases:list on npm1/@acme/billing to group:oidc1:eng
+
+$ batlehub-cli admin grants list npm1 @acme/billing
++----------------------------------+------------------------------+---------------------------+-----------+
+| Node                             | Subject                      | Actions                   | Source    |
++----------------------------------+------------------------------+---------------------------+-----------+
+| package:@acme/billing            | group:oidc1:eng              | releases:read,            | root      |
+|                                  |                              | releases:list             |           |
+| package:@acme/billing            | user:alice                   | releases:publish,         | ownership |
+|                                  |                              | owners:read, owners:write |           |
+| version:@acme/billing@2.4.0-rc.1 | group:oidc1:release-managers | releases:read             | root      |
++----------------------------------+------------------------------+---------------------------+-----------+
+```
+
+- **`name@version` addresses one version**, split on the *last* `@` — so
+  `@acme/billing` is a package and `@acme/billing@2.4.0` is a version.
+- **What `set` prints is what was stored.** `--actions releases:*` names one verb
+  and stores several; the output is the expanded set. It also prints warnings for
+  a grant that is legal but inert — one a broader tier already gives, or one on a
+  yanked version.
+- **`Source: ownership` rows are not editable here.** They follow the package's
+  owner list; change them with `admin owner`. Editing one earns a `409`.
+- Needs `grants:write` (`grants:read` for `list`), which `role:admin` holds.
+
 ### Audit log
 
 ```

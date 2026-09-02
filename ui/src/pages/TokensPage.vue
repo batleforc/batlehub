@@ -423,13 +423,10 @@ const lifetimePresets = [7, 30, 90];
               {{ g }}
             </Button>
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            class="h-7 text-xs"
-            @click="toggleAllGroups"
-          >
-            {{ allGroupsSelected ? t("tokensPage.selectNoGroups") : t("tokensPage.selectAllGroups") }}
+          <Button variant="ghost" size="sm" class="h-7 text-xs" @click="toggleAllGroups">
+            {{
+              allGroupsSelected ? t("tokensPage.selectNoGroups") : t("tokensPage.selectAllGroups")
+            }}
           </Button>
           <p v-if="!form.groups.length" class="text-xs text-muted-foreground">
             {{ t("tokensPage.tokenSeesNoGroups") }}

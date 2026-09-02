@@ -1114,6 +1114,21 @@ pub async fn finish_test_app(
         .app_data(actix_web::web::Data::new(user_block_repo))
         .app_data(actix_web::web::Data::new(ip_block_store))
         .app_data(actix_web::web::Data::new(cargo_indexes))
+        // RFC 0017 §4.1 — the grants editor, assembled from the same handles
+        // `server_factory` uses. Wired unconditionally so a suite that never
+        // touches it pays nothing and a suite that does needs no second factory;
+        // the service answers `503` on its own when `hot.grant_repo` is absent.
+        .app_data(actix_web::web::Data::new(Arc::new(
+            batlehub_core::services::GrantAdminService::new(
+                local_svc.hot.clone(),
+                Some(
+                    Arc::new(batlehub_core::services::BackendVersions(Arc::clone(
+                        &local_svc.backend,
+                    ))) as Arc<dyn batlehub_core::services::VersionLookup>,
+                ),
+                local_svc.ownership.clone(),
+            ),
+        )))
         .app_data(actix_web::web::Data::new(local_svc))
         .app_data(actix_web::web::Data::new(mode_map))
         .app_data(actix_web::web::Data::new(RepoSignerMap::default()))
@@ -1170,6 +1185,21 @@ pub async fn finish_test_app_with_extra<E: 'static>(
         .app_data(actix_web::web::Data::new(user_block_repo))
         .app_data(actix_web::web::Data::new(ip_block_store))
         .app_data(actix_web::web::Data::new(cargo_indexes))
+        // RFC 0017 §4.1 — the grants editor, assembled from the same handles
+        // `server_factory` uses. Wired unconditionally so a suite that never
+        // touches it pays nothing and a suite that does needs no second factory;
+        // the service answers `503` on its own when `hot.grant_repo` is absent.
+        .app_data(actix_web::web::Data::new(Arc::new(
+            batlehub_core::services::GrantAdminService::new(
+                local_svc.hot.clone(),
+                Some(
+                    Arc::new(batlehub_core::services::BackendVersions(Arc::clone(
+                        &local_svc.backend,
+                    ))) as Arc<dyn batlehub_core::services::VersionLookup>,
+                ),
+                local_svc.ownership.clone(),
+            ),
+        )))
         .app_data(actix_web::web::Data::new(local_svc))
         .app_data(actix_web::web::Data::new(mode_map))
         .app_data(actix_web::web::Data::new(RepoSignerMap::default()))

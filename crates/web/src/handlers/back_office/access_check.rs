@@ -185,7 +185,7 @@ pub async fn admin_access_check(
 
     let package_id = PackageId::new(&body.registry, &body.package_name, &body.version);
     let metadata = PackageMetadata {
-        id: package_id,
+        id: package_id.clone(),
         published_at: None,
         download_url: None,
         checksum: None,
@@ -214,16 +214,19 @@ pub async fn admin_access_check(
     };
     if let Some(grants) = grants {
         let subject = Subject::Identity(sim_identity.clone());
-        // The whole path, instance tier included — see `authz_explain`. This is
-        // the endpoint RFC 0004-bis B4 records for answering *allow* where the
-        // system answered *deny*; resolving against a partial hierarchy is the
-        // same defect from the other direction.
-        let path = batlehub_core::services::authz::resolution_path(
+        // The whole path — the instance tier above, and the stored package and
+        // version tiers below. See `authz_explain`. This is the endpoint RFC
+        // 0004-bis B4 records for answering *allow* where the system answered
+        // *deny*; resolving against a partial hierarchy is the same defect from
+        // the other direction, and a simulator that stops before the tiers RFC
+        // 0017's editor writes simulates a server nobody is running.
+        let path = batlehub_core::services::authz::resolution_path_for_coordinate(
             &proxy_svc.hot,
             &grants,
-            &body.package_name,
+            &package_id,
         )
-        .await;
+        .await
+        .map_err(AppError::from)?;
         let resolved = resolve(&path, &subject);
         if !resolved.holds(action) {
             return Ok(web::Json(AccessSimulationResponse {

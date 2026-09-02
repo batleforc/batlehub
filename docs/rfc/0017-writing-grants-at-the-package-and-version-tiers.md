@@ -2,7 +2,7 @@
 
 | Field       | Value                                                        |
 | ----------- | ------------------------------------------------------------ |
-| Status      | Draft                                                         |
+| Status      | **Implemented** — all three phases. `grants:read`/`grants:write` are in the vocabulary and held by `role:admin` at the instance tier (§10 rule 5); `GrantAdminService` (`crates/core/src/services/grants_admin.rs`) is the write funnel; the three routes are `crates/web/src/handlers/back_office/governance/grants.rs`; `filter_by_grants` runs in `load_visible_versions` and gave `filter_listing`/`package_visibility` their first caller, in the same release, as §2.3 requires; the CLI is `batlehub admin grants list\|set\|rm` and the console panel is `ui/src/components/admin/PackageGrants.vue`. **§1's before/after example is wrong and is corrected below** — it describes a version grant *narrowing* what another subject sees, which §4.3's "grants only widen" forbids and `resolve` (a union) cannot express |
 | Short       | Grants editor                                                 |
 | Settles     | Who writes a package- or version-tier grant, and what §4.4 filters once they exist |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                       |
@@ -58,9 +58,42 @@ $ batlehub admin grants list npm @acme/billing
   version:@acme/billing@2.4.0-rc.1  group:oidc1:release-managers  releases:read
 ```
 
-An `eng` caller listing `@acme/billing` now receives every version **except**
-`2.4.0-rc.1`, rather than a version index naming a release candidate they cannot
-download.
+::: warning This paragraph was wrong, and the correction is the interesting part
+
+It originally read: *"An `eng` caller listing `@acme/billing` now receives every
+version **except** `2.4.0-rc.1`, rather than a version index naming a release
+candidate they cannot download."*
+
+That describes a version-tier grant **narrowing** what a different subject sees,
+and it contradicts this document's own §4.3 — *"Grants only widen. Nothing
+written here can take away what a broader tier granted"* — as well as RFC 0015's
+model, where `resolve` is a union over the path. `eng` holds `releases:read` on
+the package, so it holds it on every version beneath, and a row written for
+`release-managers` cannot subtract from that.
+
+**What the filter actually does**, and what the implementation asserts: it is
+what a caller holding `releases:list` **without** `releases:read` sees. That
+caller's read verdict is decided per version, so a version-tier grant is the only
+thing that puts a version in their index:
+
+```text
+$ batlehub admin grants set gems rails@2.0.0 --subject user:ci --actions releases:read
+
+  ci  →  GET /proxy/gems/info/rails  →  2.0.0
+         (1.0.0 and 3.0.0 are absent: ci holds the list, and the read on
+          nothing else)
+
+  eng →  GET /proxy/gems/info/rails  →  1.0.0, 2.0.0, 3.0.0
+         (holds releases:read above; grants only widen, so nothing is removed)
+```
+
+Hiding a release candidate from a caller who holds the package read is
+`Visibility::Private` on that version plus a grant re-admitting the audience —
+visibility narrows, grants widen (§4.5), and the two stay separate mechanisms.
+That is not built: visibility is a property of the package name today, applied to
+all versions at once.
+
+:::
 
 ---
 
@@ -286,9 +319,12 @@ flowchart LR
 
 - `handlers/back_office/governance/grants.rs` (new) — the three routes, guarded
   by `require_verb(GrantsWrite | GrantsRead)`.
-- `handlers/back_office/authz_explain.rs` — no change needed; `explain` already
-  reports package- and version-tier provenance because it resolves through the
-  same path.
+- `handlers/back_office/authz_explain.rs` — **this was wrong, and the correction
+  is below (§12).** `explain` did *not* resolve through the same path: the stored
+  tiers are appended by `authorize_grants` after a short-circuit no diagnostic
+  reaches, so it answered `deny` where the server answers `allow`.
+  `access_check.rs` had the same defect. Both now take
+  `resolution_path_for_coordinate`.
 
 ### 6.4 `cli`
 
@@ -374,12 +410,20 @@ flowchart LR
   grant on one version of three yields one version to a caller whose package
   grant does not cover it; no version-tier row yields all three, byte for byte
   what the funnel returns today.
-- **Integration** (`crates/web/tests/authz_matrix.rs`): the matrix gains a
-  version-tier row. This is the strongest signal in the plan — §13.17 records
-  that a test granting its own verb cannot tell a correct denial from a denial
-  for the wrong reason, and the matrix is what caught 44 such routes.
-- **Integration** (`crates/web/tests/grants_*.rs`): the three routes, the verb
-  gate, and `explain` reporting a version-tier grant's provenance.
+- **Integration** (`crates/web/tests/authz_matrix.rs`): ~~the matrix gains a
+  version-tier row~~ — **withdrawn, and the reason is the appendix below.** The
+  matrix's rows are read routes, and every one of them gates on `releases:read`
+  at the handler; §4.4's configuration is a caller holding `releases:list`
+  *without* the read, who is refused before the funnel the filter lives in. A row
+  there would assert a `403` that the handler gate produces and the filter never
+  sees — §13.17's own failure mode, a denial for the wrong reason. The filter is
+  observable on the rubygems compact index and is asserted there instead. What
+  the matrix does still owe is the inert direction: it must pass unchanged with
+  no version-tier row in the table, which it does.
+- **Integration** (`crates/web/tests/grants_editor.rs`): the three routes, the
+  verb gate, and `explain` reporting a package- and a version-tier grant's
+  provenance — the last of which failed against the code §6.3 said needed no
+  change.
 - **Integration**: a filtered version index served twice to two callers with
   different grant sets returns two different documents — rule 3, asserted rather
   than assumed.
@@ -402,30 +446,82 @@ flowchart LR
 
 ### Still open
 
-1. **Does the version filter apply to proxied documents?** A version-tier grant
-   names a local coordinate, and `ProxyService::version_document` filters
-   upstream documents for blocks. A hybrid registry can hold a local `1.2.0`
-   beside an upstream `1.2.1`; a grant on the local one is meaningful and a grant
-   on the upstream one has no row to hang from. Recommendation: local versions
-   only in phase 1, stated in the docs rather than left to be discovered, because
-   the alternative is a grant that appears to apply and does not.
+All three closed as recommended; kept here because the reasoning is what the
+answers rest on.
 
-2. **Should `grants:read` be separate from `audit:read`?** Both answer "who could
-   see this". Recommendation: separate, matching the `audit:read`/`audit:purge`
-   split — reading who holds a verb is not reading what they did with it, and one
-   of the two is a much larger disclosure.
+1. ~~**Does the version filter apply to proxied documents?**~~ **Closed: local
+   only.** `filter_by_grants` runs in `load_visible_versions`, the local funnel —
+   a proxied version has no local row to hang a grant from. `GrantAdminService::set`
+   refuses a version the local backend does not hold, so the grant that "appears
+   to apply and does not" cannot be written in the first place; with no local
+   backend the check degrades to *not checkable* rather than to *refused*.
 
-3. **Does the console get the version tier in phase 3, or later?** The package
-   tier is a table of subjects; the version tier is that table per version, and a
-   package with 400 versions makes it a different design problem. Recommendation:
-   defer, and let the CLI carry the version tier until someone asks for the panel.
+2. ~~**Should `grants:read` be separate from `audit:read`?**~~ **Closed:
+   separate.** The audit log says what a subject *did*; a grant listing says what
+   they *may do*, and enumerates the subjects that can reach a private package.
+   That is the larger of the two disclosures, and the `audit:read`/`audit:purge`
+   split is the precedent.
+
+3. ~~**Does the console get the version tier in phase 3, or later?**~~ **Closed:
+   later, but the rows are shown.** The panel edits the package tier and renders
+   version-tier rows read-only, pointing at the CLI. Deferring the *editor* is the
+   recommendation; deferring the *display* would have made the panel answer "who
+   can reach this package" with half the rows, which is the question it exists for.
 
 ---
 
 ## 12. Implementation phases
 
-| Phase | Content |
-| --- | --- |
-| 1 | `grants:read` / `grants:write` in the vocabulary, `GrantAdminService`, the three routes, the audit actions. Useful alone: it makes the package tier writable with the full verb set, which is §2.2 and needs no filter |
-| 2 | `filter_by_grants` in `load_visible_versions`, wiring `filter_listing` and `package_visibility`. **Must ship no later than the release that allows a version-tier write** — phase 1 refuses `node_kind = version` until this lands, which is the interlock rather than a note in a changelog |
-| 3 | CLI `admin grants list\|set\|rm`, then the console's package-tier panel |
+| Phase | Content | State |
+| --- | --- | --- |
+| 1 | `grants:read` / `grants:write` in the vocabulary, `GrantAdminService`, the three routes, the audit actions | **Built.** The interlock phase 1 describes — refusing `node_kind = version` until phase 2 lands — was never needed: phases 1 and 2 shipped in one change, which is the guarantee the interlock existed to provide |
+| 2 | `filter_by_grants` in `load_visible_versions`, wiring `filter_listing` and `package_visibility` | **Built, in the same change.** Those two have their first caller. Rule 3 landed with them: `DocumentAudience` gained `version_read_grants`, because the rubygems compact index filters every version of every gem and two callers differing by one version row are entitled to different documents |
+| 3 | CLI `admin grants list\|set\|rm`, then the console's package-tier panel | **Built.** The CLI takes `name` or `name@version`, splitting on the *last* `@` so a scoped npm name is not read as a version node. The console edits the package tier and shows the version tier read-only |
+
+### What building it changed
+
+Four departures from §6, each because the code disagreed with the plan:
+
+- **`crates/adapters` was not "Nothing".** Two `GrantRepository` methods were
+  added: `version_grants_for_package` (the filter's one query per package —
+  asking `grants_for` per version would be the N+1 §13.2 measured at 806× on a
+  package with four hundred versions) and `version_grants_in_registry`
+  (`package_grants_in_registry`'s twin, which rule 3's cache key needs). Both are
+  one indexed query; neither is on the fast path.
+- **The filter needed a query-free fast path.** It runs inside
+  `load_visible_versions`, which the rubygems `/versions` document calls once per
+  gem. Resolving the config tiers first and returning early when they already
+  grant `releases:read` means the common caller pays nothing — the rows are
+  fetched only for a caller those tiers do not already satisfy.
+- **`explain` did need a change, and so did `access-check`.** §6.3 said the
+  diagnostics already reported the two new tiers "because it resolves through the
+  same path". They did not resolve through the same path. `resolution_path`
+  composes the tiers a config file declares; the stored ones are appended by
+  `authorize_grants` *after* a short-circuit that returns as soon as the config
+  tiers hold the verb. A diagnostic is asked about exactly the callers they do
+  not hold it for, so both endpoints answered `deny` where the server answers
+  `allow` — and `explain` listed `package:…` and `version:…` in `tiers_walked`
+  while doing it, reporting that it had looked where it had not. Before this RFC
+  the blast radius was the ownership projection's three verbs; the editor makes
+  it any verb on either tier. Both now call
+  `resolution_path_for_coordinate`, which is `resolution_path` plus
+  `stored_nodes` — the enforcement path keeps its short-circuit, because grants
+  union and the two therefore agree.
+
+- **`GrantAdminService` does not take `LocalRegistryBackend`.** It needs one
+  question answered — does this version exist, and is it spent — so it takes a
+  four-line `VersionLookup` instead of a 22-method trait. A rule whose test double
+  costs a page is a rule that ends up asserted through HTTP or not at all.
+
+### Where the filter is observable
+
+Worth stating, because it is not every route. §4.4's configuration is a caller
+holding `releases:list` **without** `releases:read`, and most version-document
+routes gate on `releases:read` at the handler
+(`serve_local_or_proxy_document(..., Action::ReleasesRead, ...)`) — so such a
+caller is refused before the funnel and the filter never runs. The rubygems
+compact index in `Local` mode authorizes *inside* the funnel, through
+`check_read_access`'s `releases:list`, which makes it the surface where rule 2's
+second half is reachable — and the one document cached under `DocumentAudience`,
+which is why rule 3 matters exactly there. `crates/web/tests/grants_editor.rs`
+asserts it through those routes rather than through the service.

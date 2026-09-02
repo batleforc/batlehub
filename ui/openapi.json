@@ -2574,6 +2574,181 @@
         ]
       }
     },
+    "/api/v1/admin/registries/{registry}/grants": {
+      "get": {
+        "tags": [
+          "back-office"
+        ],
+        "operationId": "list_grants",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "package",
+            "in": "query",
+            "description": "The package to report grants for.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "description": "When present, only that version node. When absent, the package node\n**and** every version node beneath it — which is what an operator asking\n\"who can reach this package\" actually means.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Grants on the addressed node(s)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GrantListResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`grants:read` required"
+          },
+          "503": {
+            "description": "Grant storage not configured"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "back-office"
+        ],
+        "operationId": "put_grant",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutGrantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Grant written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutGrantResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown action, unparseable subject, empty action set, or a version that does not exist"
+          },
+          "403": {
+            "description": "`grants:write` required"
+          },
+          "409": {
+            "description": "The subject holds these verbs through ownership"
+          },
+          "503": {
+            "description": "Grant storage not configured"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "back-office"
+        ],
+        "operationId": "delete_grant",
+        "parameters": [
+          {
+            "name": "registry",
+            "in": "path",
+            "description": "Registry name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteGrantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Grant removed (or was already absent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteGrantResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unparseable subject"
+          },
+          "403": {
+            "description": "`grants:write` required"
+          },
+          "409": {
+            "description": "The subject holds this grant through ownership"
+          },
+          "503": {
+            "description": "Grant storage not configured"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ]
+      }
+    },
     "/api/v1/admin/registries/{registry}/namespaces": {
       "get": {
         "tags": [
@@ -14827,6 +15002,8 @@
           "releasenamespace",
           "resetquota",
           "tombstonecompact",
+          "grantwrite",
+          "grantrevoke",
           "setretentionpin",
           "retentionreclaim",
           "retentionrun",
@@ -16253,6 +16430,39 @@
           }
         }
       },
+      "DeleteGrantRequest": {
+        "type": "object",
+        "required": [
+          "package",
+          "subject"
+        ],
+        "properties": {
+          "package": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "DeleteGrantResponse": {
+        "type": "object",
+        "required": [
+          "removed"
+        ],
+        "properties": {
+          "removed": {
+            "type": "boolean",
+            "description": "Whether a row was actually there. `false` is a success: removal is\nidempotent, and an operator who ran it twice deserves to know which."
+          }
+        }
+      },
       "DeletePackageRequest": {
         "type": "object",
         "required": [
@@ -17041,6 +17251,60 @@
           "set_by": {
             "type": "string",
             "description": "user_id of the admin who set the banner, or `\"system\"` for auto-set messages."
+          }
+        }
+      },
+      "GrantDto": {
+        "type": "object",
+        "description": "One stored grant, as the API reports it.",
+        "required": [
+          "node_kind",
+          "node_key",
+          "subject",
+          "actions",
+          "from_ownership"
+        ],
+        "properties": {
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "from_ownership": {
+            "type": "boolean",
+            "description": "Whether this row is the ownership projection's rather than the editor's.\n\nThe console needs to know before it offers an edit control: these rows\nare refused by `PUT` and `DELETE` (§4.3), and a UI that discovers that\nfrom a `409` has already let the operator fill in a form."
+          },
+          "granted_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "node_key": {
+            "type": "string",
+            "description": "The package name, or `name@version` for a version-tier row — the same\nspelling `version_node_key` stores and the CLI's positional argument\ntakes, so the three never have to be translated between."
+          },
+          "node_kind": {
+            "type": "string",
+            "description": "`package` or `version`."
+          },
+          "subject": {
+            "type": "string"
+          }
+        }
+      },
+      "GrantListResponse": {
+        "type": "object",
+        "required": [
+          "grants"
+        ],
+        "properties": {
+          "grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GrantDto"
+            }
           }
         }
       },
@@ -18200,6 +18464,61 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "PutGrantRequest": {
+        "type": "object",
+        "required": [
+          "package",
+          "subject",
+          "actions"
+        ],
+        "properties": {
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Action patterns. `releases:*` is expanded here, at write, never at\nevaluation (§4.2) — the stored row carries the expanded set."
+          },
+          "package": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string",
+            "description": "A subject spelling: `user:alice`, `group:oidc1:eng`, `role:user`, `*`."
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Absent addresses the package node; present, the version node."
+          }
+        }
+      },
+      "PutGrantResponse": {
+        "type": "object",
+        "description": "What was written, and what the operator should know about it.",
+        "required": [
+          "actions",
+          "warnings"
+        ],
+        "properties": {
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The expanded action set actually stored, which is not always what was\nasked for: `releases:*` names one thing and stores six."
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Legal but probably not intended — a redundant grant, a spent coordinate.\nReported rather than refused (§4.4)."
           }
         }
       },

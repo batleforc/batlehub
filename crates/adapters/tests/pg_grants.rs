@@ -543,3 +543,167 @@ async fn ownership_rows_migrate_to_package_tier_grants() {
         .await
         .unwrap();
 }
+
+// ── RFC 0017's two read shapes ───────────────────────────────────────────────
+//
+// Both are new with the grants editor: `version_grants_for_package` is the
+// listing filter's one query per package, and `version_grants_in_registry` is
+// the cache key's. Both are asserted against Postgres *and* the in-memory
+// double, because the Postgres one escapes a `LIKE` and the double does not —
+// two implementations of one rule is exactly where they drift.
+
+/// The per-package read returns the version rows and **only** the version rows.
+///
+/// Not the package row above them: the filter resolves the package tier
+/// separately, and folding it in here would make a package-tier grant look like
+/// a grant on every version.
+#[tokio::test]
+async fn version_grants_for_package_returns_only_that_packages_version_rows() {
+    let reg = "grants-test-vgfp";
+    for (name, store) in stores(reg).await {
+        store
+            .put_grant(grant(
+                reg,
+                NodeKind::Package,
+                "pkg",
+                SubjectMatcher::Anyone,
+                vec![Action::ReleasesRead],
+            ))
+            .await
+            .unwrap();
+        for v in ["1.0.0", "2.0.0"] {
+            store
+                .put_grant(grant(
+                    reg,
+                    NodeKind::Version,
+                    &version_node_key("pkg", v),
+                    SubjectMatcher::Anyone,
+                    vec![Action::ReleasesRead],
+                ))
+                .await
+                .unwrap();
+        }
+        // A neighbour whose name is a prefix of nothing but shares a stem.
+        store
+            .put_grant(grant(
+                reg,
+                NodeKind::Version,
+                &version_node_key("pkg-internal", "9.9.9"),
+                SubjectMatcher::Anyone,
+                vec![Action::ReleasesRead],
+            ))
+            .await
+            .unwrap();
+
+        let rows = store.version_grants_for_package(reg, "pkg").await.unwrap();
+        assert_eq!(
+            rows.len(),
+            2,
+            "{name}: expected exactly pkg's two version rows"
+        );
+        assert!(
+            rows.iter().all(|g| g.node_kind == NodeKind::Version),
+            "{name}: the package row must not be folded in"
+        );
+        assert!(
+            !rows.iter().any(|g| g.node_key.starts_with("pkg-internal")),
+            "{name}: `pkg-internal` is not under `pkg` — the boundary is `pkg@`"
+        );
+    }
+}
+
+/// The same `LIKE` hazard as the delete path, on a **read**: an unescaped `_`
+/// would return another package's rows, which here widens a listing instead of
+/// destroying data — quieter, and just as wrong.
+#[tokio::test]
+async fn version_grants_for_package_escapes_pattern_characters() {
+    let reg = "grants-test-vgfp-escape";
+    for (name, store) in stores(reg).await {
+        for pkg in ["a_b", "axb"] {
+            store
+                .put_grant(grant(
+                    reg,
+                    NodeKind::Version,
+                    &version_node_key(pkg, "1.0.0"),
+                    SubjectMatcher::Anyone,
+                    vec![Action::ReleasesRead],
+                ))
+                .await
+                .unwrap();
+        }
+
+        let rows = store.version_grants_for_package(reg, "a_b").await.unwrap();
+        assert_eq!(rows.len(), 1, "{name}: `_` was treated as a wildcard");
+        assert_eq!(rows[0].node_key, "a_b@1.0.0", "{name}");
+    }
+}
+
+#[tokio::test]
+async fn version_grants_for_package_is_empty_for_an_empty_name() {
+    let reg = "grants-test-vgfp-empty";
+    for (name, store) in stores(reg).await {
+        store
+            .put_grant(grant(
+                reg,
+                NodeKind::Version,
+                &version_node_key("pkg", "1.0.0"),
+                SubjectMatcher::Anyone,
+                vec![Action::ReleasesRead],
+            ))
+            .await
+            .unwrap();
+        assert!(
+            store
+                .version_grants_for_package(reg, "")
+                .await
+                .unwrap()
+                .is_empty(),
+            "{name}: an empty name must match nothing, not everything"
+        );
+    }
+}
+
+/// The registry-wide read, `package_grants_in_registry`'s twin: version rows
+/// only, and scoped to the registry named.
+#[tokio::test]
+async fn version_grants_in_registry_is_scoped_and_version_only() {
+    let reg = "grants-test-vgir";
+    let other = "grants-test-vgir-other";
+    for (name, store) in stores(reg).await {
+        store
+            .put_grant(grant(
+                reg,
+                NodeKind::Package,
+                "pkg",
+                SubjectMatcher::Anyone,
+                vec![Action::ReleasesRead],
+            ))
+            .await
+            .unwrap();
+        store
+            .put_grant(grant(
+                reg,
+                NodeKind::Version,
+                &version_node_key("pkg", "1.0.0"),
+                SubjectMatcher::Anyone,
+                vec![Action::ReleasesRead],
+            ))
+            .await
+            .unwrap();
+        store
+            .put_grant(grant(
+                other,
+                NodeKind::Version,
+                &version_node_key("pkg", "1.0.0"),
+                SubjectMatcher::Anyone,
+                vec![Action::ReleasesRead],
+            ))
+            .await
+            .unwrap();
+
+        let rows = store.version_grants_in_registry(reg).await.unwrap();
+        assert_eq!(rows.len(), 1, "{name}: one version row in this registry");
+        assert_eq!(rows[0].registry, reg, "{name}: another registry leaked in");
+        assert_eq!(rows[0].node_kind, NodeKind::Version, "{name}");
+    }
+}

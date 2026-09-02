@@ -100,6 +100,15 @@ pub enum AdminCommand {
         #[command(subcommand)]
         cmd: VisibilityCommand,
     },
+    /// Manage package- and version-tier grants (RFC 0017)
+    ///
+    /// The two tiers a config file cannot enumerate. Registry- and
+    /// namespace-tier grants stay in `config.toml`, where broad authorization
+    /// belongs — this edits the deep ones, per package and per version.
+    Grants {
+        #[command(subcommand)]
+        cmd: GrantsCommand,
+    },
     /// Manage team namespace prefix claims
     Namespace {
         #[command(subcommand)]
@@ -314,6 +323,39 @@ pub enum VisibilityCommand {
 }
 
 #[derive(Subcommand)]
+pub enum GrantsCommand {
+    /// List the grants on a package and on each of its versions
+    List {
+        registry: String,
+        /// `name` for the package tier and every version beneath it, or
+        /// `name@version` for one version node.
+        target: String,
+    },
+    /// Write a subject's grant, replacing that subject's row on the node
+    Set {
+        registry: String,
+        /// `name` or `name@version` — the same spelling the node is stored
+        /// under, so what you type and what is stored read the same.
+        target: String,
+        /// `user:alice`, `group:oidc1:eng`, `role:user`, or `*`
+        #[arg(long)]
+        subject: String,
+        /// Comma-separated verbs or patterns, e.g. `releases:read,releases:list`
+        /// or `releases:*`. Patterns are expanded by the server at write.
+        #[arg(long, value_delimiter = ',')]
+        actions: Vec<String>,
+    },
+    /// Remove a subject's grant from a node
+    Rm {
+        registry: String,
+        /// `name` or `name@version`
+        target: String,
+        #[arg(long)]
+        subject: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum NamespaceCommand {
     /// List claimed namespace prefixes for a registry
     List { registry: String },
@@ -457,6 +499,7 @@ pub async fn run(cmd: AdminCommand, client: &BatleHubClient, json: bool) -> Resu
             }
         }
         AdminCommand::Visibility { cmd } => handle_visibility(cmd, client, json).await?,
+        AdminCommand::Grants { cmd } => handle_grants(cmd, client, json).await?,
         AdminCommand::Namespace { cmd } => handle_namespace(cmd, client, json).await?,
         AdminCommand::Users { cmd } => handle_users(cmd, client, json).await?,
         AdminCommand::Sbom { cmd } => handle_sbom(cmd, client, json).await?,
@@ -1000,6 +1043,92 @@ async fn handle_visibility(
     Ok(())
 }
 
+/// Split `name@version` into its two halves, or `name` alone.
+///
+/// The last `@` wins, matching `version_node_key`'s own construction: a scoped
+/// npm name (`@acme/billing`) starts with one, so splitting on the first would
+/// make every scoped package look like a version node named `acme/billing`.
+fn split_target(target: &str) -> (&str, Option<&str>) {
+    match target.rfind('@') {
+        // Position 0 is a scope marker, not a separator.
+        Some(i) if i > 0 => (&target[..i], Some(&target[i + 1..])),
+        _ => (target, None),
+    }
+}
+
+async fn handle_grants(cmd: GrantsCommand, client: &BatleHubClient, json: bool) -> Result<()> {
+    match cmd {
+        GrantsCommand::List { registry, target } => {
+            let (package, version) = split_target(&target);
+            let resp = client.list_grants(&registry, package, version).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&resp)?);
+            } else if resp.grants.is_empty() {
+                println!("No grants written on {registry}/{target}");
+            } else {
+                let mut table = Table::new();
+                table.set_header(["Node", "Subject", "Actions", "Source"]);
+                for g in &resp.grants {
+                    table.add_row([
+                        &format!("{}:{}", g.node_kind, g.node_key),
+                        &g.subject,
+                        &g.actions.join(", "),
+                        &if g.from_ownership {
+                            "ownership".to_owned()
+                        } else {
+                            g.granted_by.clone().unwrap_or_else(|| "-".to_owned())
+                        },
+                    ]);
+                }
+                println!("{table}");
+            }
+        }
+        GrantsCommand::Set {
+            registry,
+            target,
+            subject,
+            actions,
+        } => {
+            let (package, version) = split_target(&target);
+            let resp = client
+                .put_grant(&registry, package, version, &subject, &actions)
+                .await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&resp)?);
+            } else {
+                // What was *stored*, not what was asked for: `releases:*` names
+                // one verb and stores several, and an operator who cannot see
+                // the difference cannot review it.
+                println!(
+                    "Granted {} on {registry}/{target} to {subject}",
+                    resp.actions.join(", ")
+                );
+                for w in &resp.warnings {
+                    println!("  warning: {w}");
+                }
+            }
+        }
+        GrantsCommand::Rm {
+            registry,
+            target,
+            subject,
+        } => {
+            let (package, version) = split_target(&target);
+            let resp = client
+                .delete_grant(&registry, package, version, &subject)
+                .await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&resp)?);
+            } else if resp.removed {
+                println!("Removed {subject}'s grant on {registry}/{target}");
+            } else {
+                println!("{subject} had no grant on {registry}/{target}");
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn handle_namespace(
     cmd: NamespaceCommand,
     client: &BatleHubClient,
@@ -1331,4 +1460,42 @@ fn print_audit_log_table(entries: &[AuditEntry]) {
     }
     println!("{table}");
     println!("{} entry/entries", entries.len());
+}
+
+#[cfg(test)]
+mod grants_target_tests {
+    use super::split_target;
+
+    /// A scoped npm name starts with `@`. Splitting on the *first* one would
+    /// read `@acme/billing` as a version node keyed `acme/billing`, which is a
+    /// grant written on a coordinate nobody can reach.
+    #[test]
+    fn a_scoped_name_is_not_a_version_node() {
+        assert_eq!(split_target("@acme/billing"), ("@acme/billing", None));
+    }
+
+    #[test]
+    fn a_version_suffix_splits_on_the_last_at() {
+        assert_eq!(
+            split_target("@acme/billing@2.4.0-rc.1"),
+            ("@acme/billing", Some("2.4.0-rc.1"))
+        );
+        assert_eq!(split_target("rails@7.1.0"), ("rails", Some("7.1.0")));
+    }
+
+    #[test]
+    fn a_bare_name_is_the_package_node() {
+        assert_eq!(split_target("rails"), ("rails", None));
+    }
+
+    /// Round-trips with `version_node_key`, which is the point of taking the
+    /// coordinate in this spelling at all.
+    #[test]
+    fn the_spelling_matches_the_storage_key() {
+        let (p, v) = split_target("@acme/billing@2.4.0-rc.1");
+        assert_eq!(
+            batlehub_core::ports::version_node_key(p, v.unwrap()),
+            "@acme/billing@2.4.0-rc.1"
+        );
+    }
 }

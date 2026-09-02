@@ -28,42 +28,39 @@
 //!    an identity-blind key.** [`GrantSet::cache_key`] is the key it must be
 //!    cached under instead.
 //!
-//! # What of this is live, and what is waiting for a writer
+//! # Where each of these is called
 //!
-//! Audited 2026-09-01, because the answer is not uniform across the module and a
-//! reader who assumes either way gets it wrong.
+//! Audited 2026-09-01 and rewritten when RFC 0017 landed the writer, because the
+//! answer used to differ across the module and a reader who assumed either way
+//! got it wrong.
 //!
-//! **Live.** [`Readable`] and its builders — [`Readable::from_registry`],
+//! [`Readable`] and its builders — [`Readable::from_registry`],
 //! [`Readable::needs_package_grants`], [`Readable::with_package_grants`] — are
 //! how `LocalRegistryService` scopes every whole-registry document
-//! (`local_registry/read.rs`). Package-tier grants are real and written at
-//! runtime: the ownership API puts them (`services/ownership_grants.rs`), and
-//! migration 042 seeded them from the ownership rows that predate the model. So
-//! rule 2's first half — *no grant on the package → answer as though it does not
-//! exist* — is enforced, and so is the filtering of documents that span many
-//! packages.
+//! (`local_registry/read.rs`). Package-tier grants are written by the ownership
+//! projection (`services/ownership_grants.rs`), by the grants editor
+//! (`services/grants_admin.rs`), and were seeded from pre-model ownership rows by
+//! migration 042. That is rule 2's first half — *no grant on the package →
+//! answer as though it does not exist* — and the filtering of documents that
+//! span many packages.
 //!
-//! **Waiting for a writer.** [`filter_listing`] and [`package_visibility`] have
-//! no caller. They are rule 2's *second* half — *a grant on the package but not
-//! on every version → return the filtered list* — and that state cannot be
-//! reached today for one narrow reason: **nothing writes a version-tier grant.**
-//! Everything else on that path exists and is live — the `grants` table's
-//! `node_kind = 'version'` (migration 041), [`version_node_key`](crate::ports::version_node_key), the
-//! `grants_for(registry, package, version)` read on the hot path in
-//! `chain::stored_nodes` — but every `put_grant` call site in the tree writes
-//! `NodeKind::Package`. With no version row to differ from the package answer,
-//! a caller's `releases:read` verdict is uniform across every version, so the
-//! package-tier decision *is* the whole answer and a per-version filter would
-//! remove nothing.
+//! [`filter_listing`] and [`package_visibility`] are rule 2's **second** half —
+//! *a grant on the package but not on every version → return the filtered list*
+//! — and they are called from `LocalRegistryService::filter_by_grants`, the last
+//! stage of the `load_visible_versions` funnel. Until RFC 0017 they had no
+//! caller and could not have had one: the state they decide was unreachable
+//! because nothing wrote a version-tier grant, so a caller's `releases:read`
+//! verdict was uniform across every version and the package-tier decision was
+//! the whole answer.
 //!
-//! **The day a version-tier grant becomes writable, these two become
-//! load-bearing** — and the failure would be silent: version indexes would keep
-//! listing versions the caller may not read, the download gate would keep
-//! refusing them one at a time, and what leaks is the existence and the numbers
-//! rather than the bytes. Rule 3 arrives in the same commit: a listing that
-//! filters is identity-dependent, and every cache in front of one needs
-//! [`GrantSet::cache_key`](crate::entities::GrantSet::cache_key) from that point
-//! on.
+//! **They became load-bearing in the same release that made a version-tier grant
+//! writable**, which RFC 0017 §2.3 requires rather than recommends: the failure
+//! of shipping the writer first would have been silent — version indexes still
+//! listing versions the caller may not read, the download gate still refusing
+//! them one at a time, and what leaks being the existence and the numbers rather
+//! than the bytes. Rule 3 landed with them: [`DocumentAudience`] carries the
+//! caller's version-tier grants, so a filtered document cannot be served from an
+//! entry keyed without them.
 //!
 //! # Why filtering only bites when the broad tier is narrow
 //!
@@ -263,17 +260,29 @@ pub struct DocumentAudience<'a> {
     /// Package-tier grants naming this caller with the read, sorted — §4.5's
     /// `private` audience, which the `Everything` fast path cannot express.
     local_read_grants: &'a [String],
+    /// Version-tier grants naming this caller with the read, sorted — §4.4 rule
+    /// 3, and the field RFC 0017 added.
+    ///
+    /// Not derivable from `local_read_grants`: a version row is a different node
+    /// from the package row above it, and `LocalRegistryService::filter_by_grants`
+    /// consults it for every version of every package in a compact index. Two
+    /// callers agreeing on every package-tier row and differing on one version
+    /// row are entitled to different documents, and without this they would
+    /// share an entry — finding 11's shape, one tier down.
+    version_read_grants: &'a [String],
     /// Beta-channel membership: a non-member's document has no pre-releases in
     /// it.
     beta_member: bool,
 }
 
 impl<'a> DocumentAudience<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         identity: &Identity,
         readable: &'a Readable,
         listable: &'a Readable,
         local_read_grants: &'a [String],
+        version_read_grants: &'a [String],
         beta_member: bool,
     ) -> Self {
         let mut groups: Vec<String> = identity.groups.iter().map(|g| g.replace(' ', "")).collect();
@@ -285,6 +294,7 @@ impl<'a> DocumentAudience<'a> {
             role: identity.role.clone(),
             groups,
             local_read_grants,
+            version_read_grants,
             beta_member,
         }
     }
@@ -308,6 +318,10 @@ impl<'a> DocumentAudience<'a> {
         feed(&mut hasher, "|");
         for package in self.local_read_grants {
             feed(&mut hasher, package);
+        }
+        feed(&mut hasher, "|");
+        for node_key in self.version_read_grants {
+            feed(&mut hasher, node_key);
         }
         hasher
             .finalize()
@@ -1141,9 +1155,20 @@ mod document_key_tests {
         local: &[String],
         beta: bool,
     ) -> String {
+        key_with_versions(id, read, list, local, &[], beta)
+    }
+
+    fn key_with_versions(
+        id: &Identity,
+        read: &Readable,
+        list: &Readable,
+        local: &[String],
+        versions: &[String],
+        beta: bool,
+    ) -> String {
         document_cache_key(
             "reg/versions",
-            &DocumentAudience::new(id, read, list, local, beta),
+            &DocumentAudience::new(id, read, list, local, versions, beta),
         )
     }
 
@@ -1265,6 +1290,41 @@ mod document_key_tests {
         );
     }
 
+    /// §4.4 rule 3 at the version tier — RFC 0017's own addition to this key.
+    ///
+    /// The version rows are a *different node* from the package rows above them,
+    /// so two callers can agree on every package-tier grant and still be
+    /// entitled to different documents. Before RFC 0017 this could not happen
+    /// because nothing wrote a version row; the writer and this key had to land
+    /// together, which is what §7 means by "not a follow-up".
+    #[test]
+    fn a_version_grant_is_part_of_the_key() {
+        let alice = identity(Role::User, Some("alice"), &[]);
+        let bob = identity(Role::User, Some("bob"), &[]);
+        let all = Readable::Everything;
+        let version = ["@acme/billing@2.4.0-rc.1".to_owned()];
+        assert_ne!(
+            key_with_versions(&alice, &all, &all, &[], &version, false),
+            key_with_versions(&bob, &all, &all, &[], &[], false),
+            "the compact index filters every version of every package; a caller \
+             holding one version row sees a document the other does not"
+        );
+    }
+
+    /// The two tiers are separate fields, not one concatenated list: a package
+    /// key and a version key that happen to spell the same string must not
+    /// collide the audiences.
+    #[test]
+    fn a_package_grant_and_a_version_grant_do_not_collide() {
+        let alice = identity(Role::User, Some("alice"), &[]);
+        let same = ["@acme/billing".to_owned()];
+        let all = Readable::Everything;
+        assert_ne!(
+            key_with_versions(&alice, &all, &all, &same, &[], false),
+            key_with_versions(&alice, &all, &all, &[], &same, false),
+        );
+    }
+
     /// `team` visibility is a group question, and no grant answers it.
     #[test]
     fn team_membership_is_part_of_the_key() {
@@ -1312,7 +1372,7 @@ mod document_key_tests {
     fn two_documents_do_not_share_a_key() {
         let alice = identity(Role::User, Some("alice"), &[]);
         let all = Readable::Everything;
-        let audience = DocumentAudience::new(&alice, &all, &all, &[], false);
+        let audience = DocumentAudience::new(&alice, &all, &all, &[], &[], false);
         assert_ne!(
             document_cache_key("reg/versions", &audience),
             document_cache_key("reg/names", &audience)

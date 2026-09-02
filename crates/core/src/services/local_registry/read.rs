@@ -799,6 +799,12 @@ impl LocalRegistryService {
         // `private` audience. Fetching it once is also what keeps them
         // consistent — three queries could observe three different states.
         let mut local_read_grants: Vec<String> = Vec::new();
+        // §4.4 rule 3 — the version tier changes these bytes too, because
+        // `filter_by_grants` consults it for every version of every package this
+        // document lists. Keyed on the node keys that grant *this* caller the
+        // read, so two callers differing by one version row cannot share an
+        // entry.
+        let mut version_read_grants: Vec<String> = Vec::new();
         if let Some(repo) = repo {
             let rows: Vec<(String, _, Vec<Action>)> = repo
                 .package_grants_in_registry(registry)
@@ -818,6 +824,18 @@ impl LocalRegistryService {
 
             readable = readable.with_package_grants(rows.clone(), Action::ReleasesRead, &subject);
             listable = listable.with_package_grants(rows, Action::ReleasesList, &subject);
+
+            version_read_grants.extend(
+                repo.version_grants_in_registry(registry)
+                    .await?
+                    .into_iter()
+                    .filter(|g| {
+                        g.actions.contains(&Action::ReleasesRead) && g.subject.matches(&subject)
+                    })
+                    .map(|g| g.node_key),
+            );
+            version_read_grants.sort();
+            version_read_grants.dedup();
         }
 
         let beta_member = match beta {
@@ -829,6 +847,7 @@ impl LocalRegistryService {
             &readable,
             &listable,
             &local_read_grants,
+            &version_read_grants,
             beta_member,
         );
         let key = document_cache_key(&format!("{registry}/{document}"), &audience);
@@ -1042,6 +1061,174 @@ impl LocalRegistryService {
             .collect())
     }
 
+    /// Drop versions this caller holds no `releases:read` on — RFC 0015 §4.4
+    /// rule 2's second half, and [RFC 0017]'s phase 2.
+    ///
+    /// [RFC 0017]: https://batleforc.git.batleforc.fr/batlehub/rfc/0017-writing-grants-at-the-package-and-version-tiers
+    ///
+    /// # Why this is inert on every estate that has not used the editor
+    ///
+    /// Grants only widen (§4.3), so with **no version-tier row** a caller's read
+    /// verdict is uniform across every version of a package: whatever the
+    /// package tier answers is the answer for all of them, and a per-version
+    /// filter would remove nothing or everything. The one query below is what
+    /// establishes that, and an empty result returns the input untouched — which
+    /// is RFC 0017 §9's promise that no estate's listings change until an
+    /// operator writes the first version-tier grant.
+    ///
+    /// # Why it filters rather than refuses
+    ///
+    /// The funnel has already run `check_read_access`, which asks
+    /// `releases:list`. A caller holding the list but not the read on some
+    /// versions is exactly §4.4's opening configuration, and the answer is a
+    /// shorter document rather than a `403` — the rule RFC 0006 established for
+    /// blocked versions, applied to the same documents at the same point.
+    ///
+    /// # One query per package, never one per version
+    ///
+    /// [`GrantRepository::version_grants_for_package`] fetches every version row
+    /// under this name at once. Asking `grants_for` per version would be the N+1
+    /// §13.2 measured at 806×, on a path a package with 400 versions walks.
+    ///
+    /// Fails **closed** on a repository error, unlike `filter_blocked` beside it,
+    /// and the asymmetry is deliberate: a blocking blip that shows one version
+    /// too many is a policy miss the download gate still catches, while a grants
+    /// blip that shows every version is the §2.3 disclosure this filter exists to
+    /// prevent. The error propagates rather than degrading to a wider document.
+    async fn filter_by_grants(
+        &self,
+        registry: &str,
+        name: &str,
+        versions: Vec<PublishedPackage>,
+        identity: &Identity,
+    ) -> Result<Vec<PublishedPackage>, CoreError> {
+        use crate::entities::{Action, GrantMap, Node, Subject, Tier};
+        use crate::services::authz::filter::{filter_listing, package_visibility};
+
+        if versions.is_empty() {
+            return Ok(versions);
+        }
+        let (repo, grants, instance) = {
+            let hot = self.hot.read().await;
+            (
+                hot.grant_repo.clone(),
+                hot.grants.get(registry).cloned(),
+                hot.instance.clone(),
+            )
+        };
+        let (Some(repo), Some(grants)) = (repo, grants) else {
+            return Ok(versions);
+        };
+
+        let subject = Subject::Identity(identity.clone());
+
+        // ── the fast path, and it costs no query ─────────────────────────────
+        //
+        // The config tiers alone. A caller they already grant `releases:read` to
+        // holds it on every version beneath — grants only widen — so no row this
+        // function could fetch would remove one, and the whole document stands.
+        // That is the overwhelmingly common caller, and it must not pay a query
+        // per package on a document that walks every package in the registry.
+        let mut path: Vec<Node> = Vec::new();
+        if let Some(instance) = instance.as_deref() {
+            path.push(instance.clone());
+        }
+        path.extend(grants.path_for(name));
+        if crate::entities::resolve(&path, &subject).holds(Action::ReleasesRead) {
+            return Ok(versions);
+        }
+
+        let rows = repo.version_grants_for_package(registry, name).await?;
+        if rows.is_empty() {
+            // Nothing to differ from the package-tier answer, so nothing to
+            // filter — RFC 0017 §9's promise, and the state of every estate that
+            // has not used the editor.
+            return Ok(versions);
+        }
+
+        // Only now is the package node worth a query: it can carry the read for
+        // this caller, and if it does the document again stands whole.
+        if let Some(package_node) = self.package_node(registry, name, &repo).await? {
+            path.push(package_node);
+            if crate::entities::resolve(&path, &subject).holds(Action::ReleasesRead) {
+                return Ok(versions);
+            }
+        }
+
+        // Every row for a version folded into *one* `GrantMap`, exactly as
+        // `chain::stored_nodes` folds them: one node per tier, carrying every
+        // subject written on it. Keeping one row per version instead would drop
+        // all but one subject's grant — and which one survived would depend on
+        // the order the repository happened to return, so a version granted to
+        // two subjects would admit an arbitrary one of them.
+        let version_prefix = format!("{name}@");
+        let mut by_version: std::collections::HashMap<&str, GrantMap> =
+            std::collections::HashMap::new();
+        for g in &rows {
+            let Some(v) = g.node_key.strip_prefix(&version_prefix) else {
+                continue;
+            };
+            let map = by_version.entry(v).or_default();
+            *map = std::mem::take(map).grant(g.subject.clone(), g.actions.clone());
+        }
+
+        let outcome = filter_listing(versions, |p: &PublishedPackage| {
+            let mut nodes = path.clone();
+            if let Some(map) = by_version.get(p.version.as_str()) {
+                nodes.push(Node::new(
+                    Tier::Version,
+                    format!("version:{}", p.version),
+                    Some(map.clone()),
+                ));
+            }
+            package_visibility(
+                &crate::entities::resolve(&nodes, &subject),
+                Action::ReleasesRead,
+            )
+        });
+
+        if outcome.withheld() > 0 {
+            tracing::debug!(
+                registry,
+                package = name,
+                withheld = outcome.withheld(),
+                "version listing filtered by grants"
+            );
+        }
+        Ok(outcome.into_items())
+    }
+
+    /// The package-tier node for `name`, or `None` when nothing is written on it.
+    ///
+    /// Mirrors `chain::stored_nodes`' own rule: a tier with no rows contributes
+    /// *inherit*, never an empty map — an empty map is a seal, and a seal here
+    /// would stop the registry's grants reaching every package that has none of
+    /// its own.
+    async fn package_node(
+        &self,
+        registry: &str,
+        name: &str,
+        repo: &std::sync::Arc<dyn crate::ports::GrantRepository>,
+    ) -> Result<Option<crate::entities::Node>, CoreError> {
+        use crate::entities::{GrantMap, Node, Tier};
+
+        let rows = repo
+            .grants_on_node(registry, crate::ports::NodeKind::Package, name)
+            .await?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        let mut map = GrantMap::new();
+        for g in rows {
+            map = map.grant(g.subject, g.actions);
+        }
+        Ok(Some(Node::new(
+            Tier::Package,
+            format!("package:{name}"),
+            Some(map),
+        )))
+    }
+
     /// Drop unlisted versions. Unlisted versions are hidden from registry-protocol
     /// listings (index, packument, version lists) but remain downloadable by exact
     /// coordinate (see [`Self::get_artifact`], which is keyed directly, not filtered).
@@ -1110,7 +1297,11 @@ impl LocalRegistryService {
         let versions = self.backend.get_versions(registry, name).await?;
         let versions = Self::filter_unlisted(versions);
         let versions = self.filter_blocked(registry, name, versions).await;
-        self.filter_for_identity(registry, versions, identity).await
+        let versions = self
+            .filter_for_identity(registry, versions, identity)
+            .await?;
+        self.filter_by_grants(registry, name, versions, identity)
+            .await
     }
 
     /// `load_visible_versions`, turning an empty result into an error.

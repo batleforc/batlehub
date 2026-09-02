@@ -82,6 +82,8 @@ own:
 | `blocks:read` | read the block lists |
 | `blocks:write` | change them |
 | `authz:read` | the authorization diagnostics (`explain`, shadow) |
+| `grants:read` | read the grants written on a package or a version |
+| `grants:write` | write and remove them ([Grants on one package](#package-grants)) |
 | `cache:evict` | drop cached artifacts |
 | `cache:warm` | pre-fetch them |
 | `quota:read` | read quota usage |
@@ -231,6 +233,49 @@ the three ecosystem verbs that no legacy setting translates to.
 
 `gates:exempt` is **not** on the floor, deliberately: it is the one verb that
 silences a security finding, so it is held only where someone wrote it down.
+
+#### Grants on one package, or one version {#package-grants}
+
+The two deepest tiers are written through the admin API rather than the config
+file, for the reason the tier list gives: a registry with 200 000 packages will
+not enumerate them in TOML.
+
+```sh
+# every verb the vocabulary defines, on one package, for one group
+batlehub admin grants set npm1 @acme/billing --subject group:oidc1:eng \
+    --actions releases:read,releases:list
+
+# …or on one version. `name@version` is the coordinate, split on the last `@`,
+# so a scoped npm name is still a package name
+batlehub admin grants set npm1 @acme/billing@2.4.0-rc.1 \
+    --subject group:oidc1:release-managers --actions releases:read
+
+batlehub admin grants list npm1 @acme/billing   # both tiers
+batlehub admin grants rm   npm1 @acme/billing --subject group:oidc1:eng
+```
+
+The console has the same controls on a package's detail page, under **Who can
+reach this package**. Version-tier rows are shown there but edited from the CLI.
+
+Four things are worth knowing before you write one:
+
+- **Reading and writing them are their own verbs**, `grants:read` and
+  `grants:write`, held by `role:admin` at the instance tier and delegable per
+  registry like every other control verb. A grant listing enumerates who can
+  reach a private package, which is why it is not folded into `audit:read`.
+- **`releases:*` is expanded when you write it**, not when a request is
+  evaluated. What you get back from `set` is the set that was stored — check it,
+  because it is not always what you typed.
+- **Ownership rows are not editable here.** Adding an owner writes a package-tier
+  row carrying `releases:publish`, `owners:read` and `owners:write`; a write that
+  would drop one of those is refused with a `409` naming `admin owner rm`. Two
+  writers on one table is fine, two writers on one verb is a race.
+- **A version-tier grant only ever adds.** Grants union across the path, so
+  granting a group read on `2.4.0-rc.1` does not hide that version from anyone
+  else. What it changes is the version index served to a caller who holds
+  `releases:list` and **not** `releases:read`: they see the versions they were
+  granted, and nothing else. If every version is filtered out, the document is
+  `404` rather than an empty index — hidden means absent.
 
 ### The other policies {#policies}
 

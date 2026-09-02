@@ -15,7 +15,8 @@ use batlehub_core::ports::{
     UserBlockRepository, UserTokenRepository,
 };
 use batlehub_core::services::{
-    AdminService, LocalRegistryService, ProxyMetrics, ProxyService, QuotaService, SbomService,
+    AdminService, BackendVersions, GrantAdminService, LocalRegistryService, ProxyMetrics,
+    ProxyService, QuotaService, SbomService,
 };
 use batlehub_web::handlers::back_office::ops::eviction::EvictionServiceMap;
 use batlehub_web::handlers::back_office::ops::warming::WarmingServiceMap;
@@ -291,6 +292,18 @@ pub(super) async fn run_actix_server(p: ServerParams) -> anyhow::Result<()> {
             .app_data(web::Data::new(vuln_db_map.clone()))
             .app_data(web::Data::new(sumdb_map.clone()))
             .app_data(web::Data::new(local_svc.clone()))
+            // RFC 0017 §4.1 — the grants editor. Built here rather than in
+            // `main.rs` because it is assembled entirely from handles this
+            // closure already holds, and it holds no state of its own: it is a
+            // write funnel over `hot.grant_repo`, the local backend (for the
+            // one question validation needs — does this version exist?) and the
+            // ownership list (for §4.3's refusal).
+            .app_data(web::Data::new(Arc::new(GrantAdminService::new(
+                local_svc.hot.clone(),
+                Some(Arc::new(BackendVersions(Arc::clone(&local_svc.backend)))
+                    as Arc<dyn batlehub_core::services::VersionLookup>),
+                local_svc.ownership.clone(),
+            ))))
             .app_data(web::Data::new(Arc::clone(&quota_svc)))
             .app_data(web::Data::new(Arc::clone(&stats_history)))
             .app_data(web::Data::new(registry_mode_map.clone()))
