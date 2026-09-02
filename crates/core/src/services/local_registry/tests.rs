@@ -39,6 +39,22 @@ impl crate::ports::LocalRegistryBackend for InMemBackend {
         self.versions.lock().unwrap().push(pkg);
         Ok(())
     }
+    /// The port's default returns an empty vec, which made every
+    /// whole-registry document in this module build from no names at all — a
+    /// green assertion about a document that could not have had anything in it.
+    async fn list_package_names(&self, registry: &str) -> Result<Vec<String>, CoreError> {
+        let mut names: Vec<String> = self
+            .versions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|p| p.registry == registry)
+            .map(|p| p.name.clone())
+            .collect();
+        names.sort();
+        names.dedup();
+        Ok(names)
+    }
     async fn yank(&self, _: &str, _: &str, _: &str) -> Result<(), CoreError> {
         Ok(())
     }
@@ -3473,7 +3489,28 @@ mod version_grant_filter {
     use tokio::sync::RwLock as AsyncRwLock;
 
     #[derive(Default)]
-    struct Rows(AsyncRwLock<Vec<StoredGrant>>);
+    struct Rows(
+        AsyncRwLock<Vec<StoredGrant>>,
+        std::sync::atomic::AtomicUsize,
+    );
+
+    impl Rows {
+        /// How many *per-package* grant queries the funnel issued.
+        ///
+        /// The N+1 this counts is not a slow test — it is the §13.2 shape, one
+        /// `LIKE` per package on every whole-registry document, for exactly the
+        /// callers the config tiers do not already satisfy. A number is the only
+        /// way to assert it stayed gone.
+        fn per_package_queries(&self) -> usize {
+            self.1.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        /// Seeding the fixture goes through the same port, so the count starts
+        /// after the setup rather than including it.
+        fn reset_counter(&self) {
+            self.1.store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
 
     #[async_trait]
     impl GrantRepository for Rows {
@@ -3543,6 +3580,7 @@ mod version_grant_filter {
             registry: &str,
             package: &str,
         ) -> Result<Vec<StoredGrant>, CoreError> {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let prefix = format!("{package}@");
             Ok(self
                 .0
@@ -3563,6 +3601,7 @@ mod version_grant_filter {
             node_kind: NodeKind,
             node_key: &str,
         ) -> Result<Vec<StoredGrant>, CoreError> {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(self
                 .0
                 .read()
@@ -3651,6 +3690,82 @@ mod version_grant_filter {
             .into_iter()
             .map(|p| p.version)
             .collect()
+    }
+
+    /// A whole-registry document costs **no** per-package grant query.
+    ///
+    /// The filter asks two questions per package — the version rows under this
+    /// name, and the package node. A document that walks every package asked
+    /// them once per package, for exactly the callers the config tiers do not
+    /// already satisfy: the ones this feature exists for. The fast path missed
+    /// the case that matters, and a registry with no version-tier rows at all
+    /// still paid one wasted `LIKE` per package.
+    ///
+    /// A count rather than a timing: the §13.2 shape is a query multiplier, and
+    /// a multiplier is invisible at three packages and fatal at two hundred
+    /// thousand.
+    #[tokio::test]
+    async fn a_whole_registry_document_costs_no_per_package_query() {
+        let backend = InMemBackend::arc();
+        for name in ["alpha", "beta", "gamma", "delta"] {
+            for v in ["1.0.0", "2.0.0"] {
+                backend.seed(pkg("npm", name, v));
+            }
+        }
+        let rows = Arc::new(Rows::default());
+        rows.put_grant(StoredGrant {
+            node_key: crate::ports::version_node_key("beta", "2.0.0"),
+            ..version_grant("2.0.0", &[Action::ReleasesRead])
+        })
+        .await
+        .unwrap();
+        // A package-tier read on each name — the shape the ownership projection
+        // writes, and the one that makes the multiplier real. Such a name is
+        // admitted by `Readable::with_package_grants`, so it reaches the filter;
+        // but `filter_by_grants`' fast path resolves the *config* tiers only, so
+        // it does not short-circuit, and each name then asked for its version
+        // rows and its package node. Two queries per package, on a document that
+        // walks every package.
+        for name in ["alpha", "beta", "gamma", "delta"] {
+            rows.put_grant(StoredGrant {
+                registry: "npm".to_owned(),
+                node_kind: NodeKind::Package,
+                node_key: name.to_owned(),
+                subject: SubjectMatcher::User("alice".to_owned()),
+                actions: vec![Action::ReleasesRead],
+                granted_by: None,
+            })
+            .await
+            .unwrap();
+        }
+        rows.reset_counter();
+
+        // The §4.4 caller: holds the list, holds the read nowhere, so the fast
+        // path does not fire and every package reaches the querying branch.
+        let s = service(
+            backend,
+            registry_granting(&[Action::ReleasesList]),
+            rows.clone(),
+        );
+        let doc = s
+            .get_rubygems_compact_versions("npm", &alice())
+            .await
+            .expect("document");
+
+        for name in ["alpha", "beta", "gamma", "delta"] {
+            assert!(
+                doc.contains(name),
+                "the positive control: every package the caller may read must be \
+                 in the document, or 'no queries' passes against a document that \
+                 names nothing — {doc:?}"
+            );
+        }
+        assert_eq!(
+            rows.per_package_queries(),
+            0,
+            "the document already fetches the registry's rows once to build \
+             `Readable` and the cache key; asking again per package is the N+1"
+        );
     }
 
     /// RFC 0017 §9's promise, asserted: with no version-tier row the funnel

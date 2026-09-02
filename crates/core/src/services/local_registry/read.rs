@@ -5,6 +5,61 @@ use super::{
 use crate::entities::Action;
 use crate::services::authz::filter::Readable;
 
+/// What [`LocalRegistryService::load_visible_versions_reporting`] returned.
+///
+/// The flag is only meaningful when `versions` is empty; a non-empty listing has
+/// nothing to explain.
+pub(super) struct VisibleVersions {
+    pub versions: Vec<PublishedPackage>,
+    /// Something was visible until the grant filter removed the last of it —
+    /// §4.4 rule 2 taken to its end. Distinct from "nothing was ever here",
+    /// because on a Hybrid registry the two get different answers.
+    pub withheld_by_grants: bool,
+}
+
+/// Every stored grant row in one registry, fetched once for a whole document.
+///
+/// # The N+1 this exists to close
+///
+/// `filter_by_grants` asks two questions per package — the version rows under
+/// this name, and the package node — and a whole-registry document asks it once
+/// per package. For a caller the config tiers already grant `releases:read` the
+/// filter returns before either query, which is almost every caller; but the
+/// caller this feature exists *for* is precisely the one those tiers do not
+/// satisfy, so the fast path misses exactly the case that matters. On a registry
+/// with no version-tier rows at all it was still one wasted `LIKE` per package —
+/// the §13.2 shape measured at 806× the cached document.
+///
+/// The document already fetches both sets registry-wide, to build `Readable` and
+/// the cache key. Handing them down turns 2N queries into the 2 that were being
+/// issued anyway.
+#[derive(Default)]
+pub(super) struct RegistryGrantRows {
+    package: Vec<crate::ports::StoredGrant>,
+    version: Vec<crate::ports::StoredGrant>,
+}
+
+impl RegistryGrantRows {
+    /// The version rows under `package`, matched on the `package@` boundary —
+    /// the same rule `version_grants_for_package` applies in SQL, so the
+    /// prefetched path and the querying one cannot disagree about which rows
+    /// belong to a name.
+    fn versions_of<'a>(&'a self, package: &str) -> Vec<&'a crate::ports::StoredGrant> {
+        let prefix = format!("{package}@");
+        self.version
+            .iter()
+            .filter(|g| g.node_key.starts_with(&prefix))
+            .collect()
+    }
+
+    fn package_rows<'a>(&'a self, package: &str) -> Vec<&'a crate::ports::StoredGrant> {
+        self.package
+            .iter()
+            .filter(|g| g.node_key == package)
+            .collect()
+    }
+}
+
 /// The result of asking the document cache for a whole-registry document.
 ///
 /// A named type rather than `Result<Arc<String>, (String, u64)>`, because the
@@ -26,17 +81,21 @@ pub(super) enum DocumentSlot {
         generation: u64,
         /// What this caller may read, resolved once.
         readable: Readable,
+        /// The registry's stored grant rows, fetched once. Passed back down to
+        /// `load_visible_versions_in` so the per-package filter costs no query.
+        grants: std::sync::Arc<RegistryGrantRows>,
     },
 }
 
 impl DocumentSlot {
     /// A miss that will never be stored: build the document, serve it, keep
     /// nothing.
-    fn uncached(readable: Readable) -> Self {
+    fn uncached(readable: Readable, grants: std::sync::Arc<RegistryGrantRows>) -> Self {
         DocumentSlot::Miss {
             key: String::new(),
             generation: 0,
             readable,
+            grants,
         }
     }
 }
@@ -675,7 +734,7 @@ impl LocalRegistryService {
         &self,
         registry: &str,
         identity: &Identity,
-    ) -> Result<crate::services::authz::filter::Readable, CoreError> {
+    ) -> Result<(Readable, std::sync::Arc<RegistryGrantRows>), CoreError> {
         use crate::entities::{Action, Subject};
         use crate::services::authz::filter::Readable;
 
@@ -688,7 +747,7 @@ impl LocalRegistryService {
             )
         };
         let Some(grants) = grants else {
-            return Ok(Readable::Everything);
+            return Ok((Readable::Everything, Default::default()));
         };
 
         let subject = Subject::Identity(identity.clone());
@@ -696,17 +755,39 @@ impl LocalRegistryService {
             Readable::from_registry(instance.as_deref(), &grants, Action::ReleasesRead, &subject);
 
         // The fast path fetches nothing: a caller the config tiers already grant
-        // the read to has no package-tier row that could widen it further.
+        // the read to has no package- or version-tier row that could widen it
+        // further.
         let (true, Some(repo)) = (readable.needs_package_grants(), repo) else {
-            return Ok(readable);
+            return Ok((readable, Default::default()));
         };
-        let rows = repo
-            .package_grants_in_registry(registry)
-            .await?
-            .into_iter()
+        let package_rows = repo.package_grants_in_registry(registry).await?;
+        let rows = package_rows
+            .iter()
+            .cloned()
             .map(|g| (g.node_key, g.subject, g.actions));
 
-        Ok(readable.with_package_grants(rows, Action::ReleasesRead, &subject))
+        let readable = readable.with_package_grants(rows, Action::ReleasesRead, &subject);
+
+        // The version tier, for the same reason it is applied on the keyed path
+        // above: this set gates the name, and a name dropped here never reaches
+        // the per-version filter. Both paths must answer alike — a document
+        // built with a cache and one built without differing in *what they show*
+        // would be the cache deciding authorization.
+        let version_rows = repo.version_grants_in_registry(registry).await?;
+        let version_keys: Vec<&str> = version_rows
+            .iter()
+            .filter(|g| g.actions.contains(&Action::ReleasesRead) && g.subject.matches(&subject))
+            .map(|g| g.node_key.as_str())
+            .collect();
+        let readable = readable.with_version_grants(version_keys);
+
+        Ok((
+            readable,
+            std::sync::Arc::new(RegistryGrantRows {
+                package: package_rows,
+                version: version_rows,
+            }),
+        ))
     }
 
     /// Every whole-registry document for `registry` is now stale.
@@ -779,15 +860,17 @@ impl LocalRegistryService {
             // No configured hierarchy — `readable_packages` answers
             // `Everything` here for the same reason, and there is no node to
             // key against.
-            return Ok(DocumentSlot::uncached(Readable::Everything));
+            return Ok(DocumentSlot::uncached(
+                Readable::Everything,
+                Default::default(),
+            ));
         };
         let Some(cache) = cache else {
             // No cache: build it every time. A missing cache is a slow answer,
             // never a wrong one — and with nothing to key, the read set is all
             // that is wanted, on `readable_packages`' own fast path.
-            return Ok(DocumentSlot::uncached(
-                self.readable_packages(registry, identity).await?,
-            ));
+            let (readable, grants) = self.readable_packages(registry, identity).await?;
+            return Ok(DocumentSlot::uncached(readable, grants));
         };
 
         let mut readable =
@@ -805,11 +888,13 @@ impl LocalRegistryService {
         // read, so two callers differing by one version row cannot share an
         // entry.
         let mut version_read_grants: Vec<String> = Vec::new();
+        let mut fetched = RegistryGrantRows::default();
         if let Some(repo) = repo {
-            let rows: Vec<(String, _, Vec<Action>)> = repo
-                .package_grants_in_registry(registry)
-                .await?
-                .into_iter()
+            fetched.package = repo.package_grants_in_registry(registry).await?;
+            let rows: Vec<(String, _, Vec<Action>)> = fetched
+                .package
+                .iter()
+                .cloned()
                 .map(|g| (g.node_key, g.subject, g.actions))
                 .collect();
             local_read_grants.extend(
@@ -825,17 +910,26 @@ impl LocalRegistryService {
             readable = readable.with_package_grants(rows.clone(), Action::ReleasesRead, &subject);
             listable = listable.with_package_grants(rows, Action::ReleasesList, &subject);
 
+            fetched.version = repo.version_grants_in_registry(registry).await?;
             version_read_grants.extend(
-                repo.version_grants_in_registry(registry)
-                    .await?
-                    .into_iter()
+                fetched
+                    .version
+                    .iter()
                     .filter(|g| {
                         g.actions.contains(&Action::ReleasesRead) && g.subject.matches(&subject)
                     })
-                    .map(|g| g.node_key),
+                    .map(|g| g.node_key.clone()),
             );
             version_read_grants.sort();
             version_read_grants.dedup();
+
+            // The outer gate of every whole-registry document is
+            // `readable.contains(name)`, and until this line the version tier
+            // never reached it: a caller whose only grant was on one version was
+            // dropped at the name, before `load_visible_versions` — and so
+            // before `filter_by_grants` — could put that version back. See
+            // `Readable::with_version_grants`.
+            readable = readable.with_version_grants(version_read_grants.iter().map(String::as_str));
         }
 
         let beta_member = match beta {
@@ -859,6 +953,7 @@ impl LocalRegistryService {
                 key,
                 generation,
                 readable,
+                grants: std::sync::Arc::new(fetched),
             }),
         }
     }
@@ -946,12 +1041,26 @@ impl LocalRegistryService {
         let all_names: std::collections::HashSet<String> = names.iter().cloned().collect();
 
         let q = query.to_lowercase();
+        // One fetch for the whole search rather than one per hit — search walks
+        // every published name, which is the widest of the loops. See
+        // `RegistryGrantRows`.
+        // Degrades to the querying path rather than failing the search: this
+        // function returns no `Result`, and a grants blip must cost speed, not
+        // results. `filter_by_grants` still fails closed per package.
+        let grant_rows = self
+            .readable_packages(registry, identity)
+            .await
+            .map(|(_, rows)| rows)
+            .unwrap_or_default();
         let mut out = Vec::new();
         for name in names {
             if !q.is_empty() && !name.to_lowercase().contains(&q) {
                 continue;
             }
-            let Ok(versions) = self.load_visible_versions(registry, &name, identity).await else {
+            let Ok(versions) = self
+                .load_visible_versions_in(registry, &name, identity, Some(&grant_rows))
+                .await
+            else {
                 continue;
             };
             // The newest visible version, so a hit names something this caller
@@ -1101,6 +1210,7 @@ impl LocalRegistryService {
         name: &str,
         versions: Vec<PublishedPackage>,
         identity: &Identity,
+        prefetched: Option<&RegistryGrantRows>,
     ) -> Result<Vec<PublishedPackage>, CoreError> {
         use crate::entities::{Action, GrantMap, Node, Subject, Tier};
         use crate::services::authz::filter::{filter_listing, package_visibility};
@@ -1138,7 +1248,17 @@ impl LocalRegistryService {
             return Ok(versions);
         }
 
-        let rows = repo.version_grants_for_package(registry, name).await?;
+        // Prefetched when a whole-registry document is walking every package;
+        // queried when this is a single-coordinate read, which pays one query
+        // rather than N. Both go through the same `package@` boundary rule.
+        let owned;
+        let rows: Vec<&crate::ports::StoredGrant> = match prefetched {
+            Some(pre) => pre.versions_of(name),
+            None => {
+                owned = repo.version_grants_for_package(registry, name).await?;
+                owned.iter().collect()
+            }
+        };
         if rows.is_empty() {
             // Nothing to differ from the package-tier answer, so nothing to
             // filter — RFC 0017 §9's promise, and the state of every estate that
@@ -1148,7 +1268,7 @@ impl LocalRegistryService {
 
         // Only now is the package node worth a query: it can carry the read for
         // this caller, and if it does the document again stands whole.
-        if let Some(package_node) = self.package_node(registry, name, &repo).await? {
+        if let Some(package_node) = self.package_node(registry, name, &repo, prefetched).await? {
             path.push(package_node);
             if crate::entities::resolve(&path, &subject).holds(Action::ReleasesRead) {
                 return Ok(versions);
@@ -1164,7 +1284,7 @@ impl LocalRegistryService {
         let version_prefix = format!("{name}@");
         let mut by_version: std::collections::HashMap<&str, GrantMap> =
             std::collections::HashMap::new();
-        for g in &rows {
+        for g in rows {
             let Some(v) = g.node_key.strip_prefix(&version_prefix) else {
                 continue;
             };
@@ -1209,18 +1329,26 @@ impl LocalRegistryService {
         registry: &str,
         name: &str,
         repo: &std::sync::Arc<dyn crate::ports::GrantRepository>,
+        prefetched: Option<&RegistryGrantRows>,
     ) -> Result<Option<crate::entities::Node>, CoreError> {
         use crate::entities::{GrantMap, Node, Tier};
 
-        let rows = repo
-            .grants_on_node(registry, crate::ports::NodeKind::Package, name)
-            .await?;
+        let owned;
+        let rows: Vec<&crate::ports::StoredGrant> = match prefetched {
+            Some(pre) => pre.package_rows(name),
+            None => {
+                owned = repo
+                    .grants_on_node(registry, crate::ports::NodeKind::Package, name)
+                    .await?;
+                owned.iter().collect()
+            }
+        };
         if rows.is_empty() {
             return Ok(None);
         }
         let mut map = GrantMap::new();
         for g in rows {
-            map = map.grant(g.subject, g.actions);
+            map = map.grant(g.subject.clone(), g.actions.clone());
         }
         Ok(Some(Node::new(
             Tier::Package,
@@ -1293,6 +1421,56 @@ impl LocalRegistryService {
         name: &str,
         identity: &Identity,
     ) -> Result<Vec<PublishedPackage>, CoreError> {
+        Ok(self
+            .load_visible_versions_reporting(registry, name, identity)
+            .await?
+            .versions)
+    }
+
+    /// [`Self::load_visible_versions`], and — when the answer is empty — whether
+    /// the **grant** filter is what emptied it.
+    ///
+    /// The distinction only matters on the empty path, and there it is a
+    /// security boundary rather than a diagnostic: see
+    /// [`CoreError::NotFoundWithheld`]. Every other filter in this funnel either
+    /// has its own answer for "it emptied the list" (`filter_blocked`, through
+    /// `emptied_by_blocking`) or leaves a set that was already empty before it
+    /// ran.
+    pub(super) async fn load_visible_versions_reporting(
+        &self,
+        registry: &str,
+        name: &str,
+        identity: &Identity,
+    ) -> Result<VisibleVersions, CoreError> {
+        self.load_visible_versions_reporting_in(registry, name, identity, None)
+            .await
+    }
+
+    /// [`Self::load_visible_versions`] with the registry's grant rows already in
+    /// hand.
+    ///
+    /// For the whole-registry documents, which walk every package: see
+    /// [`RegistryGrantRows`] for why the per-package queries had to go.
+    pub(super) async fn load_visible_versions_in(
+        &self,
+        registry: &str,
+        name: &str,
+        identity: &Identity,
+        rows: Option<&RegistryGrantRows>,
+    ) -> Result<Vec<PublishedPackage>, CoreError> {
+        Ok(self
+            .load_visible_versions_reporting_in(registry, name, identity, rows)
+            .await?
+            .versions)
+    }
+
+    pub(super) async fn load_visible_versions_reporting_in(
+        &self,
+        registry: &str,
+        name: &str,
+        identity: &Identity,
+        rows: Option<&RegistryGrantRows>,
+    ) -> Result<VisibleVersions, CoreError> {
         self.check_read_access(registry, name, identity).await?;
         let versions = self.backend.get_versions(registry, name).await?;
         let versions = Self::filter_unlisted(versions);
@@ -1300,8 +1478,18 @@ impl LocalRegistryService {
         let versions = self
             .filter_for_identity(registry, versions, identity)
             .await?;
-        self.filter_by_grants(registry, name, versions, identity)
-            .await
+        // Measured across the grant filter alone. "Something was here and §4.4
+        // rule 2 took the last of it" is the fact the caller needs; "the set was
+        // already empty" is not, and conflating them would turn every genuinely
+        // absent package on a Hybrid registry into one that never falls through.
+        let before = versions.is_empty();
+        let versions = self
+            .filter_by_grants(registry, name, versions, identity, rows)
+            .await?;
+        Ok(VisibleVersions {
+            withheld_by_grants: !before && versions.is_empty(),
+            versions,
+        })
     }
 
     /// `load_visible_versions`, turning an empty result into an error.
@@ -1328,8 +1516,10 @@ impl LocalRegistryService {
         identity: &Identity,
         entity_label: &str,
     ) -> Result<Vec<PublishedPackage>, CoreError> {
-        let versions = self.load_visible_versions(registry, name, identity).await?;
-        if versions.is_empty() {
+        let outcome = self
+            .load_visible_versions_reporting(registry, name, identity)
+            .await?;
+        if outcome.versions.is_empty() {
             // Only consulted on the empty path, so the common case pays nothing.
             if self.emptied_by_blocking(registry, name).await {
                 return Err(CoreError::AccessDenied(format!(
@@ -1337,11 +1527,25 @@ impl LocalRegistryService {
                      is administratively blocked"
                 )));
             }
+            // RFC 0017 opened a second way to empty a listing, and it arrives at
+            // this line with `emptied_by_blocking` false. A plain `NotFound`
+            // here is the dependency-confusion fall-through the paragraph above
+            // describes, reached through §4.4 rule 2 instead of through a block:
+            // an internal package whose versions this caller may not read would
+            // be answered with the *public* package of the same name.
+            //
+            // 404 to the client either way — hidden means absent — but not the
+            // variant the Hybrid handlers fall through on.
+            if outcome.withheld_by_grants {
+                return Err(CoreError::NotFoundWithheld(format!(
+                    "{entity_label} '{name}' not found in local registry '{registry}'"
+                )));
+            }
             return Err(CoreError::NotFound(format!(
                 "{entity_label} '{name}' not found in local registry '{registry}'"
             )));
         }
-        Ok(versions)
+        Ok(outcome.versions)
     }
 
     /// Whether this instance holds `name` locally *and* administrative blocks

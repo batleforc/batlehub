@@ -8,6 +8,27 @@ pub enum CoreError {
     #[error("Package not found: {0}")]
     NotFound(String),
 
+    /// Hosted here, and this caller may see none of it.
+    ///
+    /// # Why this is not `NotFound`, and not `AccessDenied` either
+    ///
+    /// It renders as **404** — RFC 0006 and RFC 0011-bis §4.5 both settle that
+    /// hidden means absent, and a `403` would confirm the name exists to a
+    /// caller who may not know it. So to the client it is a `NotFound`.
+    ///
+    /// To the *server* it is the opposite. On a Hybrid registry `NotFound` means
+    /// "we do not host this, ask upstream", and every fall-through site matches
+    /// that variant by name. A package this instance hosts privately must never
+    /// take that branch: answering with the public package of the same name is
+    /// the dependency-confusion substitution the withholding exists to prevent.
+    ///
+    /// A distinct variant makes the two facts distinguishable where they differ
+    /// and identical where they do not — and it fails **closed** by
+    /// construction, because a `match` arm written for `NotFound` does not
+    /// catch this one.
+    #[error("Package not found: {0}")]
+    NotFoundWithheld(String),
+
     #[error("Storage error: {0}")]
     Storage(String),
 

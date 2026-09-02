@@ -241,12 +241,34 @@ impl GrantAdminService {
     /// Both tiers for one package, which is what an operator actually wants to
     /// see: the package rows and the rows on each of its versions.
     ///
-    /// Reads the version rows through `grants_for` per version rather than
-    /// scanning, because the port offers no "every version row of this package"
-    /// query — deliberately, per its own doc comment, since resolution never
-    /// asks that question. An admin listing is not the hot path and can afford
-    /// the loop; adding a query to the port for one non-hot caller would put a
-    /// second read shape in front of the resolver's table.
+    /// # Two queries, not one per version
+    ///
+    /// This enumerated versions through [`VersionLookup`] and asked
+    /// `grants_on_node` for each, under a comment saying the port offered no
+    /// "every version row of this package" query. That was true when the comment
+    /// was written and false by the time it shipped: this RFC added
+    /// [`GrantRepository::version_grants_for_package`] for the listing filter,
+    /// and it answers exactly this question in one indexed query.
+    ///
+    /// The cost was the smaller half of the problem. Driving the listing off the
+    /// *version list* meant a row could exist and not be listed:
+    ///
+    /// - **A grant on a version that was later deleted became invisible.** It
+    ///   kept resolving — `version_grants_in_registry` still feeds it to
+    ///   `Readable::with_version_grants`, so it went on admitting the package
+    ///   name into listings — while `GET /grants`, `batlehub admin grants list`
+    ///   and the console panel all showed nothing. An operator could neither
+    ///   discover it nor remove it through the surface built to remove it.
+    /// - **With no local backend wired, no version row was ever listed**, though
+    ///   `set` writes them: `check_version` degrades to *not checkable* rather
+    ///   than to *refused*, so the write succeeds and the read showed nothing.
+    ///
+    /// Reading the rows themselves has neither failure, and does not depend on
+    /// the backend at all.
+    ///
+    /// Sorted here rather than by the store: this is a listing an operator
+    /// reads, the CLI renders as a table and the console paginates, and neither
+    /// adapter promises an order.
     pub async fn list_for_package(
         &self,
         registry: &str,
@@ -256,23 +278,11 @@ impl GrantAdminService {
         let mut out = repo
             .grants_on_node(registry, NodeKind::Package, package)
             .await?;
-
-        if let Some(versions) = &self.versions {
-            for v in versions
-                .versions_of(registry, package)
-                .await
-                .unwrap_or_default()
-            {
-                out.extend(
-                    repo.grants_on_node(
-                        registry,
-                        NodeKind::Version,
-                        &version_node_key(package, &v.version),
-                    )
-                    .await?,
-                );
-            }
-        }
+        let mut versions = repo.version_grants_for_package(registry, package).await?;
+        versions.sort_by(|a, b| {
+            (&a.node_key, a.subject.as_string()).cmp(&(&b.node_key, b.subject.as_string()))
+        });
+        out.extend(versions);
         Ok(out)
     }
 
@@ -499,11 +509,10 @@ impl GrantAdminService {
     /// as redundant.
     ///
     /// A `SubjectMatcher` is not a caller, so this asks the question of a
-    /// synthetic identity the matcher describes. That is exact for `user:` and
-    /// `group:` — the two forms an operator writes here — and approximate for
-    /// `role:`, where it uses the role itself. Approximate in the safe
-    /// direction: a missed warning is a message not printed, never a grant not
-    /// written.
+    /// synthetic identity the matcher describes — see [`synthetic_subject`] for
+    /// which forms that is exact for and which it approximates. Approximate in
+    /// the safe direction: a missed warning is a message not printed, never a
+    /// grant not written, which is why this went unnoticed for `group:*:`.
     async fn redundancy(
         &self,
         target: &GrantTarget,
@@ -554,8 +563,31 @@ impl GrantAdminService {
 /// `None` for the forms that describe no single caller: `*` matches everyone, so
 /// "does this subject already hold it" has no one answer, and `token:` names a
 /// principal whose groups this service cannot know.
+///
+/// Exact for `user:` and for both spellings of `group:`; approximate for
+/// `role:`, where it uses the role itself.
+///
+/// # The group string has to carry a provider
+///
+/// `group:*:eng` matches an identity whose group string is `<provider>:eng` for
+/// **any non-empty provider** — `group_matches` requires the prefix to be there
+/// and non-empty, and answers `false` for a bare string. Synthesising a bare
+/// `eng` therefore built an identity its own matcher did not match, so the
+/// redundancy warning could never fire for a wildcard-provider subject: an
+/// operator re-granting at the package tier a verb the registry tier already
+/// gave `group:*:eng` was told nothing.
+///
+/// `authz_explain::identity_for` has the same problem and solved it the same
+/// way, for the same reason. The two are deliberately *not* one function — they
+/// disagree about `*` and `token:`, which each answers for its own endpoint —
+/// but they agree here, and a reader changing one should look at the other.
 fn synthetic_subject(matcher: &SubjectMatcher) -> Option<Subject> {
     use crate::entities::{GroupProvider, Role};
+
+    /// Stands in for "some provider" when the subject names none. Never
+    /// compared against a configured provider — a `group:*:` subject matches on
+    /// the name and on the prefix merely being present.
+    const SYNTHETIC_PROVIDER: &str = "grants-editor-any-provider";
 
     let identity = match matcher {
         SubjectMatcher::User(id) => Identity {
@@ -573,7 +605,16 @@ fn synthetic_subject(matcher: &SubjectMatcher) -> Option<Subject> {
             },
             groups: vec![match provider {
                 GroupProvider::Named(p) => format!("{p}:{name}"),
-                _ => name.clone(),
+                // Any provider will do, so name one that cannot collide with a
+                // real one: the answer has to be about the wildcard, not about
+                // whichever identity provider this deployment happens to run.
+                GroupProvider::Any => format!("{SYNTHETIC_PROVIDER}:{name}"),
+                // Unprefixed matches a bare group string, and only a bare one.
+                // Unreachable from this service — `SubjectMatcher::parse`
+                // requires `group:<provider>:<name>`, so the editor cannot write
+                // one — but the arm is here because the enum has it and a
+                // `_ =>` is how the wildcard case got the wrong string.
+                GroupProvider::Unprefixed => name.clone(),
             }],
         },
         SubjectMatcher::Role(role) => Identity {
@@ -1131,6 +1172,72 @@ mod tests {
     }
 
     // ── §4.4 the redundancy warning ──────────────────────────────────────────
+
+    /// A registry tier granting `group:*:eng`, so the wildcard spelling is the
+    /// one under test on both sides.
+    fn service_granting_any_provider(actions: &[Action]) -> GrantAdminService {
+        let map = GrantMap::new().grant(
+            SubjectMatcher::Group {
+                provider: crate::entities::GroupProvider::Any,
+                name: "eng".to_owned(),
+            },
+            actions.to_vec(),
+        );
+        let grants = crate::entities::RegistryGrants {
+            kind: RegistryKind::Npm,
+            registry: Node::new(Tier::Registry, "registry:npm1", Some(map)),
+            namespaces: Vec::new(),
+        };
+        let hot = new_hot_lock(HotConfig {
+            grants: HashMap::from([("npm1".to_owned(), Arc::new(grants))]),
+            grant_repo: Some(Arc::new(Rows::default()) as Arc<dyn GrantRepository>),
+            ..Default::default()
+        });
+        GrantAdminService::new(hot, None, None)
+    }
+
+    /// The wildcard-provider spelling gets its warning too.
+    ///
+    /// `group:*:eng` matches a group string `<provider>:eng` for any non-empty
+    /// provider, and `synthetic_subject` was building a **bare** `eng` — an
+    /// identity the subject's own matcher rejects. So this warning could never
+    /// fire for the wildcard, and an operator re-granting a verb the registry
+    /// tier already gave was told nothing. Fail-safe, and therefore silent,
+    /// which is why it needed a test rather than a bug report.
+    #[tokio::test]
+    async fn a_wildcard_provider_group_is_reported_redundant() {
+        let svc = service_granting_any_provider(&[Action::ReleasesRead]);
+        let warnings = svc
+            .set(
+                &pkg(),
+                "group:*:eng",
+                &["releases:read".to_owned()],
+                &admin(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(warnings.as_slice(), [GrantWarning::Redundant { .. }]),
+            "got {warnings:?}"
+        );
+    }
+
+    /// …and it is still the *name* that decides: a wildcard on another name is
+    /// not covered by this one, or the warning would fire for everything.
+    #[tokio::test]
+    async fn a_wildcard_provider_group_on_another_name_is_not_redundant() {
+        let svc = service_granting_any_provider(&[Action::ReleasesRead]);
+        let warnings = svc
+            .set(
+                &pkg(),
+                "group:*:security",
+                &["releases:read".to_owned()],
+                &admin(),
+            )
+            .await
+            .unwrap();
+        assert!(warnings.is_empty(), "got {warnings:?}");
+    }
 
     #[tokio::test]
     async fn a_verb_the_registry_tier_already_grants_is_reported_redundant() {

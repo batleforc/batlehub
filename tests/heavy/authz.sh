@@ -111,6 +111,7 @@ T_LISTER="authz-lister-token"
 T_BROWSER="authz-browser-token"
 T_SRE="authz-sre-token"
 T_AUDITOR="authz-auditor-token"
+T_GRANTS_READER="authz-grants-reader-token"
 T_SUPPORT="authz-support-token"
 T_GATE="authz-gatekeeper-token"
 # The literal used where a request must carry no credential at all. `-` rather
@@ -119,6 +120,10 @@ T_GATE="authz-gatekeeper-token"
 T_ANON="-"
 
 PKG="authz-probe-$HEAVY_RUN"
+# The subject RFC 0017's version-tier grant is written for. Holds nothing in
+# `config.authz.toml` and is named nowhere else, so an `allow` about it is
+# attributable to the row the suite writes and to no config tier.
+GRANTEE="authz-grantee-$HEAVY_RUN"
 TEAM_PKG="@team/probe-$HEAVY_RUN"
 # The segment-boundary probe. `@teamx` shares `@team`'s prefix and is a
 # different namespace; RFC 0011-bis §4.2 records the bug where it was not
@@ -249,25 +254,37 @@ authz_refused_anonymous() {
   return 0
 }
 
-# authz_explain <registry> <subject> <action> [package] — echoes allow | deny.
+# authz_explain <registry> <subject> <action> [package] [version]
+#   — echoes allow | deny.
 #
 # The oracle. `explain` resolves the same hierarchy the request path does, and
 # §11.6 requires the two to agree; asking it here, on the running server, is the
 # only place that claim is checked against an answer the server actually gave.
+#
+# `version` is the fifth argument because RFC 0017 made the deepest tier
+# writable, and `explain` was resolving without it: it composed the tiers a
+# config file declares and stopped, while the request path appends the stored
+# package and version nodes afterwards. So it answered `deny` where the server
+# answers `allow` — the third time this diagnostic has drifted from the server
+# (§13.7 under a shadow, §13.9 at the instance tier), and the reason a version
+# argument that nothing passed would be a coverage hole rather than an
+# unimplemented convenience.
 authz_explain() {
-  local registry="$1" subject="$2" action="$3" package="${4:-}"
+  local registry="$1" subject="$2" action="$3" package="${4:-}" version="${5:-}"
   local q
   # Encoded by a real encoder rather than pasted: a `*` subject and the `:` in
   # `group:*:eng` are not URL-safe, and a hand-built query answers about a
   # different subject while looking correct.
   q="$(python3 -c '
 import sys, urllib.parse
-registry, subject, action, package = sys.argv[1:5]
+registry, subject, action, package, version = sys.argv[1:6]
 fields = {"registry": registry, "subject": subject, "action": action}
 if package:
     fields["package"] = package
+if version:
+    fields["version"] = version
 print(urllib.parse.urlencode(fields))
-' "$registry" "$subject" "$action" "$package")"
+' "$registry" "$subject" "$action" "$package" "$version")"
   authz_body GET "$T_ADMIN" "/api/v1/admin/authz/explain?$q" | python3 -c '
 import json, sys
 try:
@@ -278,16 +295,16 @@ except Exception:
   return 0
 }
 
-# authz_oracle <verb> <registry> <subject> <expected> [package]
+# authz_oracle <verb> <registry> <subject> <expected> [package] [version]
 #
 # Asserts `explain` answers what the wire just did.
 authz_oracle() {
-  local verb="$1" registry="$2" subject="$3" expected="$4" package="${5:-}"
+  local verb="$1" registry="$2" subject="$3" expected="$4" package="${5:-}" version="${6:-}"
   local got
-  got="$(authz_explain "$registry" "$subject" "$verb" "$package")"
+  got="$(authz_explain "$registry" "$subject" "$verb" "$package" "$version")"
   if [[ "$got" != "$expected" ]]; then
     heavy_fail "explain disagrees with the server: $subject / $verb on \
-${package:-$registry} — the wire said $expected, explain says '$got'. \
+${package:-$registry}${version:+@$version} — the wire said $expected, explain says '$got'. \
 A diagnostic that can disagree with reality is worse than none (§11.6)."
   fi
   AUTHZ_CHECKS=$((AUTHZ_CHECKS + 1))
@@ -778,6 +795,50 @@ because an anonymous publish creates an owner-less package and \`can_publish\` a
     DELETE "$T_SUPPORT" "/api/v1/admin/quota/$NPM/authz-reader"
   authz_allowed quota:write "the administrator resets them" \
     DELETE "$T_ADMIN" "/api/v1/admin/quota/$NPM/authz-reader"
+
+  # ── 12-bis. The grants pair, and the tier it writes (RFC 0017) ─────────────
+  #
+  # The editor for the two tiers a config file cannot enumerate. Three things
+  # are asserted, in the order they can fail:
+  #
+  #   1. **The pair is split.** `grants:read` does not confer `grants:write`.
+  #      Open question 2 closed them as separate verbs because a grant listing
+  #      enumerates every subject that can reach a private package — the larger
+  #      of the two disclosures, and not the one `audit:read` covers.
+  #   2. **The version tier is writable at all.** Migration 041 has carried
+  #      `node_kind = 'version'` since RFC 0015 and nothing could populate it;
+  #      the whole RFC is that this `PUT` exists.
+  #   3. **`explain` agrees about the row that was just written.** This is the
+  #      one that failed. §6.3 said the diagnostic needed no change because it
+  #      "resolves through the same path"; it did not — the stored tiers are
+  #      appended after a short-circuit no diagnostic reaches, so `explain`
+  #      answered `deny` about a grant the server honours.
+
+  heavy_mark "grants"
+  heavy_log "grants:read / grants:write — RFC 0017's editor, and the version tier it writes"
+
+  authz_allowed grants:read "the grants reader lists a package's grants" \
+    GET "$T_GRANTS_READER" "/api/v1/admin/registries/$NPM/grants?package=$PKG"
+  authz_denied grants:read "$WHO_DENIED lists them" \
+    GET "$T_DENIED" "/api/v1/admin/registries/$NPM/grants?package=$PKG"
+  authz_denied grants:write "the grants reader writes one" \
+    PUT "$T_GRANTS_READER" "/api/v1/admin/registries/$NPM/grants" \
+    -H "$HDR_JSON" \
+    --data "{\"package\":\"$PKG\",\"subject\":\"user:$GRANTEE\",\"actions\":[\"releases:read\"]}"
+
+  # The version tier, written through the route and read back through the
+  # diagnostic. `$GRANTEE` holds nothing anywhere else in this file, so an
+  # `allow` here is attributable to this row and to nothing that came before it.
+  authz_allowed grants:write "the administrator writes a version-tier grant" \
+    PUT "$T_ADMIN" "/api/v1/admin/registries/$NPM/grants" \
+    -H "$HDR_JSON" \
+    --data "{\"package\":\"$PKG\",\"version\":\"1.0.0\",\"subject\":\"user:$GRANTEE\",\"actions\":[\"releases:read\"]}"
+
+  authz_oracle releases:read "$NPM" "user:$GRANTEE" allow "$PKG" "1.0.0"
+  # Grants only widen, and they widen *downward from where they are written*: a
+  # row on `1.0.0` is not a row on the package, and the package question has to
+  # keep answering deny or the tier means nothing.
+  authz_oracle releases:read "$NPM" "user:$GRANTEE" deny "$PKG"
 
   # ── 13. The instance tier ──────────────────────────────────────────────────
   #
@@ -1470,20 +1531,29 @@ phase_rubygems() {
   local source="$HEAVY_TAP_BASE/proxy/$GEMS"
   mkdir -p "$HEAVY_WORK/gems/$gem_name/lib"
   echo "module Probe; end" > "$HEAVY_WORK/gems/$gem_name/lib/$gem_name.rb"
-  printf '%s\n' \
-    "Gem::Specification.new do |s|" \
-    "  s.name        = \"$gem_name\"" \
-    "  s.version     = \"1.0.0\"" \
-    "  s.summary     = \"RFC 0015 heavy authz probe\"" \
-    "  s.authors     = [\"batlehub heavy tests\"]" \
-    "  s.files       = [\"lib/$gem_name.rb\"]" \
-    "end" > "$HEAVY_WORK/gems/$gem_name/$gem_name.gemspec"
-  (cd "$HEAVY_WORK/gems/$gem_name" && ruby_run gem build "$gem_name.gemspec" >/dev/null)
 
+  # **Three versions, not one.** RFC 0017's filter narrows a version index, and
+  # an index with one entry narrows to either one entry or none — neither of
+  # which distinguishes a filter that works from a filter that is inert. The
+  # middle version is the one granted below, so the assertion is that Bundler
+  # resolves to `2.0.0` while `3.0.0` exists and is newer: a resolver picking
+  # what the filter left rather than what the registry holds.
   heavy_mark "gems-seed"
-  curl -fsS -o /dev/null -X POST -H "Authorization: Bearer $T_ADMIN" \
-    --data-binary @"$HEAVY_WORK/gems/$gem_name/$gem_name-1.0.0.gem" \
-    "$source/api/v1/gems" || heavy_fail "publishing the gem failed"
+  local gem_version
+  for gem_version in 1.0.0 2.0.0 3.0.0; do
+    printf '%s\n' \
+      "Gem::Specification.new do |s|" \
+      "  s.name        = \"$gem_name\"" \
+      "  s.version     = \"$gem_version\"" \
+      "  s.summary     = \"RFC 0015 heavy authz probe\"" \
+      "  s.authors     = [\"batlehub heavy tests\"]" \
+      "  s.files       = [\"lib/$gem_name.rb\"]" \
+      "end" > "$HEAVY_WORK/gems/$gem_name/$gem_name.gemspec"
+    (cd "$HEAVY_WORK/gems/$gem_name" && ruby_run gem build "$gem_name.gemspec" >/dev/null)
+    curl -fsS -o /dev/null -X POST -H "Authorization: Bearer $T_ADMIN" \
+      --data-binary @"$HEAVY_WORK/gems/$gem_name/$gem_name-$gem_version.gem" \
+      "$source/api/v1/gems" || heavy_fail "publishing $gem_name-$gem_version failed"
+  done
 
   export BUNDLE_USER_HOME="$HEAVY_WORK/bundle-home"
   mkdir -p "$BUNDLE_USER_HOME"
@@ -1539,7 +1609,92 @@ Bundler fetches this document on every resolve, so that is the registry's invent
   grep -q "$gem_name" "$HEAVY_WORK/proj-allow/Gemfile.lock" \
     || heavy_fail "$gem_name missing from Gemfile.lock"
 
-  heavy_log "RUBYGEMS-AUTHZ-OK (refused, served)"
+  # ── RFC 0017 — the version tier, under a real resolver ─────────────────────
+  #
+  # §4.4 rule 2's second half, which nothing could reach before the grants
+  # editor: a caller holding `releases:list` **without** `releases:read` has a
+  # read verdict decided per version, so a version-tier row is the only thing
+  # that puts a version in their index. `authz-lister` is exactly that caller
+  # here — `[registries.grants]` gives it the list and nothing else.
+  #
+  # This is the one protocol document where the filter is observable. Most
+  # version documents gate on `releases:read` at the handler, so a list-only
+  # caller is refused before the funnel the filter lives in; the rubygems
+  # compact index authorizes *inside* the funnel, through `check_read_access`'s
+  # `releases:list`.
+  #
+  # And it is asked of Bundler rather than of `curl` alone, because the claim is
+  # not "the document has fewer lines" — it is that a real resolver, offered a
+  # filtered index, resolves to what the grant left. A route test cannot tell
+  # those apart.
+
+  heavy_mark "gems-version-inert"
+  heavy_log "before any version grant — §9's promise: the index is what it always was"
+  local lister_index
+  lister_index="$(authz_body GET "$T_LISTER" "/proxy/$GEMS/info/$gem_name")"
+  local v
+  for v in 1.0.0 2.0.0 3.0.0; do
+    grep -q "^$v " <<<"$lister_index" || heavy_fail "before any version-tier row exists the \
+list-only caller's compact index must name every version, and $v is missing — RFC 0017 §9 \
+promises the filter is inert until an operator writes the first grant, and an index that is \
+already short makes every assertion below pass for the wrong reason"
+  done
+
+  heavy_mark "gems-version-grant"
+  heavy_log "a version-tier grant on 2.0.0 — written through the editor RFC 0017 adds"
+  # `source:read` alongside `releases:read`: the index decides what Bundler
+  # *resolves*, the download gate decides what it may *fetch*, and a grant
+  # carrying only the first would filter the index correctly and then fail the
+  # install for a reason that has nothing to do with the filter.
+  local grant_status
+  grant_status="$(authz_status PUT "$T_ADMIN" "/api/v1/admin/registries/$GEMS/grants" \
+    -H "$HDR_JSON" \
+    --data "{\"package\":\"$gem_name\",\"version\":\"2.0.0\",\"subject\":\"user:authz-lister\",\"actions\":[\"releases:read\",\"source:read\"]}")"
+  [[ "$grant_status" == "200" ]] || heavy_fail \
+    "writing the version-tier grant returned $grant_status — the whole RFC is that this PUT exists"
+
+  lister_index="$(authz_body GET "$T_LISTER" "/proxy/$GEMS/info/$gem_name")"
+  grep -q "^2.0.0 " <<<"$lister_index" || heavy_fail \
+    "the granted version is absent from the list-only caller's index — the positive control, \
+without which 'names neither of the others' passes against an empty document"
+  for v in 1.0.0 3.0.0; do
+    if grep -q "^$v " <<<"$lister_index"; then
+      heavy_fail "the compact index served to a caller granted the read on 2.0.0 alone names \
+$v — that is the existence and the number of a release they may not read, which is the \
+disclosure §2.3 says the filter has to ship with the writer to prevent"
+    fi
+  done
+
+  # Grants only widen (§4.3). The reader holds `releases:read` on the registry,
+  # so it holds it on every version beneath, and a row written for someone else
+  # cannot subtract from that. This is the assertion the RFC's own before/after
+  # example got backwards.
+  local reader_info
+  reader_info="$(authz_body GET "$T_READER" "/proxy/$GEMS/info/$gem_name")"
+  for v in 1.0.0 2.0.0 3.0.0; do
+    grep -q "^$v " <<<"$reader_info" || heavy_fail "the reader's index lost $v — a version-tier \
+row written for another subject narrowed what this one sees, which §4.3 forbids and a union \
+cannot express"
+  done
+
+  # §11.6's oracle, asked about the row that was just written, on the server
+  # that just accepted it.
+  authz_oracle releases:read "$GEMS" "user:authz-lister" allow "$gem_name" "2.0.0"
+  authz_oracle releases:read "$GEMS" "user:authz-lister" deny "$gem_name" "3.0.0"
+
+  heavy_mark "gems-version-resolve"
+  heavy_log "bundle install as the lister — must resolve to 2.0.0, not to the newest"
+  bundle_install lister "authz-lister:$T_LISTER" >"$HEAVY_WORK/gems-lister.log" 2>&1 \
+    || { tail -40 "$HEAVY_WORK/gems-lister.log" >&2; heavy_fail "bundle install failed for the \
+caller granted 2.0.0 — the filter left them a resolvable index and the install still did not work"; }
+  grep -qE "^    $gem_name \(2\.0\.0\)" "$HEAVY_WORK/proj-lister/Gemfile.lock" || {
+    cat "$HEAVY_WORK/proj-lister/Gemfile.lock" >&2
+    heavy_fail "Bundler did not pin 2.0.0. The Gemfile names no version, so an unfiltered index \
+resolves to 3.0.0 — pinning 2.0.0 is the filter changing what a real resolver picks, and it is \
+the only assertion here that a route test could not have made"
+  }
+
+  heavy_log "RUBYGEMS-AUTHZ-OK (refused, served, filtered to the granted version)"
   return 0
 }
 

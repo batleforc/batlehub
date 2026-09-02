@@ -134,6 +134,9 @@ impl From<CoreError> for AppError {
     fn from(e: CoreError) -> Self {
         match e {
             CoreError::NotFound(msg) => Self::not_found(msg),
+            // Same status and same body as `NotFound`: the distinction is for
+            // the Hybrid fall-through, never for the client. See the variant.
+            CoreError::NotFoundWithheld(msg) => Self::not_found(msg),
             CoreError::AccessDenied(msg) => Self::forbidden(msg),
             CoreError::UnknownRegistry(name) => {
                 Self::bad_request(format!("unknown registry: {name}"))

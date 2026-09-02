@@ -576,6 +576,44 @@ impl Readable {
         self
     }
 
+    /// Admit a package because a **version** beneath it grants the read.
+    ///
+    /// `keys` are `name@version` node keys already filtered to this subject and
+    /// to `releases:read` — the same list `DocumentAudience` keys on.
+    ///
+    /// # Why the name and not the version
+    ///
+    /// This set gates whole-registry documents, and the question they ask is
+    /// *"may this caller see anything under this name"*. The narrowing to the
+    /// granted versions happens one layer in, in `filter_by_grants`; a document
+    /// that dropped the name here would never reach it. That is not
+    /// hypothetical — it is what `tests/heavy/authz.sh rubygems` found: a caller
+    /// granted the read on one version was told by `/versions` that the gem does
+    /// not exist, Bundler fell back to the legacy full index, and the `/info`
+    /// document that *would* have offered them their version was never fetched.
+    /// Every version-tier grant was unreachable through the one client that
+    /// resolves from these documents.
+    ///
+    /// Widening here cannot disclose bytes: `Readable` filters listings and is
+    /// never a download gate — `authorize_read` walks the stored tiers itself.
+    /// The worst an over-wide name does is put the name in a document whose
+    /// version list then comes back empty, and `live.is_empty()` drops it.
+    pub fn with_version_grants<'a>(mut self, keys: impl IntoIterator<Item = &'a str>) -> Readable {
+        if let Readable::Scoped(ref mut scope) = self {
+            scope.packages.extend(keys.into_iter().filter_map(|key| {
+                // The **last** `@`, because a scoped npm name opens with one:
+                // `@acme/billing@1.0.0` is `@acme/billing` at `1.0.0`, and
+                // splitting on the first would ask about a package named `` .
+                key.rfind('@')
+                    .filter(|i| *i > 0)
+                    .map(|i| key[..i].to_owned())
+            }));
+            scope.packages.sort();
+            scope.packages.dedup();
+        }
+        self
+    }
+
     pub fn contains(&self, package: &str) -> bool {
         match self {
             Readable::Everything => true,

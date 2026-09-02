@@ -427,6 +427,19 @@ flowchart LR
 - **Integration**: a filtered version index served twice to two callers with
   different grant sets returns two different documents — rule 3, asserted rather
   than assumed.
+- **Heavy** (`tests/heavy/authz.sh rubygems`): the writer and the filter under
+  Bundler. Three versions are published, one is granted to a list-only caller,
+  and the assertion is that `bundle install` resolves to **`2.0.0` while `3.0.0`
+  exists and is newer** — a real resolver picking what the grant left. This is
+  the arm that found the `/versions` defect below; every `curl` assertion about
+  `/info` passed while it was broken.
+- **Heavy** (`tests/heavy/authz.sh matrix`): the pair over `curl` against a
+  running server and a real Postgres. Not optional and not a nicety — that suite
+  reads the verb list out of `permission.rs` at run time and fails on any verb
+  nothing exercised, so adding `grants:read`/`grants:write` to the vocabulary
+  *breaks it* until the section exists. It is also where §11.6's oracle is asked
+  about a version-tier row on the same server that just accepted it, which is
+  the check §6.3's mistake would have survived in-process.
 - **Existing suites that must pass unchanged**: `authz_matrix.rs` on every route
   that has no version-tier grant (the filter must be inert when the table is
   empty), `local_npm_registry.rs` and its siblings for the untouched protocol
@@ -480,7 +493,7 @@ answers rest on.
 
 ### What building it changed
 
-Four departures from §6, each because the code disagreed with the plan:
+Nine departures from §6, each because the code disagreed with the plan:
 
 - **`crates/adapters` was not "Nothing".** Two `GrantRepository` methods were
   added: `version_grants_for_package` (the filter's one query per package —
@@ -493,6 +506,81 @@ Four departures from §6, each because the code disagreed with the plan:
   gem. Resolving the config tiers first and returning early when they already
   grant `releases:read` means the common caller pays nothing — the rows are
   fetched only for a caller those tiers do not already satisfy.
+- **The redundancy warning could never fire for `group:*:`.** §4.4's warning
+  table promises a subject already holding a verb from a broader tier is told so.
+  `synthetic_subject` builds the caller a matcher describes, and for a
+  wildcard provider it built a **bare** group string — while `group_matches`
+  requires the `<provider>:` prefix to be present and non-empty, answering
+  `false` for a bare one. The synthetic identity was therefore rejected by its
+  own matcher, and the warning was structurally unreachable for that spelling.
+  Fail-safe, so it was silent: a message not printed, never a grant not written,
+  which is why it needed a test rather than surfacing as a bug.
+  `authz_explain::identity_for` had already met this and solved it the same way;
+  the two stay separate functions — they disagree about `*` and `token:` — but
+  they now agree here, and each says so.
+
+- **The filter reintroduced the N+1 it was written to avoid.** `filter_by_grants`
+  asks two questions per package — the version rows under this name, and the
+  package node — and a whole-registry document asks it once per package. The
+  query-free fast path §12 records covers a caller the config tiers already
+  grant `releases:read`, which is *not* the caller this feature is for: one
+  holding a package-tier read is admitted to the document, does not short-circuit
+  (the fast path resolves the config tiers only), and pays both queries. That is
+  the shape §13.2 measured at 806×, on the estate sizes §11.7 gives — and the
+  ownership projection writes package-tier rows, so it is the common estate, not
+  a corner. The document already fetches both row sets registry-wide to build
+  `Readable` and the cache key; `RegistryGrantRows` hands them down, and
+  `crates/core`'s `a_whole_registry_document_costs_no_per_package_query` counts
+  the queries rather than timing them: 5 on a four-package fixture before, 0
+  after.
+
+- **`list_for_package` could not see a grant whose version was deleted.** It
+  enumerated versions through `VersionLookup` and asked `grants_on_node` per
+  version, under a comment saying the port offered no "every version row of this
+  package" query — which this RFC had itself made false by adding
+  `version_grants_for_package`. Driving the listing off the version list meant a
+  row on a deleted version kept resolving (`version_grants_in_registry` still
+  feeds it to `Readable::with_version_grants`) while `GET /grants`, the CLI and
+  the console panel all showed nothing: undiscoverable through the surface built
+  to remove it. With no local backend the whole tier was writable and never
+  listed. Reading the rows themselves has neither failure, does not depend on the
+  backend, and is one query instead of one per version.
+
+- **An emptied listing is not an absent package, and Hybrid could not tell.**
+  The filter's terminal case — §4.4 rule 2 removing the *last* version a caller
+  may read — reaches `load_visible_versions_or_not_found` with
+  `emptied_by_blocking` false, so it answered `NotFound`. On a Hybrid registry
+  that variant is the fall-through signal: every handler reads it as *"we do not
+  host this, ask upstream"*. An internal package whose versions this caller may
+  not read was therefore answered with the **public package of the same name** —
+  the dependency-confusion substitution that function's own doc comment was
+  written to prevent for administratively blocked packages, arriving through the
+  door this RFC opened. `crates/web/tests/grants_editor.rs` demonstrates it:
+  reverted, the test receives `200` and upstream's `1.1.0` and `2.0.0-beta.1`.
+
+  `CoreError::NotFoundWithheld` renders as `404` — hidden means absent, and a
+  `403` would confirm the name — but is not the variant the Hybrid arms match,
+  so it fails **closed** at all seventeen of them by construction. One arm did
+  not match on the variant at all: rubygems' compact index read `Err(_) => {}`
+  and fell through on *every* error, which had been defeating the blocked-package
+  protection too. That is fixed in the same change.
+
+- **The whole-registry index dropped the name before the filter could see
+  it.** Every such document gates each package on `Readable::contains`, which
+  composed the config and package tiers and stopped there — so a caller whose
+  only grant was a version-tier row was told the package does not exist, and
+  `load_visible_versions` (where `filter_by_grants` lives) was never called for
+  it. `/info/{gem}` filtered correctly the whole time, which is why nothing
+  caught it: `curl` asks `/info` directly, and **Bundler does not**. It resolves
+  from `/versions`, and an empty one sends it to the legacy `specs.4.8.gz` index
+  this server answers `404` — so the install failed with *"could not fetch
+  specs"* and the correctly-filtered document was never requested. The grant was
+  writable, visible in `explain`, and asserted in `/info`; it was unusable by the
+  one client that resolves from these documents. `Readable::with_version_grants`
+  admits the name; the version list behind it is unchanged, and `live.is_empty()`
+  drops a name whose versions all filter away. Not a disclosure — it failed
+  closed — but the §4.4 rule-2 story was unreachable in practice.
+
 - **`explain` did need a change, and so did `access-check`.** §6.3 said the
   diagnostics already reported the two new tiers "because it resolves through the
   same path". They did not resolve through the same path. `resolution_path`

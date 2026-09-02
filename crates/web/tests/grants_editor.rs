@@ -360,20 +360,74 @@ async fn gems_app() -> impl actix_web::dev::Service<
     Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
     Error = actix_web::Error,
 > {
+    gems_app_with(false).await
+}
+
+/// `gems_app`, with the whole-registry document cache a real server runs with.
+///
+/// The two are **different code paths**, not the same one made faster.
+/// `cached_document` resolves the read set, keys it by `DocumentAudience` and
+/// hands the set back; with no cache configured it falls through to
+/// `readable_packages` instead. RFC 0017 §4.4 rule 3 lives on the first of
+/// those — the key names the caller's version-tier grants — and every test in
+/// this file ran on the second, so the keyed path had no test at all.
+async fn gems_app_cached() -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    gems_app_with(true).await
+}
+
+/// `gems_app` on a **Hybrid** registry with an upstream behind it.
+///
+/// `FixedRegistry` advertises `1.1.0` and `2.0.0-beta.1`, which the local gem
+/// does not have — so a test can tell a local answer from an upstream one by
+/// looking at the version numbers rather than at a status code.
+async fn gems_app_hybrid() -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    gems_app_full(false, RegistryMode::Hybrid, true).await
+}
+
+async fn gems_app_with(
+    cached: bool,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
+    gems_app_full(cached, RegistryMode::Local, false).await
+}
+
+async fn gems_app_full(
+    cached: bool,
+    mode: RegistryMode,
+    upstream: bool,
+) -> impl actix_web::dev::Service<
+    actix_http::Request,
+    Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+    Error = actix_web::Error,
+> {
     use batlehub_core::services::local_registry::PublishRequest;
 
-    let parts = local_only_app_parts_with_policy(
-        GEMS,
-        "rubygems",
-        RegistryMode::Local,
-        false,
-        rbac_list_without_read,
-    )
-    .await;
-    {
-        let mut hot = parts.proxy_svc.hot.write().await;
-        hot.grant_repo = Some(batlehub_adapters::in_memory::InMemoryGrantRepository::new()
-            as Arc<dyn batlehub_core::ports::GrantRepository>);
+    let parts =
+        local_only_app_parts_with_policy(GEMS, "rubygems", mode, upstream, rbac_list_without_read)
+            .await;
+    // Built before either lock is taken. `local_svc.hot` and `proxy_svc.hot` are
+    // the *same* `Arc<RwLock<_>>` in this harness, so writing one while reading
+    // the other deadlocks — and a deadlocked async test does not fail, it hangs,
+    // which is how this first showed up: as three tests "running for over 60
+    // seconds" under `cargo llvm-cov` rather than as a red assertion.
+    let grant_repo = batlehub_adapters::in_memory::InMemoryGrantRepository::new()
+        as Arc<dyn batlehub_core::ports::GrantRepository>;
+    let document_cache = cached.then(batlehub_core::services::document_cache::DocumentCache::new);
+    for lock in [&parts.proxy_svc.hot, &parts.local_svc.hot] {
+        let mut hot = lock.write().await;
+        hot.grant_repo = Some(Arc::clone(&grant_repo));
+        hot.document_cache = document_cache.clone();
     }
 
     let admin = batlehub_core::entities::Identity {
@@ -402,6 +456,31 @@ async fn gems_app() -> impl actix_web::dev::Service<
     }
 
     build_local_registry_app(parts, batlehub_web::CargoIndexMap::default(), None).await
+}
+
+/// The whole-registry compact index `/versions`, as `token` receives it.
+///
+/// The document Bundler resolves from, and the one cached under
+/// `DocumentAudience` — so it is where §4.4 rule 3 is observable.
+async fn registry_index<S>(app: &S, token: &str) -> String
+where
+    S: actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+{
+    let resp = call_service(
+        app,
+        TestRequest::get()
+            .uri(&format!("/proxy/{GEMS}/versions"))
+            .insert_header(("Authorization", bearer(token)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), 200, "the compact index should be served");
+    let body = actix_web::test::read_body(resp).await;
+    String::from_utf8_lossy(&body).into_owned()
 }
 
 /// The versions the compact `/info/{gem}` document lists for `token`.
@@ -498,6 +577,186 @@ async fn two_callers_with_different_grants_get_different_documents() {
         "the admin holds the read at the instance tier, so the filter removes \
          nothing for them — and the narrower caller's document must not be \
          replayed here"
+    );
+}
+
+/// The whole-registry index must name a gem the caller holds one version of.
+///
+/// Found by `tests/heavy/authz.sh rubygems`, not by any route test, and the
+/// distance between the two is the point. `/versions` gates each name on
+/// `Readable::contains`, which composed the config and package tiers and stopped
+/// — so a caller whose only grant was a version-tier row was told the gem does
+/// not exist. Every assertion about `/info` still passed, because `/info` was
+/// reached directly by `curl`.
+///
+/// Bundler does not reach it directly. It resolves from `/versions`, and an
+/// empty one sends it to the legacy `specs.4.8.gz` full index, which this server
+/// answers `404` — so the install failed with "could not fetch specs" and the
+/// filtered `/info` document was never requested. The grant was correct,
+/// reachable through the API, visible in `explain`, asserted in `/info`, and
+/// unusable by the one client that resolves from these documents.
+#[actix_web::test]
+async fn the_registry_index_names_a_gem_the_caller_holds_one_version_of() {
+    let app = gems_app().await;
+    grant_version(&app, "2.0.0", "user:user-1").await;
+
+    let body = registry_index(&app, USER_TOKEN).await;
+
+    let line = body
+        .lines()
+        .find(|l| l.starts_with(GEM))
+        .unwrap_or_else(|| panic!("the compact index does not name {GEM}: {body:?}"));
+    // …and it names only the version they hold, so the fix widened the *name*
+    // gate without widening the version list behind it.
+    assert!(
+        line.contains("2.0.0") && !line.contains("1.0.0") && !line.contains("3.0.0"),
+        "the index line must offer 2.0.0 alone, got {line:?}"
+    );
+}
+
+/// §4.4 rule 3, through the cache it is a rule about.
+///
+/// `two_callers_with_different_grants_get_different_documents` above asserts the
+/// same property on `/info`, which is not cached — so until this test the rule
+/// was asserted everywhere except where it can fail. `DocumentAudience` gained
+/// `version_read_grants` for exactly this key; a key that omitted them would
+/// populate the entry with the narrow caller's document and replay it.
+///
+/// The narrow caller asks **first**, deliberately: that is the order in which a
+/// broken key discloses, and asking the admin first would pass either way.
+#[actix_web::test]
+async fn the_cached_registry_index_is_not_replayed_across_grant_sets() {
+    let app = gems_app_cached().await;
+    grant_version(&app, "2.0.0", "user:user-1").await;
+
+    let narrow = registry_index(&app, USER_TOKEN).await;
+    let broad = registry_index(&app, ADMIN_TOKEN).await;
+
+    let narrow_line = narrow
+        .lines()
+        .find(|l| l.starts_with(GEM))
+        .unwrap_or_else(|| panic!("the list-only caller's index does not name {GEM}: {narrow:?}"));
+    assert!(
+        narrow_line.contains("2.0.0")
+            && !narrow_line.contains("1.0.0")
+            && !narrow_line.contains("3.0.0"),
+        "the granted version alone: {narrow_line:?}"
+    );
+
+    let broad_line = broad
+        .lines()
+        .find(|l| l.starts_with(GEM))
+        .unwrap_or_else(|| panic!("the admin's index does not name {GEM}: {broad:?}"));
+    assert!(
+        broad_line.contains("1.0.0") && broad_line.contains("3.0.0"),
+        "the admin holds the read above, so the filter removes nothing for them — \
+         and the narrow caller's cached document must not have been replayed here: \
+         {broad_line:?}"
+    );
+}
+
+/// The keyed path filters the same way the unkeyed one does.
+///
+/// Two code paths, not one made faster: with a cache configured
+/// `cached_document` resolves and keys the read set, without one the service
+/// falls through to `readable_packages`. Both had to learn the version tier
+/// separately, and a document that differed between them would be the cache
+/// deciding authorization.
+#[actix_web::test]
+async fn the_cached_and_uncached_indexes_agree() {
+    let cached = gems_app_cached().await;
+    let uncached = gems_app().await;
+    grant_version(&cached, "2.0.0", "user:user-1").await;
+    grant_version(&uncached, "2.0.0", "user:user-1").await;
+
+    assert_eq!(
+        registry_index(&cached, USER_TOKEN).await,
+        registry_index(&uncached, USER_TOKEN).await,
+        "a document built with a cache and one built without must be the same bytes"
+    );
+}
+
+// ── The Hybrid fall-through, and why an empty listing is not an absent one ───
+
+/// The `/info/{gem}` document, as `token` receives it, with its status.
+async fn info_raw<S>(app: &S, token: &str) -> (u16, String)
+where
+    S: actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+{
+    let resp = call_service(
+        app,
+        TestRequest::get()
+            .uri(&format!("/proxy/{GEMS}/info/{GEM}"))
+            .insert_header(("Authorization", bearer(token)))
+            .to_request(),
+    )
+    .await;
+    let status = resp.status().as_u16();
+    let body = actix_web::test::read_body(resp).await;
+    (status, String::from_utf8_lossy(&body).into_owned())
+}
+
+/// A listing the grant filter emptied must **not** be answered with upstream's
+/// package of the same name.
+///
+/// This is the dependency-confusion substitution `load_visible_versions_or_not_found`
+/// was written to prevent for administratively blocked packages, arriving
+/// through the door RFC 0017 opened: §4.4 rule 2 takes the last version a
+/// caller may read, the funnel returns empty, `emptied_by_blocking` is false
+/// because no block is involved, and a plain `NotFound` tells every Hybrid
+/// handler *"we do not host this, ask upstream"*.
+///
+/// The internal gem is real, it is hosted here, and the caller is simply not
+/// allowed to see it. Answering with rubygems.org's `rails` is the worst
+/// available outcome — worse than the `403` and worse than the `404` — because
+/// the resolver installs it.
+#[actix_web::test]
+async fn a_grant_filtered_listing_does_not_fall_through_to_upstream() {
+    let app = gems_app_hybrid().await;
+    // Granted to somebody else, so this caller may read no version at all.
+    grant_version(&app, "2.0.0", "user:someone-else").await;
+
+    let (status, body) = info_raw(&app, USER_TOKEN).await;
+
+    assert!(
+        !body.contains("1.1.0") && !body.contains("2.0.0-beta.1"),
+        "upstream's versions reached a caller asking about a gem this instance \
+         hosts privately — that is the substitution the withholding exists to \
+         prevent (status {status}): {body:?}"
+    );
+    assert_eq!(
+        status, 404,
+        "hidden means absent (RFC 0006, RFC 0011-bis §4.5), so the client still \
+         gets a 404 — the distinction is for the fall-through, not for them"
+    );
+}
+
+/// …and the fix must not close the door on genuine fall-through: a gem this
+/// instance has never hosted is still answered from upstream.
+///
+/// The positive control. Without it, "does not serve upstream" passes against a
+/// server that stopped proxying altogether.
+#[actix_web::test]
+async fn a_gem_that_was_never_published_here_still_falls_through() {
+    let app = gems_app_hybrid().await;
+
+    let resp = call_service(
+        &app,
+        TestRequest::get()
+            .uri(&format!("/proxy/{GEMS}/info/never-published-here"))
+            .insert_header(("Authorization", bearer(ADMIN_TOKEN)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        200,
+        "a gem with no local rows is a routing question, and Hybrid answers it \
+         upstream — `NotFound` still means what it meant"
     );
 }
 

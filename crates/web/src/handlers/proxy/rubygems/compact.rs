@@ -55,6 +55,7 @@ use crate::handlers::schemas::ProtocolDocument;
 use crate::RegistryModeMap;
 use batlehub_config::schema::RegistryMode;
 use batlehub_core::entities::Action;
+use batlehub_core::error::CoreError;
 use batlehub_core::services::LocalRegistryService;
 
 /// Render a text document as the compact index expects it.
@@ -325,7 +326,17 @@ pub async fn gem_compact_info(
             // Hybrid falls through to upstream for a gem it does not host;
             // local has nowhere else to look, so the error stands.
             Err(e) if mode == RegistryMode::Local => return Err(AppError::from(e)),
-            Err(_) => {}
+            // **`NotFound` alone.** This read `Err(_) => {}`, which fell through
+            // on *every* error — including the `AccessDenied` that
+            // `load_visible_versions_or_not_found` returns for a gem whose every
+            // version is administratively blocked, and the `NotFoundWithheld`
+            // RFC 0017 added for one filtered away by grants. Both name a gem
+            // this instance hosts, so falling through answers with rubygems.org's
+            // gem of the same name: the dependency-confusion substitution those
+            // two errors exist to prevent, served by the one arm that did not
+            // look at which error it had.
+            Err(CoreError::NotFound(_)) => {}
+            Err(e) => return Err(AppError::from(e)),
         }
     }
 
