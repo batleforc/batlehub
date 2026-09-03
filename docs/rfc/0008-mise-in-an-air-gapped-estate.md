@@ -331,7 +331,7 @@ reading a single blob, then writes each blob and its metadata rows transactional
 | --- | --- |
 | `air_gap.enabled = true` together with any `[proxy]` or `[registries.proxy]` table | An egress proxy is a route off the site. Both set is a contradiction, and the safe reading (which one wins?) is not obvious enough to pick silently. |
 | `air_gap.enabled = true` with any `cache.warm_paths` / `cache.warm_packages` entry | Warming fetches from an upstream this mode guarantees will never be dialled. Failing at boot is better than a startup task that logs a connect error per path, forever. |
-| `air_gap.bundle_trusted_keys` entry that is not 32 hex-encoded bytes | Same rule as `signing.trusted_keys`; an unusable key must not read as "signing is configured". |
+| `air_gap.bundle_trusted_keys` entry that is not 32 hex-encoded bytes | The rule `signing.trusted_keys` *should* have and does not (it is parsed at verify time today); this RFC adds it for both fields. An unusable key must not read as "signing is configured". |
 | `air_gap.enabled = true` with `bundle_trusted_keys = []` | Import would accept any bundle. An air-gapped instance whose only content path is unauthenticated is worse than one with no content path. |
 
 Warnings (logged and surfaced to the admin):
@@ -452,7 +452,7 @@ mirror.
   `CoreError::ContentUnavailable { registry, key }` instead of dialling, and hand the coordinate to
   the miss recorder. New error variant rather than reusing `NotFound`, because the web layer's
   hybrid fall-through treats `NotFound` as "ask upstream" — the exact confusion RFC 0006's
-  `AccessDenied`/`NotFound` split exists to prevent, and reusing it here would reintroduce it.
+  `NotFoundWithheld`/`NotFound` split exists to prevent, and reusing it here would reintroduce it.
 - New port `MissRecorder` in `crates/core/src/ports/`, with the in-memory and Postgres implementations
   in `crates/adapters`. Recording is fire-and-forget: a failure to record a miss must never turn a
   `503` into a `500`.
@@ -495,8 +495,8 @@ mirror.
 - `batlehub-cli mise seed [--verify]`, `admin bundle export|import`, `admin air-gap missing`.
 - `registry suggest --mise` gains the catch-all rule in its emitted block, behind
   `--mise-catch-all` (`requires = "mise"`, mirroring the existing `--mise-commented`) so an existing
-  user's output does not change shape without asking. `render_mise_toml` grows the flag as a third
-  parameter rather than a second renderer.
+  user's output does not change shape without asking. `render_mise_toml` grows the flag as a fourth
+  parameter (it already takes `regs`, `server_url`, `commented`) rather than a second renderer.
 
 ### 6.6 `ui`
 
@@ -651,22 +651,12 @@ mirror.
 
 ### Still open
 
-1. **Per-platform plans.** `mise.lock` records URLs per platform. Does a bundle carry every platform
-   in the lock, or only the ones the estate runs? Carrying all is simpler and larger; the recommended
-   default is `--platform` explicit with no implicit "all", so the size is a choice the operator makes
-   knowingly.
-2. **How the mise binary itself is upgraded across the gap.** The first install comes from the base
-   image (§3, non-goals). `mise self-update` reaches GitHub, which the `github` registry can serve —
-   but the version that performs the upgrade is the one whose `url_replacements` we control, so this
-   is probably fine and probably needs a documented procedure rather than a feature. Confirm.
-3. **Miss-log granularity for metadata.** An artifact miss is one key. A metadata miss for a listing
-   is a package, and a `503` there fails a resolve rather than a download. Should the two be separate
-   `kind`s in the console (as designed) or separate tables? Current answer: one table, one `kind`
-   column; revisit if the console wants different columns for each.
-4. **Whether `mise seed --verify` should fail the run on an unsigned artifact.** Many GitHub releases
-   carry no attestation at all. Failing would make the feature unusable; not failing risks the verdict
-   column reading as "fine". Proposed: exit non-zero only on a *failed* verification, report
-   `unsigned` as its own count in the summary, and make `--require-signed` the strict opt-in.
+Closed on 2026-09-02; the decisions are in §13.
+
+1. ~~**Per-platform plans.**~~ `--platform` explicit, default the planning host's, `all` opt-in (§13).
+2. ~~**How the mise binary itself is upgraded across the gap.**~~ `plan --include-mise` (§13).
+3. ~~**Miss-log granularity for metadata.**~~ One table, one `kind` column, capped (§13).
+4. ~~**Whether `mise seed --verify` should fail the run on an unsigned artifact.**~~ The registry's `[security]` decides; no `--require-signed` (§13).
 
 ---
 
@@ -680,3 +670,80 @@ mirror.
 | 4 | Bundle format, export, import, signature verification, and the traversal/`path_allow` guards on import. |
 | 5 | The Air gap admin page and `docs/use/mise.md` + the operations runbook. |
 | 6 | `tests/heavy/mise.sh`: seed → export → import → `mise install` with egress denied, on RFC 0009's harness and in the `heavy-client` matrix, as the standing proof of §1. |
+
+---
+
+## 13. Revision against the tree (2026-09-02)
+
+The header still says "ready to schedule". Re-read against the tree after
+RFC 0015, 0016, 0018 and 0019, four load-bearing assumptions no longer hold,
+and this section replaces them. Nothing of the six phases has started, so no
+shipped behaviour is affected.
+
+**Corrected in place.** RFC 0006's variant is `NotFoundWithheld`, not
+`AccessDenied`. `render_mise_toml` already takes three parameters. The
+`signing.trusted_keys` hex validation §4.5 cites does not exist; it is added
+here for both fields. `docs/use/mise.md` is a page this RFC creates, not one
+it edits; the pointers that exist are in `docs/registries/generic.md` and
+`docs/registries/github.md`.
+
+**Four assumptions that moved.**
+
+1. *"The decision sits in `ProxyService::handle`, at the upstream-fetch
+   branch."* There are two artifact fetch sites (`handle.rs` and
+   `proxy/cache.rs`, both through `fetch_artifact_or_record_error`) and five
+   other dial-outs `handle` never sees: the passthrough rungs (npm audit,
+   sumdb), metadata resolution, `upstream_detail` (already warned as
+   air-gap-relevant in `warnings.rs`), warming and README fetch. **Decision:**
+   "never dials" is enforced where clients are *built* — `server/src/builders.rs`
+   wraps every `RegistryClient` of an `air_gap.enabled` instance in an
+   `OfflineRegistryClient` that answers `ContentUnavailable` to every call.
+   Every path inherits it; §6.7's "seeding runs through the same code"
+   objection is void because seeding runs on the connected instance.
+2. *"`serve_stale` becomes the normal path for cached metadata and
+   artifacts."* `serve_stale` is metadata-only (`serve_stale_metadata`);
+   artifacts have no stale path, a cached artifact is a plain hit and a miss
+   is the 503. §4.1 is amended to say so.
+3. *Identity.* §4.2 keys every plan entry on the lock's sha256 and the
+   `artifact_storage_key`. RFC 0019 decision 9 keys forge archives and raw
+   files on the **commit SHA** (forge tarballs are not byte-stable) and
+   rewrites the `PackageId` so the cache key is
+   `{registry}/{o}/{r}/{sha}/…`. A plan built on the lock's sha256 would fail
+   `mise seed --verify` on every recompressed archive. **Decision:** identity
+   is per kind — content sha256 for release assets, npm, cargo, pypi; commit
+   SHA for `tarball`/`zipball`/`raw` — and the bundle manifest carries the
+   `ref → commit` rows so the disconnected instance can answer a ref without
+   resolving it (0019's TTLs are frozen under `air_gap.enabled`). `[raw]`
+   must be enabled on the disconnected side for the `raw.githubusercontent.com`
+   rewrite to work; the runbook says so.
+4. *Verification.* `artifact_attestations` duplicates RFC 0018's
+   `artifact_verdicts`/`artifact_findings`. **Decision:** the table is dropped.
+   `mise seed --verify` runs the 0018 pipeline on the connected instance and
+   the bundle carries verdict and finding rows; import upserts them with
+   `policy_ref` naming the connected-side policy, and the disconnected instance
+   runs 0018's offline profile (`["osv"]` against a mirror plus offline
+   postmortem). An imported blob with no verdict on an instance with
+   `[security]` is `SCAN_PENDING`, fail-closed, as 0018 intends.
+
+**The four open questions, closed.**
+
+| # | Question | Decision |
+| - | -------- | -------- |
+| 1 | Per-platform plans | `--platform` explicit; default is the planning host's; `--platform all` opt-in. Same shape as RFC 0010 decision 11 (`warm_platforms`). |
+| 2 | Upgrading mise across the gap | `mise self-update` reads `api.github.com/repos/jdx/mise/releases`, which the github rule already rewrites and RFC 0019 phase 3 link-rewrites; `plan --include-mise` adds `github:jdx/mise@<current>` so a bundle always carries the binary that reads the next plan. |
+| 3 | Miss-log granularity | One table, one `kind` column (`artifact`, `document`, `checksum`, plus `ref` for a forge ref not in the bundle), matching 0018's single verdict table with codes. Rows are capped per registry with LRU purge and `miss_retention_days` — the cardinality was unbounded and attacker-writable. |
+| 4 | `--verify` on an unsigned artifact | Not this RFC's knob. Strictness is the registry's `[registries.security]` (`require_provenance`); `seed --verify` exits non-zero on a `denied` verdict and reports `PROVENANCE_MISSING` as a count. |
+
+**Coverage, stated.** RFC 0010 covers `nodedist` and `sdkman`. mise's `core:`
+backends for go (`dl.google.com`), python (python-build-standalone) and ruby
+have no kind; they are `generic` or `unmirrored_hosts`, and the CLI's
+`BACKEND_REGISTRIES` needs `core:` rows saying which. The two generators of the
+mise snippet (`cli/src/api/suggest.rs`, nine rules including openvsx, and
+`ui/src/config/registryTypes.ts`, three) already disagree; phase 1 makes one
+the source of the other. And the catch-all `^https://(.+)` rule rewrites
+BatleHub's own URLs when an operator has already pointed a backend at the proxy
+— an identity rule for the proxy host precedes it, and `mise.sh` tests that.
+
+**Ordering, as a constraint.** RFC 0019 phase 1 (SHA-keyed cache) before this
+RFC's phases 2 and 4; RFC 0018 phase 1 (verdict model) before phase 3; RFC 0010
+before all of it, for the toolchain-coverage reason the index gives.

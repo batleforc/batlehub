@@ -73,7 +73,7 @@ environment variables they already consult.
 2. **For Node, the bytes already flow and the policy does not.** A `generic`
    registry pointed at `nodejs.org/dist` caches every tarball — the worked
    example in `docs/registries/generic.md` is literally that. But `generic_get`
-   (`crates/web/src/handlers/proxy/generic.rs:56`) builds
+   (`crates/web/src/handlers/proxy/generic.rs:57`) builds
    `PackageId::new(reg, "repo", "_")`: one synthetic package, no version, no
    identity. So `index.tab` is relayed unfiltered, no Node version can be
    blocked, nothing appears in explore, and per-version statistics do not exist.
@@ -183,7 +183,7 @@ upstreams = ["https://nodejs.org/dist"]        # the default; io.js takes its ow
 
 - `broker_url` is a new `RegistryConfig` field, absent by default, meaning
   `https://broker.sdkman.io`. It sits beside cargo's `index_url`
-  (`crates/config/src/schema/registry.rs:94`) and is documented the same way: a
+  (`crates/config/src/schema/registry.rs:232`) and is documented the same way: a
   second upstream URL that one kind needs and the rest ignore. It is rejected on
   any other type.
 - `upstreams` behaves as everywhere — a list tried in order, defaulting to
@@ -397,7 +397,7 @@ the chain leaves the registry's origin.
 Terraform's `modules/`/`providers/` prefix already does. That is fine for the
 fetch and wrong for the *block*: `ProxyService::version_document` derives the
 blocked-version lookup from the same string
-(`crates/core/src/services/proxy/handle.rs:427` and `:452`), so an admin would
+(`crates/core/src/services/proxy/handle.rs:509` and `:518`), so an admin would
 block `java/linuxx64 17.0.20-tem` and leave the same JDK installable on macOS.
 §6.2 normalises it.
 
@@ -434,7 +434,9 @@ user who types a version the listing no longer shows — from a lockfile, an
 ### 6.1 `crates/core` — the registry kinds
 
 `RegistryKind::Sdkman` and `RegistryKind::Nodedist` are added to the enum and to
-`ALL`. Six exhaustive matches then refuse to compile until answered, which is the
+`ALL`. Ten wildcard-free matches then refuse to compile until answered (five in
+`registry_kind.rs`, two in `upstream_detail`, one in `blocking`, two in
+`builders.rs`), which is the
 intended pressure. Both answer `supports_local_mode() = false`,
 `requires_explicit_upstream_in_proxy_mode() = false` and
 `is_path_addressed() = false`; the rest:
@@ -778,8 +780,9 @@ that an implementer will otherwise hit one at a time:
 
 - **New unauthenticated surface: none.** Every route sits under
   `/proxy/{registry}/…` and inherits the registry's RBAC, reading
-  `releases:read` for artifacts and the listing authorisation for documents,
-  exactly as the other twenty kinds do.
+  `releases:read` for artifacts and `releases:list` for documents (RFC 0015's
+  vocabulary; the `strip` of §4.4 composes with 0015 §4.4's per-version grant
+  filter, which runs first), exactly as the other twenty-one kinds do.
 
 ---
 
@@ -963,7 +966,7 @@ Each phase leaves the tree green — builds, clippy clean, tests pass.
 
 | Phase | Content |
 | --- | --- |
-| 1 | `RegistryKind::Sdkman` and `::Nodedist` with their six exhaustive answers; `broker_url` in `RegistryConfig`, and the mandatory `deny_missing_timestamp` validation, with their tests; the conformance fixture entries as `not_yet`. Useful alone: the generated support tables gain two honest rows saying what is and is not covered. |
+| 1 | `RegistryKind::Sdkman` and `::Nodedist` with their ten exhaustive answers and the three `matches!` predicates that would otherwise default silently; `broker_url` in `RegistryConfig`, and the mandatory `deny_missing_timestamp` validation, with their tests; the conformance fixture entries as `not_yet`. Useful alone: the generated support tables gain two honest rows saying what is and is not covered. |
 | 2 | `NodeDistRegistryClient` and its routes — `index.tab`, `index.json`, `{version}/{file}` — with edge validation, OpenAPI bodies, and `published_at` read from the cached index. `nvm install` works here. |
 | 3 | `Nodedist` blocking: `strip`'s arm, the `index-json` document kind, the header-row and LTS-alias tests. Node policy is code-complete at the end of this phase — and unproven. |
 | 4 | `tests/heavy/nvm.sh` with its `config.nvm.toml`, `task test:nvm-heavy`, an entry in `task test:heavy` and a row in the `heavy-client` CI matrix (§6.10, §10). **`nodedist` ships at the end of this phase, and not before.** |
@@ -978,3 +981,69 @@ placement is the point: each manager is verified when *it* is finished, by the
 only oracle that can fail on the bugs this RFC is most likely to contain. A
 plan that defers both to phase 9 is a plan that discovers in week four that the
 refusal path never refused.
+
+---
+
+## 13. Revision against the tree (2026-09-02)
+
+Accepted two weeks ago, nothing built. A re-read against the tree after RFC
+0015 landed and RFC 0018/0019 were drafted found the document sound and its
+vocabulary stale in three places. Line references were refreshed in place
+(`generic.rs:57`, `registry.rs:232`, `handle.rs:509/518`), the exhaustive-match
+count corrected (ten, not six, plus three `matches!` predicates that default
+silently — `grant.rs`'s `namespace_separator` among them, see below), and
+"twenty kinds" reconciled with §11's "twenty-one".
+
+**RFC 0015.** §7 used pre-0015 words. Listings are `releases:list`, and 0015
+§4.4 filters a listing by per-version grant *before* this RFC's `strip` sees
+it; the two compose and the order is stated in §7 now. "Block" throughout means
+an admin block row (`packages:block`, `BlockListRule`, `blocked_versions_for`),
+which is still the right mechanism. The namespace tier has no meaning for
+`nodedist` (one package) and an ambiguous one for `sdkman`, where §5.2 stuffs
+`{candidate}/{platform}` into `package` and `namespace_separator` defaults to
+`/`: the platform would read as a namespace. **Decision:** `namespace_separator`
+answers `None` for both kinds (no namespace tier), and the `Sdkman` arm is
+written explicitly rather than left to the `_ => '/'` default.
+
+**RFC 0018.** Three seams, all now recorded on 0018's side too.
+
+- 0018 replaces `release_age_gate` with `[security].min_age_secs` and holds on
+  a missing timestamp by default. This RFC's mandatory `deny_missing_timestamp`
+  is the same flag under the other name; on a `[security]` registry 0018's key
+  wins and this RFC's validation row does not apply. The `published_at` this
+  RFC derives from `index.tab` / the candidate list is registered in 0018 §4.1
+  as the timestamp source for the two kinds.
+- A JDK or Node tarball exceeds 0018's `max_extracted_mb = 512`; archive
+  scanners answer `SCANNER_UNSUPPORTED` for them and age + OSV still apply.
+  Operators who put a toolchain registry behind `[security]` get exactly the
+  age gate this RFC argues for, with a verdict and a `Retry-After`.
+- 0010 decision 9 (no installers) and 0019's `raw` policy are reconciled in
+  0019 §11 q2, not here.
+
+**RFC 0019.** SDKMAN's broker answers `302` to `github.com/…/releases/download/…`
+for several candidates. This RFC follows the chain server-side through the
+SSRF pair and caches under `sdkman/{c}/{v}/{plat}`; it never goes through the
+github registry client, so 0019's ref model does not apply, and the egress host
+list in §9 is the one 0019 will need for GitHub release assets. Neither RFC
+depends on the other.
+
+**Two protocol details corrected against the recorded endpoint map** (the
+memory this repository keeps of the live SDKMAN probe):
+
+- `X-Sdkman-Checksum` / `X-Sdkman-Archive-Type` were returned on the broker's
+  `302`, not on the CDN's final `200`, and by none of the seven sampled
+  candidates rather than "some". §4.4 is amended: headers are collected from
+  every hop, last non-empty wins, and their absence is not an error.
+- `broker/version/sdkman/{channel}/{track}` lives under the *candidates* API
+  host, and `selfupdate/{channel}/{platform}` exists beside it; both are added
+  to §6.5's endpoint list, relayed byte-exact like the hooks.
+
+**Wording.** §9 said "the ordinary retention path collects them"; RFC 0016's
+retention governs locally published versions only. Proxy cache is
+`EvictionConfig`; the word is "eviction".
+
+**Still the weakest piece**, and unchanged: the fixed-width parse of the
+rendered `versions/list` table. Its cache key includes the client's
+`?current=&installed=` query, so the hit rate is per client and the filter runs
+on nearly every call; §4.4 now says so instead of implying the document caches
+like `index.tab`.

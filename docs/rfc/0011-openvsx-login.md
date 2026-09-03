@@ -2,7 +2,7 @@
 
 | Field      | Value                                                                  |
 | ---------- | ---------------------------------------------------------------------- |
-| Status     | Draft                                                                  |
+| Status     | Draft — revised 2026-09-02: phases 1–2 are largely shipped, the PAT model here is not the shipped one; see §13 |
 | Short      | Authenticated OpenVSX access |
 | Settles    | Giving an editor that has no credential hook a way to send one: a contract file that may point at a secret rather than hold it, the pod's own Kubernetes identity, a loopback proxy for editors we do not build, and a sign-in entry in the Extensions view instead of a blank one |
 | Author     | batleforc                                                              |
@@ -813,7 +813,7 @@ flowchart TD
 - Bearer middleware on VSX routes: prefix dispatch (`bh_pat_` → PAT path, else JWT path), JWKS cached with rotation handling, no introspection round-trip on the hot path.
 - **The provider chain is not rebuilt.** `KubernetesAuthProvider` and the OIDC provider ship; the work is routing VSX endpoints through the middleware that already consults them, and adding the PAT scope check.
 - Kubernetes (§4.5.1): a TokenReview response cache keyed by token hash and bounded by the token's own `exp`, because `extensionquery` runs on every editor start. The two-directional audience check is untouched.
-- PAT table: hashed secret (argon2id), scopes, optional expiry, revocation flag; CRUD API consumed by the CLI and the admin UI. The group snapshot on a PAT is RFC 0011-bis.
+- PAT table — **shipped**, and not as drafted: hashed secret (argon2id), `role`, `groups` (migration 046), a mandatory 1–90 day expiry, revocation flag; no `scopes` column (§13). CRUD API consumed by the CLI and the admin UI. The group snapshot on a PAT is RFC 0011-bis.
 
 ### 6.2 `cli/` (`batlehub-cli`, existing)
 
@@ -956,13 +956,16 @@ flowchart TD
 
 ### Still open
 
-1. **Who supervises `proxy serve` in a workspace.** A DevWorkspace container command, a user-run process, or a supervisor entry: when it dies the Extensions view dies with it. Recommendation: workspace container command with restart, and a status line in the CLI when the editor's configured gallery URL points at a proxy that is not answering.
-2. **How the capability URL reaches each editor build.** che-code is ours; VSCodium and derivatives each have their own gallery-URL mechanism, and `--print-gallery-url` assumes a startup script exists to consume it. Recommendation: document one recipe per supported build rather than invent a generic injector.
-3. **Whether an unauthenticated proxy also serves anonymously-readable proxied extensions** alongside the sign-in entry. A server-side anonymous-read decision; this RFC's default is no.
-4. **Fallback marketplace offline behaviour**: cache search results for degraded network, or fail visibly. Recommendation: fail visibly in v1. If caching lands, the cache is keyed by identity — a shared cache would serve one team's filtered list to another. The same rule applies to any cache the proxy grows.
-5. **Whether the proxy embeds the `batlehub-vsx` package or fetches it from the registry.** Embedding makes the bootstrap work before any extension is published and keeps the channel narrow (§7); fetching keeps one copy. Recommendation: embed, and treat the size as the cost of a bootstrap that works offline.
-6. Where the VS Code extension lives in the repository layout.
-7. **Whether Kubernetes validation should move off TokenReview** to offline JWKS via the cluster's issuer-discovery endpoint. It removes an API-server round trip from a hot path; it also replaces a shipped implementation whose audience check is stricter than the reference authenticator's, and offline validation has no equivalent of `status.audiences` — it asserts `aud` from the token itself rather than having the API server confirm the binding. Recommendation: cache first, measure, and only then decide. Not this RFC.
+Closed on 2026-09-02; the decisions are in §13. Questions 1 and 5 leave with the
+loopback proxy and the extension, which §13 moves to a follow-up RFC.
+
+1. ~~**Who supervises `proxy serve` in a workspace.**~~ Not this RFC any more (§13).
+2. ~~**How the capability URL reaches each editor build.**~~ The Setup Guide's per-build `product.json` snippets (§13).
+3. ~~**Whether an unauthenticated proxy also serves anonymously-readable proxied extensions.**~~ Per-package visibility is RFC 0015's; pass through, never re-decide (§13).
+4. ~~**Fallback marketplace offline behaviour.**~~ Fail visibly (§13).
+5. ~~**Whether the proxy embeds the `batlehub-vsx` package or fetches it.**~~ Not this RFC any more (§13).
+6. ~~Where the VS Code extension lives in the repository layout.~~ A separate repository (§13).
+7. ~~**Whether Kubernetes validation should move off TokenReview.**~~ No; the shipped cache bounds the cost (§13).
 
 ---
 
@@ -979,3 +982,76 @@ flowchart TD
 | 7 | `batlehub-vsx` broker mode: mode detection, credential chain, contract-file upkeep, status-bar state, re-query after login. Becomes the package the bootstrap serves. | 4 |
 | 8 | `batlehub-vsx` fallback marketplace for builds whose gallery URL cannot be repointed — stock VS Code above all. | 7 |
 | 9 | Upstream PR against `che-incubator/che-code`; adjust per review; the proxy and fallback remain regardless of outcome. | 5 |
+
+---
+
+## 13. Revision against the tree (2026-09-02)
+
+This document has not been re-read against the tree since July, and a full
+quarter of its server-side work has shipped in the meantime — under RFC 0015,
+0017 and the "groups on a PAT" item — in a shape that is not the one drafted
+here. Nothing in phases 3–9 has started. This section says what is shipped,
+what the draft got wrong, and what is cut.
+
+**Already shipped, described above as future work.**
+
+- The auth middleware is applied app-wide (`server_factory.rs`); every VSX
+  handler takes an `AuthIdentity` and the gallery runs `authorize_gallery_read`.
+  §4.2/§5.4's "the work is routing VSX endpoints through the chain" is done.
+- The TokenReview response cache (60 s hit / 10 s reject, keyed by token hash)
+  and the server-side `aud`/`iss` peek before any API-server call
+  (`token_may_be_ours`, `looks_like_a_jwt`) — §6.1's and phase 2's largest
+  items.
+- PATs: `bh_pat_` prefix, argon2id, revocation, `role`, `groups` snapshot
+  capped to the creator's own, `--groups`/`--all-groups`, the tokens page.
+- `--kubernetes-token-path`, re-read per request; `is_token_expiring_soon`;
+  the TUI `Login` screen with its Kubernetes-path tab.
+
+**Wrong when drafted.**
+
+- *The PAT model.* There is no `scopes` column, no optional expiry (1–90 days,
+  mandatory), and `vsx:read` is not in RFC 0015's vocabulary — gallery read is
+  `source:read`. Every `--scope vsx:read` above reads as `--role user
+  --groups …`; the blast-radius argument of §7 holds through groups and
+  visibility, not scopes.
+- *The CLI login flow.* §4.1.3/§5.2 describe PKCE with a loopback redirect and
+  a device-code fallback. The shipped flow is server-brokered: the CLI prints
+  the SSO URL and the user pastes the redirect back; PKCE lives server-side with
+  a `client_secret` (a confidential client). Neither PKCE-loopback nor device
+  code exists; if either is wanted it is a new deliverable, and this revision
+  does not add one.
+- *`401 + WWW-Authenticate: Bearer`.* Nothing emits `WWW-Authenticate`. The
+  gallery answers `200` with an empty list to an anonymous caller — which is
+  the RFC's own §4.4.2 property, already holding server-side.
+- *§4.3 validation rows.* Empty `audiences` defaults to `["batlehub"]`; no
+  cluster-audience rejection exists; the TokenReview cache has no toggle to
+  warn about. The three rows are deleted.
+- *§5.1's diagram* says "cluster JWKS + audience check"; §4.5 and the shipped
+  provider use TokenReview. The diagram is wrong.
+- *0011-bis* is superseded by 0015; the twelve references to it as the live
+  authorization spec now point at 0015 and 0017. "Reader groups on a
+  namespace" are `group:` subjects in a grant.
+- *The `exchange` credential source* duplicates `ActionsOidcAuthProvider`,
+  which already accepts a GitHub Actions token directly. Dropped, with
+  `keychain` and `--kubeconfig`, from v1.
+
+**Cut and split.** Five deliverables across three languages and two
+repositories behind one Draft is why the index ranks this last. **Decision:**
+this RFC keeps the contract file (one source: `file`, plus a literal for
+tests), `auth token`/`write-token-file`/`status` in the CLI, and the che-code
+patch that reads one literal — roughly 500 lines. The loopback `proxy serve`,
+the bootstrap sign-in entry and the `batlehub-vsx` extension (phases 3–4 and
+7–8) move to a 0011-bis-successor RFC written when a build that cannot repoint
+its gallery URL is actually in front of us. RFC 0018 lists "the Batlehub VS
+Code extension reads the verdict endpoint" as a channel; that is this cut
+piece, and 0018 now says so.
+
+**The seven open questions.** 1 (who supervises `proxy serve`) and 5 (embed
+vs fetch the vsix) leave with the proxy and the extension. 2 (how the URL
+reaches each editor) is answered by the `product.json` snippets the Setup
+Guide already carries per build. 3 (anonymous extensions beside the sign-in
+entry): per-package visibility is 0015's, `Public` means anonymous; pass
+through what the server returns and never re-decide. 4 (offline cache): fail
+visibly, as the gallery already does. 6 (where the extension lives): a
+separate repository, when it exists. 7 (TokenReview → offline JWKS): no; the
+cache bounds the cost. Zero remain.
