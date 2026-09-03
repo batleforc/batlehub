@@ -13,8 +13,13 @@ vi.mock("@/client/sdk.gen", () => ({
   revokeToken: revokeTokenMock,
 }));
 
+const identityGroups = { value: ["authentik:eng", "authentik:qa"] };
+
 vi.mock("@/composables/useAuth", () => ({
-  useAuth: () => ({ token: { value: "t" }, identity: { value: { role: "admin" } } }),
+  useAuth: () => ({
+    token: { value: "t" },
+    identity: { value: { role: "admin", groups: identityGroups.value } },
+  }),
 }));
 
 import TokensPage from "./TokensPage.vue";
@@ -38,9 +43,18 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-async function mountPage() {
+async function mountPage(tokens?: unknown[]) {
   listTokensMock.mockResolvedValue({
-    data: [{ id: "tok-1", name: "ci-eu-west", role: "user", created_at: null, expires_at: null }],
+    data: tokens ?? [
+      {
+        id: "tok-1",
+        name: "ci-eu-west",
+        role: "user",
+        created_at: null,
+        expires_at: null,
+        groups: [],
+      },
+    ],
   });
   const wrapper = mount(TokensPage, {
     attachTo: document.body,
@@ -139,5 +153,137 @@ describe("TokensPage revocation", () => {
     const dialog = wrapper.findComponent(DestructiveConfirm);
     expect(dialog.props("open")).toBe(true);
     expect(dialog.props("error")).toContain("not permitted");
+  });
+});
+
+/**
+ * RFC 0011-bis §4.4 — a PAT's groups.
+ *
+ * A token used to resolve to no groups at all, so automation saw `public` and
+ * `internal` and nothing its owner was granted through a team. The console is
+ * where the snapshot is chosen and, because a snapshot goes stale silently,
+ * the only place its owner can see what an existing token still carries.
+ */
+describe("TokensPage group snapshot", () => {
+  beforeEach(() => {
+    revokeTokenMock.mockReset().mockResolvedValue({ data: {} });
+    createTokenMock.mockReset().mockResolvedValue({
+      data: {
+        id: "tok-2",
+        name: "ci",
+        token: "bh_pat_secret",
+        role: "user",
+        expires_at: null,
+        created_at: null,
+        groups: ["authentik:eng"],
+      },
+    });
+  });
+
+  /* The create dialog renders through radix's `DialogPortal`, so it lands in
+     `document.body` outside the wrapper's own tree — queried through the DOM,
+     the way the existing announcer assertion already does. */
+  const buttonIn = (root: ParentNode, label: string) =>
+    [...root.querySelectorAll("button")].find((b) => b.textContent?.trim() === label)!;
+
+  /* Scoped to the dialog, never to the whole body: the page header carries a
+     "Create token" button of its own, and matching that one silently reopens
+     the dialog instead of submitting it. */
+  const dialog = () => document.querySelector('[role="dialog"]') as ParentNode;
+
+  async function openDialog() {
+    const wrapper = await mountPage();
+    buttonIn(wrapper.element as ParentNode, "Create token").click();
+    await flushPromises();
+    return wrapper;
+  }
+
+  async function submit(label = "ci") {
+    const name = dialog().querySelector("#token-name") as HTMLInputElement;
+    name.value = label;
+    name.dispatchEvent(new Event("input"));
+    await flushPromises();
+    buttonIn(dialog(), "Create token").click();
+    await flushPromises();
+  }
+
+  /** Only what the caller holds: the server refuses anything else with a 403. */
+  it("offers exactly the caller's own groups", async () => {
+    await openDialog();
+    for (const g of identityGroups.value) {
+      expect(buttonIn(dialog(), g)).toBeTruthy();
+    }
+  });
+
+  it("sends no groups when none are picked", async () => {
+    await openDialog();
+    await submit();
+
+    expect(createTokenMock).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.objectContaining({ groups: [] }) }),
+    );
+  });
+
+  it("sends the picked groups", async () => {
+    await openDialog();
+    buttonIn(dialog(), "authentik:eng").click();
+    await flushPromises();
+    await submit();
+
+    expect(createTokenMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({ groups: ["authentik:eng"] }),
+      }),
+    );
+  });
+
+  /**
+   * The server's answer, not the form's. A snapshot is capped to what the
+   * creator holds, so the two can differ, and what the token *actually*
+   * carries is the only one worth showing at the one moment it can be changed.
+   */
+  it("reveals what the created token carries", async () => {
+    const wrapper = await openDialog();
+    await submit();
+
+    expect(wrapper.text()).toContain("authentik:eng");
+  });
+
+  it("says so when a created token carries nothing", async () => {
+    createTokenMock.mockResolvedValue({
+      data: {
+        id: "tok-3",
+        name: "ci",
+        token: "bh_pat_secret",
+        role: "user",
+        expires_at: null,
+        created_at: null,
+        groups: [],
+      },
+    });
+    const wrapper = await openDialog();
+    await submit();
+
+    expect(wrapper.text()).toContain("only public and internal");
+  });
+
+  /** Where an owner finds out a token still carries a team they have left. */
+  it("lists what an existing token carries", async () => {
+    const wrapper = await mountPage([
+      {
+        id: "tok-1",
+        name: "ci-eu-west",
+        role: "user",
+        created_at: null,
+        expires_at: null,
+        groups: ["authentik:qa"],
+      },
+    ]);
+    expect(wrapper.text()).toContain("authentik:qa");
+  });
+
+  it("marks a groupless token in the listing rather than leaving the cell blank", async () => {
+    const wrapper = await mountPage();
+    expect(wrapper.text()).toContain("public + internal only");
   });
 });

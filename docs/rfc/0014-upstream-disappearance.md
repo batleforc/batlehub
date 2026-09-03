@@ -2,7 +2,7 @@
 
 | Field       | Value                                                        |
 | ----------- | ------------------------------------------------------------ |
-| Status      | Draft                                                         |
+| Status      | Draft — revised 2026-09-02 onto RFC 0018's worker; O2, O4, O6 closed in §13 |
 | Short       | Upstream disappearance                                        |
 | Settles     | How a package that vanished upstream is detected, held, and reported to the admin |
 | Author      | Max Batleforc <maxleriche.60@gmail.com>                       |
@@ -78,7 +78,7 @@ unpublish as a supply-chain event first and an availability event second:
 ## 2. Motivation
 
 1. **Eviction deletes the last copy of exactly the artifacts worth keeping.**
-   `EvictionService::run_ttl` (`crates/core/src/services/eviction/mod.rs:84`)
+   `EvictionService::run_ttl` (`crates/core/src/services/eviction/mod.rs:248`)
    selects on `cached_at`, and `run_idle` on `last_accessed_at`. Neither knows
    anything about upstream. An artifact that upstream no longer has is,
    mechanically, an artifact that will never be re-cached — and it ages exactly
@@ -698,7 +698,7 @@ discovered later.
 
 ### 6.6 `crates/adapters`
 
-- `crates/adapters/migrations/039_upstream_status.sql`, registered with a `mig!`
+- `crates/adapters/migrations/047_upstream_status.sql`, registered with a `mig!`
   entry in `crates/adapters/src/migrations.rs`.
 
   ```sql
@@ -789,7 +789,7 @@ then `task ui:generate` — never hand-edited.
 - `crates/core/src/services/proxy/` — the serve path reads none of this. The
   temptation is to add a header or a warning on a served-but-disappeared
   artifact; that is a serving change, and §3 rules it out.
-- `PackageStatus` (`entities/package.rs:95`) — a two-arm enum owned by the admin
+- `PackageStatus` (`entities/package.rs:143`) — a two-arm enum owned by the admin
   block workflow. A third arm would make every `is_blocked()` call site
   re-derive intent, and disappearance is orthogonal to blocking: a package can
   be both, neither, or either.
@@ -900,7 +900,7 @@ then `task ui:generate` — never hand-edited.
 - **Config migration**: none. The block is additive and every field has a serde
   default. `CURRENT_CONFIG_VERSION` does not move — it marks breaking schema
   changes, and nothing here breaks an existing file.
-- **Database migration**: `039_upstream_status.sql` is additive, `IF NOT EXISTS`,
+- **Database migration**: `047_upstream_status.sql` is additive, `IF NOT EXISTS`,
   and touches no existing table. It runs on upgrade whether or not the feature is
   enabled, which is what makes enabling it later a config-only change.
 - **Operator prerequisites**: outbound network access to the configured
@@ -989,7 +989,7 @@ then `task ui:generate` — never hand-edited.
 - **Contract**: `crates/web/tests/openapi_contract.rs` must pass unchanged —
   it is what proves the three endpoints declare response bodies and that the
   generated client will not emit `unknown`.
-- **UI** (`ui/src/views/AdminUpstream.test.ts`, plus additions to
+- **UI** (`ui/src/pages/AdminUpstream.test.ts`, plus additions to
   `AdminHealth.test.ts` and `PackageDetailPage.test.ts`): the table renders each
   state, the empty state explains the first-sweep-finds-nothing behaviour, the
   active policy is shown on the health card, and the badge offers the block
@@ -1024,48 +1024,14 @@ then `task ui:generate` — never hand-edited.
 
 ### Still open
 
-1. **Should `retain_disappeared` hold the *metadata* cache too?** A held
-   artifact whose metadata entry expires is servable by key but may vanish from
-   the version listing the resolver reads, which for some ecosystems is as good
-   as gone. That is arguably the same bug as motivation 1 one layer up.
-   Recommendation: yes, but as a follow-up — it interacts with
-   `serve_stale_metadata` and RFC 0006's listing rules, and folding it in here
-   doubles the surface for a benefit only some ecosystems see.
-2. **Which registry kinds actually reach rung 1?** The ladder is designed to
-   degrade safely, but the honest coverage matrix is unknown — twenty-one kinds,
-   and `list_versions` is a defaulted method. `docs/internal/registry-api-coverage.md`
-   is the right home for the measured answer, and it should be filled in during
-   phase 2 rather than asserted now. A kind that only ever reaches rung 3 has a
-   real per-sweep cost worth knowing before phase 4 ships.
-3. **Flip `enabled` to `true` in a later release?** The feature only helps
-   operators who know it exists, and default-off means most never will.
-   Recommendation: revisit once phase 4 has run against a real estate and the
-   per-sweep request volume is measured, not before.
-4. **What is the right `outage_ratio` for a registry with three cached
-   packages?** One missing package is 33% and voids every sweep, so small
-   registries are undetectable. An absolute floor (`min_probed = 10`, below
-   which the ratio gate is skipped and the count/age floors carry the decision
-   alone) is the obvious fix and is probably right, but it weakens the guarantee
-   exactly where the population argument is weakest. Needs a decision before
-   phase 2. **Sharper now that `"block"` exists**: on a small registry the
-   count/age floors would be the *only* thing standing between one upstream
-   hiccup and a blocked package.
-5. **How does an estate block a freed *name* against re-registration?**
-   `"block"` blocks the versions the estate holds; a squatter publishing `9.9.9`
-   under the freed name is untouched (§3, §4.3), so motivation 4 is only half
-   served. Closing it needs a name-level block row — a `version = '*'` sentinel,
-   or a `blocked_names` table — read by `BlockListRule` and by every listing
-   filter RFC 0006 built. That is a change to the block model itself, so it
-   belongs in a follow-up to RFC 0002 rather than here. Recommendation: file it,
-   and until it lands say plainly in the docs that `"block"` quarantines what
-   you have and does not reserve the name.
-6. **Per-registry `on_confirmed` override?** Auto-block a public upstream,
-   audit-only an internal mirror one probably controls end-to-end — the §7
-   threat model differs sharply between the two, which is the strongest argument
-   that one global key is too coarse. Recommendation: ship the global key, add
-   the per-registry override in `RegistryPolicy` if anyone asks; the precedence
-   rule (registry overrides global, absent means inherit) is obvious enough that
-   deferring costs nothing.
+Closed on 2026-09-02; the decisions are in §13's table.
+
+1. ~~**Should `retain_disappeared` hold the *metadata* cache too?**~~ Yes, in phase 5 (§13 O1).
+2. ~~**Which registry kinds actually reach rung 1?**~~ `RegistryKind::upstream_detail()` already says: 13 can, 8 cannot (§13 O2).
+3. ~~**Flip `enabled` to `true` in a later release?**~~ Later; unchanged (§13 O3).
+4. ~~**What is the right `outage_ratio` for a registry with three cached packages?**~~ `min_probed = 10`, and `"block"` refused under the floor (§13 O4).
+5. ~~**How does an estate block a freed *name* against re-registration?**~~ RFC 0002 §13's `version = '*'` sentinel on `Opaque` kinds (§13 O5).
+6. ~~**Per-registry `on_confirmed` override?**~~ A registry-tier policy row, deepest wins (§13 O6).
 
 ---
 
@@ -1088,3 +1054,67 @@ Each phase leaves the tree building, clippy-clean and green.
 Phases 1–5 are the feature as an admin first asked for it: detect, notify, keep.
 Phase 6 is the policy that lets an estate act on it without staffing 04:00.
 Phases 7–9 are what stop it being a webhook nobody can query afterwards.
+
+---
+
+## 13. Revision against the tree (2026-09-02)
+
+Written before RFC 0015, 0016 and 0018; nothing of its nine phases has
+started. The diagnosis in §2.1 is intact and still the strongest reason to
+build it: `run_ttl` selects on `cached_at` and knows nothing about upstream.
+The rest is re-based here.
+
+**Corrected in place.** `run_ttl` is at `eviction/mod.rs:248`; `PackageStatus`
+at `package.rs:143`; migration `039` is `local_package_tombstones`, the next
+free is `047`; the console pages live in `ui/src/pages/`.
+
+**§2.2 was half wrong.** "A 404 exists for one stack frame and is discarded"
+— `UpstreamDetailCoordinator` keeps a per-process negative cache
+(`record_absent`, `is_absent`, `clear_absent`, capped at 100 000, TTL
+`negative_ttl`), written from the console discovery path. It is not this
+RFC's mechanism — in RAM, per document, console-only, never for something the
+estate holds — but it is prior art, and the sweep seeds from it: a remembered
+absence is a free first miss.
+
+**Re-based onto RFC 0018** (recorded there as decision 29). Two periodic
+walkers over the same rows, two timers, two concurrency bounds and two ways to
+say "upstream no longer lists this" is the shape 0018 exists to remove.
+**Decision:** the probe of §5 runs as an `ArtifactScanner` named
+`upstream-presence` on 0018's worker with `ScanTrigger::Rescan`, on every
+proxy/hybrid registry whether or not it has `[security]`; its finding is
+`UNPUBLISHED_UPSTREAM`. The state machine — population gate, confirmation
+window, hold, reappearance — stays here, keyed on the `upstream_status` rows.
+On a `[security]` registry `on_confirmed = "block"` is a `denied` verdict with
+that code; elsewhere it stays a `PackageStatus::Blocked` row as written.
+Phase 3's own timer and concurrency knobs go; `[worker]` owns them.
+
+**Re-based onto RFC 0016.** Tombstones are local rows and eviction never reads
+them, so there is no overlap in code — but 0016 §5.1 and `retention/mod.rs`
+insist eviction must never grow "only copy" semantics, and a held artifact is
+an only copy. The hold is the minimal exception, bounded by the LRU cap.
+Three deleters now touch the same bytes; the precedence is **hold > 0018 §6.10
+retention > eviction**, and the size cap wins over all three.
+
+**Two conventions corrected.** The actor is `Identity::system()` (already
+`user_id = "system"`, admin) with the source in the block `reason` and the
+event's `metadata.source`; `system:upstream-audit` was a second convention
+nobody else uses. The sweep's first tick copies
+`spawn_periodic_coherence_sweep` (skips tick one) rather than
+`spawn_periodic_vuln_scan` (fires at second zero, before `skip_recently_seen`
+has a picture). And the rung ladder dispatches on
+`RegistryKind::upstream_detail()` — which already declares `Document`,
+`ListVersions` or `None` per kind — instead of inferring capability from an
+empty `Vec`.
+
+**Open questions.**
+
+| # | Question | Decision |
+| - | -------- | -------- |
+| O1 | Hold the metadata cache too? | Yes, in phase 5: a `disappeared` row pins the metadata key's stale copy, otherwise motivation 3 returns one layer up. |
+| O2 | Which kinds reach rung 1? | Answered by `upstream_detail()`: 9 by document, 4 by listing, 8 cannot (3 forges, 5 path-proxy). The matrix is generated from the enum, not maintained in `docs/internal/`. |
+| O3 | Flip `enabled` default? | Later; unchanged. |
+| O4 | `outage_ratio` on three packages | `min_probed = 10` (a constant, not config): below it the ratio gate is skipped and `confirm_after`/`confirm_min_age` carry the decision, **and** `"block"` is refused under the floor — hold and notify only, the event carrying `policy_downgraded: "small_population"`. The one place the population argument is weak is no longer the one place the destructive arm fires. This was the decision the index said was owed before phase 2. |
+| O5 | Block a freed name | RFC 0002 §13 allows a `version = '*'` sentinel on `Opaque` kinds; a package-level confirmation writes it once 0002 lands. Until then, versions only, as written. |
+| O6 | Per-registry `on_confirmed` | RFC 0015's `policy` table already composes per-tier `rules` and `retention`; `on_confirmed` is a registry-tier policy row, deepest wins. No global key. |
+
+Zero remain open.

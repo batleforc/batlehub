@@ -536,6 +536,7 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
             explore::invalidate_explore_cache,
             governance::{
                 beta_channel::{add_beta_member, list_beta_members, remove_beta_member},
+                grants::{delete_grant, list_grants, put_grant},
                 ownership::{add_package_owner, list_package_owners, remove_package_owner},
                 policy::{
                     delete_gate_exemption, delete_package_policy, delete_version_policy,
@@ -1005,6 +1006,12 @@ fn collect_routes(cfg: &mut UtoipaServiceConfig) {
     cfg.service(get_quota_for_user);
     cfg.service(list_quota_for_registry);
     cfg.service(list_quota);
+    // RFC 0017 §4.1 — the package/version grants editor. Registered before the
+    // `{name:.*}` visibility routes below for the same reason ownership is:
+    // a wildcard tail would otherwise swallow `/grants`.
+    cfg.service(list_grants);
+    cfg.service(put_grant);
+    cfg.service(delete_grant);
     // Ownership admin
     cfg.service(list_package_owners);
     cfg.service(add_package_owner);

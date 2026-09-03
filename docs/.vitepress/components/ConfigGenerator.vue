@@ -35,6 +35,66 @@ type Enforcement = "block" | "warn";
 type MatchMode = "all" | "any";
 type ConditionMatchType = "auto" | "glob" | "regex";
 
+/// RFC 0015 §4.1 — how wide the read audience is at one tier of the hierarchy.
+///
+/// `private` is deliberately absent: §4.9 rejects it above the package tier,
+/// where it "either says nothing or says what `grants = {}` already says
+/// properly", and the generator writes registry and namespace tiers only.
+type Visibility = "" | "public" | "internal" | "team";
+
+/// RFC 0015 §4.5 — whether published bytes may be replaced.
+type Immutable = "never" | "released" | "always";
+
+/// One `subject -> verbs` row of a `grants` table (RFC 0015 §4.2).
+///
+/// The subject is the TOML key: `"*"`, `"role:admin"`, `"group:oidc:team-a"`,
+/// `"user:alice"`. Verbs are the closed vocabulary, comma-separated here and
+/// expanded once at startup — an unknown one is a startup error, not a
+/// permission granted to nobody.
+interface GrantEntry {
+  id: number;
+  subject: string;
+  verbs: string;
+}
+
+/// RFC 0015 §4.1 — one `[[registries.namespaces]]` node.
+///
+/// A namespace is a *prefix* of the package coordinate, not a separate object:
+/// `match = "@acme"` covers `@acme/ui` on npm, `match = "com.acme"` covers
+/// `com.acme:lib` on Maven. The separator is the ecosystem's own, and matching
+/// appends it — which is why a `match` ending in the separator can never match
+/// and is refused at startup.
+interface Namespace {
+  id: number;
+  match_prefix: string;
+  /// `sealed` writes `grants = {}`: the one construct that *stops* inheritance
+  /// from the registry above, as opposed to an absent block (inherit) or a
+  /// populated one (inherit, then widen). The three states are distinct and
+  /// collapsing them is the modelling error §4.2 calls out by name.
+  sealed: boolean;
+  grants: GrantEntry[];
+  visibility: Visibility;
+  prerelease_visibility: Visibility;
+  versioning_enabled: boolean;
+  versioning_enforce_semver: boolean;
+  versioning_allow_prerelease: boolean;
+  versioning_pattern: string;
+  versioning_immutable: Immutable;
+  versioning_monotonic: boolean;
+  versioning_dry_run: boolean;
+  quota_enabled: boolean;
+  quota_max_bytes: string;
+  quota_max_packages: string;
+  quota_warn_threshold_pct: number;
+  quota_enforcement: Enforcement;
+  shadow_enabled: boolean;
+  shadow_until: string;
+  /// Gate rules for this subtree. Absent (the checkbox off) inherits the
+  /// registry's; present replaces them for everything under `match`.
+  rules_enabled: boolean;
+  rules: RulePolicy;
+}
+
 interface StorageBackend {
   id: number;
   name: string;
@@ -148,11 +208,49 @@ interface AuthProvider {
   // actions-oidc
   actions_name: string;
   actions_issuer: string;
+  /// Value the token's `aud` claim must equal. **Required, and there is no
+  /// default.** The issuer is shared by every repository on the forge, so
+  /// without it `iss` proves only that the caller is *a* CI job.
+  actions_audience: string;
   actions_user_id_claim: string;
   actions_rules: ActionsRule[];
 }
 
-interface Registry {
+/// The seven gate rules, in the flat shape the form binds to.
+///
+/// Extracted so a namespace can carry its own set: `rules` is one of the
+/// policies RFC 0015 §4.1 attaches to every tier, and the emit layer is
+/// identical at both — only the table name differs.
+interface RulePolicy {
+  rule_age_gate_enabled: boolean;
+  rule_age_gate_min_age: number;
+  rule_age_gate_bypass_roles: string;
+  rule_age_gate_deny_missing_timestamp: boolean;
+  rule_deny_latest_enabled: boolean;
+  rule_deny_latest_bypass_roles: string;
+  rule_signed_release_enabled: boolean;
+  rule_signed_release_bypass_roles: string;
+  rule_signed_release_deny_missing: boolean;
+  rule_license_gate_enabled: boolean;
+  rule_license_gate_allow: string;
+  rule_license_gate_deny: string;
+  rule_license_gate_allow_unknown: boolean;
+  rule_license_gate_block: boolean;
+  rule_license_gate_bypass_roles: string;
+  rule_version_gate_enabled: boolean;
+  rule_version_gate_allow: string;
+  rule_version_gate_block: string;
+  rule_version_gate_bypass_roles: string;
+  rule_cve_gate_enabled: boolean;
+  rule_cve_gate_min_severity: string;
+  rule_cve_gate_block: boolean;
+  rule_cve_gate_bypass_roles: string;
+  rule_trusted_publisher_enabled: boolean;
+  rule_trusted_publisher_allow: string;
+  rule_trusted_publisher_bypass_roles: string;
+}
+
+interface Registry extends RulePolicy {
   id: number;
   name: string;
   type: RegistryType;
@@ -223,6 +321,49 @@ interface Registry {
   versioning_enforce_semver: boolean;
   versioning_allow_prerelease: boolean;
   versioning_pattern: string;
+  /// RFC 0015 §4.5. Not a verb: immutability is a property of the resource,
+  /// which is what lets a node be append-only for everyone, admins included.
+  versioning_immutable: Immutable;
+  versioning_monotonic: boolean;
+  versioning_dry_run: boolean;
+  // RFC 0015 — grants and the tiered policy hierarchy
+  grants: GrantEntry[];
+  namespaces: Namespace[];
+  grants_shadow_enabled: boolean;
+  grants_shadow_until: string;
+  visibility: Visibility;
+  prerelease_visibility: Visibility;
+  // RFC 0016 — retention of locally published versions (local/hybrid)
+  retention_enabled: boolean;
+  retention_keep_versions: string;
+  retention_keep_for_days: string;
+  retention_keep_if_pulled_days: string;
+  retention_keep_yanked: boolean;
+  retention_download_signal_floor_days: string;
+  retention_reclaim_delay_ms: number;
+  retention_tombstone_detail_for_days: string;
+  retention_dry_run: boolean;
+  // RFC 0012 — signed, expiring download URLs in this registry's documents
+  signed_downloads: boolean;
+  // README capture (RFC 0007-bis)
+  readme_customised: boolean;
+  readme_enabled: boolean;
+  readme_from_archive: boolean;
+  readme_max_bytes: number;
+  readme_remote_images: "strip" | "proxy";
+  readme_remote_image_hosts: string;
+  readme_image_max_bytes: number;
+  // The console's upstream discovery read
+  upstream_detail_customised: boolean;
+  upstream_detail_enabled: boolean;
+  upstream_detail_max_versions: number;
+  upstream_detail_negative_ttl_secs: number;
+  /// Whether the console may pull a version this instance does not hold yet.
+  console_fetch: boolean;
+  /// goproxy only: the checksum database to proxy. Blank string disables
+  /// `/sumdb/{path}`, which is what a private-module registry wants.
+  sumdb_url: string;
+  sumdb_disabled: boolean;
   // signing (local/hybrid)
   signing_enabled: boolean;
   signing_required: boolean;
@@ -247,32 +388,6 @@ interface Registry {
   integrity_bypass_roles: string;
   integrity_verify_on_serve: boolean;
   // rules
-  rule_age_gate_enabled: boolean;
-  rule_age_gate_min_age: number;
-  rule_age_gate_bypass_roles: string;
-  rule_age_gate_deny_missing_timestamp: boolean;
-  rule_deny_latest_enabled: boolean;
-  rule_deny_latest_bypass_roles: string;
-  rule_signed_release_enabled: boolean;
-  rule_signed_release_bypass_roles: string;
-  rule_signed_release_deny_missing: boolean;
-  rule_license_gate_enabled: boolean;
-  rule_license_gate_allow: string;
-  rule_license_gate_deny: string;
-  rule_license_gate_allow_unknown: boolean;
-  rule_license_gate_block: boolean;
-  rule_license_gate_bypass_roles: string;
-  rule_version_gate_enabled: boolean;
-  rule_version_gate_allow: string;
-  rule_version_gate_block: string;
-  rule_version_gate_bypass_roles: string;
-  rule_cve_gate_enabled: boolean;
-  rule_cve_gate_min_severity: string;
-  rule_cve_gate_block: boolean;
-  rule_cve_gate_bypass_roles: string;
-  rule_trusted_publisher_enabled: boolean;
-  rule_trusted_publisher_allow: string;
-  rule_trusted_publisher_bypass_roles: string;
   // feature flags
   feature_flags_socket_badge: boolean;
 }
@@ -336,6 +451,42 @@ const subdomainRouting = ref({
   enabled: false,
   base_domain: "",
   scheme: "https",
+});
+
+/// `[grants]` — the instance tier of RFC 0015's hierarchy.
+///
+/// Sits above every registry, which is exactly why it cannot carry an ecosystem
+/// verb: `npm:dist-tags:write` here would name a permission no single registry
+/// defines. In practice this block is only ever needed to hand a control-surface
+/// verb (`config:read`, `system:read`, `blocks:write`) to somebody who is not an
+/// administrator — §10 rule 5 already gives an admin all of them.
+const instanceGrants = ref<GrantEntry[]>([]);
+
+/// `[cache_coherence]` — the periodic sweep for storage blobs no artifact-meta
+/// row points at. Absent means orphans are collected only when asked for.
+const cacheCoherence = ref({
+  enabled: false,
+  interval_secs: 86400,
+});
+
+/// `[search]` — what the catalogue's search matches.
+///
+/// `readmes` needs Postgres: the index is a generated column on a Postgres
+/// table, and with it off `?in=readme` answers as `?in=name` does and says so.
+/// Changing `text_config` rebuilds that column at startup, which makes it an
+/// install-time decision rather than something to tune later.
+const search = ref({
+  readmes: false,
+  text_config: "english",
+});
+
+/// `[server.signed_urls]` — the instance secret behind RFC 0012's signed,
+/// expiring download URLs. Required by any registry with `signed_downloads`.
+const signedUrls = ref({
+  enabled: false,
+  secret: "",
+  ttl_seconds: 300,
+  previous_secrets: "",
 });
 
 // Global egress proxy — inherited by every registry that does not set its own.
@@ -428,7 +579,10 @@ function blankAuthProvider(): AuthProvider {
       { id: mappingSeq++, claim: "system:serviceaccount:ci:builder", role: "user" },
     ],
     actions_name: "",
-    actions_issuer: "",
+    // The one issuer GitHub Actions ever signs with; pre-filled because a blank
+    // `issuer_url` is a `missing field` parse error, not a warning.
+    actions_issuer: "https://token.actions.githubusercontent.com",
+    actions_audience: "",
     actions_user_id_claim: "sub",
     actions_rules: [],
   };
@@ -654,6 +808,41 @@ function defaultRegistry(type: RegistryType = "npm"): Registry {
     versioning_enforce_semver: false,
     versioning_allow_prerelease: true,
     versioning_pattern: "",
+    versioning_immutable: "never",
+    versioning_monotonic: false,
+    versioning_dry_run: false,
+    grants: [],
+    namespaces: [],
+    grants_shadow_enabled: false,
+    grants_shadow_until: "",
+    visibility: "",
+    prerelease_visibility: "",
+    retention_enabled: false,
+    retention_keep_versions: "",
+    retention_keep_for_days: "",
+    retention_keep_if_pulled_days: "",
+    retention_keep_yanked: true,
+    retention_download_signal_floor_days: "",
+    retention_reclaim_delay_ms: 0,
+    retention_tombstone_detail_for_days: "",
+    // RFC 0016's one dry-run that defaults to on: reclaiming is the only
+    // irreversible half of the three, so the safe direction is unambiguous.
+    retention_dry_run: true,
+    signed_downloads: false,
+    readme_customised: false,
+    readme_enabled: true,
+    readme_from_archive: true,
+    readme_max_bytes: 262144,
+    readme_remote_images: "strip",
+    readme_remote_image_hosts: "",
+    readme_image_max_bytes: 2097152,
+    upstream_detail_customised: false,
+    upstream_detail_enabled: true,
+    upstream_detail_max_versions: 300,
+    upstream_detail_negative_ttl_secs: 300,
+    console_fetch: true,
+    sumdb_url: "",
+    sumdb_disabled: false,
     signing_enabled: false,
     signing_required: false,
     signing_allowed_types: "",
@@ -673,32 +862,7 @@ function defaultRegistry(type: RegistryType = "npm"): Registry {
     integrity_require_metadata: false,
     integrity_bypass_roles: "admin",
     integrity_verify_on_serve: false,
-    rule_age_gate_enabled: false,
-    rule_age_gate_min_age: 3600,
-    rule_age_gate_bypass_roles: "admin",
-    rule_age_gate_deny_missing_timestamp: false,
-    rule_deny_latest_enabled: false,
-    rule_deny_latest_bypass_roles: "admin",
-    rule_signed_release_enabled: false,
-    rule_signed_release_bypass_roles: "admin",
-    rule_signed_release_deny_missing: false,
-    rule_license_gate_enabled: false,
-    rule_license_gate_allow: "",
-    rule_license_gate_deny: "",
-    rule_license_gate_allow_unknown: true,
-    rule_license_gate_block: false,
-    rule_license_gate_bypass_roles: "admin",
-    rule_version_gate_enabled: false,
-    rule_version_gate_allow: "",
-    rule_version_gate_block: "",
-    rule_version_gate_bypass_roles: "admin",
-    rule_cve_gate_enabled: false,
-    rule_cve_gate_min_severity: "high",
-    rule_cve_gate_block: false,
-    rule_cve_gate_bypass_roles: "admin",
-    rule_trusted_publisher_enabled: false,
-    rule_trusted_publisher_allow: "",
-    rule_trusted_publisher_bypass_roles: "admin",
+    ...blankRulePolicy(),
     feature_flags_socket_badge: true,
   };
 }
@@ -725,6 +889,203 @@ function csvToList(csv: string): string[] {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+/// The character that separates a namespace prefix from what lies under it, per
+/// ecosystem. Mirrors `namespace_separator` in
+/// `crates/core/src/entities/grant.rs` — matching appends it, so a `match` that
+/// already ends with it can never match and is refused at startup.
+function namespaceSeparator(type: RegistryType): string {
+  if (type === "openvsx" || type === "vscode-marketplace" || type === "nuget")
+    return ".";
+  if (type === "maven") return ":";
+  return "/";
+}
+
+/// The ecosystem-scoped verbs, and the registry types that define them.
+///
+/// RFC 0015 §4.2 rule 2: granting one on a registry that does not define it is
+/// rejected at config load, because "I granted it and nothing happened" is the
+/// failure the closed vocabulary exists to remove.
+const ECOSYSTEM_VERBS: Record<string, RegistryType[]> = {
+  "npm:dist-tags:write": ["npm"],
+  "openvsx:namespace:claim": ["openvsx", "vscode-marketplace"],
+  "terraform:signing-keys:write": ["terraform"],
+  "jetbrains:channel:assign": ["jetbrains", "jetbrains-marketplace"],
+};
+
+/// Verbs in `csv` that this registry type does not define — the §4.2 rule 2
+/// offenders, named so the form can say so before the server refuses to boot.
+function wrongKindVerbs(csv: string, type: RegistryType): string[] {
+  return csvToList(csv).filter((v) => {
+    const kinds = ECOSYSTEM_VERBS[v];
+    return kinds !== undefined && !kinds.includes(type);
+  });
+}
+
+/// Visibility ordered widest to narrowest, matching the `Visibility` enum's own
+/// declaration order — the ordering is load-bearing there and pinned by a test,
+/// so it is the same order here.
+const VISIBILITY_ORDER: Visibility[] = ["public", "internal", "team"];
+
+/// Whether pre-releases would reach a *wider* audience than releases.
+///
+/// Legal, and warned about at startup rather than refused, because it is almost
+/// always a typo: the setting exists to do the opposite. An unset registry
+/// visibility means `public`, which is the behaviour on every existing instance.
+function prereleaseWiderThanRelease(
+  visibility: Visibility,
+  prerelease: Visibility,
+): boolean {
+  if (!prerelease) return false;
+  const release = visibility || "public";
+  return VISIBILITY_ORDER.indexOf(prerelease) < VISIBILITY_ORDER.indexOf(release);
+}
+
+/// A shadow expiry that is blank or already past. Both are startup errors: a
+/// shadow serves every request that would have been refused, so one with no
+/// future end is a permanent bypass.
+function shadowDateInvalid(until: string): boolean {
+  if (!until) return true;
+  const d = new Date(`${until}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return true;
+  return d.getTime() <= Date.now();
+}
+
+/// Emit a rule policy as `[[<table>]]` entries.
+///
+/// One function for both tiers: `[[registries.rules]]` and
+/// `[[registries.namespaces.rules]]` deserialise into the same `Vec<RuleConfig>`
+/// and differ only in the table name. Two copies of this would be two places for
+/// a rule's keys to drift apart.
+function rulesToToml(r: RulePolicy, table: string): string[] {
+  const out: string[] = [];
+  const open = () => {
+    out.push("");
+    out.push(`[[${table}]]`);
+  };
+  const bypass = (csv: string) => {
+    const roles = csvToList(csv);
+    if (roles.length) out.push(`bypass_roles = [${roles.map(q).join(", ")}]`);
+  };
+  if (r.rule_age_gate_enabled) {
+    open();
+    out.push(`kind = "release_age_gate"`);
+    out.push(`min_age_secs = ${r.rule_age_gate_min_age}`);
+    if (r.rule_age_gate_deny_missing_timestamp)
+      out.push(`deny_missing_timestamp = true`);
+    bypass(r.rule_age_gate_bypass_roles);
+  }
+  if (r.rule_deny_latest_enabled) {
+    open();
+    out.push(`kind = "deny_latest"`);
+    bypass(r.rule_deny_latest_bypass_roles);
+  }
+  if (r.rule_signed_release_enabled) {
+    open();
+    out.push(`kind = "require_signed_release"`);
+    out.push(`enabled = true`);
+    if (r.rule_signed_release_deny_missing)
+      out.push(`deny_missing_signature = true`);
+    bypass(r.rule_signed_release_bypass_roles);
+  }
+  if (r.rule_license_gate_enabled) {
+    open();
+    out.push(`kind = "license_gate"`);
+    const licAllow = csvToList(r.rule_license_gate_allow);
+    const licDeny = csvToList(r.rule_license_gate_deny);
+    if (licAllow.length) out.push(`allow = ${tomlArray(licAllow)}`);
+    if (licDeny.length) out.push(`deny = ${tomlArray(licDeny)}`);
+    if (!r.rule_license_gate_allow_unknown) out.push(`allow_unknown = false`);
+    if (r.rule_license_gate_block) out.push(`block = true`);
+    bypass(r.rule_license_gate_bypass_roles);
+  }
+  if (r.rule_version_gate_enabled) {
+    // Each entry may itself contain a comma (">=1.2.0, <2.0.0"), so these two
+    // are one-per-line fields rather than comma-separated ones.
+    const verAllow = linesToList(r.rule_version_gate_allow);
+    const verBlock = linesToList(r.rule_version_gate_block);
+    if (verAllow.length || verBlock.length) {
+      open();
+      out.push(`kind = "version_gate"`);
+      if (verAllow.length) out.push(`allow = ${tomlArray(verAllow)}`);
+      if (verBlock.length) out.push(`block = ${tomlArray(verBlock)}`);
+      bypass(r.rule_version_gate_bypass_roles);
+    }
+  }
+  if (r.rule_cve_gate_enabled) {
+    open();
+    out.push(`kind = "cve_gate"`);
+    out.push(`min_severity = ${q(r.rule_cve_gate_min_severity)}`);
+    if (r.rule_cve_gate_block) out.push(`block = true`);
+    bypass(r.rule_cve_gate_bypass_roles);
+  }
+  if (r.rule_trusted_publisher_enabled) {
+    const allow = csvToList(r.rule_trusted_publisher_allow);
+    if (allow.length) {
+      open();
+      out.push(`kind = "trusted_publisher"`);
+      out.push(`allow = [${allow.map(q).join(", ")}]`);
+      bypass(r.rule_trusted_publisher_bypass_roles);
+    }
+  }
+  return out;
+}
+
+/// The rule defaults, in one place, so a registry and a namespace start from the
+/// same policy rather than from two lists that drift.
+function blankRulePolicy(): RulePolicy {
+  return {
+    rule_age_gate_enabled: false,
+    rule_age_gate_min_age: 3600,
+    rule_age_gate_bypass_roles: "admin",
+    rule_age_gate_deny_missing_timestamp: false,
+    rule_deny_latest_enabled: false,
+    rule_deny_latest_bypass_roles: "admin",
+    rule_signed_release_enabled: false,
+    rule_signed_release_bypass_roles: "admin",
+    rule_signed_release_deny_missing: false,
+    rule_license_gate_enabled: false,
+    rule_license_gate_allow: "",
+    rule_license_gate_deny: "",
+    rule_license_gate_allow_unknown: true,
+    rule_license_gate_block: false,
+    rule_license_gate_bypass_roles: "admin",
+    rule_version_gate_enabled: false,
+    rule_version_gate_allow: "",
+    rule_version_gate_block: "",
+    rule_version_gate_bypass_roles: "admin",
+    rule_cve_gate_enabled: false,
+    rule_cve_gate_min_severity: "high",
+    rule_cve_gate_block: false,
+    rule_cve_gate_bypass_roles: "admin",
+    rule_trusted_publisher_enabled: false,
+    rule_trusted_publisher_allow: "",
+    rule_trusted_publisher_bypass_roles: "admin",
+  };
+}
+
+/// Whether a retention block would actually veto anything.
+///
+/// Mirrors `RetentionConfig::reclaims_anything()` plus the
+/// `tombstone_detail_for_days` escape hatch. `keep_yanked` deliberately does not
+/// count: it defaults to true and would make an otherwise-empty block look
+/// configured while still reclaiming every unyanked version on the first run.
+function retentionReclaims(reg: Registry): boolean {
+  return !!(
+    reg.retention_keep_versions ||
+    reg.retention_keep_for_days ||
+    reg.retention_keep_if_pulled_days ||
+    reg.retention_tombstone_detail_for_days
+  );
+}
+
+/// Emit a `grants` table as `subject = [verbs]` rows.
+///
+/// Rows with a blank subject are dropped rather than emitted empty: a grant
+/// keyed on `""` names nobody, and the union of nothing grants nothing.
+function grantRows(entries: GrantEntry[]): GrantEntry[] {
+  return entries.filter((g) => g.subject.trim());
 }
 
 /// Splits a textarea's contents into one entry per line. Used where an entry may
@@ -787,6 +1148,35 @@ function backendFields(b: {
 
 // ── TOML generation ─────────────────────────────────────────────────────────
 
+/// Whether anything routes on the `Forwarded` / `X-Forwarded-Host` header —
+/// wildcard derivation from a base domain, or a registry claiming vanity hosts.
+///
+/// The server refuses to start in that state without a declared trusted-proxy
+/// policy, because routing on a header nothing vouches for lets any client pick
+/// the registry it lands on. The two controls used to be independent here, so
+/// the form could emit a config that never loads.
+/// Whether any registry mints signed download URLs, which makes
+/// `[server.signed_urls]` mandatory rather than optional.
+const signedDownloadsUsed = computed(() =>
+  registries.value.some((r) => r.signed_downloads),
+);
+
+/// A signing secret below the HMAC-SHA256 minimum. Byte length, not character
+/// count: a 32-character string of multi-byte characters is fine while a
+/// 20-character ASCII one is not. A `${VAR}` placeholder is exempt — it is
+/// expanded before the file is parsed, so what is typed here is not the key.
+const signingSecretTooShort = computed(() => {
+  const secret = signedUrls.value.secret;
+  if (!secret || /^\$\{[^}]+\}$/.test(secret)) return false;
+  return new TextEncoder().encode(secret).length < 32;
+});
+
+const hostRoutingEnabled = computed(
+  () =>
+    (subdomainRouting.value.enabled && !!subdomainRouting.value.base_domain.trim()) ||
+    registries.value.some((r) => r.hosts.trim()),
+);
+
 const toml = computed(() => {
   const lines: string[] = [];
 
@@ -806,8 +1196,27 @@ const toml = computed(() => {
   if (server.value.cors_allowed_origins) {
     lines.push(`cors_allowed_origins = ${listToToml(server.value.cors_allowed_origins)}`);
   }
-  if (server.value.trusted_proxies_set) {
+  // Host-based routing makes this mandatory, not optional: `validate()` bails
+  // without it. An empty list is itself a policy — "trust nobody, always use the
+  // TCP peer address" — which is the right default for a server exposed
+  // directly, and is what the config's own error message suggests.
+  if (server.value.trusted_proxies_set || hostRoutingEnabled.value) {
     lines.push(`trusted_proxies = ${listToToml(server.value.trusted_proxies)}`);
+  }
+
+  // [server.signed_urls] — RFC 0012. Emitted whenever a registry asks for signed
+  // downloads, because that pairing without a secret is a startup error: a
+  // registry that believes it is closed and is not is what the feature exists to
+  // prevent.
+  if (signedUrls.value.enabled || signedDownloadsUsed.value) {
+    lines.push("");
+    lines.push("[server.signed_urls]");
+    lines.push(`secret = ${q(signedUrls.value.secret)}`);
+    if (signedUrls.value.ttl_seconds !== 300)
+      lines.push(`ttl_seconds = ${signedUrls.value.ttl_seconds}`);
+    const previous = csvToList(signedUrls.value.previous_secrets);
+    if (previous.length)
+      lines.push(`previous_secrets = ${tomlArray(previous)}`);
   }
 
   // [database]
@@ -869,9 +1278,11 @@ const toml = computed(() => {
       }
     } else if (auth.type === "oidc") {
       if (auth.oidc_name) lines.push(`name = ${q(auth.oidc_name)}`);
-      if (auth.oidc_issuer) lines.push(`issuer_url = ${q(auth.oidc_issuer)}`);
-      if (auth.oidc_client_id)
-        lines.push(`client_id = ${q(auth.oidc_client_id)}`);
+      // Neither key has a serde default, so omitting one is a `missing field`
+      // parse error naming the whole `[[auth]]` table. Emitting them blank keeps
+      // the diagnostic on the key the operator still has to fill.
+      lines.push(`issuer_url = ${q(auth.oidc_issuer)}`);
+      lines.push(`client_id = ${q(auth.oidc_client_id)}`);
       if (auth.oidc_client_secret)
         lines.push(`client_secret = ${q(auth.oidc_client_secret)}`);
       if (auth.oidc_redirect_uri)
@@ -923,7 +1334,13 @@ const toml = computed(() => {
       }
     } else if (auth.type === "actions-oidc") {
       if (auth.actions_name) lines.push(`name = ${q(auth.actions_name)}`);
-      if (auth.actions_issuer) lines.push(`issuer_url = ${q(auth.actions_issuer)}`);
+      // `issuer_url` and `audience` have no serde default: omitting either is a
+      // `missing field` parse error rather than something the server can warn
+      // about. Emit both unconditionally so a half-filled form produces the
+      // config's *own* diagnostic ("`audience` must not be blank"), which names
+      // the key to fill, instead of a parse error that names the whole table.
+      lines.push(`issuer_url = ${q(auth.actions_issuer)}`);
+      lines.push(`audience = ${q(auth.actions_audience)}`);
       if (auth.actions_user_id_claim && auth.actions_user_id_claim !== "sub")
         lines.push(`user_id_claim = ${q(auth.actions_user_id_claim)}`);
       for (const rule of auth.actions_rules) {
@@ -1005,6 +1422,25 @@ const toml = computed(() => {
       if (allow.length) lines.push(`path_allow = ${tomlArray(allow)}`);
     }
 
+    // RFC 0015 §4.1 — the registry-tier policy scalars. These have to precede
+    // every sub-table below: once `[registries.rbac]` is open, a bare
+    // `visibility = …` would land inside it.
+    if (reg.visibility) lines.push(`visibility = ${q(reg.visibility)}`);
+    if (reg.prerelease_visibility)
+      lines.push(`prerelease_visibility = ${q(reg.prerelease_visibility)}`);
+    if (reg.signed_downloads) lines.push(`signed_downloads = true`);
+    // Defaults to true; only the deliberate "keep the console read-only" is
+    // written. Inert on a local-mode registry, which has no upstream to fetch
+    // from and already holds every version it lists.
+    if (!reg.console_fetch) lines.push(`console_fetch = false`);
+    // goproxy only. Absent means `https://sum.golang.org`; `""` disables the
+    // sumdb route, which is what a registry serving only private modules wants —
+    // a lookup there would leak private module paths upstream.
+    if (reg.type === "goproxy") {
+      if (reg.sumdb_disabled) lines.push(`sumdb_url = ""`);
+      else if (reg.sumdb_url) lines.push(`sumdb_url = ${q(reg.sumdb_url)}`);
+    }
+
     // [registries.rbac]
     lines.push("");
     lines.push("[registries.rbac]");
@@ -1031,6 +1467,31 @@ const toml = computed(() => {
       if (!reg.rbac_explore_anonymous) lines.push(`anonymous = false`);
       if (!reg.rbac_explore_user) lines.push(`user = false`);
       if (!reg.rbac_explore_admin) lines.push(`admin = false`);
+    }
+
+    // [registries.grants] — RFC 0015 §4.2/§4.3.
+    //
+    // Unioned on top of the `[registries.rbac]` translation above, never
+    // replacing it: a grant only ever adds. An *empty* block is refused at
+    // startup rather than treated as a seal, because a registry has no ancestor
+    // to stop inheriting from — so rows with no subject are dropped and the
+    // table is omitted entirely when nothing is left.
+    const regGrants = grantRows(reg.grants);
+    if (regGrants.length) {
+      lines.push("");
+      lines.push("[registries.grants]");
+      for (const g of regGrants) {
+        lines.push(`${q(g.subject.trim())} = ${permsToToml(g.verbs)}`);
+      }
+    }
+
+    // [registries.grants_shadow] — evaluate, record, refuse nothing.
+    if (reg.grants_shadow_enabled && reg.grants_shadow_until) {
+      lines.push("");
+      lines.push("[registries.grants_shadow]");
+      // A quoted string: `chrono::NaiveDate` deserialises from text, not from
+      // TOML's own bare-date type.
+      lines.push(`until = ${q(reg.grants_shadow_until)}`);
     }
 
     // [registries.cache]
@@ -1123,6 +1584,51 @@ const toml = computed(() => {
       if (reg.versioning_enforce_semver) lines.push(`enforce_semver = true`);
       if (!reg.versioning_allow_prerelease) lines.push(`allow_prerelease = false`);
       if (reg.versioning_pattern) lines.push(`version_pattern = ${q(reg.versioning_pattern)}`);
+      // RFC 0015 §4.5. `immutable` defaults to `never` — not because it is the
+      // best policy, but because nothing enforced immutability before, and any
+      // other default would change what an existing config means.
+      if (reg.versioning_immutable !== "never")
+        lines.push(`immutable = ${q(reg.versioning_immutable)}`);
+      if (reg.versioning_monotonic) lines.push(`monotonic = true`);
+      if (reg.versioning_dry_run) lines.push(`dry_run = true`);
+    }
+
+    // [registries.retention] — RFC 0016.
+    //
+    // Local/hybrid only: a proxy-mode registry publishes nothing, so every
+    // setting here would govern an empty set and the operator meant
+    // `[registries.cache]`. The server refuses that pairing outright.
+    //
+    // The block is emitted only once it reclaims something. An empty one is the
+    // single most destructive config in the file — the union of keep conditions
+    // is empty, so nothing vetoes and the first live run takes every version —
+    // and the server refuses it for that reason.
+    if (
+      reg.retention_enabled &&
+      (reg.mode === "local" || reg.mode === "hybrid") &&
+      retentionReclaims(reg)
+    ) {
+      lines.push("");
+      lines.push("[registries.retention]");
+      if (reg.retention_keep_versions)
+        lines.push(`keep_versions = ${reg.retention_keep_versions}`);
+      if (reg.retention_keep_for_days)
+        lines.push(`keep_for_days = ${reg.retention_keep_for_days}`);
+      if (reg.retention_keep_if_pulled_days)
+        lines.push(`keep_if_pulled_days = ${reg.retention_keep_if_pulled_days}`);
+      if (!reg.retention_keep_yanked) lines.push(`keep_yanked = false`);
+      if (reg.retention_download_signal_floor_days)
+        lines.push(
+          `download_signal_floor_days = ${reg.retention_download_signal_floor_days}`,
+        );
+      if (reg.retention_reclaim_delay_ms)
+        lines.push(`reclaim_delay_ms = ${reg.retention_reclaim_delay_ms}`);
+      if (reg.retention_tombstone_detail_for_days)
+        lines.push(
+          `tombstone_detail_for_days = ${reg.retention_tombstone_detail_for_days}`,
+        );
+      // Defaults to true, so only the deliberate switch to enforcing is written.
+      if (!reg.retention_dry_run) lines.push(`dry_run = false`);
     }
 
     // [registries.signing]
@@ -1165,6 +1671,41 @@ const toml = computed(() => {
       if (!reg.sbom_fetch_upstream) lines.push(`fetch_upstream = false`);
     }
 
+    // [registries.readme] — omitted unless the operator changed something, since
+    // the absent block already means "capture READMEs, extract from the archive
+    // when the metadata carries none, strip remote images".
+    if (reg.readme_customised) {
+      lines.push("");
+      lines.push("[registries.readme]");
+      if (!reg.readme_enabled) lines.push(`enabled = false`);
+      if (!reg.readme_from_archive) lines.push(`from_archive = false`);
+      if (reg.readme_max_bytes !== 262144)
+        lines.push(`max_bytes = ${reg.readme_max_bytes}`);
+      if (reg.readme_remote_images !== "strip") {
+        lines.push(`remote_images = ${q(reg.readme_remote_images)}`);
+        // Absent means every host, which is what `proxy` did before the key
+        // existed — so an allowlist is only written when there is one.
+        const hosts = csvToList(reg.readme_remote_image_hosts);
+        if (hosts.length)
+          lines.push(`remote_image_hosts = ${tomlArray(hosts)}`);
+        if (reg.readme_image_max_bytes !== 2097152)
+          lines.push(`image_max_bytes = ${reg.readme_image_max_bytes}`);
+      }
+    }
+
+    // [registries.upstream_detail] — the console's discovery read. No TTL of its
+    // own: the document lands in the metadata cache and obeys this registry's
+    // `metadata_ttl_secs`.
+    if (reg.upstream_detail_customised) {
+      lines.push("");
+      lines.push("[registries.upstream_detail]");
+      if (!reg.upstream_detail_enabled) lines.push(`enabled = false`);
+      if (reg.upstream_detail_max_versions !== 300)
+        lines.push(`max_versions = ${reg.upstream_detail_max_versions}`);
+      if (reg.upstream_detail_negative_ttl_secs !== 300)
+        lines.push(`negative_ttl_secs = ${reg.upstream_detail_negative_ttl_secs}`);
+    }
+
     // [registries.integrity] — omitted entirely unless the operator changed
     // something, since the absent section already means "verify and block on
     // mismatch, warn when no checksum is advertised".
@@ -1182,80 +1723,8 @@ const toml = computed(() => {
       }
     }
 
-    // [[registries.rules]]
-    const pushBypassRoles = (csv: string) => {
-      const roles = csvToList(csv);
-      if (roles.length) lines.push(`bypass_roles = [${roles.map(q).join(", ")}]`);
-    };
-    if (reg.rule_age_gate_enabled) {
-      lines.push("");
-      lines.push("[[registries.rules]]");
-      lines.push(`kind = "release_age_gate"`);
-      lines.push(`min_age_secs = ${reg.rule_age_gate_min_age}`);
-      if (reg.rule_age_gate_deny_missing_timestamp)
-        lines.push(`deny_missing_timestamp = true`);
-      pushBypassRoles(reg.rule_age_gate_bypass_roles);
-    }
-    if (reg.rule_deny_latest_enabled) {
-      lines.push("");
-      lines.push("[[registries.rules]]");
-      lines.push(`kind = "deny_latest"`);
-      pushBypassRoles(reg.rule_deny_latest_bypass_roles);
-    }
-    if (reg.rule_signed_release_enabled) {
-      lines.push("");
-      lines.push("[[registries.rules]]");
-      lines.push(`kind = "require_signed_release"`);
-      lines.push(`enabled = true`);
-      if (reg.rule_signed_release_deny_missing)
-        lines.push(`deny_missing_signature = true`);
-      pushBypassRoles(reg.rule_signed_release_bypass_roles);
-    }
-    if (reg.rule_license_gate_enabled) {
-      lines.push("");
-      lines.push("[[registries.rules]]");
-      lines.push(`kind = "license_gate"`);
-      const licAllow = csvToList(reg.rule_license_gate_allow);
-      const licDeny = csvToList(reg.rule_license_gate_deny);
-      if (licAllow.length) lines.push(`allow = ${tomlArray(licAllow)}`);
-      if (licDeny.length) lines.push(`deny = ${tomlArray(licDeny)}`);
-      if (!reg.rule_license_gate_allow_unknown)
-        lines.push(`allow_unknown = false`);
-      if (reg.rule_license_gate_block) lines.push(`block = true`);
-      pushBypassRoles(reg.rule_license_gate_bypass_roles);
-    }
-    if (reg.rule_version_gate_enabled) {
-      // Each entry may itself contain a comma (">=1.2.0, <2.0.0"), so these two
-      // are one-per-line fields rather than comma-separated ones.
-      const verAllow = linesToList(reg.rule_version_gate_allow);
-      const verBlock = linesToList(reg.rule_version_gate_block);
-      if (verAllow.length || verBlock.length) {
-        lines.push("");
-        lines.push("[[registries.rules]]");
-        lines.push(`kind = "version_gate"`);
-        if (verAllow.length) lines.push(`allow = ${tomlArray(verAllow)}`);
-        if (verBlock.length) lines.push(`block = ${tomlArray(verBlock)}`);
-        pushBypassRoles(reg.rule_version_gate_bypass_roles);
-      }
-    }
-    if (reg.rule_cve_gate_enabled) {
-      lines.push("");
-      lines.push("[[registries.rules]]");
-      lines.push(`kind = "cve_gate"`);
-      lines.push(`min_severity = ${q(reg.rule_cve_gate_min_severity)}`);
-      if (reg.rule_cve_gate_block) lines.push(`block = true`);
-      pushBypassRoles(reg.rule_cve_gate_bypass_roles);
-    }
-    if (reg.rule_trusted_publisher_enabled) {
-      const allow = csvToList(reg.rule_trusted_publisher_allow);
-      if (allow.length) {
-        lines.push("");
-        lines.push("[[registries.rules]]");
-        lines.push(`kind = "trusted_publisher"`);
-        lines.push(`allow = [${allow.map(q).join(", ")}]`);
-        pushBypassRoles(reg.rule_trusted_publisher_bypass_roles);
-      }
-    }
+    // [[registries.rules]] — see rulesToToml, shared with the namespace tier.
+    lines.push(...rulesToToml(reg, "registries.rules"));
 
     // [registries.feature_flags]
     if (!reg.feature_flags_socket_badge) {
@@ -1300,6 +1769,80 @@ const toml = computed(() => {
       if (reg.proxy_password) lines.push(`password = ${q(reg.proxy_password)}`);
       if (reg.proxy_no_proxy) lines.push(`no_proxy = ${q(reg.proxy_no_proxy)}`);
     }
+
+    // [[registries.namespaces]] — RFC 0015 §4.1, emitted last.
+    //
+    // Position matters. `[[registries.namespaces]]` opens an array-of-tables
+    // element, and every `[registries.<x>]` header written after it still
+    // resolves against the registry rather than the namespace — but a reader
+    // cannot see that from the file. Keeping the namespaces at the end of the
+    // registry means every sub-table above them reads in the order it applies.
+    for (const ns of reg.namespaces) {
+      if (!ns.match_prefix.trim()) continue;
+      lines.push("");
+      lines.push("[[registries.namespaces]]");
+      lines.push(`match = ${q(ns.match_prefix.trim())}`);
+      if (ns.visibility) lines.push(`visibility = ${q(ns.visibility)}`);
+      if (ns.prerelease_visibility)
+        lines.push(`prerelease_visibility = ${q(ns.prerelease_visibility)}`);
+
+      // The seal. `grants = {}` is the one construct that stops a node
+      // inheriting from its ancestors — distinct from an absent block (inherit)
+      // and from a populated one (inherit, then widen). Written inline because
+      // an empty `[registries.namespaces.grants]` header is indistinguishable
+      // from a table somebody meant to fill in.
+      const nsGrants = grantRows(ns.grants);
+      if (ns.sealed) {
+        lines.push(`grants = {}`);
+      } else if (nsGrants.length) {
+        lines.push("");
+        lines.push("[registries.namespaces.grants]");
+        for (const g of nsGrants) {
+          lines.push(`${q(g.subject.trim())} = ${permsToToml(g.verbs)}`);
+        }
+      }
+
+      if (ns.quota_enabled) {
+        lines.push("");
+        lines.push("[registries.namespaces.quota]");
+        if (ns.quota_max_bytes)
+          lines.push(`max_storage_bytes_per_user = ${ns.quota_max_bytes}`);
+        if (ns.quota_max_packages)
+          lines.push(`max_packages_per_user = ${ns.quota_max_packages}`);
+        if (ns.quota_warn_threshold_pct !== 80)
+          lines.push(`warn_threshold_pct = ${ns.quota_warn_threshold_pct}`);
+        if (ns.quota_enforcement !== "block")
+          lines.push(`enforcement = ${q(ns.quota_enforcement)}`);
+      }
+
+      if (ns.versioning_enabled) {
+        lines.push("");
+        lines.push("[registries.namespaces.versioning]");
+        if (ns.versioning_enforce_semver) lines.push(`enforce_semver = true`);
+        if (!ns.versioning_allow_prerelease)
+          lines.push(`allow_prerelease = false`);
+        if (ns.versioning_pattern)
+          lines.push(`version_pattern = ${q(ns.versioning_pattern)}`);
+        if (ns.versioning_immutable !== "never")
+          lines.push(`immutable = ${q(ns.versioning_immutable)}`);
+        if (ns.versioning_monotonic) lines.push(`monotonic = true`);
+        if (ns.versioning_dry_run) lines.push(`dry_run = true`);
+      }
+
+      if (ns.shadow_enabled && ns.shadow_until) {
+        lines.push("");
+        lines.push("[registries.namespaces.grants_shadow]");
+        lines.push(`until = ${q(ns.shadow_until)}`);
+      }
+
+      // Last within the namespace, because an array-of-tables header ends the
+      // run of sibling sub-tables: anything written after it would have to
+      // re-open one, which reads as belonging to the rules rather than to the
+      // namespace.
+      if (ns.rules_enabled) {
+        lines.push(...rulesToToml(ns.rules, "registries.namespaces.rules"));
+      }
+    }
   }
 
   // [ip_blocking]
@@ -1343,6 +1886,38 @@ const toml = computed(() => {
     if (stats.value.history_retention_days !== 30)
       lines.push(`history_retention_days = ${stats.value.history_retention_days}`);
     if (!stats.value.metrics_enabled) lines.push(`metrics_enabled = false`);
+  }
+
+  // [grants] — the instance tier (RFC 0015 §4.2).
+  //
+  // Only ever emitted with rows in it: an empty `[grants]` is a startup error,
+  // because a seal stops a node inheriting from its ancestors and the instance
+  // tier has none — so it would grant nothing and block nothing.
+  const topGrants = grantRows(instanceGrants.value);
+  if (topGrants.length) {
+    lines.push("");
+    lines.push("[grants]");
+    for (const g of topGrants) {
+      lines.push(`${q(g.subject.trim())} = ${permsToToml(g.verbs)}`);
+    }
+  }
+
+  // [cache_coherence]
+  if (cacheCoherence.value.enabled) {
+    lines.push("");
+    lines.push("[cache_coherence]");
+    lines.push(`enabled = true`);
+    if (cacheCoherence.value.interval_secs !== 86400)
+      lines.push(`interval_secs = ${cacheCoherence.value.interval_secs}`);
+  }
+
+  // [search]
+  if (search.value.readmes || search.value.text_config !== "english") {
+    lines.push("");
+    lines.push("[search]");
+    if (search.value.readmes) lines.push(`readmes = true`);
+    if (search.value.text_config !== "english")
+      lines.push(`text_config = ${q(search.value.text_config)}`);
   }
 
   // [subdomain_routing]
@@ -1549,6 +2124,63 @@ function removeRbacGroup(reg: Registry, id: number) {
   reg.rbac_groups = reg.rbac_groups.filter((g) => g.id !== id);
 }
 
+// ── RFC 0015 grants and namespaces ──────────────────────────────────────────
+
+let grantSeq = 0;
+function addGrant(list: GrantEntry[]) {
+  list.push({ id: grantSeq++, subject: "", verbs: "releases:read" });
+}
+function removeGrant(list: GrantEntry[], id: number) {
+  const i = list.findIndex((g) => g.id === id);
+  if (i !== -1) list.splice(i, 1);
+}
+
+let nsSeq = 0;
+function addNamespace(reg: Registry) {
+  reg.namespaces.push({
+    id: nsSeq++,
+    match_prefix: "",
+    sealed: false,
+    grants: [],
+    visibility: "",
+    prerelease_visibility: "",
+    versioning_enabled: false,
+    versioning_enforce_semver: false,
+    versioning_allow_prerelease: true,
+    versioning_pattern: "",
+    versioning_immutable: "never",
+    versioning_monotonic: false,
+    versioning_dry_run: false,
+    quota_enabled: false,
+    quota_max_bytes: "",
+    quota_max_packages: "",
+    quota_warn_threshold_pct: 80,
+    quota_enforcement: "block",
+    shadow_enabled: false,
+    shadow_until: "",
+    rules_enabled: false,
+    rules: blankRulePolicy(),
+  });
+}
+function removeNamespace(reg: Registry, id: number) {
+  reg.namespaces = reg.namespaces.filter((n) => n.id !== id);
+}
+
+/// The startup errors a namespace `match` can carry, named while the operator is
+/// still typing rather than at boot: a blank prefix matches nothing, a duplicate
+/// is two answers to one question, and one ending in the ecosystem's separator
+/// can never match because matching appends it.
+function namespaceMatchError(reg: Registry, ns: Namespace): string {
+  const m = ns.match_prefix.trim();
+  if (!m) return "A blank match covers no package at all.";
+  const sep = namespaceSeparator(reg.type);
+  if (m.endsWith(sep))
+    return `Ends with '${sep}', the separator this ecosystem uses — matching appends it, so this can never match. Write "${m.replace(new RegExp(`\\${sep}+$`), "")}".`;
+  if (reg.namespaces.filter((o) => o.match_prefix.trim() === m).length > 1)
+    return "Two namespace blocks both match this prefix; merge them.";
+  return "";
+}
+
 let rlGroupSeq = 0;
 function addRateLimitGroup(reg: Registry) {
   reg.rate_limit_groups.push({
@@ -1736,19 +2368,167 @@ const composerAuthSnippet = `{
           ></label
         >
         <label class="cg-check cg-mb">
-          <input type="checkbox" v-model="server.trusted_proxies_set" />
+          <input
+            type="checkbox"
+            v-model="server.trusted_proxies_set"
+            :disabled="hostRoutingEnabled"
+            :checked="server.trusted_proxies_set || hostRoutingEnabled"
+          />
           Declare a trusted-proxy policy
         </label>
-        <label v-if="server.trusted_proxies_set"
+        <p v-if="hostRoutingEnabled" class="cg-field-hint cg-hint-required">
+          Required, because host-based routing is on (a base domain under
+          <em>Subdomain routing</em>, or a registry with vanity hosts). Routing
+          reads the <code>Forwarded</code> / <code>X-Forwarded-Host</code>
+          header, so the server refuses to start until you say which peers may
+          set it.
+        </p>
+        <label v-if="server.trusted_proxies_set || hostRoutingEnabled"
           >Trusted proxy IPs (comma-separated)<input
             v-model="server.trusted_proxies"
             placeholder="10.0.0.1, 10.0.0.2"
           /><span class="cg-field-hint"
             >IPs of reverse proxies trusted to forward
             <code>X-Forwarded-For</code>. An empty list is a policy in itself —
-            it means trust nobody and always use the TCP peer address. This
-            supersedes the deprecated <code>[ip_blocking].trusted_proxies</code>,
-            which logs a warning at startup.</span
+            it means trust nobody and always use the TCP peer address, which is
+            the right answer when BatleHub is exposed directly. This supersedes
+            the deprecated <code>[ip_blocking].trusted_proxies</code>, which logs
+            a warning at startup.</span
+          ></label
+        >
+
+        <p class="cg-subsection-label">Signed download URLs</p>
+        <label class="cg-check cg-mb">
+          <input
+            type="checkbox"
+            v-model="signedUrls.enabled"
+            :disabled="signedDownloadsUsed"
+            :checked="signedUrls.enabled || signedDownloadsUsed"
+          />
+          Configure a URL signing secret
+        </label>
+        <p v-if="signedDownloadsUsed" class="cg-field-hint cg-hint-required">
+          Required, because a registry above has <em>signed downloads</em> on.
+          Setting one without a secret is a startup error: a registry that
+          believes it is closed and is not is what the feature exists to prevent.
+        </p>
+        <template v-if="signedUrls.enabled || signedDownloadsUsed">
+          <label
+            >Signing secret<input
+              v-model="signedUrls.secret"
+              placeholder="${BATLEHUB_URL_SIGNING_SECRET}"
+            /><span
+              class="cg-field-hint"
+              :class="{ 'cg-hint-required': signingSecretTooShort }"
+              >{{
+                signingSecretTooShort
+                  ? `${signedUrls.secret.length} of the 32 bytes an HMAC-SHA256 key needs. Measured in bytes, not characters.`
+                  : "HMAC-SHA256 key material. Prefer a ${VAR} placeholder — it is expanded before the file is parsed, so the secret never lands in the config."
+              }}</span
+            ></label
+          >
+          <div class="cg-two-col">
+            <label
+              >TTL (seconds)<input
+                type="number"
+                v-model.number="signedUrls.ttl_seconds"
+                min="1"
+                max="3600"
+              /><span class="cg-field-hint"
+                >The ceiling is 3600, so a misconfiguration cannot mint a
+                month-long bearer credential.</span
+              ></label
+            >
+            <label
+              >Previous secrets (comma-separated)<input
+                v-model="signedUrls.previous_secrets"
+                placeholder="${BATLEHUB_URL_SIGNING_SECRET_OLD}"
+              /><span class="cg-field-hint"
+                >Verified against but never minted with, so a secret rotates
+                without a flag day.</span
+              ></label
+            >
+          </div>
+        </template>
+      </section>
+
+      <!-- Instance-tier grants -->
+      <section class="cg-section">
+        <h3>Instance permissions</h3>
+        <p class="cg-field-hint" style="margin-bottom: 0.5rem">
+          <code>[grants]</code> sits above every registry, which is why it cannot
+          carry an ecosystem verb like <code>npm:dist-tags:write</code> — no one
+          registry defines it. An administrator already holds every
+          control-surface verb, so this block is only ever needed to give one of
+          them to somebody else.
+        </p>
+        <div v-for="g in instanceGrants" :key="g.id" class="cg-condition-item">
+          <div class="cg-two-col">
+            <label
+              >Subject<input v-model="g.subject" placeholder="group:oidc:sre"
+            /></label>
+            <label
+              >Verbs<input
+                v-model="g.verbs"
+                placeholder="config:read, system:read"
+            /></label>
+          </div>
+          <button class="cg-btn-remove" @click="removeGrant(instanceGrants, g.id)">
+            Remove grant
+          </button>
+        </div>
+        <button class="cg-btn-add" @click="addGrant(instanceGrants)">
+          + Add instance grant
+        </button>
+      </section>
+
+      <!-- Search -->
+      <section class="cg-section">
+        <h3>Search</h3>
+        <label class="cg-check cg-mb">
+          <input type="checkbox" v-model="search.readmes" />
+          Match README prose as well as package names
+        </label>
+        <!-- No "needs Postgres" warning here: this generator always emits a
+             `[database] type = "postgresql"` block, so the pairing the server
+             refuses is unreachable from the form. A hint that can never be true
+             is one an operator learns to skip. -->
+        <span
+          class="cg-field-hint"
+          style="display: block; margin-bottom: 0.5rem"
+          >With this off, <code>?in=readme</code> is accepted and answers exactly
+          as <code>?in=name</code> does, plus a field saying so. A parameter that
+          silently means something else is worse than one that says prose search
+          is not enabled here.</span
+        >
+        <label
+          >Postgres text search configuration<input
+            v-model="search.text_config"
+            placeholder="english"
+          /><span class="cg-field-hint"
+            >Changing this <strong>rebuilds the generated column</strong> at
+            startup, which makes it an install-time decision rather than
+            something to tune later. <code>english</code>, <code>french</code>,
+            <code>simple</code>, …</span
+          ></label
+        >
+      </section>
+
+      <!-- Cache coherence -->
+      <section class="cg-section">
+        <h3>Cache coherence</h3>
+        <label class="cg-check cg-mb">
+          <input type="checkbox" v-model="cacheCoherence.enabled" />
+          Periodically sweep for storage blobs nothing references
+        </label>
+        <label v-if="cacheCoherence.enabled"
+          >Interval (seconds)<input
+            type="number"
+            v-model.number="cacheCoherence.interval_secs"
+            min="1"
+          /><span class="cg-field-hint"
+            >Default 86400 (daily). With the sweep off, orphaned blobs are
+            collected only when an operator asks for it.</span
           ></label
         >
       </section>
@@ -2272,6 +3052,21 @@ const composerAuthSnippet = `{
               ></label
             >
             <label
+              >Audience (required)<input
+                v-model="auth.actions_audience"
+                placeholder="https://batlehub.example.com"
+              /><span
+                class="cg-field-hint"
+                :class="{ 'cg-hint-required': !auth.actions_audience.trim() }"
+                >The value the token's <code>aud</code> claim must equal. The
+                issuer above signs for <em>every</em> repository on the forge, so
+                without this <code>iss</code> only proves the caller is some CI
+                job and the rules below are the whole barrier. Use this
+                deployment's URL and have workflows ask for it:
+                <code>core.getIDToken('https://batlehub.example.com')</code>.</span
+              ></label
+            >
+            <label
               >User ID claim (optional)<input
                 v-model="auth.actions_user_id_claim"
                 placeholder="sub"
@@ -2584,6 +3379,14 @@ curl -X POST \
               >(comma-separated; use <code>*</code> for all)</span
             >
           </p>
+          <p class="cg-field-hint" style="margin-bottom: 0.35rem">
+            The verb set is closed — one that is not on the
+            <a href="/guide/access-control#verbs">list</a> is a startup error,
+            not a permission granted to nobody. Common ones:
+            <code>releases:read</code>, <code>releases:list</code>,
+            <code>releases:publish</code>, <code>source:read</code>,
+            <code>catalogue:browse</code>.
+          </p>
           <div class="cg-three-col">
             <label
               >anonymous<input v-model="reg.rbac_anonymous" placeholder=""
@@ -2618,7 +3421,7 @@ curl -X POST \
               <label
                 >Permissions<input
                   v-model="g.perms"
-                  placeholder="releases:read, releases:write"
+                  placeholder="releases:read, releases:publish"
               /></label>
             </div>
             <button class="cg-btn-remove" @click="removeRbacGroup(reg, g.id)">
@@ -2643,8 +3446,351 @@ curl -X POST \
           </div>
 
           <div v-if="reg.showAdvanced" class="cg-advanced">
+            <!-- Access policy — RFC 0015's registry and namespace tiers -->
+            <p class="cg-subsection-label">Access policy</p>
+            <p class="cg-field-hint" style="margin-bottom: 0.5rem">
+              The permissions above are the role translation. Grants sit
+              <em>on top</em> of it and only ever widen — they cannot narrow what
+              a package is already readable by. Visibility is the knob that
+              narrows.
+            </p>
+            <div class="cg-two-col">
+              <label
+                >Visibility<select v-model="reg.visibility">
+                  <option value="">— default (public) —</option>
+                  <option value="public">public — anyone, including anonymous</option>
+                  <option value="internal">internal — any authenticated user</option>
+                  <option value="team">team — the owning team group only</option>
+                </select></label
+              >
+              <label
+                >Pre-release visibility<select v-model="reg.prerelease_visibility">
+                  <option value="">— same as visibility —</option>
+                  <option value="public">public</option>
+                  <option value="internal">internal</option>
+                  <option value="team">team</option>
+                </select></label
+              >
+            </div>
+            <p
+              v-if="prereleaseWiderThanRelease(reg.visibility, reg.prerelease_visibility)"
+              class="cg-field-hint cg-hint-required"
+            >
+              Pre-releases would be visible to a <em>wider</em> audience than
+              releases. Legal, and almost always a typo — the setting exists to
+              do the opposite.
+            </p>
+
+            <!-- [registries.grants] -->
+            <div
+              v-for="g in reg.grants"
+              :key="g.id"
+              class="cg-condition-item"
+            >
+              <div class="cg-two-col">
+                <label
+                  >Subject<input
+                    v-model="g.subject"
+                    placeholder="group:oidc:team-a"
+                  /><span class="cg-field-hint"
+                    ><code>*</code>, <code>role:admin</code>,
+                    <code>group:oidc:team-a</code> (or
+                    <code>group:*:team-a</code> across providers),
+                    <code>user:alice</code>.</span
+                  ></label
+                >
+                <label
+                  >Verbs<input
+                    v-model="g.verbs"
+                    placeholder="releases:read, releases:publish"
+                  /><span
+                    class="cg-field-hint"
+                    :class="{ 'cg-hint-required': wrongKindVerbs(g.verbs, reg.type).length > 0 }"
+                    >{{
+                      wrongKindVerbs(g.verbs, reg.type).length
+                        ? `A ${reg.type} registry does not define ${wrongKindVerbs(g.verbs, reg.type).join(", ")} — an ecosystem verb is only grantable where it is implemented.`
+                        : "Comma-separated, from the closed vocabulary."
+                    }}</span
+                  ></label
+                >
+              </div>
+              <button class="cg-btn-remove" @click="removeGrant(reg.grants, g.id)">
+                Remove grant
+              </button>
+            </div>
+            <button class="cg-btn-add" @click="addGrant(reg.grants)">
+              + Add registry grant
+            </button>
+
+            <label class="cg-check cg-mb" style="margin-top: 0.5rem">
+              <input type="checkbox" v-model="reg.grants_shadow_enabled" />
+              Shadow mode — evaluate grants, log refusals, refuse nothing
+            </label>
+            <label v-if="reg.grants_shadow_enabled"
+              >Shadow until<input
+                type="date"
+                v-model="reg.grants_shadow_until"
+              /><span
+                class="cg-field-hint"
+                :class="{ 'cg-hint-required': shadowDateInvalid(reg.grants_shadow_until) }"
+                >An expiry is mandatory and must be in the future: a shadow
+                serves every request that would have been refused, so one nobody
+                revisits is a permanent bypass wearing a migration's
+                clothes.</span
+              ></label
+            >
+
+            <!-- [[registries.namespaces]] -->
+            <p class="cg-subsection-label" style="margin-top: 0.75rem">
+              Namespaces
+            </p>
+            <p class="cg-field-hint" style="margin-bottom: 0.5rem">
+              A prefix of the package coordinate, not a separate object — on this
+              registry the separator is
+              <code>{{ namespaceSeparator(reg.type) }}</code
+              >, so <code>acme</code> covers
+              <code>acme{{ namespaceSeparator(reg.type) }}thing</code>. Policy set
+              here overrides the registry above it for everything underneath.
+            </p>
+            <div
+              v-for="ns in reg.namespaces"
+              :key="ns.id"
+              class="cg-condition-item"
+            >
+              <label
+                >Match<input
+                  v-model="ns.match_prefix"
+                  :placeholder="reg.type === 'maven' ? 'com.acme' : '@acme'"
+                /><span
+                  class="cg-field-hint"
+                  :class="{ 'cg-hint-required': !!namespaceMatchError(reg, ns) }"
+                  >{{
+                    namespaceMatchError(reg, ns) ||
+                    "The prefix this node governs."
+                  }}</span
+                ></label
+              >
+              <div class="cg-two-col">
+                <label
+                  >Visibility<select v-model="ns.visibility">
+                    <option value="">— inherit —</option>
+                    <option value="public">public</option>
+                    <option value="internal">internal</option>
+                    <option value="team">team</option>
+                  </select></label
+                >
+                <label
+                  >Pre-release visibility<select v-model="ns.prerelease_visibility">
+                    <option value="">— inherit —</option>
+                    <option value="public">public</option>
+                    <option value="internal">internal</option>
+                    <option value="team">team</option>
+                  </select></label
+                >
+              </div>
+              <label class="cg-check cg-mb">
+                <input type="checkbox" v-model="ns.sealed" />
+                Seal — stop inheriting grants from the registry above
+              </label>
+              <p v-if="ns.sealed" class="cg-field-hint" style="margin: -0.25rem 0 0.4rem 1.4rem">
+                Writes <code>grants = {}</code>. This is the one construct that
+                <em>narrows</em>: an absent block inherits, a filled one inherits
+                and widens, and a seal stops inheritance. Grants written on this
+                namespace are dropped while it is sealed.
+              </p>
+              <template v-if="!ns.sealed">
+                <div
+                  v-for="g in ns.grants"
+                  :key="g.id"
+                  class="cg-two-col"
+                >
+                  <label
+                    >Subject<input v-model="g.subject" placeholder="group:oidc:acme"
+                  /></label>
+                  <label
+                    >Verbs<input
+                      v-model="g.verbs"
+                      placeholder="releases:read, releases:publish"
+                    /><button
+                      class="cg-btn-remove"
+                      @click="removeGrant(ns.grants, g.id)"
+                    >
+                      Remove
+                    </button></label
+                  >
+                </div>
+                <button class="cg-btn-add" @click="addGrant(ns.grants)">
+                  + Add namespace grant
+                </button>
+              </template>
+
+              <label class="cg-check cg-mb" style="margin-top: 0.5rem">
+                <input type="checkbox" v-model="ns.quota_enabled" />
+                Override the publish quota here
+              </label>
+              <div v-if="ns.quota_enabled" class="cg-two-col">
+                <label
+                  >Max bytes per user<input
+                    v-model="ns.quota_max_bytes"
+                    placeholder="1073741824"
+                /></label>
+                <label
+                  >Max packages per user<input
+                    v-model="ns.quota_max_packages"
+                    placeholder="100"
+                /></label>
+              </div>
+
+              <label class="cg-check cg-mb">
+                <input type="checkbox" v-model="ns.versioning_enabled" />
+                Override the versioning policy here
+              </label>
+              <template v-if="ns.versioning_enabled">
+                <label class="cg-check">
+                  <input type="checkbox" v-model="ns.versioning_enforce_semver" />
+                  Require valid semver
+                </label>
+                <div class="cg-two-col">
+                  <label
+                    >Immutability<select v-model="ns.versioning_immutable">
+                      <option value="never">never</option>
+                      <option value="released">released</option>
+                      <option value="always">always</option>
+                    </select></label
+                  >
+                  <label
+                    >Version regex<input
+                      v-model="ns.versioning_pattern"
+                      placeholder="^\d+\.\d+\.\d+$"
+                  /></label>
+                </div>
+                <label class="cg-check">
+                  <input type="checkbox" v-model="ns.versioning_monotonic" />
+                  Versions must sort strictly upward
+                </label>
+                <label class="cg-check cg-mb">
+                  <input type="checkbox" v-model="ns.versioning_dry_run" />
+                  Dry run
+                </label>
+              </template>
+
+              <label class="cg-check cg-mb">
+                <input type="checkbox" v-model="ns.rules_enabled" />
+                Override the gate rules here
+              </label>
+              <template v-if="ns.rules_enabled">
+                <p class="cg-field-hint" style="margin-bottom: 0.4rem">
+                  Replaces the registry's rules for everything under
+                  <code>{{ ns.match_prefix || "this prefix" }}</code
+                  >, rather than adding to them.
+                </p>
+                <label class="cg-check">
+                  <input type="checkbox" v-model="ns.rules.rule_age_gate_enabled" />
+                  Release age gate
+                </label>
+                <label v-if="ns.rules.rule_age_gate_enabled"
+                  >Minimum age (seconds)<input
+                    type="number"
+                    v-model.number="ns.rules.rule_age_gate_min_age"
+                    min="0"
+                /></label>
+                <label class="cg-check">
+                  <input type="checkbox" v-model="ns.rules.rule_deny_latest_enabled" />
+                  Deny <code>latest</code> tag resolution
+                </label>
+                <label class="cg-check">
+                  <input
+                    type="checkbox"
+                    v-model="ns.rules.rule_signed_release_enabled"
+                  />
+                  Require a signed release
+                </label>
+                <label class="cg-check">
+                  <input type="checkbox" v-model="ns.rules.rule_cve_gate_enabled" />
+                  CVE gate
+                </label>
+                <label v-if="ns.rules.rule_cve_gate_enabled"
+                  >Minimum severity<select v-model="ns.rules.rule_cve_gate_min_severity">
+                    <option value="low">low</option>
+                    <option value="moderate">moderate</option>
+                    <option value="high">high</option>
+                    <option value="critical">critical</option>
+                  </select></label
+                >
+                <label class="cg-check">
+                  <input
+                    type="checkbox"
+                    v-model="ns.rules.rule_license_gate_enabled"
+                  />
+                  License gate
+                </label>
+                <div v-if="ns.rules.rule_license_gate_enabled" class="cg-two-col">
+                  <label
+                    >Allowed licences<input
+                      v-model="ns.rules.rule_license_gate_allow"
+                      placeholder="MIT, Apache-2.0"
+                  /></label>
+                  <label
+                    >Denied licences<input
+                      v-model="ns.rules.rule_license_gate_deny"
+                      placeholder="GPL-3.0"
+                  /></label>
+                </div>
+                <label class="cg-check">
+                  <input
+                    type="checkbox"
+                    v-model="ns.rules.rule_trusted_publisher_enabled"
+                  />
+                  Trusted publishers only
+                </label>
+                <label v-if="ns.rules.rule_trusted_publisher_enabled"
+                  >Allowed publishers<input
+                    v-model="ns.rules.rule_trusted_publisher_allow"
+                    placeholder="npmjs"
+                /></label>
+                <label class="cg-check cg-mb">
+                  <input
+                    type="checkbox"
+                    v-model="ns.rules.rule_version_gate_enabled"
+                  />
+                  Version gate
+                </label>
+                <template v-if="ns.rules.rule_version_gate_enabled">
+                  <label
+                    >Allowed versions (one range per line)
+                    <textarea v-model="ns.rules.rule_version_gate_allow" rows="2" />
+                  </label>
+                  <label
+                    >Blocked versions (one range per line)
+                    <textarea v-model="ns.rules.rule_version_gate_block" rows="2" />
+                  </label>
+                </template>
+              </template>
+
+              <label class="cg-check cg-mb">
+                <input type="checkbox" v-model="ns.shadow_enabled" />
+                Shadow this namespace's grants
+              </label>
+              <label v-if="ns.shadow_enabled"
+                >Shadow until<input type="date" v-model="ns.shadow_until" /><span
+                  class="cg-field-hint"
+                  :class="{ 'cg-hint-required': shadowDateInvalid(ns.shadow_until) }"
+                  >Must be a future date.</span
+                ></label
+              >
+
+              <button class="cg-btn-remove" @click="removeNamespace(reg, ns.id)">
+                Remove namespace
+              </button>
+            </div>
+            <button class="cg-btn-add" @click="addNamespace(reg)">
+              + Add namespace
+            </button>
+
             <!-- Routing & addressing -->
-            <p class="cg-subsection-label">Routing &amp; addressing</p>
+            <p class="cg-subsection-label" style="margin-top: 0.75rem">
+              Routing &amp; addressing
+            </p>
             <label
               >Vanity hosts (optional, comma-separated)<input
                 v-model="reg.hosts"
@@ -2714,7 +3860,47 @@ curl -X POST \
                   v-model="reg.vuln_db_url"
                   placeholder="https://vuln.go.dev"
               /></label>
+              <label class="cg-check">
+                <input type="checkbox" v-model="reg.sumdb_disabled" />
+                Disable the checksum database passthrough
+              </label>
+              <span
+                v-if="reg.sumdb_disabled"
+                class="cg-field-hint"
+                style="display: block; margin-bottom: 0.5rem"
+                >What a registry serving only private modules wants — a lookup
+                on <code>sum.golang.org</code> would leak private module paths
+                upstream.</span
+              >
+              <label v-else
+                >Checksum database URL (optional)<input
+                  v-model="reg.sumdb_url"
+                  placeholder="https://sum.golang.org"
+                /><span class="cg-field-hint"
+                  >The other half of <code>GOPROXY</code>. Without it
+                  <code>go mod download</code> still opens a direct connection to
+                  <code>sum.golang.org</code> for every module it has not seen,
+                  so the proxy has moved the egress rather than removed it.</span
+                ></label
+              >
             </template>
+
+            <label class="cg-check">
+              <input type="checkbox" v-model="reg.signed_downloads" />
+              Mint signed, expiring download URLs
+            </label>
+            <span
+              v-if="reg.signed_downloads"
+              class="cg-field-hint"
+              style="display: block; margin-bottom: 0.5rem"
+              >For clients that authenticate a protocol document and then fetch
+              the artifact with no credential — Terraform's provider install is
+              the case this exists for. Without it such a registry needs
+              <code>anonymous = ["releases:read", "source:read"]</code>, which
+              opens <em>every</em> read on it rather than the one step that needs
+              opening. Requires a secret under
+              <em>Signed download URLs</em> in the Server section.</span
+            >
 
             <!-- Package explorer visibility -->
             <p class="cg-subsection-label">Package explorer</p>
@@ -2733,6 +3919,118 @@ curl -X POST \
             <label class="cg-check cg-mb">
               <input type="checkbox" v-model="reg.rbac_explore_admin" /> admin
             </label>
+
+            <label class="cg-check">
+              <input type="checkbox" v-model="reg.console_fetch" />
+              Let the console pull a version this instance does not hold yet
+            </label>
+            <span
+              v-if="!reg.console_fetch"
+              class="cg-field-hint"
+              style="display: block; margin-bottom: 0.5rem"
+              >The console stays strictly read-only. On by default: the fetch is
+              a download the caller could already run with <code>curl</code>,
+              through every gate that download would pass, attributed to them in
+              the audit log. Inert on a local-mode registry.</span
+            >
+
+            <label class="cg-check cg-mb">
+              <input type="checkbox" v-model="reg.upstream_detail_customised" />
+              Tune the console's upstream discovery read
+            </label>
+            <template v-if="reg.upstream_detail_customised">
+              <label class="cg-check">
+                <input type="checkbox" v-model="reg.upstream_detail_enabled" />
+                Show upstream-only versions on a package page
+              </label>
+              <div class="cg-two-col">
+                <label
+                  >Max upstream versions<input
+                    type="number"
+                    v-model.number="reg.upstream_detail_max_versions"
+                    min="1"
+                  /><span class="cg-field-hint"
+                    >Newest-first, and the response says the cap was applied — a
+                    silently shortened list is a lie about the registry. Ceiling
+                    5000.</span
+                  ></label
+                >
+                <label
+                  >Negative TTL (seconds)<input
+                    type="number"
+                    v-model.number="reg.upstream_detail_negative_ttl_secs"
+                    min="0"
+                  /><span class="cg-field-hint"
+                    >How long an upstream <code>404</code> is remembered, so a
+                    typo or a crawler cannot turn every reload into an upstream
+                    request. A connection failure is not a fact about the package
+                    and is never remembered.</span
+                  ></label
+                >
+              </div>
+            </template>
+
+            <label class="cg-check cg-mb">
+              <input type="checkbox" v-model="reg.readme_customised" />
+              Tune README capture
+            </label>
+            <template v-if="reg.readme_customised">
+              <label class="cg-check">
+                <input type="checkbox" v-model="reg.readme_enabled" />
+                Store and serve READMEs
+              </label>
+              <label class="cg-check cg-mb">
+                <input type="checkbox" v-model="reg.readme_from_archive" />
+                Extract from the artifact when the metadata carries none
+              </label>
+              <div class="cg-two-col">
+                <label
+                  >Max README bytes<input
+                    type="number"
+                    v-model.number="reg.readme_max_bytes"
+                    min="1"
+                  /><span class="cg-field-hint"
+                    >After decompression. Truncation is recorded and surfaced,
+                    never silent. Ceiling 4 MiB — a README is a database row read
+                    on every page load.</span
+                  ></label
+                >
+                <label
+                  >Remote images<select v-model="reg.readme_remote_images">
+                    <option value="strip">strip — chart them, load nothing</option>
+                    <option value="proxy">proxy — fetch and re-serve</option>
+                  </select>
+                  <span class="cg-field-hint"
+                    >There is no "allow": the console's CSP is baked in at build
+                    time, so it could only ever show broken images.</span
+                  ></label
+                >
+              </div>
+              <template v-if="reg.readme_remote_images === 'proxy'">
+                <label
+                  >Image host allowlist (comma-separated)<input
+                    v-model="reg.readme_remote_image_hosts"
+                    placeholder="img.shields.io, badgen.net"
+                  /><span class="cg-field-hint"
+                    >An entry matches the host exactly or any subdomain of it.
+                    <strong>Leave blank and every host is allowed</strong>, which
+                    is what <code>proxy</code> did before this key existed. An
+                    image from anywhere else is chipped exactly as
+                    <code>strip</code> chips it.</span
+                  ></label
+                >
+                <label
+                  >Max image bytes<input
+                    type="number"
+                    v-model.number="reg.readme_image_max_bytes"
+                    min="1"
+                  /><span class="cg-field-hint"
+                    >Buffered in memory to check the type and the cap before
+                    anything is stored.</span
+                  ></label
+                >
+              </template>
+            </template>
 
             <!-- Firewall mode -->
             <p class="cg-subsection-label">Firewall</p>
@@ -2978,9 +4276,40 @@ curl -X POST \
                     placeholder="^\d+\.\d+\.\d+$"
                   /><span class="cg-field-hint"
                     >Reject publishes where the version string doesn't match this
-                    pattern.</span
+                    pattern. A pattern matching none of the ordinary version
+                    shapes is refused at startup, because it would refuse every
+                    publish.</span
                   ></label
                 >
+                <label
+                  >Immutability<select v-model="reg.versioning_immutable">
+                    <option value="never">never — any version may be replaced</option>
+                    <option value="released">released — releases frozen, pre-releases may churn</option>
+                    <option value="always">always — no version may ever be replaced</option>
+                  </select>
+                  <span class="cg-field-hint"
+                    >A property of the bytes, not of the caller — which is what
+                    lets a registry be append-only for <em>everyone</em>,
+                    administrators included.
+                    <code>releases:overwrite</code> grants nothing under
+                    <code>always</code>.</span
+                  ></label
+                >
+                <label class="cg-check">
+                  <input type="checkbox" v-model="reg.versioning_monotonic" />
+                  Refuse a version that does not sort above the newest existing one
+                </label>
+                <p class="cg-field-hint" style="margin: 0 0 0.4rem 1.4rem">
+                  Catches what immutability cannot: republishing an
+                  <em>older</em> number after a bad release. A yanked or deleted
+                  version still counts as the newest. Incompatible with bulk
+                  import by construction — a package's history publishes
+                  oldest-first, so import with this off and turn it on after.
+                </p>
+                <label class="cg-check cg-mb">
+                  <input type="checkbox" v-model="reg.versioning_dry_run" />
+                  Dry run — record what would have been refused, refuse nothing
+                </label>
               </template>
             </template>
 
@@ -3062,6 +4391,100 @@ curl -X POST \
             </template>
 
             <!-- SBOM -->
+            <!-- Retention (local/hybrid only) — RFC 0016 -->
+            <template v-if="isLocalOrHybrid(reg)">
+              <p class="cg-subsection-label">Retention</p>
+              <label class="cg-check cg-mb">
+                <input type="checkbox" v-model="reg.retention_enabled" />
+                Reclaim old locally published versions
+              </label>
+              <template v-if="reg.retention_enabled">
+                <p
+                  class="cg-field-hint"
+                  :class="{ 'cg-hint-required': !retentionReclaims(reg) }"
+                  style="margin-bottom: 0.5rem"
+                >
+                  {{
+                    retentionReclaims(reg)
+                      ? "Keep conditions are a union: a version survives if any one of them vetoes its removal."
+                      : "Set at least one keep condition. A retention block with none is the single most destructive line in the file — the union of vetoes is empty, so the first live run takes every version. The block is left out of the config until one is set."
+                  }}
+                </p>
+                <div class="cg-two-col">
+                  <label
+                    >Keep newest N versions<input
+                      v-model="reg.retention_keep_versions"
+                      placeholder="10"
+                  /></label>
+                  <label
+                    >Keep for N days<input
+                      v-model="reg.retention_keep_for_days"
+                      placeholder="90"
+                  /></label>
+                </div>
+                <div class="cg-two-col">
+                  <label
+                    >Keep if pulled within N days<input
+                      v-model="reg.retention_keep_if_pulled_days"
+                      placeholder="30"
+                  /><span class="cg-field-hint"
+                      >Needs download data to mean anything — see the floor
+                      below.</span
+                    ></label
+                  >
+                  <label
+                    >Download-signal floor (days)<input
+                      v-model="reg.retention_download_signal_floor_days"
+                      placeholder="14"
+                    /><span class="cg-field-hint"
+                      >Ignore the pull signal until the registry has been
+                      recording it this long, so a freshly enabled instance does
+                      not read "never pulled" as "unused".</span
+                    ></label
+                  >
+                </div>
+                <label class="cg-check cg-mb">
+                  <input type="checkbox" v-model="reg.retention_keep_yanked" />
+                  Keep yanked versions
+                </label>
+                <div class="cg-two-col">
+                  <label
+                    >Tombstone detail for N days<input
+                      v-model="reg.retention_tombstone_detail_for_days"
+                      placeholder="180"
+                    /><span class="cg-field-hint"
+                      >Compaction discards a deleted version's checksum,
+                      publisher and metadata. The floor is 30 days — below that
+                      an auditor asking what was removed last month gets no
+                      answer.</span
+                    ></label
+                  >
+                  <label
+                    >Reclaim delay (ms)<input
+                      type="number"
+                      v-model.number="reg.retention_reclaim_delay_ms"
+                      min="0"
+                    /><span class="cg-field-hint"
+                      >Pause between deletions, to keep a sweep from saturating
+                      the storage backend.</span
+                    ></label
+                  >
+                </div>
+                <label class="cg-check cg-mb">
+                  <input type="checkbox" v-model="reg.retention_dry_run" />
+                  Dry run — report what would be reclaimed, delete nothing
+                </label>
+                <p
+                  v-if="!reg.retention_dry_run"
+                  class="cg-field-hint cg-hint-required"
+                  style="margin: -0.25rem 0 0.5rem 1.4rem"
+                >
+                  Live. This is the one irreversible half of the three dry-run
+                  switches, which is why it is the only one that defaults to on.
+                </p>
+              </template>
+            </template>
+
             <p class="cg-subsection-label">SBOM</p>
             <label class="cg-check cg-mb">
               <input type="checkbox" v-model="reg.sbom_enabled" />
@@ -4044,6 +5467,12 @@ textarea {
 
 .cg-field-hint code {
   font-size: var(--t-meta);
+}
+
+/* A required field left blank. The generated config is still emitted (so the
+   preview stays live), but it will not load until this is filled. */
+.cg-hint-required {
+  color: var(--vp-c-danger-1);
 }
 
 .cg-perm-hint {

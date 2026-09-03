@@ -57,7 +57,32 @@ const uncovered = computed(() => {
   ].filter((v): v is string => typeof v === "string");
 });
 
-const RESOURCE_TYPES = ["releases:read", "source:read", "releases:write", "source:write"];
+/**
+ * The verbs this page can simulate, in the order the vocabulary lists them.
+ *
+ * The set is closed: the endpoint parses `resource_type` into an `Action` and
+ * answers `400` for anything else. This list carried `releases:write` and
+ * `source:write`, neither of which has ever existed — two of the four options
+ * could only ever produce a bad request. Source of truth is `Action::ALL` in
+ * `crates/core/src/entities/permission.rs`, tabulated in
+ * `docs/guide/access-control.md#verbs`; the instance-tier verbs (`stats:read`,
+ * `audit:*`, the control surfaces) are left out because they name no coordinate
+ * and this page asks about one.
+ */
+const RESOURCE_TYPES = [
+  "releases:read",
+  "releases:list",
+  "releases:publish",
+  "releases:overwrite",
+  "releases:yank",
+  "releases:delete",
+  "source:read",
+  "catalogue:browse",
+  "owners:read",
+  "owners:write",
+  "packages:block",
+  "gates:exempt",
+];
 
 /**
  * Prefill from the query, as `/tools/access-check` already does.

@@ -137,6 +137,16 @@ value = "authz-support-token"
 role = "user"
 user_id = "authz-support"
 
+# Holds `grants:read` and not `grants:write` — RFC 0017's pair. Open question 2
+# closed the two as separate verbs because they disclose different things: the
+# audit log says what a subject *did*, a grant listing says what they *may do*
+# and enumerates every subject that can reach a private package. This token is
+# what makes that split assertable rather than merely written down.
+[[auth.tokens]]
+value = "authz-grants-reader-token"
+role = "user"
+user_id = "authz-grants-reader"
+
 # Holds `gates:exempt`, which `role:admin` does not. The only token in this file
 # that can do something the administrator cannot.
 [[auth.tokens]]
@@ -148,10 +158,10 @@ user_id = "authz-gatekeeper"
 #
 # The tier above every registry, and the only one that can reach an endpoint
 # naming no registry. `role:admin` already holds all of these from §10 rule 5;
-# these three lines are the delegation half — one verb each, so the suite can
+# these four lines are the delegation half — one verb each, so the suite can
 # assert that holding `system:read` does not confer `system:write`, that
-# `audit:read` does not confer `audit:purge`, and that `quota:read` does not
-# confer `quota:write`.
+# `audit:read` does not confer `audit:purge`, that `quota:read` does not confer
+# `quota:write`, and that `grants:read` does not confer `grants:write`.
 #
 # `cache:evict` is here rather than on a registry deliberately: it proves the
 # instance/registry composition. The endpoint names a registry, resolves the
@@ -161,6 +171,7 @@ user_id = "authz-gatekeeper"
 "user:authz-sre" = ["system:read", "cache:evict"]
 "user:authz-auditor" = ["audit:read"]
 "user:authz-support" = ["quota:read"]
+"user:authz-grants-reader" = ["grants:read"]
 
 # ── npm — the pull boundary, the namespace tiers, and the seal ───────────────
 

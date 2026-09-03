@@ -125,6 +125,38 @@ impl BatleHubClient {
         expect_no_content(resp).await
     }
 
+    /// PUT a JSON body and read a JSON response.
+    ///
+    /// Distinct from [`Self::put`], which expects `204`: the grants editor
+    /// answers `200` with the expanded action set and any warnings, and those
+    /// are the two things an operator most needs to see — `releases:*` names one
+    /// verb and stores several, and a redundant grant is legal and inert.
+    pub async fn put_json<T: DeserializeOwned, B: Serialize>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T> {
+        let req = self.request(Method::PUT, path).json(body);
+        let resp = self.send(req).await?;
+        expect_ok(resp).await
+    }
+
+    /// DELETE with a JSON body, reading a JSON response.
+    ///
+    /// A body on a DELETE because the coordinate is three fields — package,
+    /// optional version, subject — and a subject spelling contains `:` and `*`,
+    /// which are exactly the characters a path segment or query string would
+    /// need escaping for.
+    pub async fn delete_json<T: DeserializeOwned, B: Serialize>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T> {
+        let req = self.request(Method::DELETE, path).json(body);
+        let resp = self.send(req).await?;
+        expect_ok(resp).await
+    }
+
     pub async fn delete(&self, path: &str) -> Result<()> {
         let resp = self.send(self.request(Method::DELETE, path)).await?;
         expect_no_content(resp).await

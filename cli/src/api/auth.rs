@@ -22,6 +22,10 @@ pub struct TokenListItem {
     pub role: String,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
+    /// Absent on a server older than the PAT group snapshot (RFC 0011-bis
+    /// §4.4), which is a server where every token carries none.
+    #[serde(default)]
+    pub groups: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +36,8 @@ pub struct CreateTokenResponse {
     pub role: String,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub groups: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -39,6 +45,9 @@ pub struct CreateTokenRequest {
     pub name: String,
     pub expires_in_days: u64,
     pub role: String,
+    /// Groups to snapshot onto the token, each one the caller already holds.
+    /// Empty is the default and is what a token carried before this existed.
+    pub groups: Vec<String>,
 }
 
 impl BatleHubClient {

@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use batlehub_adapters::auth::generate_token;
 use batlehub_core::{
-    entities::Role,
+    entities::{snapshot_pat_groups, Role},
     ports::{TokenOwner, UserTokenRepository},
 };
 
@@ -28,6 +28,15 @@ pub struct CreateTokenRequest {
     /// Role for this token. Must be ≤ the caller's own role.
     /// Accepts "user" or "admin" (admin callers only for "admin").
     pub role: String,
+    /// Groups to snapshot onto the token. Each must be one the caller holds;
+    /// asking for one they do not is `403`, not a silent drop.
+    ///
+    /// Omitted or empty means no groups, which is what every token minted
+    /// before this field carried. "All of mine" is a client-side convenience
+    /// (`batlehub auth token create --all-groups`) that sends the resolved list
+    /// here, not a second server-side spelling of the same thing.
+    #[serde(default)]
+    pub groups: Vec<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -39,6 +48,10 @@ pub struct CreateTokenResponse {
     pub role: String,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
+    /// The group snapshot this token carries. Shown at creation because it is
+    /// the only moment it can be changed — a snapshot is fixed for the life of
+    /// the token, so a wrong one is re-created, never edited.
+    pub groups: Vec<String>,
 }
 
 #[utoipa::path(
@@ -49,7 +62,7 @@ pub struct CreateTokenResponse {
     responses(
         (status = 201, description = "Token created", body = CreateTokenResponse),
         (status = 400, description = "Invalid request (bad lifetime or role)"),
-        (status = 403, description = "Not an OIDC session or insufficient role"),
+        (status = 403, description = "Not an OIDC session, insufficient role, or a requested group the caller does not hold"),
     ),
     security(("bearer_token" = [])),
 )]
@@ -83,6 +96,18 @@ pub async fn create_token(
         return Err(AppError::bad_request("token name cannot be empty"));
     }
 
+    // The subset invariant of RFC 0015 §4.3, enforced at the one moment it can
+    // be: a token that outlives its creator's membership is a stale grant, but a
+    // token that never had the membership at all is privilege escalation. This
+    // is the only place a PAT's groups are chosen, so it is the only place the
+    // check has to hold.
+    let groups = snapshot_pat_groups(&body.groups, &identity).map_err(|missing| {
+        AppError::forbidden(format!(
+            "a token cannot carry groups you do not hold: {}",
+            missing.join(", ")
+        ))
+    })?;
+
     let expires_at = Utc::now() + chrono::Duration::days(body.expires_in_days as i64);
 
     let (raw_token, token_hash) = generate_token();
@@ -96,6 +121,7 @@ pub async fn create_token(
             &token_hash,
             requested_role.clone(),
             expires_at,
+            &groups,
         )
         .await
         .map_err(AppError::from)?;
@@ -111,6 +137,7 @@ pub async fn create_token(
         role = %tok.role,
         name = %tok.name,
         expires_at = %tok.expires_at,
+        groups = %tok.groups.join(","),
         "personal access token created"
     );
 
@@ -121,6 +148,7 @@ pub async fn create_token(
         role: tok.role.to_string(),
         expires_at: tok.expires_at,
         created_at: tok.created_at,
+        groups: tok.groups,
     }))
 }
 
@@ -137,6 +165,10 @@ pub struct TokenListItem {
     /// started recording. What tells a user which of their tokens is dormant and
     /// safe to revoke, and an operator which one moved after a leak.
     pub last_used_at: Option<DateTime<Utc>>,
+    /// The groups this token resolves to. Listed because a snapshot goes stale
+    /// silently: nothing tells its owner that the token still carries a team
+    /// they left, and this column is where they can see it.
+    pub groups: Vec<String>,
 }
 
 #[utoipa::path(
@@ -169,6 +201,7 @@ pub async fn list_tokens(
             expires_at: t.expires_at,
             created_at: t.created_at,
             last_used_at: t.last_used_at,
+            groups: t.groups,
         })
         .collect();
 

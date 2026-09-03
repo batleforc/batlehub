@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::auth::percent_encode;
 use super::BatleHubClient;
 
 // ── Quota ─────────────────────────────────────────────────────────────────────
@@ -363,6 +364,39 @@ pub struct AccessSimulationResponse {
     pub rule_matched: Option<String>,
 }
 
+/// One stored grant, as `GET /grants` reports it (RFC 0017 §4.1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GrantDto {
+    pub node_kind: String,
+    pub node_key: String,
+    pub subject: String,
+    pub actions: Vec<String>,
+    #[serde(default)]
+    pub granted_by: Option<String>,
+    /// The ownership projection's row rather than the editor's. Shown so an
+    /// operator is not surprised by the `409` that editing one earns.
+    #[serde(default)]
+    pub from_ownership: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GrantListResponse {
+    pub grants: Vec<GrantDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PutGrantResponse {
+    /// What was actually stored — `releases:*` names one verb and stores several.
+    pub actions: Vec<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteGrantResponse {
+    pub removed: bool,
+}
+
 impl BatleHubClient {
     // ── Quota ──────────────────────────────────────────────────────────────────
 
@@ -510,6 +544,75 @@ impl BatleHubClient {
         self.put(
             &format!("/api/v1/admin/registries/{registry}/packages/{name}/visibility"),
             &Body { visibility },
+        )
+        .await
+    }
+
+    // ── Grants (RFC 0017) ──────────────────────────────────────────────────────
+
+    pub async fn list_grants(
+        &self,
+        registry: &str,
+        package: &str,
+        version: Option<&str>,
+    ) -> Result<GrantListResponse> {
+        let mut path = format!(
+            "/api/v1/admin/registries/{registry}/grants?package={}",
+            percent_encode(package)
+        );
+        if let Some(v) = version {
+            path.push_str(&format!("&version={}", percent_encode(v)));
+        }
+        self.get(&path).await
+    }
+
+    pub async fn put_grant(
+        &self,
+        registry: &str,
+        package: &str,
+        version: Option<&str>,
+        subject: &str,
+        actions: &[String],
+    ) -> Result<PutGrantResponse> {
+        #[derive(serde::Serialize)]
+        struct Body<'a> {
+            package: &'a str,
+            version: Option<&'a str>,
+            subject: &'a str,
+            actions: &'a [String],
+        }
+        self.put_json(
+            &format!("/api/v1/admin/registries/{registry}/grants"),
+            &Body {
+                package,
+                version,
+                subject,
+                actions,
+            },
+        )
+        .await
+    }
+
+    pub async fn delete_grant(
+        &self,
+        registry: &str,
+        package: &str,
+        version: Option<&str>,
+        subject: &str,
+    ) -> Result<DeleteGrantResponse> {
+        #[derive(serde::Serialize)]
+        struct Body<'a> {
+            package: &'a str,
+            version: Option<&'a str>,
+            subject: &'a str,
+        }
+        self.delete_json(
+            &format!("/api/v1/admin/registries/{registry}/grants"),
+            &Body {
+                package,
+                version,
+                subject,
+            },
         )
         .await
     }

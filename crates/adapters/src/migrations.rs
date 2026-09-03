@@ -183,6 +183,11 @@ pub fn embedded_migrator() -> Migrator {
             "team_namespace_separator",
             "../migrations/045_team_namespace_separator.sql"
         ),
+        mig!(
+            46,
+            "user_tokens_groups",
+            "../migrations/046_user_tokens_groups.sql"
+        ),
     ])
 }
 

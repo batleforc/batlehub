@@ -328,6 +328,15 @@ pub fn instance_node(explicit: Option<&GrantMap>) -> Node {
             Action::BlocksRead,
             Action::BlocksWrite,
             Action::AuthzRead,
+            // RFC 0017 §4.1 — the grants editor's own two verbs, held here for
+            // the same reason as every other control verb: rule 5 is what stops
+            // an endpoint disappearing for administrators on upgrade. There is
+            // no `require_admin` predecessor to preserve — the surface is new —
+            // but an administrator who could already edit ownership, which
+            // writes package-tier rows, must not need a config change to reach
+            // the editor that writes the rest of them.
+            Action::GrantsRead,
+            Action::GrantsWrite,
             Action::CacheEvict,
             Action::CacheWarm,
             Action::QuotaRead,
@@ -711,6 +720,8 @@ mod control_surface_tests {
             Action::BlocksRead,
             Action::BlocksWrite,
             Action::AuthzRead,
+            Action::GrantsRead,
+            Action::GrantsWrite,
             Action::CacheEvict,
             Action::CacheWarm,
             Action::QuotaRead,

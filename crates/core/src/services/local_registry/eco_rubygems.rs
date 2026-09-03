@@ -134,14 +134,15 @@ impl LocalRegistryService {
         // what the audience has to include. The slot hands back the read set it
         // keyed on, so this document is filtered with the same resolution the
         // key describes.
-        let (cache_key, generation, readable) =
+        let (cache_key, generation, readable, grant_rows) =
             match self.cached_document(registry, "versions", identity).await? {
                 DocumentSlot::Hit(body) => return Ok(body.to_string()),
                 DocumentSlot::Miss {
                     key,
                     generation,
                     readable,
-                } => (key, generation, readable),
+                    grants,
+                } => (key, generation, readable, grants),
             };
 
         let names = self.backend.list_package_names(registry).await?;
@@ -156,7 +157,10 @@ impl LocalRegistryService {
             if !readable.contains(name) {
                 continue;
             }
-            let Ok(versions) = self.load_visible_versions(registry, name, identity).await else {
+            let Ok(versions) = self
+                .load_visible_versions_in(registry, name, identity, Some(&grant_rows))
+                .await
+            else {
                 // Not visible to this identity is not an error here — it is a
                 // gem this caller does not get to see, like every other listing.
                 continue;
@@ -192,14 +196,15 @@ impl LocalRegistryService {
         identity: &Identity,
     ) -> Result<String, CoreError> {
         // §11.7 arm 3, as `/versions` above.
-        let (cache_key, generation, readable) =
+        let (cache_key, generation, readable, grant_rows) =
             match self.cached_document(registry, "names", identity).await? {
                 DocumentSlot::Hit(body) => return Ok(body.to_string()),
                 DocumentSlot::Miss {
                     key,
                     generation,
                     readable,
-                } => (key, generation, readable),
+                    grants,
+                } => (key, generation, readable, grants),
             };
 
         let names = self.backend.list_package_names(registry).await?;
@@ -210,7 +215,10 @@ impl LocalRegistryService {
             if !readable.contains(name) {
                 continue;
             }
-            let Ok(versions) = self.load_visible_versions(registry, name, identity).await else {
+            let Ok(versions) = self
+                .load_visible_versions_in(registry, name, identity, Some(&grant_rows))
+                .await
+            else {
                 continue;
             };
             if versions.iter().any(|p| !p.yanked) {

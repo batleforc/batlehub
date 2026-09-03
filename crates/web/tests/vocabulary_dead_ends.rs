@@ -64,18 +64,28 @@ const REQUESTING: &[&str] = &[
 /// Files inside those trees that name a verb without **requesting** one, and so
 /// must not count.
 ///
-/// Three kinds. `translate.rs` and `grants.rs` *grant*, naming most of the
-/// vocabulary while building §10 rule 5's maps — counting them would make every
-/// verb look requested and turn this file green for exactly the wrong reason.
-/// `entities/` *defines*. And `differential.rs` is a **harness**: it names
-/// `releases:read` and `source:read` because those are the verbs it compares two
-/// evaluators on, which is a statement about the test corpus rather than about
-/// any route.
+/// Three kinds. `translate.rs` and `server/src/grants.rs` *grant*, naming most
+/// of the vocabulary while building §10 rule 5's maps — counting them would make
+/// every verb look requested and turn this file green for exactly the wrong
+/// reason. `entities/` *defines*. And `differential.rs` is a **harness**: it
+/// names `releases:read` and `source:read` because those are the verbs it
+/// compares two evaluators on, which is a statement about the test corpus rather
+/// than about any route.
+///
+/// # The granting file is matched by path, not by basename
+///
+/// This read `ends_with("grants.rs")` until RFC 0017 added
+/// `handlers/back_office/governance/grants.rs` — a file that *requests*
+/// `grants:read` and `grants:write` and was silently excluded by a rule written
+/// for a different file with the same name. The gate went green over two verbs
+/// no route was seen to ask for, which is precisely the silence it exists to
+/// break. A basename is not an identity; the granting file is named by where it
+/// is.
 fn is_not_a_requester(path: &Path) -> bool {
     let p = path.to_string_lossy();
     p.contains("/entities/")
         || p.ends_with("translate.rs")
-        || p.ends_with("grants.rs")
+        || p.ends_with("server/src/grants.rs")
         || p.ends_with("differential.rs")
 }
 

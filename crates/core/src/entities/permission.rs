@@ -138,6 +138,28 @@ pub enum Action {
     /// this one answers what *would*, and an estate that wants a reviewer to read
     /// the trail does not thereby want them probing the resolver.
     AuthzRead,
+    /// Reading the package- and version-tier grants written on a coordinate
+    /// ([RFC 0017](/rfc/0017-writing-grants-at-the-package-and-version-tiers) §4.1).
+    ///
+    /// Separate from [`Action::AuditRead`], which §11 open question 2 asks
+    /// about, and separate for the reason the `audit:read`/`audit:purge` split
+    /// already established: the two answer different questions about the same
+    /// package. The audit log says what a subject *did*; this says what they
+    /// *may do* and since when. An estate that lets a reviewer read the trail
+    /// has not thereby decided to publish its authorization model to them —
+    /// a grant listing enumerates the subjects that can reach a private
+    /// package, which is the larger of the two disclosures.
+    GrantsRead,
+    /// Writing and removing those grants.
+    ///
+    /// Not folded into [`Action::OwnersWrite`], though ownership projects into
+    /// the same table: ownership means three specific verbs on one package
+    /// (`OWNERSHIP_ACTIONS`), and a delegate handed the ability to *edit owners*
+    /// has not been handed the ability to grant `releases:read` on a private
+    /// package to any group they like. §8 rejects the merge for the same reason
+    /// from the other side — widening `owner` to arbitrary verbs makes the word
+    /// mean nothing, and the cargo owners API is a view over it.
+    GrantsWrite,
     /// Evicting cached artifacts and invalidating a registry's cache.
     CacheEvict,
     /// Pre-warming a registry's cache.
@@ -248,6 +270,8 @@ impl Action {
         Action::BlocksRead,
         Action::BlocksWrite,
         Action::AuthzRead,
+        Action::GrantsRead,
+        Action::GrantsWrite,
         Action::CacheEvict,
         Action::CacheWarm,
         Action::QuotaRead,
@@ -286,6 +310,8 @@ impl Action {
             Action::BlocksRead => "blocks:read",
             Action::BlocksWrite => "blocks:write",
             Action::AuthzRead => "authz:read",
+            Action::GrantsRead => "grants:read",
+            Action::GrantsWrite => "grants:write",
             Action::CacheEvict => "cache:evict",
             Action::CacheWarm => "cache:warm",
             Action::QuotaRead => "quota:read",

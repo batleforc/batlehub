@@ -135,6 +135,45 @@ pub trait GrantRepository: Send + Sync {
         registry: &str,
     ) -> Result<Vec<StoredGrant>, CoreError>;
 
+    /// Every **version-tier** grant in a registry.
+    ///
+    /// [`Self::package_grants_in_registry`]'s exact twin, and it exists for the
+    /// same kind of caller: a whole-registry document whose bytes depend on
+    /// these rows. Specifically RFC 0015 §4.4 rule 3 — a filtered listing is
+    /// identity-dependent and must never be cached under a key that does not
+    /// name the grants that filtered it. The rubygems compact index filters
+    /// every gem's version list, so two callers agreeing on every *package*-tier
+    /// row and differing on one version row are entitled to different documents,
+    /// and `DocumentAudience` needs these to tell them apart.
+    ///
+    /// Not on the fast path, for the same reason as its twin: a caller who holds
+    /// `releases:read` at a config tier has it on every version beneath, so
+    /// there is nothing to filter and nothing to fetch.
+    async fn version_grants_in_registry(
+        &self,
+        registry: &str,
+    ) -> Result<Vec<StoredGrant>, CoreError>;
+
+    /// Every **version-tier** grant under one package name.
+    ///
+    /// The listing filter's query, and the one read shape RFC 0015's resolver
+    /// never needed: resolution asks "what is written on this exact node", but a
+    /// *version index* has to decide for every version at once. Asking
+    /// [`Self::grants_for`] per version would be the N+1 §13.2 measured at 806×
+    /// — a package with 400 versions is 400 round trips to answer one document.
+    ///
+    /// One query, and it also answers the cheaper question first: **an empty
+    /// result means the filter is inert**, because with no version row a
+    /// caller's read verdict is uniform across every version and the
+    /// package-tier decision is the whole answer. That is what keeps RFC 0017 §9's
+    /// promise — no estate's listings change until an operator writes the first
+    /// version-tier grant.
+    async fn version_grants_for_package(
+        &self,
+        registry: &str,
+        package: &str,
+    ) -> Result<Vec<StoredGrant>, CoreError>;
+
     /// Every grant on one node, for the admin API and `explain`.
     async fn grants_on_node(
         &self,

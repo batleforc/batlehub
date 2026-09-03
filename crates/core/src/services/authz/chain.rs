@@ -315,6 +315,41 @@ pub async fn resolution_path(
     path
 }
 
+/// [`resolution_path`] plus the package- and version-tier nodes from storage.
+///
+/// # Why the diagnostics need their own entry point
+///
+/// [`authorize_grants`] walks both halves, but it reaches the second one only
+/// after a short-circuit: grants union, so a caller the config tiers already
+/// satisfy needs no query, and skipping it is what keeps a whole-registry
+/// document off the N+1 §13.2 measured at 806×. The answer is identical either
+/// way — that is the point of the short-circuit — so the enforcement path can
+/// afford to stop early.
+///
+/// A diagnostic cannot. `explain` and `access-check` are asked precisely about
+/// the callers the config tiers *do not* satisfy, which is the branch the
+/// short-circuit skips, and both were resolving over the config nodes alone.
+/// Before RFC 0017 that under-reported the three verbs the ownership projection
+/// writes; since the grants editor it under-reports any verb on either tier, and
+/// `explain` was naming `package:…` and `version:…` in `tiers_walked` while
+/// resolving without them — a page saying it looked where it had not.
+///
+/// §11.6 is explicit about which way that fails: *"a diagnostic that can
+/// disagree with reality is worse than none, because it is trusted"*. So the
+/// diagnostics pay the query and take the whole path.
+pub async fn resolution_path_for_coordinate(
+    hot: &HotConfigLock,
+    grants: &crate::entities::RegistryGrants,
+    package_id: &PackageId,
+) -> Result<Vec<crate::entities::Node>, CoreError> {
+    let mut path = resolution_path(hot, grants, package_id.name.as_str()).await;
+    // Appended after the config nodes for the same reason `authorize_grants`
+    // appends them there: resolution walks outermost-first, and a deeper node
+    // arriving earlier would report the wrong tier in `explain`'s provenance.
+    path.extend(stored_nodes(hot, package_id).await?);
+    Ok(path)
+}
+
 /// Authorize a **control** verb — the endpoints RFC 0015 §4.2 deferred as
 /// *"control surfaces stay `role:admin`"*.
 ///

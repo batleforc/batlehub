@@ -190,6 +190,50 @@ impl GrantRepository for PgGrantRepository {
         rows.iter().map(row_to_grant).collect()
     }
 
+    async fn version_grants_in_registry(
+        &self,
+        registry: &str,
+    ) -> Result<Vec<StoredGrant>, CoreError> {
+        let rows = sqlx::query(
+            "SELECT registry, node_kind, node_key, subject, actions, granted_by \
+             FROM grants WHERE registry = $1 AND node_kind = 'version'",
+        )
+        .bind(registry)
+        .fetch_all(&self.pool)
+        .await
+        .db_err()?;
+        rows.iter().map(row_to_grant).collect()
+    }
+
+    /// Same `LIKE` discipline as [`Self::delete_package_grants`] below, for the
+    /// same reason: a package name may contain `%` or `_`, and an unescaped one
+    /// would return another package's grants — which here would *widen* a
+    /// listing rather than narrow it.
+    async fn version_grants_for_package(
+        &self,
+        registry: &str,
+        package: &str,
+    ) -> Result<Vec<StoredGrant>, CoreError> {
+        if package.is_empty() {
+            return Ok(Vec::new());
+        }
+        let escaped = package
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let rows = sqlx::query(
+            "SELECT registry, node_kind, node_key, subject, actions, granted_by \
+             FROM grants \
+             WHERE registry = $1 AND node_kind = 'version' AND node_key LIKE $2 ESCAPE '\\'",
+        )
+        .bind(registry)
+        .bind(format!("{escaped}@%"))
+        .fetch_all(&self.pool)
+        .await
+        .db_err()?;
+        rows.iter().map(row_to_grant).collect()
+    }
+
     async fn delete_package_grants(&self, registry: &str, package: &str) -> Result<(), CoreError> {
         if package.is_empty() {
             return Ok(());

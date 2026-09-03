@@ -53,7 +53,34 @@ const form = ref({
   name: "",
   expires_in_days: 30,
   role: identity.value?.role === "admin" ? "admin" : "user",
+  groups: [] as string[],
 });
+
+/**
+ * What this token may be given, which is exactly what its creator holds.
+ *
+ * A PAT's groups are a snapshot capped to the creator's own (RFC 0011-bis
+ * §4.4), so there is nothing else to offer: the server answers `403` for
+ * anything outside this list, and a free-text field would only be a way to earn
+ * that 403 with a typo. Offering the held groups is also what makes the
+ * provider-prefixed spelling — `k8s:system:serviceaccounts:digital`, not
+ * `system:serviceaccounts:digital` — impossible to get wrong.
+ */
+const myGroups = computed(() => identity.value?.groups ?? []);
+
+function toggleGroup(g: string) {
+  const at = form.value.groups.indexOf(g);
+  if (at === -1) form.value.groups.push(g);
+  else form.value.groups.splice(at, 1);
+}
+
+const allGroupsSelected = computed(
+  () => myGroups.value.length > 0 && form.value.groups.length === myGroups.value.length,
+);
+
+function toggleAllGroups() {
+  form.value.groups = allGroupsSelected.value ? [] : [...myGroups.value];
+}
 
 const roleOptions = computed(() => {
   const r = identity.value?.role;
@@ -63,10 +90,13 @@ const roleOptions = computed(() => {
 });
 
 function openCreate() {
+  // Defaults to no groups: the same starting point every token had before the
+  // snapshot existed, and the narrow direction to be wrong in.
   form.value = {
     name: "",
     expires_in_days: 30,
     role: identity.value?.role === "admin" ? "admin" : "user",
+    groups: [],
   };
   createError.value = null;
   newToken.value = null;
@@ -86,6 +116,7 @@ async function submitCreate() {
         name: form.value.name.trim(),
         expires_in_days: form.value.expires_in_days,
         role: form.value.role,
+        groups: form.value.groups,
       },
     });
     if (apiError) {
@@ -94,6 +125,7 @@ async function submitCreate() {
       showCreate.value = false;
       newToken.value = (data as CreateTokenResponse | undefined)?.token ?? null;
       newTokenExpiry.value = (data as CreateTokenResponse | undefined)?.expires_at ?? null;
+      newTokenGroups.value = (data as CreateTokenResponse | undefined)?.groups ?? [];
       reload();
       startAutoClear();
     }
@@ -106,12 +138,15 @@ async function submitCreate() {
 
 const newToken = ref<string | null>(null);
 const newTokenExpiry = ref<string | null>(null);
+/** Echoed back from the server, not from the form: what the token *actually* carries. */
+const newTokenGroups = ref<string[]>([]);
 let autoClearTimer: ReturnType<typeof setTimeout> | null = null;
 
 function startAutoClear() {
   autoClearTimer = setTimeout(() => {
     newToken.value = null;
     newTokenExpiry.value = null;
+    newTokenGroups.value = [];
   }, 60_000);
 }
 
@@ -122,6 +157,7 @@ onUnmounted(() => {
 function dismissToken() {
   newToken.value = null;
   newTokenExpiry.value = null;
+  newTokenGroups.value = [];
 }
 
 // ── Revoke ────────────────────────────────────────────────────────────────────
@@ -219,6 +255,19 @@ const lifetimePresets = [7, 30, 90];
         <p v-if="newTokenExpiry" class="text-xs text-muted-foreground">
           {{ t("common.expiresLabel") }} {{ formatDate(newTokenExpiry) }}
         </p>
+        <!--
+          Stated at the moment of creation because it is the only moment it can
+          change: a snapshot is fixed for the life of the token, so a wrong one
+          is re-created, never edited. Said even when empty — "sees nothing of
+          your teams" is the sentence that saves an afternoon later.
+        -->
+        <p class="text-xs text-muted-foreground">
+          <template v-if="newTokenGroups.length">
+            {{ t("tokensPage.tokenSeesGroups") }}
+            <span class="font-mono">{{ newTokenGroups.join(", ") }}</span>
+          </template>
+          <template v-else>{{ t("tokensPage.tokenSeesNoGroups") }}</template>
+        </p>
         <Button variant="ghost" size="sm" class="h-7 text-xs" @click="dismissToken">{{
           t("tokensPage.dismissAutoClearsIn")
         }}</Button>
@@ -253,6 +302,7 @@ const lifetimePresets = [7, 30, 90];
               <TableRow>
                 <TableHead>{{ t("common.name") }}</TableHead>
                 <TableHead>{{ t("common.role") }}</TableHead>
+                <TableHead>{{ t("tokensPage.seesColumn") }}</TableHead>
                 <TableHead>{{ t("common.expires") }}</TableHead>
                 <TableHead>{{ t("common.created") }}</TableHead>
                 <TableHead class="w-16" />
@@ -267,6 +317,21 @@ const lifetimePresets = [7, 30, 90];
                   <Badge :variant="tok.role === 'admin' ? 'default' : 'secondary'" class="text-xs">
                     {{ tok.role }}
                   </Badge>
+                </TableCell>
+                <!--
+                  A snapshot goes stale silently — nothing tells its owner the
+                  token still carries a team they left. This column is the only
+                  place they can see it, so it is a column and not a tooltip.
+                -->
+                <TableCell>
+                  <div v-if="tok.groups?.length" class="flex flex-wrap gap-1">
+                    <Badge v-for="g in tok.groups" :key="g" variant="outline" class="text-xs">
+                      {{ g }}
+                    </Badge>
+                  </div>
+                  <span v-else class="text-sm text-muted-foreground">{{
+                    t("tokensPage.noGroupsShort")
+                  }}</span>
                 </TableCell>
                 <TableCell>
                   <span
@@ -329,6 +394,44 @@ const lifetimePresets = [7, 30, 90];
             :placeholder="t('tokensPage.selectRole')"
           />
         </div>
+
+        <!--
+          Named for what it does — what the token can see — not for the column
+          it writes. The choices are the caller's own groups and nothing else:
+          the server refuses anything outside them (RFC 0011-bis §4.4), and a
+          free-text field would only be a way to earn that refusal with a typo
+          in a provider-prefixed id.
+        -->
+        <fieldset v-if="myGroups.length" class="space-y-2 border-0 p-0 m-0">
+          <legend
+            class="font-mono text-xs font-semibold uppercase tracking-wide text-muted-foreground leading-none"
+          >
+            {{ t("tokensPage.whatThisTokenCanSee") }}
+          </legend>
+          <p class="text-xs text-muted-foreground">
+            {{ t("tokensPage.groupsAreASnapshot") }}
+          </p>
+          <div class="flex flex-wrap gap-2">
+            <Button
+              v-for="g in myGroups"
+              :key="g"
+              :variant="form.groups.includes(g) ? 'default' : 'outline'"
+              size="sm"
+              :aria-pressed="form.groups.includes(g)"
+              @click="toggleGroup(g)"
+            >
+              {{ g }}
+            </Button>
+          </div>
+          <Button variant="ghost" size="sm" class="h-7 text-xs" @click="toggleAllGroups">
+            {{
+              allGroupsSelected ? t("tokensPage.selectNoGroups") : t("tokensPage.selectAllGroups")
+            }}
+          </Button>
+          <p v-if="!form.groups.length" class="text-xs text-muted-foreground">
+            {{ t("tokensPage.tokenSeesNoGroups") }}
+          </p>
+        </fieldset>
 
         <fieldset class="space-y-2 border-0 p-0 m-0">
           <legend

@@ -732,6 +732,61 @@ pub fn pat_is_within_owner(pat: &Identity, owner: &Identity) -> bool {
     pat.groups.iter().all(|g| owner.groups.contains(g))
 }
 
+/// Build the group snapshot a PAT is minted with, or name what its creator
+/// does not hold.
+///
+/// The other half of [`pat_is_within_owner`]: that function asserts the subset
+/// invariant of a token that already exists, this one is what makes it true at
+/// the one moment a token is created. Keeping them adjacent is deliberate —
+/// a check with no producer beside it is a check that eventually guards nothing.
+///
+/// Two rules, both from RFC 0011-bis §4.4:
+///
+/// - **Comparison is space-stripped**, matching `check_team_visibility` and
+///   [`ExploreViewer::normalised_groups`]. One normalisation rule, applied
+///   everywhere, so `platform team` typed into a console field and
+///   `platformteam` emitted by the IDP are the same group here and in every
+///   later comparison.
+/// - **What is stored is the owner's string, not the requested one.** A caller
+///   who asks for `platform team` gets the exact bytes their `Identity` carries,
+///   so a snapshot is always literally a subset of what the provider emitted and
+///   every downstream comparison — SQL predicate included — behaves for the PAT
+///   exactly as it does for the OIDC session that minted it.
+///
+/// `Err` carries the requested groups the owner does not hold, in the order they
+/// were asked for. Refusing is the whole point: silently dropping them mints a
+/// token that is quietly narrower than what its creator asked for, and the first
+/// report is a pipeline that cannot see a package with nothing to explain why.
+///
+/// [`ExploreViewer::normalised_groups`]: crate::entities::ExploreViewer::normalised_groups
+pub fn snapshot_pat_groups(
+    requested: &[String],
+    owner: &Identity,
+) -> Result<Vec<String>, Vec<String>> {
+    fn normalise(g: &str) -> String {
+        g.replace(' ', "")
+    }
+
+    let mut snapshot: Vec<String> = Vec::with_capacity(requested.len());
+    let mut missing: Vec<String> = Vec::new();
+
+    for want in requested {
+        let key = normalise(want);
+        match owner.groups.iter().find(|held| normalise(held) == key) {
+            // Same group asked for twice is one group on the token, not two.
+            Some(held) if snapshot.contains(held) => {}
+            Some(held) => snapshot.push(held.clone()),
+            None => missing.push(want.clone()),
+        }
+    }
+
+    if missing.is_empty() {
+        Ok(snapshot)
+    } else {
+        Err(missing)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1208,5 +1263,107 @@ mod tests {
             ..owner.clone()
         };
         assert!(!pat_is_within_owner(&someone_else, &owner));
+    }
+
+    fn pat_owner() -> Identity {
+        Identity {
+            user_id: Some("alice".to_owned()),
+            role: Role::User,
+            auth_provider: None,
+            groups: vec![
+                "oidc1:eng".to_owned(),
+                "oidc1:qa".to_owned(),
+                "platform team".to_owned(),
+            ],
+        }
+    }
+
+    #[test]
+    fn a_snapshot_of_nothing_is_the_old_behaviour() {
+        assert_eq!(snapshot_pat_groups(&[], &pat_owner()), Ok(vec![]));
+    }
+
+    #[test]
+    fn a_snapshot_keeps_the_requested_order() {
+        assert_eq!(
+            snapshot_pat_groups(
+                &["oidc1:qa".to_owned(), "oidc1:eng".to_owned()],
+                &pat_owner()
+            ),
+            Ok(vec!["oidc1:qa".to_owned(), "oidc1:eng".to_owned()])
+        );
+    }
+
+    /// A group the creator does not hold is refused, not dropped. A quietly
+    /// narrower token is a pipeline that cannot see a package with nothing on
+    /// screen to explain why.
+    #[test]
+    fn a_snapshot_names_what_the_owner_does_not_hold() {
+        assert_eq!(
+            snapshot_pat_groups(
+                &[
+                    "oidc1:eng".to_owned(),
+                    "oidc1:admins".to_owned(),
+                    "finance".to_owned(),
+                ],
+                &pat_owner()
+            ),
+            Err(vec!["oidc1:admins".to_owned(), "finance".to_owned()])
+        );
+    }
+
+    /// Space-stripped on both sides, matching `check_team_visibility` and
+    /// `ExploreViewer::normalised_groups`.
+    #[test]
+    fn a_snapshot_compares_groups_space_stripped() {
+        assert_eq!(
+            snapshot_pat_groups(&["platformteam".to_owned()], &pat_owner()),
+            Ok(vec!["platform team".to_owned()]),
+            "stored as the owner holds it, so every later comparison sees the \
+             same bytes the OIDC session would have carried"
+        );
+    }
+
+    #[test]
+    fn a_group_asked_for_twice_is_stored_once() {
+        assert_eq!(
+            snapshot_pat_groups(
+                &[
+                    "oidc1:eng".to_owned(),
+                    "oidc1: eng".to_owned(),
+                    "oidc1:eng".to_owned(),
+                ],
+                &pat_owner()
+            ),
+            Ok(vec!["oidc1:eng".to_owned()])
+        );
+    }
+
+    /// The two functions are one rule from two sides: whatever the snapshot
+    /// produces must satisfy the invariant check.
+    #[test]
+    fn a_snapshot_always_satisfies_the_invariant() {
+        let owner = pat_owner();
+        let groups =
+            snapshot_pat_groups(&["platformteam".to_owned(), "oidc1:qa".to_owned()], &owner)
+                .expect("all held");
+        let pat = Identity {
+            groups,
+            ..owner.clone()
+        };
+        assert!(pat_is_within_owner(&pat, &owner));
+    }
+
+    #[test]
+    fn an_owner_with_no_groups_can_snapshot_nothing() {
+        let owner = Identity {
+            groups: vec![],
+            ..pat_owner()
+        };
+        assert_eq!(snapshot_pat_groups(&[], &owner), Ok(vec![]));
+        assert_eq!(
+            snapshot_pat_groups(&["oidc1:eng".to_owned()], &owner),
+            Err(vec!["oidc1:eng".to_owned()])
+        );
     }
 }

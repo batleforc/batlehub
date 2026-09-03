@@ -78,7 +78,7 @@ impl LocalRegistryService {
         identity: &Identity,
     ) -> Result<serde_json::Value, CoreError> {
         let names = self.backend.list_package_names(registry).await?;
-        let readable = self.readable_packages(registry, identity).await?;
+        let (readable, grant_rows) = self.readable_packages(registry, identity).await?;
 
         let mut packages = serde_json::Map::new();
         let mut packages_conda = serde_json::Map::new();
@@ -91,7 +91,10 @@ impl LocalRegistryService {
             // visibility predicate and drops blocked versions, which is what the
             // per-package conda routes already do. A denial is a package this
             // caller does not see, not an error that blanks the channel.
-            let versions = match self.load_visible_versions(registry, name, identity).await {
+            let versions = match self
+                .load_visible_versions_in(registry, name, identity, Some(&grant_rows))
+                .await
+            {
                 Ok(v) => v,
                 Err(CoreError::AccessDenied(_)) => continue,
                 Err(e) => return Err(e),

@@ -285,25 +285,48 @@ pub async fn admin_authz_explain(
 
     let package = query.package.clone().unwrap_or_default();
     let subject = Subject::Identity(identity_for(&matcher));
-    // `resolution_path`, not `grants.path_for` — the latter cannot see the
-    // instance tier, which lives above every registry, so this endpoint used to
-    // answer about a hierarchy missing its top node: a subject granted a verb
-    // only there resolved to `deny` here and `allow` at the server.
-    let path =
-        batlehub_core::services::authz::resolution_path(&proxy_svc.hot, &grants, &package).await;
+    // `resolution_path_for_coordinate`, not `grants.path_for` — the latter
+    // cannot see the instance tier, which lives above every registry, so this
+    // endpoint used to answer about a hierarchy missing its top node: a subject
+    // granted a verb only there resolved to `deny` here and `allow` at the
+    // server. The stored package and version tiers are the same defect at the
+    // other end of the path, and RFC 0017's editor is what made it reachable for
+    // every verb rather than for the three the ownership projection writes.
+    let coordinate = batlehub_core::entities::PackageId::new(
+        &query.registry,
+        &package,
+        query.version.clone().unwrap_or_default(),
+    );
+    let path = batlehub_core::services::authz::resolution_path_for_coordinate(
+        &proxy_svc.hot,
+        &grants,
+        &coordinate,
+    )
+    .await
+    .map_err(AppError::from)?;
     let resolved = resolve(&path, &subject);
 
     // The package and version tiers are named in `tiers_walked` when the caller
-    // asked about them, even though nothing supplies their grants yet: a tier
+    // asked about them, whether or not storage holds a row for either: a tier
     // absent from the list reads as "not considered", and these *are*
-    // considered — they simply have no `policy` table to be read from. Saying so
-    // is the difference between "we did not look" and "we looked and found
-    // nothing", which is exactly what this endpoint exists to distinguish.
+    // considered. Saying so is the difference between "we did not look" and "we
+    // looked and found nothing", which is exactly what this endpoint exists to
+    // distinguish.
+    //
+    // Since RFC 0017 a row *can* exist, so the node may already be on the path
+    // under the same label — hence the de-duplication rather than an
+    // unconditional push. Listing a tier twice would suggest two nodes and a
+    // precedence between them, and the model has neither.
     let mut tiers_walked: Vec<String> = path.iter().map(|n| n.label.clone()).collect();
     if !package.is_empty() {
-        tiers_walked.push(format!("package:{package}"));
+        let mut name_tier = |label: String| {
+            if !tiers_walked.contains(&label) {
+                tiers_walked.push(label);
+            }
+        };
+        name_tier(format!("package:{package}"));
         if let Some(version) = query.version.as_deref().filter(|v| !v.is_empty()) {
-            tiers_walked.push(format!("version:{version}"));
+            name_tier(format!("version:{version}"));
         }
     }
 

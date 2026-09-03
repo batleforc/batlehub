@@ -147,24 +147,6 @@ impl TestServer {
         )
             as Arc<dyn batlehub_core::ports::ReadmeRepository>));
 
-        let local_svc = Arc::new(LocalRegistryService {
-            backend: Arc::new(InMemoryLocalRegistry::new()),
-            storage: storage.clone(),
-            hot: new_hot_lock(HotConfig {
-                registries: HashMap::new(),
-                policies: HashMap::new(),
-                ..Default::default()
-            }),
-            quota: None,
-            ownership: None,
-            team_namespace: None,
-            sbom: None,
-            explore_cache: None,
-            package_repo: None,
-            readme: Some(Arc::clone(&readme_svc)),
-        });
-
-        let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
         // RFC 0015 §4.1's grant hierarchy, granting everything to everyone.
         //
         // Present rather than absent because `authz explain` answers `404
@@ -198,6 +180,39 @@ impl TestServer {
             )]
             .into()
         };
+        let local_svc = Arc::new(LocalRegistryService {
+            backend: Arc::new(InMemoryLocalRegistry::new()),
+            storage: storage.clone(),
+            hot: new_hot_lock(HotConfig {
+                registries: HashMap::new(),
+                policies: HashMap::new(),
+                // RFC 0017's editor reads both of these off **this** lock:
+                // `GrantAdminService` is built from `local_svc.hot`, the way
+                // `server_factory` builds it. Production has one `HotConfig`
+                // behind both services and this fixture has two, so the
+                // hierarchy is shared explicitly rather than by construction.
+                //
+                // Without `grant_repo` the routes answer `503 no grant
+                // storage`; without `grants` the service answers `404 registry
+                // not configured`, because a grant on a registry this server
+                // does not serve is a typo whose only symptom would be a row
+                // nothing reads. Either way these tests would assert an error
+                // path and never reach the command.
+                grants: grants.clone(),
+                grant_repo: Some(batlehub_adapters::in_memory::InMemoryGrantRepository::new()
+                    as Arc<dyn batlehub_core::ports::GrantRepository>),
+                ..Default::default()
+            }),
+            quota: None,
+            ownership: None,
+            team_namespace: None,
+            sbom: None,
+            explore_cache: None,
+            package_repo: None,
+            readme: Some(Arc::clone(&readme_svc)),
+        });
+
+        let registries: HashMap<String, Arc<dyn RegistryClient>> = HashMap::new();
         let proxy_svc = Arc::new(ProxyService {
             hot: new_hot_lock(HotConfig {
                 registries,
@@ -214,6 +229,12 @@ impl TestServer {
                 instance: Some(Arc::new(
                     batlehub_core::services::authz::translate::instance_node(None),
                 )),
+                // RFC 0017's editor writes here. Absent, the three `admin
+                // grants` routes answer `503 no grant storage` — a *deployment*
+                // fact rather than a bad request, so a CLI test without it would
+                // assert the command's error path and never reach the command.
+                grant_repo: Some(batlehub_adapters::in_memory::InMemoryGrantRepository::new()
+                    as Arc<dyn batlehub_core::ports::GrantRepository>),
                 ..Default::default()
             }),
             storage: storage.clone(),
@@ -357,6 +378,18 @@ impl TestServer {
                     .split_for_parts();
                 app.app_data(web::Data::new(cargo_indexes.clone()))
                     .app_data(web::Data::new(local_svc.clone()))
+                    .app_data(web::Data::new(Arc::new(
+                        batlehub_core::services::GrantAdminService::new(
+                            local_svc.hot.clone(),
+                            Some(
+                                Arc::new(batlehub_core::services::BackendVersions(Arc::clone(
+                                    &local_svc.backend,
+                                )))
+                                    as Arc<dyn batlehub_core::services::VersionLookup>,
+                            ),
+                            local_svc.ownership.clone(),
+                        ),
+                    )))
                     .app_data(web::Data::new(mode_map.clone()))
                     .app_data(web::Data::new(quota_svc.clone()))
                     .app_data(web::Data::new(ip_block_store.clone()))
@@ -876,6 +909,36 @@ fn auth_token_create_requires_oidc_fails() {
     assert!(
         stderr.to_lowercase().contains("oidc"),
         "stderr should mention OIDC, got: {stderr}"
+    );
+}
+
+/// RFC 0011-bis §4.4 — the two ways of naming a token's groups are exclusive.
+///
+/// `--all-groups` is sugar that resolves the list from `auth whoami` and sends
+/// it; combining it with an explicit `--groups` would make the resulting
+/// snapshot depend on which one the code happened to read, so clap refuses the
+/// combination instead of picking.
+#[test]
+fn auth_token_create_refuses_groups_and_all_groups_together() {
+    let srv = TestServer::start();
+    let (ok, _stdout, stderr) = cli_cmd(
+        &[
+            "auth",
+            "token",
+            "create",
+            "--name",
+            "ci-token",
+            "--groups",
+            "eng",
+            "--all-groups",
+        ],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(!ok, "the two flags must not be usable together");
+    assert!(
+        stderr.contains("--all-groups") && stderr.contains("--groups"),
+        "stderr should name both flags, got: {stderr}"
     );
 }
 
@@ -3114,4 +3177,209 @@ fn authz_shadow_says_when_nothing_is_shadowed() {
         stdout.contains("No node is in shadow"),
         "an empty list must not read as 'the shadow found nothing': {stdout}"
     );
+}
+
+// ── RFC 0017 — `admin grants list|set|rm` ────────────────────────────────────
+//
+// Phase 3 shipped the CLI with no test of its own: the service beneath it is
+// covered in `crates/core`, the routes in `crates/web/tests/grants_editor.rs`,
+// and the three subcommands in between by nothing. What lives only here is the
+// CLI's own logic — the `name@version` split, the two output modes, and the
+// distinction between "removed" and "there was nothing to remove", which the
+// exit status does not carry because neither is an error.
+
+#[test]
+fn admin_grants_set_list_and_remove() {
+    let srv = TestServer::start();
+    let base = srv.base_url();
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "grants", "list", REGISTRY, "pkg-a"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "grants list should succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("No grants written"),
+        "an empty node reports itself rather than printing an empty table: {stdout}"
+    );
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "admin",
+            "grants",
+            "set",
+            REGISTRY,
+            "pkg-a",
+            "--subject",
+            "group:oidc1:eng",
+            "--actions",
+            "releases:read,releases:list",
+        ],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "grants set should succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("releases:read") && stdout.contains("releases:list"),
+        "set reports what was stored: {stdout}"
+    );
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "grants", "list", REGISTRY, "pkg-a", "--json"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "grants list --json should succeed; stderr: {stderr}");
+    let doc: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(doc["grants"][0]["subject"], "group:oidc1:eng");
+    assert_eq!(doc["grants"][0]["node_kind"], "package");
+    assert_eq!(doc["grants"][0]["node_key"], "pkg-a");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &["admin", "grants", "list", REGISTRY, "pkg-a"],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "grants list (table) should succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("group:oidc1:eng") && stdout.contains("package:pkg-a"),
+        "the table names the node and the subject: {stdout}"
+    );
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "admin",
+            "grants",
+            "rm",
+            REGISTRY,
+            "pkg-a",
+            "--subject",
+            "group:oidc1:eng",
+        ],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "grants rm should succeed; stderr: {stderr}");
+    assert!(stdout.contains("Removed"), "stdout: {stdout}");
+
+    // Removing what is not there is **not** an error: the operator asked for a
+    // state and got it. The two outcomes differ in the message alone, which is
+    // why the message is asserted rather than the exit status.
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "admin",
+            "grants",
+            "rm",
+            REGISTRY,
+            "pkg-a",
+            "--subject",
+            "group:oidc1:eng",
+        ],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "a second rm is not a failure; stderr: {stderr}");
+    assert!(
+        stdout.contains("had no grant"),
+        "the second rm says so rather than repeating 'Removed': {stdout}"
+    );
+}
+
+/// `releases:*` names one verb and stores several (§4.2 — expansion at write),
+/// and the CLI prints what was stored. An operator who cannot see the
+/// difference cannot review the grant they just wrote.
+#[test]
+fn admin_grants_set_reports_the_expanded_wildcard() {
+    let srv = TestServer::start();
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "admin",
+            "grants",
+            "set",
+            REGISTRY,
+            "pkg-b",
+            "--subject",
+            "user:alice",
+            "--actions",
+            "releases:*",
+        ],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(ok, "grants set should succeed; stderr: {stderr}");
+    assert!(
+        stdout.matches("releases:").count() > 1,
+        "the wildcard expanded at write and the CLI must print the expansion, not \
+         the wildcard: {stdout}"
+    );
+}
+
+/// The `name@version` split is the CLI's own, and it splits on the **last**
+/// `@` so a scoped npm name is not read as a version node.
+#[test]
+fn admin_grants_splits_a_scoped_name_on_the_last_at() {
+    let srv = TestServer::start();
+    let base = srv.base_url();
+
+    let (ok, _stdout, stderr) = cli_cmd(
+        &[
+            "admin",
+            "grants",
+            "set",
+            REGISTRY,
+            "@acme/billing",
+            "--subject",
+            "user:alice",
+            "--actions",
+            "releases:read",
+        ],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "a scoped name is a package node; stderr: {stderr}");
+
+    let (ok, stdout, stderr) = cli_cmd(
+        &[
+            "admin",
+            "grants",
+            "list",
+            REGISTRY,
+            "@acme/billing",
+            "--json",
+        ],
+        &base,
+        AUTH_TOKEN,
+    );
+    assert!(ok, "grants list should succeed; stderr: {stderr}");
+    let doc: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(
+        doc["grants"][0]["node_kind"], "package",
+        "splitting on the first `@` would have made this a version node on a \
+         package named '': {stdout}"
+    );
+    assert_eq!(doc["grants"][0]["node_key"], "@acme/billing");
+}
+
+/// An unparseable subject is refused by the service, and the CLI surfaces the
+/// refusal as a non-zero exit rather than printing a success line.
+#[test]
+fn admin_grants_set_rejects_an_unparseable_subject() {
+    let srv = TestServer::start();
+    let (ok, stdout, _stderr) = cli_cmd(
+        &[
+            "admin",
+            "grants",
+            "set",
+            REGISTRY,
+            "pkg-c",
+            "--subject",
+            "not-a-subject-form",
+            "--actions",
+            "releases:read",
+        ],
+        &srv.base_url(),
+        AUTH_TOKEN,
+    );
+    assert!(!ok, "an unparseable subject must fail; stdout: {stdout}");
 }

@@ -36,6 +36,7 @@ impl UserTokenRepository for NullUserTokenRepository {
         _token_hash: &str,
         _role: Role,
         _expires_at: DateTime<Utc>,
+        _groups: &[String],
     ) -> Result<UserToken, CoreError> {
         Err(CoreError::Database(
             "NullUserTokenRepository does not support token creation".into(),
@@ -75,6 +76,7 @@ mod tests {
                 "hash",
                 Role::User,
                 Utc::now(),
+                &[],
             )
             .await;
         assert!(result.is_err());

@@ -57,6 +57,19 @@ pub enum TokenCommand {
         /// Role: user or admin
         #[arg(long, default_value = "user")]
         role: String,
+        /// Groups to snapshot onto the token (comma-separated). Each must be
+        /// one you already hold — `auth whoami` prints them as the server
+        /// resolves them, which is the reliable way to spell one.
+        #[arg(long, value_delimiter = ',', conflicts_with = "all_groups")]
+        groups: Vec<String>,
+        /// Snapshot every group you hold right now.
+        ///
+        /// Sugar, resolved here rather than on the server: it reads `auth
+        /// whoami` and sends the resulting list, so the token is minted from a
+        /// list you can also print, and there is one way for the server to be
+        /// told what a token carries.
+        #[arg(long)]
+        all_groups: bool,
     },
     /// Revoke a token by its UUID
     Revoke {
@@ -130,25 +143,45 @@ async fn handle_token_command(
                 println!("{}", serde_json::to_string_pretty(&tokens)?);
             } else {
                 let mut table = Table::new();
-                table.set_header(["ID", "Name", "Role", "Expires"]);
+                table.set_header(["ID", "Name", "Role", "Expires", "Groups"]);
                 for t in &tokens {
                     table.add_row([
                         &t.id.to_string(),
                         &t.name,
                         &t.role,
                         &t.expires_at.format("%Y-%m-%d").to_string(),
+                        // A snapshot goes stale silently, so the listing shows
+                        // it: this is where an owner sees that a token still
+                        // carries a team they left.
+                        &if t.groups.is_empty() {
+                            "-".to_owned()
+                        } else {
+                            t.groups.join(", ")
+                        },
                     ]);
                 }
                 println!("{table}");
                 println!("{} token(s)", tokens.len());
             }
         }
-        TokenCommand::Create { name, days, role } => {
+        TokenCommand::Create {
+            name,
+            days,
+            role,
+            groups,
+            all_groups,
+        } => {
+            let groups = if all_groups {
+                client.whoami().await?.groups
+            } else {
+                groups
+            };
             let resp = client
                 .create_token(CreateTokenRequest {
                     name: name.clone(),
                     expires_in_days: days,
                     role: role.clone(),
+                    groups,
                 })
                 .await?;
             if json {
@@ -158,6 +191,14 @@ async fn handle_token_command(
                     "Created token '{name}' (role: {role}, expires: {})",
                     resp.expires_at.format("%Y-%m-%d")
                 );
+                // Printed even when empty: "carries no groups" is the answer
+                // that surprises someone whose pipeline then cannot see a team
+                // package, and it is cheaper to read here than to diagnose.
+                if resp.groups.is_empty() {
+                    println!("Groups: none — this token sees only public and internal packages");
+                } else {
+                    println!("Groups: {}", resp.groups.join(", "));
+                }
                 println!();
                 println!("Token (store this — it will not be shown again):");
                 println!("  {}", resp.token);

@@ -109,7 +109,10 @@ impl LocalRegistryService {
         identity: &Identity,
     ) -> Result<Vec<String>, CoreError> {
         let names = self.backend.list_package_names(registry).await?;
-        let readable = self.readable_packages(registry, identity).await?;
+        // No `_grant_rows` consumer here: this loop asks `check_visibility` per
+        // name rather than loading versions, so there is no per-package grant
+        // query to save.
+        let (readable, _) = self.readable_packages(registry, identity).await?;
         let mut out = Vec::with_capacity(names.len());
         for name in names {
             if !readable.contains(&name) {

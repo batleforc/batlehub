@@ -6,6 +6,7 @@ pub mod document_cache;
 pub mod escaping;
 pub mod eviction;
 pub mod explore_cache;
+pub mod grants_admin;
 pub mod hot_config;
 pub mod integrity;
 pub mod local_registry;
@@ -32,6 +33,9 @@ pub use cache_control::{parse_cache_control, CacheControlDirectives};
 pub use escaping::{escape_html, percent_encode_path_segment};
 pub use eviction::{CoherenceReport, EvictionConfig, EvictionReport, EvictionService};
 pub use explore_cache::ExploreCache;
+pub use grants_admin::{
+    BackendVersions, GrantAdminService, GrantTarget, GrantWarning, VersionLookup,
+};
 pub use hot_config::{
     new_hot_lock, FeatureFlags, HotConfig, HotConfigLock, IntegrityPolicy,
     ReadmeConfig as HotReadmeConfig, RegistryPolicy, RemoteImagePolicy, RetentionPolicy,

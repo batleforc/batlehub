@@ -434,6 +434,7 @@ batlehub-cli publish numpy-1.26.0-py311h0.conda --registry internal --platform l
 batlehub-cli auth whoami
 batlehub-cli auth token list
 batlehub-cli auth token create --name <n> [--days <d>] [--role user|admin]
+                               [--groups <g1,g2> | --all-groups]
 batlehub-cli auth token revoke <uuid>
 ```
 
@@ -458,9 +459,56 @@ Create a long-lived API token (requires an active OIDC session). The raw token i
 ```
 $ batlehub-cli auth token create --name ci-pipeline --days 90
 Created token 'ci-pipeline' (role: user, expires: 2026-09-02)
+Groups: none — this token sees only public and internal packages
 
 Token (store this — it will not be shown again):
-  bhub_XXXXXXXXXXXXXXXXXXXX
+  bh_pat_XXXXXXXXXXXXXXXXXXXX
+```
+
+#### Groups on a token
+
+A token carries **no groups by default**, so it sees `public` and `internal`
+packages and nothing granted to a team. Name the groups it should carry:
+
+```
+$ batlehub-cli auth token create --name ci-pipeline --groups platform,release
+Created token 'ci-pipeline' (role: user, expires: 2026-10-01)
+Groups: platform, release
+```
+
+`--all-groups` is shorthand for every group you hold right now — it reads
+`auth whoami` and sends that list:
+
+```
+$ batlehub-cli auth token create --name laptop --all-groups
+```
+
+Three things worth knowing before you use them:
+
+- **You can only give a token groups you hold.** Naming one you do not is
+  refused with a `403` that names it, not silently dropped — a token that is
+  quietly narrower than asked for shows up later as a pipeline that cannot see a
+  package, with nothing connecting the two.
+- **Spell the group as the server resolves it.** `auth whoami` prints the
+  resolved ids, and they are not always the ones the operator has in mind: a
+  Kubernetes group reaches this model prefixed with its provider name
+  (`k8s:system:serviceaccounts:digital`, not
+  `system:serviceaccounts:digital`) unless a `role_mappings` entry renames it.
+- **It is a snapshot, not a subscription.** The groups are taken once, at
+  creation, and never re-resolved — a token has no session to re-resolve from.
+  Leaving a team does not narrow a token that already carries it; the token's
+  expiry (90 days at most) and revoking it are what bound that, which is why
+  offboarding should revoke tokens. `auth token list` shows what each one
+  carries.
+
+```
+$ batlehub-cli auth token list
++--------------------------------------+-------------+------+------------+---------------------+
+| ID                                   | Name        | Role | Expires    | Groups              |
++--------------------------------------+-------------+------+------------+---------------------+
+| 0c0f…                                | ci-pipeline | user | 2026-10-01 | platform, release   |
+| 7a31…                                | laptop      | user | 2026-09-20 | -                   |
++--------------------------------------+-------------+------+------------+---------------------+
 ```
 
 Use the resulting token as `BATLEHUB_TOKEN` in CI:
@@ -513,6 +561,44 @@ batlehub-cli admin cache clear <registry>
 batlehub-cli admin banner set   "Maintenance at 22:00 UTC" [--level info|warning|error]
 batlehub-cli admin banner clear
 ```
+
+### Grants
+
+The package and version tiers of the authorization hierarchy — the two a config
+file cannot enumerate. Registry- and namespace-tier grants stay in `config.toml`.
+
+```
+batlehub-cli admin grants list <registry> <name>[@<version>]
+batlehub-cli admin grants set  <registry> <name>[@<version>] --subject <s> --actions <a1,a2>
+batlehub-cli admin grants rm   <registry> <name>[@<version>] --subject <s>
+```
+
+```
+$ batlehub-cli admin grants set npm1 @acme/billing \
+      --subject group:oidc1:eng --actions releases:read,releases:list
+Granted releases:read, releases:list on npm1/@acme/billing to group:oidc1:eng
+
+$ batlehub-cli admin grants list npm1 @acme/billing
++----------------------------------+------------------------------+---------------------------+-----------+
+| Node                             | Subject                      | Actions                   | Source    |
++----------------------------------+------------------------------+---------------------------+-----------+
+| package:@acme/billing            | group:oidc1:eng              | releases:read,            | root      |
+|                                  |                              | releases:list             |           |
+| package:@acme/billing            | user:alice                   | releases:publish,         | ownership |
+|                                  |                              | owners:read, owners:write |           |
+| version:@acme/billing@2.4.0-rc.1 | group:oidc1:release-managers | releases:read             | root      |
++----------------------------------+------------------------------+---------------------------+-----------+
+```
+
+- **`name@version` addresses one version**, split on the *last* `@` — so
+  `@acme/billing` is a package and `@acme/billing@2.4.0` is a version.
+- **What `set` prints is what was stored.** `--actions releases:*` names one verb
+  and stores several; the output is the expanded set. It also prints warnings for
+  a grant that is legal but inert — one a broader tier already gives, or one on a
+  yanked version.
+- **`Source: ownership` rows are not editable here.** They follow the package's
+  owner list; change them with `admin owner`. Editing one earns a `409`.
+- Needs `grants:write` (`grants:read` for `list`), which `role:admin` holds.
 
 ### Audit log
 

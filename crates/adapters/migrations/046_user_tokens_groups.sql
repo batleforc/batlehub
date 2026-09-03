@@ -1,0 +1,27 @@
+-- RFC 0011-bis §4.4 — the groups a personal access token carries.
+--
+-- `UserTokenAuthProvider::to_identity` returned `groups: vec![]` for every
+-- token, so a PAT resolved to its owner's user id and role and to none of their
+-- teams. RFC 0015 built the grant hierarchy on `group:` subjects and shipped
+-- `pat_is_within_owner` to hold the subset invariant — against an empty set, so
+-- the check could not fail and the grants could not match. Automation
+-- authenticating with a token saw `public` and `internal` and nothing its owner
+-- was granted through a team.
+--
+-- # A snapshot, not a lookup
+--
+-- Taken from the creator's `Identity` at creation and capped to a subset of it.
+-- Not because re-resolving per request would be expensive — though it would, on
+-- a path an editor hits on every start — but because there is nothing to
+-- re-resolve *from*: a PAT has no session and no refresh token. The cost is
+-- staleness, bounded by the mandatory TTL (1–90 days, enforced by
+-- `create_token`) and by revocation, which is why 0011-bis §7 calls a PAT's TTL
+-- an access-control lifetime rather than hygiene.
+--
+-- # The default is what every existing row already resolved to
+--
+-- `'{}'`, so no token minted before this column widens on upgrade — those
+-- tokens carried no groups, and they still carry none. A user who needs their
+-- PAT to reach team packages re-creates it (§10).
+ALTER TABLE user_tokens
+    ADD COLUMN IF NOT EXISTS groups TEXT[] NOT NULL DEFAULT '{}';

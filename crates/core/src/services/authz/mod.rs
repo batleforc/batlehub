@@ -70,7 +70,7 @@ use crate::services::hot_config::HotConfigLock;
 pub use chain::{
     authorize_control, authorize_grants_public, authorize_listing, authorize_read,
     authorize_read_against, authorize_unheld_read, browsable_registries, resolution_path,
-    synthetic_metadata,
+    resolution_path_for_coordinate, synthetic_metadata,
 };
 
 /// Everything RFC 0015 §4.1 says applies to one coordinate, composed.
@@ -782,6 +782,40 @@ pub(crate) mod tests_support {
             _subject: &SubjectMatcher,
         ) -> Result<(), CoreError> {
             Ok(())
+        }
+
+        async fn version_grants_in_registry(
+            &self,
+            registry: &str,
+        ) -> Result<Vec<StoredGrant>, CoreError> {
+            Ok(self
+                .rows
+                .read()
+                .await
+                .iter()
+                .filter(|g| g.registry == registry && g.node_kind == NodeKind::Version)
+                .cloned()
+                .collect())
+        }
+
+        async fn version_grants_for_package(
+            &self,
+            registry: &str,
+            package: &str,
+        ) -> Result<Vec<StoredGrant>, CoreError> {
+            let prefix = format!("{package}@");
+            Ok(self
+                .rows
+                .read()
+                .await
+                .iter()
+                .filter(|g| {
+                    g.registry == registry
+                        && g.node_kind == NodeKind::Version
+                        && g.node_key.starts_with(&prefix)
+                })
+                .cloned()
+                .collect())
         }
 
         async fn package_grants_in_registry(

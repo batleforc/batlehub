@@ -39,6 +39,22 @@ impl crate::ports::LocalRegistryBackend for InMemBackend {
         self.versions.lock().unwrap().push(pkg);
         Ok(())
     }
+    /// The port's default returns an empty vec, which made every
+    /// whole-registry document in this module build from no names at all — a
+    /// green assertion about a document that could not have had anything in it.
+    async fn list_package_names(&self, registry: &str) -> Result<Vec<String>, CoreError> {
+        let mut names: Vec<String> = self
+            .versions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|p| p.registry == registry)
+            .map(|p| p.name.clone())
+            .collect();
+        names.sort();
+        names.dedup();
+        Ok(names)
+    }
     async fn yank(&self, _: &str, _: &str, _: &str) -> Result<(), CoreError> {
         Ok(())
     }
@@ -3456,5 +3472,490 @@ mod openvsx_namespace_claim {
                 .group_id,
             "team-a"
         );
+    }
+}
+
+/// RFC 0017 phase 2 — the version-tier listing filter.
+///
+/// RFC 0015 §4.4 rule 2's second half. These are the tests that turn
+/// `filter_listing` and `package_visibility` from correct-and-idle into
+/// correct-and-load-bearing: before the grants editor existed, the state they
+/// decide was unreachable because nothing wrote a version-tier row.
+mod version_grant_filter {
+    use super::*;
+    use crate::entities::{GrantMap, Node, RegistryGrants, RegistryKind, SubjectMatcher, Tier};
+    use crate::ports::{GrantRepository, NodeKind, StoredGrant};
+    use crate::services::hot_config::HotConfig;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    #[derive(Default)]
+    struct Rows(
+        AsyncRwLock<Vec<StoredGrant>>,
+        std::sync::atomic::AtomicUsize,
+    );
+
+    impl Rows {
+        /// How many *per-package* grant queries the funnel issued.
+        ///
+        /// The N+1 this counts is not a slow test — it is the §13.2 shape, one
+        /// `LIKE` per package on every whole-registry document, for exactly the
+        /// callers the config tiers do not already satisfy. A number is the only
+        /// way to assert it stayed gone.
+        fn per_package_queries(&self) -> usize {
+            self.1.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        /// Seeding the fixture goes through the same port, so the count starts
+        /// after the setup rather than including it.
+        fn reset_counter(&self) {
+            self.1.store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    #[async_trait]
+    impl GrantRepository for Rows {
+        async fn grants_for(
+            &self,
+            registry: &str,
+            package: &str,
+            version: Option<&str>,
+        ) -> Result<Vec<StoredGrant>, CoreError> {
+            let want = version.map(|v| crate::ports::version_node_key(package, v));
+            Ok(self
+                .0
+                .read()
+                .await
+                .iter()
+                .filter(|g| {
+                    g.registry == registry
+                        && match g.node_kind {
+                            NodeKind::Package => g.node_key == package,
+                            NodeKind::Version => Some(&g.node_key) == want.as_ref(),
+                        }
+                })
+                .cloned()
+                .collect())
+        }
+        async fn put_grant(&self, grant: StoredGrant) -> Result<(), CoreError> {
+            self.0.write().await.push(grant);
+            Ok(())
+        }
+        async fn delete_grant(
+            &self,
+            _: &str,
+            _: NodeKind,
+            _: &str,
+            _: &SubjectMatcher,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn package_grants_in_registry(
+            &self,
+            registry: &str,
+        ) -> Result<Vec<StoredGrant>, CoreError> {
+            Ok(self
+                .0
+                .read()
+                .await
+                .iter()
+                .filter(|g| g.registry == registry && g.node_kind == NodeKind::Package)
+                .cloned()
+                .collect())
+        }
+        async fn version_grants_in_registry(
+            &self,
+            registry: &str,
+        ) -> Result<Vec<StoredGrant>, CoreError> {
+            Ok(self
+                .0
+                .read()
+                .await
+                .iter()
+                .filter(|g| g.registry == registry && g.node_kind == NodeKind::Version)
+                .cloned()
+                .collect())
+        }
+        async fn version_grants_for_package(
+            &self,
+            registry: &str,
+            package: &str,
+        ) -> Result<Vec<StoredGrant>, CoreError> {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let prefix = format!("{package}@");
+            Ok(self
+                .0
+                .read()
+                .await
+                .iter()
+                .filter(|g| {
+                    g.registry == registry
+                        && g.node_kind == NodeKind::Version
+                        && g.node_key.starts_with(&prefix)
+                })
+                .cloned()
+                .collect())
+        }
+        async fn grants_on_node(
+            &self,
+            registry: &str,
+            node_kind: NodeKind,
+            node_key: &str,
+        ) -> Result<Vec<StoredGrant>, CoreError> {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(self
+                .0
+                .read()
+                .await
+                .iter()
+                .filter(|g| {
+                    g.registry == registry && g.node_kind == node_kind && g.node_key == node_key
+                })
+                .cloned()
+                .collect())
+        }
+        async fn delete_package_grants(&self, _: &str, _: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
+    fn alice() -> Identity {
+        Identity {
+            user_id: Some("alice".to_owned()),
+            role: Role::User,
+            auth_provider: None,
+            groups: vec![],
+        }
+    }
+
+    /// A registry granting `verbs` to everyone. The interesting fixture grants
+    /// `releases:list` and **not** `releases:read`, which is §4.4's opening
+    /// configuration and the only one where a version filter can bite.
+    fn registry_granting(verbs: &[Action]) -> RegistryGrants {
+        RegistryGrants {
+            kind: RegistryKind::Npm,
+            registry: Node::new(
+                Tier::Registry,
+                "registry:npm",
+                Some(GrantMap::new().grant(SubjectMatcher::Anyone, verbs.to_vec())),
+            ),
+            namespaces: Vec::new(),
+        }
+    }
+
+    fn service(
+        backend: Arc<InMemBackend>,
+        grants: RegistryGrants,
+        rows: Arc<Rows>,
+    ) -> LocalRegistryService {
+        let mut hot = HotConfig::default();
+        hot.grants.insert("npm".to_owned(), Arc::new(grants));
+        hot.grant_repo = Some(rows as Arc<dyn GrantRepository>);
+        LocalRegistryService {
+            backend,
+            storage: Arc::new(NoopStorage),
+            hot: new_hot_lock(hot),
+            quota: None,
+            ownership: None,
+            team_namespace: None,
+            sbom: None,
+            explore_cache: None,
+            package_repo: None,
+            readme: None,
+        }
+    }
+
+    fn three_versions() -> Arc<InMemBackend> {
+        let backend = InMemBackend::arc();
+        for v in ["1.0.0", "2.0.0", "3.0.0"] {
+            backend.seed(pkg("npm", "pkg", v));
+        }
+        backend
+    }
+
+    fn version_grant(version: &str, actions: &[Action]) -> StoredGrant {
+        StoredGrant {
+            registry: "npm".to_owned(),
+            node_kind: NodeKind::Version,
+            node_key: crate::ports::version_node_key("pkg", version),
+            subject: SubjectMatcher::User("alice".to_owned()),
+            actions: actions.to_vec(),
+            granted_by: None,
+        }
+    }
+
+    async fn versions_seen(s: &LocalRegistryService) -> Vec<String> {
+        s.load_visible_versions("npm", "pkg", &alice())
+            .await
+            .expect("listing")
+            .into_iter()
+            .map(|p| p.version)
+            .collect()
+    }
+
+    /// A whole-registry document costs **no** per-package grant query.
+    ///
+    /// The filter asks two questions per package — the version rows under this
+    /// name, and the package node. A document that walks every package asked
+    /// them once per package, for exactly the callers the config tiers do not
+    /// already satisfy: the ones this feature exists for. The fast path missed
+    /// the case that matters, and a registry with no version-tier rows at all
+    /// still paid one wasted `LIKE` per package.
+    ///
+    /// A count rather than a timing: the §13.2 shape is a query multiplier, and
+    /// a multiplier is invisible at three packages and fatal at two hundred
+    /// thousand.
+    #[tokio::test]
+    async fn a_whole_registry_document_costs_no_per_package_query() {
+        let backend = InMemBackend::arc();
+        for name in ["alpha", "beta", "gamma", "delta"] {
+            for v in ["1.0.0", "2.0.0"] {
+                backend.seed(pkg("npm", name, v));
+            }
+        }
+        let rows = Arc::new(Rows::default());
+        rows.put_grant(StoredGrant {
+            node_key: crate::ports::version_node_key("beta", "2.0.0"),
+            ..version_grant("2.0.0", &[Action::ReleasesRead])
+        })
+        .await
+        .unwrap();
+        // A package-tier read on each name — the shape the ownership projection
+        // writes, and the one that makes the multiplier real. Such a name is
+        // admitted by `Readable::with_package_grants`, so it reaches the filter;
+        // but `filter_by_grants`' fast path resolves the *config* tiers only, so
+        // it does not short-circuit, and each name then asked for its version
+        // rows and its package node. Two queries per package, on a document that
+        // walks every package.
+        for name in ["alpha", "beta", "gamma", "delta"] {
+            rows.put_grant(StoredGrant {
+                registry: "npm".to_owned(),
+                node_kind: NodeKind::Package,
+                node_key: name.to_owned(),
+                subject: SubjectMatcher::User("alice".to_owned()),
+                actions: vec![Action::ReleasesRead],
+                granted_by: None,
+            })
+            .await
+            .unwrap();
+        }
+        rows.reset_counter();
+
+        // The §4.4 caller: holds the list, holds the read nowhere, so the fast
+        // path does not fire and every package reaches the querying branch.
+        let s = service(
+            backend,
+            registry_granting(&[Action::ReleasesList]),
+            rows.clone(),
+        );
+        let doc = s
+            .get_rubygems_compact_versions("npm", &alice())
+            .await
+            .expect("document");
+
+        for name in ["alpha", "beta", "gamma", "delta"] {
+            assert!(
+                doc.contains(name),
+                "the positive control: every package the caller may read must be \
+                 in the document, or 'no queries' passes against a document that \
+                 names nothing — {doc:?}"
+            );
+        }
+        assert_eq!(
+            rows.per_package_queries(),
+            0,
+            "the document already fetches the registry's rows once to build \
+             `Readable` and the cache key; asking again per package is the N+1"
+        );
+    }
+
+    /// RFC 0017 §9's promise, asserted: with no version-tier row the funnel
+    /// returns byte for byte what it returned before this feature existed.
+    #[tokio::test]
+    async fn with_no_version_row_the_listing_is_untouched() {
+        let s = service(
+            three_versions(),
+            registry_granting(&[Action::ReleasesRead, Action::ReleasesList]),
+            Arc::new(Rows::default()),
+        );
+        assert_eq!(versions_seen(&s).await, ["1.0.0", "2.0.0", "3.0.0"]);
+    }
+
+    /// The same, for the caller the filter is *about* — list but no read. Before
+    /// a version row exists this caller still sees everything, because their
+    /// read verdict is uniform across every version and the package tier is the
+    /// whole answer.
+    #[tokio::test]
+    async fn a_list_only_caller_sees_everything_until_a_version_row_exists() {
+        let s = service(
+            three_versions(),
+            registry_granting(&[Action::ReleasesList]),
+            Arc::new(Rows::default()),
+        );
+        assert_eq!(versions_seen(&s).await, ["1.0.0", "2.0.0", "3.0.0"]);
+    }
+
+    /// §4.4 rule 2's second half, and the reason the filter had to ship with the
+    /// writer: one version granted, three published, one listed.
+    #[tokio::test]
+    async fn a_version_grant_narrows_the_listing_to_what_the_caller_may_read() {
+        let rows = Arc::new(Rows::default());
+        rows.put_grant(version_grant("2.0.0", &[Action::ReleasesRead]))
+            .await
+            .unwrap();
+        let s = service(
+            three_versions(),
+            registry_granting(&[Action::ReleasesList]),
+            rows,
+        );
+        assert_eq!(versions_seen(&s).await, ["2.0.0"]);
+    }
+
+    /// Grants only widen (§4.3): a caller who holds the read at a config tier
+    /// keeps every version, and a version row cannot take one away. This is also
+    /// the fast path — it must reach that answer without consulting the rows at
+    /// all.
+    #[tokio::test]
+    async fn a_registry_tier_read_is_not_narrowed_by_a_version_row() {
+        let rows = Arc::new(Rows::default());
+        rows.put_grant(version_grant("2.0.0", &[Action::ReleasesRead]))
+            .await
+            .unwrap();
+        let s = service(
+            three_versions(),
+            registry_granting(&[Action::ReleasesRead, Action::ReleasesList]),
+            rows,
+        );
+        assert_eq!(versions_seen(&s).await, ["1.0.0", "2.0.0", "3.0.0"]);
+    }
+
+    /// A package-tier read covers every version beneath it, for the same reason.
+    #[tokio::test]
+    async fn a_package_tier_read_is_not_narrowed_by_a_version_row() {
+        let rows = Arc::new(Rows::default());
+        rows.put_grant(version_grant("2.0.0", &[Action::ReleasesRead]))
+            .await
+            .unwrap();
+        rows.put_grant(StoredGrant {
+            registry: "npm".to_owned(),
+            node_kind: NodeKind::Package,
+            node_key: "pkg".to_owned(),
+            subject: SubjectMatcher::User("alice".to_owned()),
+            actions: vec![Action::ReleasesRead],
+            granted_by: None,
+        })
+        .await
+        .unwrap();
+        let s = service(
+            three_versions(),
+            registry_granting(&[Action::ReleasesList]),
+            rows,
+        );
+        assert_eq!(versions_seen(&s).await, ["1.0.0", "2.0.0", "3.0.0"]);
+    }
+
+    /// A version row for a *different* subject filters this caller out of it.
+    #[tokio::test]
+    async fn a_version_granted_to_someone_else_is_not_listed() {
+        let rows = Arc::new(Rows::default());
+        rows.put_grant(StoredGrant {
+            subject: SubjectMatcher::User("bob".to_owned()),
+            ..version_grant("2.0.0", &[Action::ReleasesRead])
+        })
+        .await
+        .unwrap();
+        let s = service(
+            three_versions(),
+            registry_granting(&[Action::ReleasesList]),
+            rows,
+        );
+        assert!(versions_seen(&s).await.is_empty());
+    }
+
+    /// Two subjects on one version node, and the caller is the one written
+    /// *first*. Every row for a version has to fold into one `GrantMap` — the
+    /// way `chain::stored_nodes` folds them — or all but one subject's grant is
+    /// dropped, and which one survives is whatever order the repository returned.
+    /// That is a caller silently losing a version they were granted.
+    #[tokio::test]
+    async fn two_subjects_on_one_version_both_hold_it() {
+        let rows = Arc::new(Rows::default());
+        rows.put_grant(version_grant("2.0.0", &[Action::ReleasesRead]))
+            .await
+            .unwrap();
+        rows.put_grant(StoredGrant {
+            subject: SubjectMatcher::User("bob".to_owned()),
+            ..version_grant("2.0.0", &[Action::ReleasesRead])
+        })
+        .await
+        .unwrap();
+        let s = service(
+            three_versions(),
+            registry_granting(&[Action::ReleasesList]),
+            rows,
+        );
+        assert_eq!(
+            versions_seen(&s).await,
+            ["2.0.0"],
+            "alice's row was written before bob's; keeping one row per version \
+             would have let bob's overwrite it"
+        );
+    }
+
+    /// The verb matters: a version row granting something other than the read
+    /// does not make the version listable.
+    #[tokio::test]
+    async fn a_version_row_without_the_read_verb_does_not_list_it() {
+        let rows = Arc::new(Rows::default());
+        rows.put_grant(version_grant("2.0.0", &[Action::ReleasesYank]))
+            .await
+            .unwrap();
+        let s = service(
+            three_versions(),
+            registry_granting(&[Action::ReleasesList]),
+            rows,
+        );
+        assert!(versions_seen(&s).await.is_empty());
+    }
+
+    /// A version row on a *different package* must not reach this one — the
+    /// `package@` boundary, which a bare prefix would cross.
+    #[tokio::test]
+    async fn a_row_on_a_similarly_named_package_does_not_leak_in() {
+        let rows = Arc::new(Rows::default());
+        rows.put_grant(StoredGrant {
+            node_key: "pkg-internal@2.0.0".to_owned(),
+            ..version_grant("2.0.0", &[Action::ReleasesRead])
+        })
+        .await
+        .unwrap();
+        let s = service(
+            three_versions(),
+            registry_granting(&[Action::ReleasesList]),
+            rows,
+        );
+        assert_eq!(
+            versions_seen(&s).await,
+            ["1.0.0", "2.0.0", "3.0.0"],
+            "`pkg-internal`'s row is not a row on `pkg`, so `pkg` has none and \
+             the filter stays inert — a bare prefix match would instead have \
+             narrowed this listing to the one version that row names"
+        );
+    }
+
+    /// The filter runs after the others, so a version the caller may read but
+    /// that is unlisted stays hidden: this narrows, it never widens.
+    #[tokio::test]
+    async fn the_filter_does_not_resurrect_an_unlisted_version() {
+        let backend = InMemBackend::arc();
+        backend.seed(PublishedPackage {
+            unlisted: true,
+            ..pkg("npm", "pkg", "2.0.0")
+        });
+        let rows = Arc::new(Rows::default());
+        rows.put_grant(version_grant("2.0.0", &[Action::ReleasesRead]))
+            .await
+            .unwrap();
+        let s = service(backend, registry_granting(&[Action::ReleasesList]), rows);
+        assert!(versions_seen(&s).await.is_empty());
     }
 }

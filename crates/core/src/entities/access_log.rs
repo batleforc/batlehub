@@ -59,6 +59,18 @@ pub enum AccessAction {
     /// a different fact about a system than a version being deleted, and an
     /// operator reading the trail has to be able to separate the two.
     TombstoneCompact,
+    /// A package- or version-tier grant was written or replaced
+    /// ([RFC 0017](/rfc/0017-writing-grants-at-the-package-and-version-tiers) §7).
+    ///
+    /// Two actions rather than one toggle, unlike [`Self::SetRetentionPin`]:
+    /// a pin's current state is readable from the version row, and a grant's is
+    /// not once the row is gone. "Who could read this, and since when" is the
+    /// question after an incident, and a revocation that left no event would
+    /// make the trail answer it wrongly — it would show the grant being written
+    /// and nothing afterwards, which reads as still held.
+    GrantWrite,
+    /// A package- or version-tier grant was removed.
+    GrantRevoke,
     /// A version was pinned against retention, or the pin was released
     /// (RFC 0016 §4.1).
     ///
@@ -167,6 +179,8 @@ impl AccessAction {
         Self::ClaimNamespace,
         Self::ReleaseNamespace,
         Self::ResetQuota,
+        Self::GrantWrite,
+        Self::GrantRevoke,
         Self::TombstoneCompact,
         Self::SetRetentionPin,
         Self::RetentionReclaim,
@@ -213,6 +227,8 @@ impl AccessAction {
             Self::ClaimNamespace => "claim_namespace",
             Self::ReleaseNamespace => "release_namespace",
             Self::ResetQuota => "reset_quota",
+            Self::GrantWrite => "grant_write",
+            Self::GrantRevoke => "grant_revoke",
             Self::TombstoneCompact => "tombstone_compact",
             Self::SetRetentionPin => "set_retention_pin",
             Self::RetentionReclaim => "retention_reclaim",
@@ -554,7 +570,7 @@ mod tests {
     fn all_lists_every_variant() {
         assert_eq!(
             AccessAction::ALL.len(),
-            35,
+            37,
             "a new AccessAction variant must be added to ALL (and this count bumped), \
              or ?action= cannot name it"
         );
